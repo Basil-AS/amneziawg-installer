@@ -1,4 +1,5 @@
 #!/bin/bash
+# shellcheck disable=SC1003,SC2012,SC2015,SC2016,SC2004,SC2086,SC2317
 
 # Проверка минимальной версии Bash
 if [[ "${BASH_VERSINFO[0]}" -lt 4 ]]; then
@@ -45,6 +46,7 @@ CLI_ROUTING_MODE="default"; CLI_CUSTOM_ROUTES=""; CLI_ENDPOINT=""; CLI_NO_TWEAKS
 CLI_ENABLE_NATIVE_IPV6=0; CLI_IPV6_SUBNET=""; CLI_UPGRADE_IPV6=0
 CLI_P2P_BASE_PORT=""; CLI_P2P_PORTS_PER_CLIENT=""
 CLI_FULLCONE_NAT=0; CLI_WEB_PORT=""; CLI_WEB_BIND=""; CLI_DISABLE_WEB=0
+CLI_ENABLE_ADGUARD=0; CLI_ADGUARD_PORT=""; CLI_DNS_MODE=""
 
 # --- Автоочистка временных файлов ---
 _install_temp_files=()
@@ -77,6 +79,9 @@ while [[ $# -gt 0 ]]; do
         --web-port=*)    CLI_WEB_PORT="${1#*=}" ;;
         --web-bind=*)    CLI_WEB_BIND="${1#*=}" ;;
         --disable-web)   CLI_DISABLE_WEB=1 ;;
+        --enable-adguard) CLI_ENABLE_ADGUARD=1 ;;
+        --adguard-port=*) CLI_ADGUARD_PORT="${1#*=}" ;;
+        --dns-mode=*)    CLI_DNS_MODE="${1#*=}" ;;
         --route-all)     CLI_ROUTING_MODE=1 ;;
         --route-amnezia) CLI_ROUTING_MODE=2 ;;
         --route-custom=*) CLI_ROUTING_MODE=3; CLI_CUSTOM_ROUTES="${1#*=}" ;;
@@ -280,6 +285,9 @@ show_help() {
   --web-port=PORT       Порт веб-панели HTTPS (умолч. 8443)
   --web-bind=ADDR       Адрес bind веб-панели (умолч. 0.0.0.0)
   --disable-web         Не устанавливать и не запускать веб-панель
+  --enable-adguard      Установить AdGuard Home и выдать клиентам DNS 10.9.9.1
+  --adguard-port=PORT   HTTP-порт AdGuard Home на localhost/VPN (умолч. 3000)
+  --dns-mode=MODE       DNS для клиентов: adguard, system или custom
   --route-all           Использовать режим 'Весь трафик' неинтерактивно
   --route-amnezia       Использовать режим 'Amnezia' неинтерактивно
   --route-custom=СЕТИ   Использовать режим 'Пользовательский' неинтерактивно
@@ -556,7 +564,8 @@ safe_load_config() {
                 AWG_H1|AWG_H2|AWG_H3|AWG_H4|AWG_I1|AWG_PRESET|NO_TWEAKS|AWG_APPLY_MODE|\
                 AWG_IPV6_ENABLED|AWG_IPV6_MODE|AWG_IPV6_SUBNET|AWG_IPV6_NDP_PROXY|\
                 AWG_P2P_ENABLED|AWG_P2P_BASE_PORT|AWG_P2P_PORTS_PER_CLIENT|AWG_FULLCONE_NAT|\
-                AWG_WEB_ENABLED|AWG_WEB_PORT|AWG_WEB_BIND)
+                AWG_WEB_ENABLED|AWG_WEB_PORT|AWG_WEB_BIND|\
+                AWG_DNS_MODE|AWG_CUSTOM_DNS|AWG_ADGUARD_ENABLED|AWG_ADGUARD_PORT|AWG_ADGUARD_DIR)
                     export "$key=$value"
                     ;;
             esac
@@ -1277,6 +1286,11 @@ setup_improved_firewall() {
         if [[ "${AWG_WEB_ENABLED:-1}" -eq 1 ]]; then
             ufw allow "${AWG_WEB_PORT}/tcp" comment "AmneziaWG Web Panel" || { log_warn "UFW: ошибка allow Web port"; ufw_errors=1; }
         fi
+        if [[ "${AWG_ADGUARD_ENABLED:-0}" -eq 1 ]]; then
+            ufw allow in on awg0 to any port 53 proto udp comment "AmneziaWG AdGuard DNS UDP" || log_warn "UFW: ошибка allow DNS UDP on awg0"
+            ufw allow in on awg0 to any port 53 proto tcp comment "AmneziaWG AdGuard DNS TCP" || log_warn "UFW: ошибка allow DNS TCP on awg0"
+            ufw allow in on awg0 to any port "${AWG_ADGUARD_PORT}" proto tcp comment "AmneziaWG AdGuard UI" || log_warn "UFW: ошибка allow AdGuard UI on awg0"
+        fi
         if [[ "${AWG_P2P_ENABLED:-1}" -eq 1 ]]; then
             local p2p_from=$((AWG_P2P_BASE_PORT + 1)) p2p_to=$((AWG_P2P_BASE_PORT + 1024))
             ufw allow "${p2p_from}:${p2p_to}/tcp" comment "AmneziaWG P2P TCP" || log_warn "UFW: ошибка allow P2P TCP"
@@ -1319,6 +1333,11 @@ setup_improved_firewall() {
         ufw allow "${AWG_PORT}/udp" comment "AmneziaWG VPN" || { log_warn "UFW: ошибка allow VPN port"; ufw_errors=1; }
         if [[ "${AWG_WEB_ENABLED:-1}" -eq 1 ]]; then
             ufw allow "${AWG_WEB_PORT}/tcp" comment "AmneziaWG Web Panel" || { log_warn "UFW: ошибка allow Web port"; ufw_errors=1; }
+        fi
+        if [[ "${AWG_ADGUARD_ENABLED:-0}" -eq 1 ]]; then
+            ufw allow in on awg0 to any port 53 proto udp comment "AmneziaWG AdGuard DNS UDP" || log_warn "UFW: ошибка allow DNS UDP on awg0"
+            ufw allow in on awg0 to any port 53 proto tcp comment "AmneziaWG AdGuard DNS TCP" || log_warn "UFW: ошибка allow DNS TCP on awg0"
+            ufw allow in on awg0 to any port "${AWG_ADGUARD_PORT}" proto tcp comment "AmneziaWG AdGuard UI" || log_warn "UFW: ошибка allow AdGuard UI on awg0"
         fi
         if [[ "${AWG_P2P_ENABLED:-1}" -eq 1 ]]; then
             local p2p_from=$((AWG_P2P_BASE_PORT + 1)) p2p_to=$((AWG_P2P_BASE_PORT + 1024))
@@ -1579,6 +1598,8 @@ step_uninstall() {
     systemctl disable awg-quick@awg0 2>/dev/null
     systemctl stop awg-web.service 2>/dev/null
     systemctl disable awg-web.service 2>/dev/null
+    systemctl stop AdGuardHome.service 2>/dev/null
+    systemctl disable AdGuardHome.service 2>/dev/null
     systemctl stop ndppd 2>/dev/null || true
     modprobe -r amneziawg 2>/dev/null || true
     # v5.12.0+: автовосстановление модуля при обновлении ядра.
@@ -1619,6 +1640,12 @@ step_uninstall() {
             web_port_to_del=$(safe_read_config_key "AWG_WEB_PORT" "$CONFIG_FILE" 2>/dev/null || true)
             web_port_to_del=${web_port_to_del:-8443}
             ufw delete allow "${web_port_to_del}/tcp" 2>/dev/null
+            ufw delete allow in on awg0 to any port 53 proto udp 2>/dev/null
+            ufw delete allow in on awg0 to any port 53 proto tcp 2>/dev/null
+            local adguard_port_to_del
+            adguard_port_to_del=$(safe_read_config_key "AWG_ADGUARD_PORT" "$CONFIG_FILE" 2>/dev/null || true)
+            adguard_port_to_del=${adguard_port_to_del:-3000}
+            ufw delete allow in on awg0 to any port "${adguard_port_to_del}" proto tcp 2>/dev/null
             p2p_base_to_del=$(safe_read_config_key "AWG_P2P_BASE_PORT" "$CONFIG_FILE" 2>/dev/null || true)
             p2p_base_to_del=${p2p_base_to_del:-20000}
             ufw delete allow "$((p2p_base_to_del + 1)):$((p2p_base_to_del + 1024))/tcp" 2>/dev/null
@@ -1670,6 +1697,7 @@ step_uninstall() {
     rm -rf /etc/amnezia \
         /etc/ndppd.conf \
         /etc/systemd/system/awg-web.service \
+        /etc/systemd/system/AdGuardHome.service \
         /etc/modules-load.d/amneziawg.conf \
         /etc/sysctl.d/99-amneziawg-security.conf \
         /etc/sysctl.d/99-amneziawg-forwarding.conf \
@@ -1755,6 +1783,11 @@ initialize_setup() {
     AWG_WEB_ENABLED=1
     AWG_WEB_PORT=8443
     AWG_WEB_BIND="0.0.0.0"
+    AWG_DNS_MODE="system"
+    AWG_CUSTOM_DNS="1.1.1.1"
+    AWG_ADGUARD_ENABLED=0
+    AWG_ADGUARD_PORT=3000
+    AWG_ADGUARD_DIR="/opt/AdGuardHome"
 
     # Загрузка конфига
     if [[ -f "$CONFIG_FILE" ]]; then
@@ -1779,6 +1812,11 @@ initialize_setup() {
         AWG_WEB_ENABLED=${AWG_WEB_ENABLED:-1}
         AWG_WEB_PORT=${AWG_WEB_PORT:-8443}
         AWG_WEB_BIND=${AWG_WEB_BIND:-0.0.0.0}
+        AWG_DNS_MODE=${AWG_DNS_MODE:-system}
+        AWG_CUSTOM_DNS=${AWG_CUSTOM_DNS:-1.1.1.1}
+        AWG_ADGUARD_ENABLED=${AWG_ADGUARD_ENABLED:-0}
+        AWG_ADGUARD_PORT=${AWG_ADGUARD_PORT:-3000}
+        AWG_ADGUARD_DIR=${AWG_ADGUARD_DIR:-/opt/AdGuardHome}
         log "Настройки из файла загружены."
     else
         log "Файл конфигурации $CONFIG_FILE не найден."
@@ -1795,6 +1833,12 @@ initialize_setup() {
     [[ -n "$CLI_WEB_PORT" ]] && AWG_WEB_PORT="$CLI_WEB_PORT"
     [[ -n "$CLI_WEB_BIND" ]] && AWG_WEB_BIND="$CLI_WEB_BIND"
     [[ "$CLI_DISABLE_WEB" -eq 1 ]] && AWG_WEB_ENABLED=0
+    [[ -n "$CLI_ADGUARD_PORT" ]] && AWG_ADGUARD_PORT="$CLI_ADGUARD_PORT"
+    if [[ -n "$CLI_DNS_MODE" ]]; then AWG_DNS_MODE="$CLI_DNS_MODE"; fi
+    if [[ "$CLI_ENABLE_ADGUARD" -eq 1 ]]; then
+        AWG_ADGUARD_ENABLED=1
+        AWG_DNS_MODE="adguard"
+    fi
     if [[ "$CLI_ROUTING_MODE" != "default" ]]; then
         ALLOWED_IPS_MODE=$CLI_ROUTING_MODE
         if [[ "$CLI_ROUTING_MODE" -eq 3 ]]; then ALLOWED_IPS=$CLI_CUSTOM_ROUTES; fi
@@ -1818,6 +1862,14 @@ initialize_setup() {
         die "Некорректный AWG_P2P_PORTS_PER_CLIENT: '$AWG_P2P_PORTS_PER_CLIENT' (0-12)."
     fi
     validate_port "$AWG_WEB_PORT"
+    validate_port "$AWG_ADGUARD_PORT"
+    case "$AWG_DNS_MODE" in
+        adguard|system|custom) ;;
+        *) die "Некорректный --dns-mode: '$AWG_DNS_MODE' (ожидается adguard, system или custom)." ;;
+    esac
+    if [[ "$AWG_DNS_MODE" == "adguard" ]]; then
+        AWG_ADGUARD_ENABLED=1
+    fi
     # AWG_ENDPOINT мог прийти из CONFIG_FILE через safe_load_config (без CLI override).
     # Если значение есть и не валидно — log_warn + сброс в "" чтобы инсталлятор
     # вернулся к auto-detect через get_server_public_ip (audit).
@@ -1900,6 +1952,11 @@ export AWG_FULLCONE_NAT=${AWG_FULLCONE_NAT}
 export AWG_WEB_ENABLED=${AWG_WEB_ENABLED}
 export AWG_WEB_PORT=${AWG_WEB_PORT}
 export AWG_WEB_BIND='${AWG_WEB_BIND}'
+export AWG_DNS_MODE='${AWG_DNS_MODE}'
+export AWG_CUSTOM_DNS='${AWG_CUSTOM_DNS}'
+export AWG_ADGUARD_ENABLED=${AWG_ADGUARD_ENABLED}
+export AWG_ADGUARD_PORT=${AWG_ADGUARD_PORT}
+export AWG_ADGUARD_DIR='${AWG_ADGUARD_DIR}'
 # AWG 2.0 Parameters
 export AWG_Jc=${AWG_Jc}
 export AWG_Jmin=${AWG_Jmin}
@@ -1927,12 +1984,14 @@ EOF
     export AWG_IPV6_ENABLED AWG_IPV6_MODE AWG_IPV6_SUBNET AWG_IPV6_NDP_PROXY
     export AWG_P2P_ENABLED AWG_P2P_BASE_PORT AWG_P2P_PORTS_PER_CLIENT AWG_FULLCONE_NAT
     export AWG_WEB_ENABLED AWG_WEB_PORT AWG_WEB_BIND
+    export AWG_DNS_MODE AWG_CUSTOM_DNS AWG_ADGUARD_ENABLED AWG_ADGUARD_PORT AWG_ADGUARD_DIR
     log "Порт: ${AWG_PORT}/udp"
     log "Подсеть: ${AWG_TUNNEL_SUBNET}"
     log "Откл. IPv6: $DISABLE_IPV6"
     log "IPv6 клиентов: ${AWG_IPV6_ENABLED} (${AWG_IPV6_MODE:-legacy} ${AWG_IPV6_SUBNET:-})"
     log "P2P: base=${AWG_P2P_BASE_PORT}, ports/client=${AWG_P2P_PORTS_PER_CLIENT}, fullcone=${AWG_FULLCONE_NAT}"
     log "Web: enabled=${AWG_WEB_ENABLED}, bind=${AWG_WEB_BIND}:${AWG_WEB_PORT}"
+    log "DNS: mode=${AWG_DNS_MODE}, adguard=${AWG_ADGUARD_ENABLED}, port=${AWG_ADGUARD_PORT}"
     log "Режим AllowedIPs: $ALLOWED_IPS_MODE"
 
     # Загрузка состояния
@@ -2814,6 +2873,127 @@ EOF
     log "ndppd настроен для ${AWG_IPV6_SUBNET} через ${nic}."
 }
 
+deploy_adguard_home() {
+    [[ "${AWG_ADGUARD_ENABLED:-0}" -eq 1 ]] || return 0
+    log "Развёртывание AdGuard Home (fork delta)..."
+
+    local ag_dir="${AWG_ADGUARD_DIR:-/opt/AdGuardHome}"
+    local ag_port="${AWG_ADGUARD_PORT:-3000}"
+    local ag_bin="$ag_dir/AdGuardHome"
+    local ag_arch url tmp tgz server_v6=""
+
+    case "$(uname -m)" in
+        x86_64|amd64) ag_arch="amd64" ;;
+        aarch64|arm64) ag_arch="arm64" ;;
+        armv7l|armv7*) ag_arch="armv7" ;;
+        armv6l|armv6*) ag_arch="armv6" ;;
+        *) log_warn "AdGuard Home: неподдерживаемая архитектура $(uname -m), пропуск."; return 0 ;;
+    esac
+
+    mkdir -p "$ag_dir" || { log_warn "AdGuard Home: не удалось создать $ag_dir"; return 0; }
+    if [[ ! -x "$ag_bin" ]]; then
+        tmp=$(mktemp -d) || { log_warn "AdGuard Home: mktemp failed"; return 0; }
+        tgz="$tmp/AdGuardHome_linux_${ag_arch}.tar.gz"
+        url="https://github.com/AdguardTeam/AdGuardHome/releases/latest/download/AdGuardHome_linux_${ag_arch}.tar.gz"
+        if curl -fL --connect-timeout 10 --max-time 120 -o "$tgz" "$url"; then
+            if tar -xzf "$tgz" -C "$tmp" && [[ -x "$tmp/AdGuardHome/AdGuardHome" ]]; then
+                cp -a "$tmp/AdGuardHome/." "$ag_dir/" || log_warn "AdGuard Home: не удалось скопировать файлы в $ag_dir"
+            else
+                log_warn "AdGuard Home: архив не распакован, DNS fallback останется системным."
+            fi
+        else
+            log_warn "AdGuard Home: download failed, VPN продолжит работать с текущим DNS fallback."
+        fi
+        rm -rf "$tmp"
+    fi
+
+    if [[ ! -x "$ag_bin" ]]; then
+        log_warn "AdGuard Home binary не найден, пропуск запуска."
+        return 0
+    fi
+
+    if [[ "${AWG_IPV6_ENABLED:-0}" == "1" && -n "${AWG_IPV6_SUBNET:-}" ]]; then
+        server_v6=$(python3 - "$AWG_IPV6_SUBNET" <<'PY'
+import ipaddress, sys
+try:
+    net = ipaddress.ip_network(sys.argv[1], strict=False)
+    print(net.network_address + 1)
+except Exception:
+    pass
+PY
+)
+    fi
+
+    cat > "$ag_dir/AdGuardHome.yaml" << EOF
+bind_host: 10.9.9.1
+bind_port: ${ag_port}
+users: []
+auth_attempts: 5
+block_auth_min: 15
+http_proxy: ""
+language: ""
+theme: auto
+dns:
+  bind_hosts:
+    - 127.0.0.1
+    - 10.9.9.1
+EOF
+    if [[ -n "$server_v6" ]]; then
+        echo "    - ::1" >> "$ag_dir/AdGuardHome.yaml"
+        echo "    - ${server_v6}" >> "$ag_dir/AdGuardHome.yaml"
+    fi
+    cat >> "$ag_dir/AdGuardHome.yaml" <<'EOF'
+  port: 53
+  anonymize_client_ip: false
+  protection_enabled: true
+  blocking_mode: default
+  upstream_dns:
+    - https://dns.quad9.net/dns-query
+    - https://cloudflare-dns.com/dns-query
+  bootstrap_dns:
+    - 9.9.9.10
+    - 1.1.1.1
+  cache_size: 4194304
+  enable_dnssec: true
+filters:
+  - enabled: true
+    url: https://adguardteam.github.io/HostlistsRegistry/assets/filter_1.txt
+    name: AdGuard DNS filter
+    id: 1
+whitelist_filters: []
+user_rules: []
+dhcp:
+  enabled: false
+schema_version: 20
+EOF
+    chmod 600 "$ag_dir/AdGuardHome.yaml"
+
+    cat > /etc/systemd/system/AdGuardHome.service << EOF
+[Unit]
+Description=AdGuard Home for AmneziaWG clients
+After=network-online.target awg-quick@awg0.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=${ag_dir}
+ExecStart=${ag_bin} -c ${ag_dir}/AdGuardHome.yaml -w ${ag_dir} --no-check-update
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    chmod 644 /etc/systemd/system/AdGuardHome.service
+    systemctl daemon-reload
+    systemctl enable AdGuardHome.service 2>/dev/null || log_warn "Не удалось enable AdGuardHome.service"
+    if ! systemctl restart AdGuardHome.service; then
+        log_warn "AdGuard Home не стартовал. VPN не сломан; переключитесь на system DNS: manage dns set-mode system."
+    else
+        log "AdGuard Home запущен: DNS 10.9.9.1:53, UI http://10.9.9.1:${ag_port}/"
+    fi
+}
+
 deploy_web_panel() {
     [[ "${AWG_WEB_ENABLED:-1}" -eq 1 ]] || { log "Веб-панель отключена (--disable-web)."; return 0; }
     log "Развёртывание веб-панели AmneziaWG..."
@@ -2834,9 +3014,15 @@ deploy_web_panel() {
 
     cat > "$web_dir/server.py" <<'PY'
 #!/usr/bin/env python3
-import json, os, re, ssl, subprocess, time
+import json
+import ipaddress
+import os
+import re
+import ssl
+import subprocess
+import time
 from http import HTTPStatus
-from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
+from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
@@ -2848,16 +3034,19 @@ TOKEN_FILE = WEB_DIR / "auth_token"
 NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 RATE = {}
 
-def token():
-    return TOKEN_FILE.read_text().strip()
 
 def run_manage(*args, timeout=60):
     env = os.environ.copy()
     env["AWG_YES"] = "1"
-    p = subprocess.run(["/bin/bash", str(MANAGE), "--yes", *args], text=True,
-                       stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                       timeout=timeout, env=env)
-    return p.returncode, p.stdout, p.stderr
+    return subprocess.run(
+        ["/bin/bash", str(MANAGE), "--yes", *args],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=timeout,
+        env=env,
+    )
+
 
 def parse_peers():
     peers, cur = [], None
@@ -2865,7 +3054,8 @@ def parse_peers():
         return peers
     for line in SERVER_CONF.read_text(errors="ignore").splitlines():
         if line == "[Peer]":
-            if cur: peers.append(cur)
+            if cur:
+                peers.append(cur)
             cur = {"name": "", "public_key": "", "ipv4": "", "ipv6": "", "p2p_ports": []}
         elif cur is not None and line.startswith("#_Name = "):
             cur["name"] = line.split("=", 1)[1].strip()
@@ -2877,24 +3067,69 @@ def parse_peers():
             value = line.split("=", 1)[1]
             m4 = re.search(r"(\d+\.\d+\.\d+\.\d+)/32", value)
             m6 = re.search(r"([0-9A-Fa-f:]+)/128", value)
-            if m4: cur["ipv4"] = m4.group(1)
-            if m6: cur["ipv6"] = m6.group(1)
-    if cur: peers.append(cur)
+            if m4:
+                cur["ipv4"] = m4.group(1)
+            if m6:
+                cur["ipv6"] = m6.group(1)
+    if cur:
+        peers.append(cur)
     return [p for p in peers if p.get("name")]
 
-def stats_map():
-    try:
-        rc, out, _ = run_manage("--json", "stats", timeout=20)
-        if rc == 0:
-            return {x.get("name"): x for x in json.loads(out or "[]")}
-    except Exception:
-        pass
-    return {}
+
+def dns_status():
+    mode = "system"
+    client_dns = "1.1.1.1"
+    adguard_enabled = "0"
+    adguard_port = "3000"
+    cfg = AWG_DIR / "awgsetup_cfg.init"
+    ipv6_enabled = "0"
+    ipv6_subnet = ""
+    if cfg.exists():
+        for line in cfg.read_text(errors="ignore").splitlines():
+            line = line.removeprefix("export ").strip()
+            if "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            value = value.strip().strip("'\"")
+            if key == "AWG_DNS_MODE":
+                mode = value or mode
+            elif key == "AWG_CUSTOM_DNS":
+                client_dns = value or client_dns
+            elif key == "AWG_ADGUARD_ENABLED":
+                adguard_enabled = value or adguard_enabled
+            elif key == "AWG_ADGUARD_PORT":
+                adguard_port = value or adguard_port
+            elif key == "AWG_IPV6_ENABLED":
+                ipv6_enabled = value or ipv6_enabled
+            elif key == "AWG_IPV6_SUBNET":
+                ipv6_subnet = value or ipv6_subnet
+    if mode == "adguard":
+        client_dns = "10.9.9.1"
+        if ipv6_enabled == "1" and ipv6_subnet:
+            try:
+                client_dns += f", {ipaddress.ip_network(ipv6_subnet, strict=False).network_address + 1}"
+            except ValueError:
+                pass
+    active = subprocess.run(
+        ["systemctl", "is-active", "AdGuardHome.service"],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+    ).stdout.strip()
+    return {
+        "mode": mode,
+        "client_dns": client_dns,
+        "adguard_enabled": adguard_enabled == "1",
+        "adguard_service": active or "unknown",
+        "adguard_port": adguard_port,
+    }
+
 
 def safe_name(name):
     if not NAME_RE.match(name or ""):
         raise ValueError("invalid client name")
     return name
+
 
 class Handler(SimpleHTTPRequestHandler):
     server_version = "AmneziaWGWeb/1.0"
@@ -2902,30 +3137,22 @@ class Handler(SimpleHTTPRequestHandler):
     def log_message(self, fmt, *args):
         return
 
-    def rate_limited(self):
+    def authed(self):
+        if not self.path.startswith("/api/"):
+            return True
         ip = self.client_address[0]
         now = time.time()
         bucket = [t for t in RATE.get(ip, []) if now - t < 60]
         bucket.append(now)
         RATE[ip] = bucket
-        return len(bucket) > 100
-
-    def authed(self):
-        if self.path.startswith("/api/"):
-            if self.rate_limited():
-                self.send_error(HTTPStatus.TOO_MANY_REQUESTS)
-                return False
-            hdr = self.headers.get("Authorization", "")
-            if hdr != f"Bearer {token()}":
-                self.send_error(HTTPStatus.UNAUTHORIZED)
-                return False
+        if len(bucket) > 100:
+            self.send_error(HTTPStatus.TOO_MANY_REQUESTS)
+            return False
+        token = TOKEN_FILE.read_text().strip()
+        if self.headers.get("Authorization", "") != f"Bearer {token}":
+            self.send_error(HTTPStatus.UNAUTHORIZED)
+            return False
         return True
-
-    def json_body(self):
-        n = int(self.headers.get("Content-Length", "0") or 0)
-        if n <= 0:
-            return {}
-        return json.loads(self.rfile.read(n).decode("utf-8"))
 
     def send_json(self, obj, status=200):
         data = json.dumps(obj, ensure_ascii=False).encode()
@@ -2934,6 +3161,10 @@ class Handler(SimpleHTTPRequestHandler):
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
         self.wfile.write(data)
+
+    def json_body(self):
+        size = int(self.headers.get("Content-Length", "0") or 0)
+        return json.loads(self.rfile.read(size).decode("utf-8")) if size else {}
 
     def send_file(self, path, ctype):
         if not path.exists() or not path.is_file():
@@ -2947,49 +3178,51 @@ class Handler(SimpleHTTPRequestHandler):
         self.wfile.write(data)
 
     def do_GET(self):
-        if not self.authed(): return
+        if not self.authed():
+            return
         u = urlparse(self.path)
         if not u.path.startswith("/api/"):
-            if u.path == "/":
-                self.path = "/index.html"
+            self.path = "/index.html" if u.path == "/" else self.path
             return super().do_GET()
         if u.path == "/api/status":
-            active = subprocess.run(["systemctl", "is-active", "awg-quick@awg0"], text=True,
-                                    stdout=subprocess.PIPE, stderr=subprocess.DEVNULL).stdout.strip()
-            self.send_json({"service": active, "clients": len(parse_peers()), "version": "5.13.0", "fork": "ipv6-p2p-web"})
-        elif u.path == "/api/clients":
-            sm = stats_map()
-            clients = []
-            for p in parse_peers():
-                p.update(sm.get(p["name"], {}))
-                clients.append(p)
-            self.send_json(clients)
-        elif u.path == "/api/stats":
-            rc, out, err = run_manage("--json", "stats", timeout=20)
-            self.send_json(json.loads(out or "[]") if rc == 0 else {"error": err or out}, 200 if rc == 0 else 500)
-        elif u.path == "/api/server/logs":
+            active = subprocess.run(["systemctl", "is-active", "awg-quick@awg0"], text=True, stdout=subprocess.PIPE).stdout.strip()
+            self.send_json({"service": active, "clients": len(parse_peers()), "version": "5.13.0", "fork": "ipv6-p2p-web-adguard"})
+            return
+        if u.path == "/api/dns":
+            self.send_json(dns_status())
+            return
+        if u.path == "/api/clients":
+            self.send_json(parse_peers())
+            return
+        if u.path == "/api/stats":
+            p = run_manage("--json", "stats", timeout=20)
+            self.send_json(json.loads(p.stdout or "[]") if p.returncode == 0 else {"error": p.stderr or p.stdout}, 200 if p.returncode == 0 else 500)
+            return
+        if u.path == "/api/server/logs":
             lines = []
             for f in (AWG_DIR / "manage_amneziawg.log", AWG_DIR / "install_amneziawg.log"):
                 if f.exists():
                     lines.extend(f.read_text(errors="ignore").splitlines()[-100:])
             self.send_json({"lines": lines[-100:]})
+            return
+        m = re.match(r"^/api/clients/([^/]+)/(config|qr|vpnuri|p2p)$", u.path)
+        if not m:
+            self.send_error(404)
+            return
+        name, kind = safe_name(m.group(1)), m.group(2)
+        if kind == "config":
+            self.send_file(AWG_DIR / f"{name}.conf", "text/plain; charset=utf-8")
+        elif kind == "qr":
+            self.send_file(AWG_DIR / f"{name}.png", "image/png")
+        elif kind == "vpnuri":
+            self.send_file(AWG_DIR / f"{name}.vpnuri", "text/plain; charset=utf-8")
         else:
-            m = re.match(r"^/api/clients/([^/]+)/(config|qr|vpnuri|p2p)$", u.path)
-            if not m:
-                self.send_error(404); return
-            name, kind = safe_name(m.group(1)), m.group(2)
-            if kind == "config":
-                self.send_file(AWG_DIR / f"{name}.conf", "text/plain; charset=utf-8")
-            elif kind == "qr":
-                self.send_file(AWG_DIR / f"{name}.png", "image/png")
-            elif kind == "vpnuri":
-                self.send_file(AWG_DIR / f"{name}.vpnuri", "text/plain; charset=utf-8")
-            else:
-                peer = next((p for p in parse_peers() if p["name"] == name), None)
-                self.send_json({"name": name, "ports": (peer or {}).get("p2p_ports", [])})
+            peer = next((p for p in parse_peers() if p["name"] == name), None)
+            self.send_json({"name": name, "ports": (peer or {}).get("p2p_ports", [])})
 
     def do_POST(self):
-        if not self.authed(): return
+        if not self.authed():
+            return
         u = urlparse(self.path)
         try:
             body = self.json_body()
@@ -2997,56 +3230,63 @@ class Handler(SimpleHTTPRequestHandler):
                 args = []
                 if body.get("expires"):
                     args.append(f"--expires={body['expires']}")
-                args += ["add", safe_name(body.get("name", ""))]
-                rc, out, err = run_manage(*args)
-                self.send_json({"ok": rc == 0, "stdout": out, "stderr": err}, 200 if rc == 0 else 400)
+                p = run_manage(*args, "add", safe_name(body.get("name", "")))
             elif u.path == "/api/server/restart":
-                rc, out, err = run_manage("restart", timeout=90)
-                self.send_json({"ok": rc == 0, "stdout": out, "stderr": err}, 200 if rc == 0 else 500)
+                p = run_manage("restart", timeout=90)
+            elif u.path == "/api/dns/restart":
+                p = run_manage("dns", "restart", timeout=30)
+            elif u.path == "/api/dns/mode":
+                mode = body.get("mode", "")
+                custom = body.get("custom", "")
+                args = ["dns", "set-mode", mode]
+                if custom:
+                    args.append(custom)
+                p = run_manage(*args, timeout=120)
             else:
                 m = re.match(r"^/api/clients/([^/]+)/p2p$", u.path)
                 if not m:
-                    self.send_error(404); return
+                    self.send_error(404)
+                    return
                 args = ["p2p", "add", safe_name(m.group(1))]
                 if body.get("port"):
                     args.append(str(body["port"]))
-                rc, out, err = run_manage(*args)
-                self.send_json({"ok": rc == 0, "stdout": out, "stderr": err}, 200 if rc == 0 else 400)
-        except ValueError as e:
-            self.send_json({"error": str(e)}, 400)
+                p = run_manage(*args)
+            self.send_json({"ok": p.returncode == 0, "stdout": p.stdout, "stderr": p.stderr}, 200 if p.returncode == 0 else 400)
+        except ValueError as exc:
+            self.send_json({"error": str(exc)}, 400)
 
     def do_DELETE(self):
-        if not self.authed(): return
+        if not self.authed():
+            return
         u = urlparse(self.path)
         try:
             m = re.match(r"^/api/clients/([^/]+)$", u.path)
             if m:
-                rc, out, err = run_manage("remove", safe_name(m.group(1)))
-                self.send_json({"ok": rc == 0, "stdout": out, "stderr": err}, 200 if rc == 0 else 400)
-                return
-            m = re.match(r"^/api/clients/([^/]+)/p2p$", u.path)
-            if m:
-                qs = parse_qs(u.query)
-                port = (qs.get("port") or [""])[0]
-                rc, out, err = run_manage("p2p", "remove", safe_name(m.group(1)), port)
-                self.send_json({"ok": rc == 0, "stdout": out, "stderr": err}, 200 if rc == 0 else 400)
-                return
-            self.send_error(404)
-        except ValueError as e:
-            self.send_json({"error": str(e)}, 400)
+                p = run_manage("remove", safe_name(m.group(1)))
+            else:
+                m = re.match(r"^/api/clients/([^/]+)/p2p$", u.path)
+                if not m:
+                    self.send_error(404)
+                    return
+                port = (parse_qs(u.query).get("port") or [""])[0]
+                p = run_manage("p2p", "remove", safe_name(m.group(1)), port)
+            self.send_json({"ok": p.returncode == 0, "stdout": p.stdout, "stderr": p.stderr}, 200 if p.returncode == 0 else 400)
+        except ValueError as exc:
+            self.send_json({"error": str(exc)}, 400)
+
 
 def main():
     os.chdir(WEB_DIR)
-    bind = os.environ.get("AWG_WEB_BIND", "0.0.0.0")
-    port = int(os.environ.get("AWG_WEB_PORT", "8443"))
-    httpd = ThreadingHTTPServer((bind, port), Handler)
+    httpd = ThreadingHTTPServer((os.environ.get("AWG_WEB_BIND", "0.0.0.0"), int(os.environ.get("AWG_WEB_PORT", "8443"))), Handler)
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     ctx.load_cert_chain(WEB_DIR / "cert.pem", WEB_DIR / "key.pem")
     httpd.socket = ctx.wrap_socket(httpd.socket, server_side=True)
     httpd.serve_forever()
 
+
 if __name__ == "__main__":
     main()
+
 PY
     chmod 700 "$web_dir/server.py"
 
@@ -3073,7 +3313,19 @@ PY
     <section class="metrics">
       <div><span>Сервис</span><strong id="service">?</strong></div>
       <div><span>Клиенты</span><strong id="count">0</strong></div>
-      <div><span>IPv6/P2P</span><strong id="mode">on</strong></div>
+      <div><span>DNS</span><strong id="dnsMode">?</strong></div>
+      <div><span>AdGuard</span><strong id="adguardState">?</strong></div>
+    </section>
+    <section class="dns-panel">
+      <div>
+        <span id="dnsServers">?</span>
+        <small id="dnsUi">?</small>
+      </div>
+      <div class="dns-actions">
+        <button data-dns-mode="adguard">AdGuard</button>
+        <button data-dns-mode="system">System</button>
+        <button id="restartDns">Restart DNS</button>
+      </div>
     </section>
     <section class="table-wrap">
       <table>
@@ -3086,21 +3338,24 @@ PY
   <script src="app.js"></script>
 </body>
 </html>
+
 HTML
 
     cat > "$web_dir/style.css" <<'CSS'
 :root{color-scheme:dark;--bg:#111418;--panel:#1a2027;--line:#303842;--text:#edf2f7;--muted:#9aa7b4;--accent:#4cc9a6;--danger:#ff6b6b}
-*{box-sizing:border-box}body{margin:0;font-family:Inter,system-ui,Segoe UI,sans-serif;background:#111418;color:var(--text)}
+*{box-sizing:border-box}body{margin:0;font-family:Inter,system-ui,Segoe UI,sans-serif;background:var(--bg);color:var(--text)}
 .shell{max-width:1180px;margin:0 auto;padding:28px}.topbar{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:18px}
 h1{font-size:28px;margin:0}.actions{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end}
 button,input{height:36px;border:1px solid var(--line);border-radius:6px;background:#202731;color:var(--text);padding:0 12px}
 button{cursor:pointer;background:#26313b}button:hover{border-color:var(--accent)}input{min-width:210px}
-.metrics{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin:18px 0}.metrics div,.table-wrap{background:var(--panel);border:1px solid var(--line);border-radius:8px}
+.metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:18px 0}.metrics div,.dns-panel,.table-wrap{background:var(--panel);border:1px solid var(--line);border-radius:8px}
 .metrics div{padding:16px}.metrics span{display:block;color:var(--muted);font-size:12px}.metrics strong{font-size:24px}
+.dns-panel{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 16px;margin-bottom:12px}.dns-panel span{display:block;font-weight:700}.dns-panel small{color:var(--muted)}.dns-actions{display:flex;gap:8px;flex-wrap:wrap}
 .table-wrap{overflow:auto}table{width:100%;border-collapse:collapse}th,td{padding:12px;border-bottom:1px solid var(--line);text-align:left;white-space:nowrap}
 th{color:var(--muted);font-weight:600;font-size:12px}td:last-child{text-align:right}.pill{display:inline-block;padding:3px 7px;border:1px solid var(--line);border-radius:999px;margin:2px;color:var(--accent)}
 .danger{color:var(--danger)}dialog{border:1px solid var(--line);border-radius:8px;background:var(--panel);color:var(--text);max-width:720px;width:calc(100% - 32px)}pre{white-space:pre-wrap;word-break:break-word}
-@media (max-width:760px){.shell{padding:14px}.topbar{align-items:flex-start;flex-direction:column}.actions{justify-content:flex-start}.metrics{grid-template-columns:1fr}input{width:100%}}
+@media (max-width:760px){.shell{padding:14px}.topbar,.dns-panel{align-items:flex-start;flex-direction:column}.actions{justify-content:flex-start}.metrics{grid-template-columns:1fr}input{width:100%}}
+
 CSS
 
     cat > "$web_dir/app.js" <<'JS'
@@ -3109,6 +3364,11 @@ let token = localStorage.getItem("awgToken") || "";
 $("#token").value = token;
 $("#saveToken").onclick = () => { token = $("#token").value.trim(); localStorage.setItem("awgToken", token); load(); };
 $("#refresh").onclick = () => load();
+$("#restartDns").onclick = async () => { await api("/api/dns/restart", {method:"POST", body:"{}"}); load(); };
+document.querySelectorAll("[data-dns-mode]").forEach(btn => btn.onclick = async () => {
+  await api("/api/dns/mode", {method:"POST", body:JSON.stringify({mode:btn.dataset.dnsMode})});
+  load();
+});
 $("#addClient").onclick = async () => {
   const name = prompt("Имя клиента");
   if (!name) return;
@@ -3128,6 +3388,9 @@ function show(title, body){$("#modalTitle").textContent=title;$("#modalBody").in
 async function load(){
   try{
     const st = await api("/api/status"); $("#service").textContent=st.service||"?"; $("#count").textContent=st.clients;
+    const dns = await api("/api/dns"); $("#dnsMode").textContent=dns.mode||"?"; $("#adguardState").textContent=dns.adguard_service||"?";
+    $("#dnsServers").textContent=`Clients use DNS: ${dns.client_dns||"?"}`;
+    $("#dnsUi").textContent=`AdGuard UI: http://10.9.9.1:${dns.adguard_port||3000}/`;
     const rows = await api("/api/clients"); $("#clients").innerHTML = rows.map(c => `
       <tr><td>${c.name}</td><td>${c.ipv4||"-"}</td><td>${c.ipv6||"-"}</td>
       <td>${(c.p2p_ports||[]).map(p=>`<span class="pill">${p}</span>`).join("")||"-"}</td>
@@ -3139,6 +3402,7 @@ async function cfg(n){const b=await api(`/api/clients/${n}/config`); show(n, `<p
 async function qr(n){const b=await api(`/api/clients/${n}/qr`); const u=URL.createObjectURL(b); show(n, `<img alt="QR" style="max-width:100%" src="${u}">`)}
 async function delc(n){if(confirm(`Удалить ${n}?`)){await api(`/api/clients/${n}`,{method:"DELETE"});load()}}
 load();
+
 JS
     chmod 600 "$web_dir"/* 2>/dev/null || true
     chmod 700 "$web_dir/server.py"
@@ -3284,6 +3548,7 @@ step7_start_service() {
         log "Запуск веб-панели awg-web.service..."
         systemctl restart awg-web.service || log_warn "Не удалось запустить awg-web.service"
     fi
+    deploy_adguard_home
 
     log "Проверка статуса сервиса..."
     local _attempt

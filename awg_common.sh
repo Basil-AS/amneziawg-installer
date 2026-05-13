@@ -1,4 +1,5 @@
 #!/bin/bash
+# shellcheck disable=SC1003,SC2012,SC2015,SC2016,SC2004,SC2086,SC2317
 
 # ==============================================================================
 # Общая библиотека функций для AmneziaWG 2.0
@@ -125,6 +126,34 @@ awg_ipv6_enabled() {
 
 awg_p2p_enabled() {
     _awg_bool "${AWG_P2P_ENABLED:-0}"
+}
+
+awg_dns_mode() {
+    case "${AWG_DNS_MODE:-system}" in
+        adguard|system|custom) echo "${AWG_DNS_MODE}" ;;
+        *) echo "system" ;;
+    esac
+}
+
+awg_dns_servers() {
+    local mode
+    mode=$(awg_dns_mode)
+    case "$mode" in
+        adguard)
+            local dns="10.9.9.1" server_v6=""
+            if awg_ipv6_enabled; then
+                server_v6=$(get_server_ipv6_address 2>/dev/null || true)
+                [[ -n "$server_v6" ]] && dns="${dns}, ${server_v6}"
+            fi
+            echo "$dns"
+            ;;
+        custom)
+            echo "${AWG_CUSTOM_DNS:-1.1.1.1}"
+            ;;
+        *)
+            echo "1.1.1.1"
+            ;;
+    esac
 }
 
 normalize_ipv6_subnet() {
@@ -895,7 +924,8 @@ safe_load_config() {
                 AWG_H1|AWG_H2|AWG_H3|AWG_H4|AWG_I1|AWG_PRESET|NO_TWEAKS|AWG_APPLY_MODE|\
                 AWG_IPV6_ENABLED|AWG_IPV6_MODE|AWG_IPV6_SUBNET|AWG_IPV6_NDP_PROXY|\
                 AWG_P2P_ENABLED|AWG_P2P_BASE_PORT|AWG_P2P_PORTS_PER_CLIENT|AWG_FULLCONE_NAT|\
-                AWG_WEB_ENABLED|AWG_WEB_PORT|AWG_WEB_BIND)
+                AWG_WEB_ENABLED|AWG_WEB_PORT|AWG_WEB_BIND|\
+                AWG_DNS_MODE|AWG_CUSTOM_DNS|AWG_ADGUARD_ENABLED|AWG_ADGUARD_PORT|AWG_ADGUARD_DIR)
                     export "$key=$value"
                     ;;
             esac
@@ -1254,6 +1284,8 @@ render_client_config() {
 
     local conf_file="$AWG_DIR/${name}.conf"
     local allowed_ips="${ALLOWED_IPS:-0.0.0.0/0}"
+    local dns_servers
+    dns_servers=$(awg_dns_servers)
     local address_line="${client_ip}/32"
     if awg_ipv6_enabled; then
         if [[ -z "$client_ipv6" ]]; then
@@ -1274,7 +1306,7 @@ render_client_config() {
 [Interface]
 PrivateKey = ${client_privkey}
 Address = ${address_line}
-DNS = 1.1.1.1
+DNS = ${dns_servers}
 MTU = 1280
 Jc = ${AWG_Jc}
 Jmin = ${AWG_Jmin}

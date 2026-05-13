@@ -1,4 +1,5 @@
 #!/bin/bash
+# shellcheck disable=SC1091,SC2317
 # Common test helper for awg_common.sh unit tests
 # Sets up isolated temp environment for each test
 

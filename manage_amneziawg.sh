@@ -1,4 +1,5 @@
 #!/bin/bash
+# shellcheck disable=SC1003,SC2012,SC2015,SC2016,SC2004,SC2086,SC2317
 
 # Проверка минимальной версии Bash
 if [[ "${BASH_VERSINFO[0]}" -lt 4 ]]; then
@@ -847,6 +848,82 @@ check_server() {
     fi
 }
 
+validate_dns_list() {
+    local value="$1"
+    [[ -n "$value" ]] || return 1
+    [[ "$value" =~ ^[0-9a-fA-F.:,\ ]+$ ]] || return 1
+}
+
+set_config_value() {
+    local key="$1" value="$2"
+    [[ -f "$CONFIG_FILE" ]] || { log_error "Не найден $CONFIG_FILE"; return 1; }
+    case "$value" in *$'\n'*|*$'\r'*|*\'*) log_error "Невалидное значение для $key"; return 1 ;; esac
+    local tmp
+    tmp=$(mktemp "${CONFIG_FILE}.tmp.XXXXXX") || return 1
+    if awk -v key="$key" -v value="$value" '
+        BEGIN { done=0 }
+        $0 ~ "^(export[[:space:]]+)?" key "=" {
+            print "export " key "='\''" value "'\''"
+            done=1
+            next
+        }
+        { print }
+        END {
+            if (!done) print "export " key "='\''" value "'\''"
+        }
+    ' "$CONFIG_FILE" > "$tmp"; then
+        mv -f "$tmp" "$CONFIG_FILE" || { rm -f "$tmp"; return 1; }
+        chmod 600 "$CONFIG_FILE" 2>/dev/null || true
+        return 0
+    fi
+    rm -f "$tmp"
+    return 1
+}
+
+regenerate_all_clients_for_dns() {
+    local name rc=0
+    while IFS= read -r name; do
+        [[ -n "$name" ]] || continue
+        regenerate_client "$name" || { log_warn "Ошибка перегенерации '$name'"; rc=1; }
+    done < <(grep '^#_Name = ' "$SERVER_CONF_FILE" 2>/dev/null | sed 's/^#_Name = //')
+    return "$rc"
+}
+
+dns_status() {
+    safe_load_config "$CONFIG_FILE" 2>/dev/null || true
+    local active="unknown"
+    active=$(systemctl is-active AdGuardHome.service 2>/dev/null || true)
+    log "DNS mode: ${AWG_DNS_MODE:-system}"
+    log "Client DNS: $(awg_dns_servers)"
+    log "AdGuard enabled: ${AWG_ADGUARD_ENABLED:-0}"
+    log "AdGuard service: ${active:-unknown}"
+    log "AdGuard UI: http://10.9.9.1:${AWG_ADGUARD_PORT:-3000}/"
+    if [[ "${AWG_DNS_MODE:-system}" == "adguard" && "$active" != "active" ]]; then
+        log_warn "AdGuard Home не активен. VPN продолжит работать; для fallback выполните: manage dns set-mode system"
+    fi
+}
+
+dns_set_mode() {
+    local mode="$1" custom="${2:-}"
+    case "$mode" in
+        adguard|system|custom) ;;
+        *) log_error "Использование: dns set-mode adguard|system|custom [DNS]"; return 1 ;;
+    esac
+    if [[ "$mode" == "custom" ]]; then
+        [[ -n "$custom" ]] || custom="${AWG_CUSTOM_DNS:-1.1.1.1}"
+        validate_dns_list "$custom" || { log_error "Невалидный custom DNS: '$custom'"; return 1; }
+        set_config_value "AWG_CUSTOM_DNS" "$custom" || return 1
+    fi
+    set_config_value "AWG_DNS_MODE" "$mode" || return 1
+    if [[ "$mode" == "adguard" ]]; then
+        set_config_value "AWG_ADGUARD_ENABLED" "1" || return 1
+        systemctl restart AdGuardHome.service 2>/dev/null || log_warn "AdGuardHome.service не стартовал; VPN не менялся."
+    fi
+    safe_load_config "$CONFIG_FILE" 2>/dev/null || true
+    regenerate_all_clients_for_dns || return 1
+    log "DNS mode установлен: $mode. Клиентские конфиги перегенерированы."
+}
+
 # ==============================================================================
 # Список клиентов
 # ==============================================================================
@@ -1127,6 +1204,10 @@ usage() {
     echo "  p2p remove <имя> <порт> Удалить P2P порт клиента"
     echo "  ipv6 status           Показать режим IPv6"
     echo "  ipv6 upgrade          Выдать IPv6/P2P metadata существующим клиентам"
+    echo "  dns status            Показать режим DNS и статус AdGuard Home"
+    echo "  dns restart           Перезапустить AdGuard Home"
+    echo "  dns logs              Показать последние логи AdGuard Home"
+    echo "  dns set-mode <режим>  Сменить DNS: adguard, system или custom [DNS]"
     echo "  regen [имя]           Перегенерировать файлы клиента(ов)"
     echo "  modify <имя> <пар> <зн> Изменить параметр клиента"
     echo "  backup                Создать бэкап"
@@ -1387,6 +1468,33 @@ case $COMMAND in
                 ;;
             *)
                 die "Неизвестная ipv6 команда: $_sub"
+                ;;
+        esac
+        ;;
+
+    dns)
+        safe_load_config "$CONFIG_FILE" 2>/dev/null || true
+        _sub="${ARGS[0]:-status}"
+        case "$_sub" in
+            status)
+                dns_status
+                ;;
+            restart)
+                if systemctl restart AdGuardHome.service; then
+                    log "AdGuard Home перезапущен."
+                else
+                    log_warn "AdGuard Home не перезапустился. VPN не менялся."
+                    _cmd_rc=1
+                fi
+                ;;
+            logs)
+                journalctl -u AdGuardHome.service -n 80 --no-pager || _cmd_rc=1
+                ;;
+            set-mode)
+                dns_set_mode "${ARGS[1]:-}" "${ARGS[2]:-}" || _cmd_rc=1
+                ;;
+            *)
+                die "Неизвестная dns команда: $_sub"
                 ;;
         esac
         ;;
