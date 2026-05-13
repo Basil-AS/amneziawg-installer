@@ -3,8 +3,8 @@
 # ==============================================================================
 # Общая библиотека функций для AmneziaWG 2.0
 # Автор: @bivlked
-# Версия: 5.12.1
-# Дата: 2026-05-08
+# Версия: 5.13.0
+# Дата: 2026-05-13
 # Репозиторий: https://github.com/bivlked/amneziawg-installer
 # ==============================================================================
 #
@@ -91,6 +91,417 @@ _try_local_ip() {
         | head -1)
     [[ -n "$ip" && "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || return 1
     echo "$ip"
+    return 0
+}
+
+# Первый non-loopback IPv6 с сетевого интерфейса. Используется только как
+# best-effort endpoint fallback; для клиентских адресов нужен отдельный /64.
+_try_local_ipv6() {
+    local ip
+    ip=$(ip -6 -o addr show scope global 2>/dev/null \
+        | awk '{print $4}' \
+        | cut -d/ -f1 \
+        | grep -vi '^fe80:' \
+        | head -1)
+    [[ -n "$ip" && "$ip" == *:* ]] || return 1
+    echo "$ip"
+    return 0
+}
+
+# ------------------------------------------------------------------------------
+# IPv6 / P2P helpers
+# ------------------------------------------------------------------------------
+
+_awg_bool() {
+    case "${1:-0}" in
+        1|yes|true|on|enabled) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+awg_ipv6_enabled() {
+    _awg_bool "${AWG_IPV6_ENABLED:-0}" && [[ -n "${AWG_IPV6_SUBNET:-}" ]]
+}
+
+awg_p2p_enabled() {
+    _awg_bool "${AWG_P2P_ENABLED:-0}"
+}
+
+normalize_ipv6_subnet() {
+    local subnet="$1"
+    [[ -n "$subnet" ]] || return 1
+    python3 - "$subnet" <<'PY'
+import ipaddress, sys
+try:
+    net = ipaddress.ip_network(sys.argv[1], strict=False)
+    if net.version != 6 or net.prefixlen != 64:
+        raise ValueError("expected IPv6 /64")
+    print(str(net))
+except Exception:
+    sys.exit(1)
+PY
+}
+
+ipv6_addr_at() {
+    local subnet="$1" offset="$2"
+    python3 - "$subnet" "$offset" <<'PY'
+import ipaddress, sys
+try:
+    net = ipaddress.ip_network(sys.argv[1], strict=False)
+    off = int(sys.argv[2])
+    print(str(net.network_address + off))
+except Exception:
+    sys.exit(1)
+PY
+}
+
+get_server_ipv6_address() {
+    awg_ipv6_enabled || return 1
+    ipv6_addr_at "$AWG_IPV6_SUBNET" 1
+}
+
+_extract_peer_value() {
+    local name="$1" key="$2"
+    awk -v target="$name" -v key="$key" '
+    /^\[Peer\]/ { in_peer=1; found=0; next }
+    in_peer && $0 == "#_Name = " target { found=1; next }
+    in_peer && found && index($0, key " = ") == 1 {
+        sub("^[^=]+=[ \t]*", "")
+        print
+        exit
+    }
+    /^\[/ && !/^\[Peer\]/ { in_peer=0; found=0 }
+    ' "$SERVER_CONF_FILE" 2>/dev/null
+}
+
+get_client_ipv4_from_server() {
+    local name="$1" value part
+    value=$(_extract_peer_value "$name" "AllowedIPs")
+    IFS=',' read -ra _parts <<< "$value"
+    for part in "${_parts[@]}"; do
+        part="${part//[[:space:]]/}"
+        if [[ "$part" =~ ^([0-9.]+)/32$ ]]; then
+            echo "${BASH_REMATCH[1]}"
+            return 0
+        fi
+    done
+    return 1
+}
+
+get_client_ipv6_from_server() {
+    local name="$1" value part
+    value=$(_extract_peer_value "$name" "AllowedIPs")
+    IFS=',' read -ra _parts <<< "$value"
+    for part in "${_parts[@]}"; do
+        part="${part//[[:space:]]/}"
+        if [[ "$part" == *:* && "$part" == */128 ]]; then
+            echo "${part%/128}"
+            return 0
+        fi
+    done
+    return 1
+}
+
+get_peer_p2p_ports() {
+    local name="$1" ports
+    ports=$(_extract_peer_value "$name" "#_P2PPorts")
+    ports="${ports//[[:space:]]/}"
+    echo "$ports"
+}
+
+_p2p_used_ports_stream() {
+    [[ -f "$SERVER_CONF_FILE" ]] || return 0
+    sed -n 's/^#_P2PPorts[[:space:]]*=[[:space:]]*//p' "$SERVER_CONF_FILE" \
+        | tr ',' '\n' \
+        | sed 's/[[:space:]]//g' \
+        | grep -E '^[0-9]+$' || true
+}
+
+validate_p2p_port() {
+    local port="$1"
+    local base="${AWG_P2P_BASE_PORT:-20000}"
+    local min=$((base + 1))
+    local max=$((base + 1024))
+    [[ "$max" -le 65535 ]] || max=65535
+    [[ "$port" =~ ^[0-9]+$ ]] && [[ "$port" -ge "$min" ]] && [[ "$port" -le "$max" ]]
+}
+
+get_default_p2p_ports_for_ipv4() {
+    local ipv4="$1" count="${2:-${AWG_P2P_PORTS_PER_CLIENT:-3}}"
+    local base="${AWG_P2P_BASE_PORT:-20000}"
+    local last="${ipv4##*.}"
+    [[ "$last" =~ ^[0-9]+$ ]] || return 1
+    local candidates=($((base + last)) $((base + 256 + last)) $((base + 512 + last)))
+    local out=() p
+    for p in "${candidates[@]}"; do
+        validate_p2p_port "$p" || continue
+        out+=("$p")
+        [[ "${#out[@]}" -ge "$count" ]] && break
+    done
+    (IFS=','; echo "${out[*]}")
+}
+
+get_next_p2p_port() {
+    local base="${AWG_P2P_BASE_PORT:-20000}"
+    local limit=$((base + 1024))
+    local p
+    declare -A used
+    while IFS= read -r p; do
+        [[ -n "$p" ]] && used["$p"]=1
+    done < <(_p2p_used_ports_stream)
+    for ((p=base + 1; p<=limit && p<=65535; p++)); do
+        if [[ -z "${used[$p]+x}" ]]; then
+            echo "$p"
+            return 0
+        fi
+    done
+    log_error "Нет свободных P2P портов в диапазоне $((base + 1))-${limit}"
+    return 1
+}
+
+allocate_p2p_ports_for_ipv4() {
+    local ipv4="$1" count="${2:-${AWG_P2P_PORTS_PER_CLIENT:-3}}"
+    local defaults extra p
+    declare -A used picked
+    while IFS= read -r p; do
+        [[ -n "$p" ]] && used["$p"]=1
+    done < <(_p2p_used_ports_stream)
+
+    IFS=',' read -ra defaults <<< "$(get_default_p2p_ports_for_ipv4 "$ipv4" "$count")"
+    local out=()
+    for p in "${defaults[@]}"; do
+        validate_p2p_port "$p" || continue
+        if [[ -z "${used[$p]+x}" && -z "${picked[$p]+x}" ]]; then
+            out+=("$p")
+            picked["$p"]=1
+        fi
+        [[ "${#out[@]}" -ge "$count" ]] && break
+    done
+    while [[ "${#out[@]}" -lt "$count" ]]; do
+        extra=$(get_next_p2p_port) || break
+        used["$extra"]=1
+        picked["$extra"]=1
+        out+=("$extra")
+    done
+    (IFS=','; echo "${out[*]}")
+}
+
+get_next_client_ipv6() {
+    awg_ipv6_enabled || return 1
+    local subnet="$AWG_IPV6_SUBNET"
+    python3 - "$subnet" "$SERVER_CONF_FILE" <<'PY'
+import ipaddress, re, sys
+net = ipaddress.ip_network(sys.argv[1], strict=False)
+used = {net.network_address + 1}
+try:
+    data = open(sys.argv[2], encoding="utf-8", errors="ignore").read()
+except FileNotFoundError:
+    data = ""
+for token in re.findall(r"([0-9A-Fa-f:]+/128)", data):
+    try:
+        addr = ipaddress.ip_interface(token).ip
+    except ValueError:
+        continue
+    if addr in net:
+        used.add(addr)
+for i in range(2, 255):
+    cand = net.network_address + i
+    if cand not in used:
+        print(cand)
+        sys.exit(0)
+sys.exit(1)
+PY
+}
+
+_peer_inventory_tsv() {
+    [[ -f "$SERVER_CONF_FILE" ]] || return 0
+    awk '
+    function flush() {
+        if (name != "") print name "\t" allowed "\t" ports
+    }
+    /^\[Peer\]/ { flush(); name=""; allowed=""; ports=""; in_peer=1; next }
+    /^\[/ && !/^\[Peer\]/ { flush(); name=""; allowed=""; ports=""; in_peer=0; next }
+    in_peer && /^#_Name = / { name=$0; sub(/^#_Name = /, "", name); next }
+    in_peer && /^#_P2PPorts[[:space:]]*=/ { ports=$0; sub(/^#_P2PPorts[[:space:]]*=[[:space:]]*/, "", ports); next }
+    in_peer && /^AllowedIPs[[:space:]]*=/ { allowed=$0; sub(/^AllowedIPs[[:space:]]*=[[:space:]]*/, "", allowed); next }
+    END { flush() }
+    ' "$SERVER_CONF_FILE"
+}
+
+generate_firewall_scripts() {
+    local nic="${1:-}"
+    [[ -n "$nic" ]] || nic=$(get_main_nic)
+    [[ -n "$nic" ]] || nic="eth0"
+    mkdir -p "$AWG_DIR" || return 1
+
+    local postup="$AWG_DIR/postup.sh"
+    local postdown="$AWG_DIR/postdown.sh"
+    local p2p="$AWG_DIR/p2p_rules.sh"
+    local tmp
+
+    tmp=$(awg_mktemp) || return 1
+    cat > "$tmp" << EOF
+#!/bin/bash
+# Auto-generated by awg_common.sh. Do not edit manually.
+set +e
+NIC="\${AWG_MAIN_NIC:-${nic}}"
+AWG_IFACE="\${AWG_IFACE:-awg0}"
+FULLCONE="${AWG_FULLCONE_NAT:-0}"
+IPV6_ENABLED="${AWG_IPV6_ENABLED:-0}"
+IPV6_MODE="${AWG_IPV6_MODE:-legacy}"
+IPV6_SUBNET="${AWG_IPV6_SUBNET:-}"
+P2P_RULES="${p2p}"
+
+ipt_add() { local table="\$1" chain="\$2"; shift 2; iptables -t "\$table" -C "\$chain" "\$@" 2>/dev/null || iptables -t "\$table" -A "\$chain" "\$@"; }
+ipt_ins() { local chain="\$1"; shift; iptables -C "\$chain" "\$@" 2>/dev/null || iptables -I "\$chain" "\$@"; }
+ip6t_add() { local table="\$1" chain="\$2"; shift 2; ip6tables -t "\$table" -C "\$chain" "\$@" 2>/dev/null || ip6tables -t "\$table" -A "\$chain" "\$@"; }
+ip6t_ins() { local chain="\$1"; shift; ip6tables -C "\$chain" "\$@" 2>/dev/null || ip6tables -I "\$chain" "\$@"; }
+
+if [[ "\$FULLCONE" == "1" ]]; then
+    if ! ipt_add nat POSTROUTING -o "\$NIC" -j FULLCONENAT; then
+        ipt_add nat POSTROUTING -o "\$NIC" -j MASQUERADE
+    else
+        ipt_add nat PREROUTING -i "\$NIC" -j FULLCONENAT
+    fi
+else
+    ipt_add nat POSTROUTING -o "\$NIC" -j MASQUERADE
+fi
+
+ipt_ins FORWARD -i "\$AWG_IFACE" -j ACCEPT
+ipt_ins FORWARD -o "\$AWG_IFACE" -m state --state RELATED,ESTABLISHED -j ACCEPT
+
+if [[ "\$IPV6_ENABLED" == "1" ]]; then
+    ip6t_ins FORWARD -i "\$AWG_IFACE" -j ACCEPT
+    ip6t_ins FORWARD -o "\$AWG_IFACE" -m state --state RELATED,ESTABLISHED -j ACCEPT
+    ip6t_ins FORWARD -i "\$NIC" -o "\$AWG_IFACE" -m state --state RELATED,ESTABLISHED -j ACCEPT
+    if [[ "\$IPV6_MODE" == "ula" && -n "\$IPV6_SUBNET" ]]; then
+        ip6t_add nat POSTROUTING -s "\$IPV6_SUBNET" -o "\$NIC" -j MASQUERADE
+    fi
+    ip6tables -C FORWARD -i "\$NIC" -o "\$AWG_IFACE" -m state --state NEW -j DROP 2>/dev/null || \
+        ip6tables -A FORWARD -i "\$NIC" -o "\$AWG_IFACE" -m state --state NEW -j DROP
+fi
+
+[[ -x "\$P2P_RULES" ]] && "\$P2P_RULES" up
+exit 0
+EOF
+    mv -f "$tmp" "$postup" || return 1
+    chmod 700 "$postup" 2>/dev/null || true
+
+    tmp=$(awg_mktemp) || return 1
+    cat > "$tmp" << EOF
+#!/bin/bash
+# Auto-generated by awg_common.sh. Do not edit manually.
+set +e
+NIC="\${AWG_MAIN_NIC:-${nic}}"
+AWG_IFACE="\${AWG_IFACE:-awg0}"
+IPV6_ENABLED="${AWG_IPV6_ENABLED:-0}"
+IPV6_MODE="${AWG_IPV6_MODE:-legacy}"
+IPV6_SUBNET="${AWG_IPV6_SUBNET:-}"
+P2P_RULES="${p2p}"
+
+del_ipt_nat() { local chain="\$1"; shift; while iptables -t nat -C "\$chain" "\$@" 2>/dev/null; do iptables -t nat -D "\$chain" "\$@"; done; }
+del_ipt() { local chain="\$1"; shift; while iptables -C "\$chain" "\$@" 2>/dev/null; do iptables -D "\$chain" "\$@"; done; }
+del_ip6t_nat() { local chain="\$1"; shift; while ip6tables -t nat -C "\$chain" "\$@" 2>/dev/null; do ip6tables -t nat -D "\$chain" "\$@"; done; }
+del_ip6t() { local chain="\$1"; shift; while ip6tables -C "\$chain" "\$@" 2>/dev/null; do ip6tables -D "\$chain" "\$@"; done; }
+
+[[ -x "\$P2P_RULES" ]] && "\$P2P_RULES" down
+
+del_ipt_nat PREROUTING -i "\$NIC" -j FULLCONENAT
+del_ipt_nat POSTROUTING -o "\$NIC" -j FULLCONENAT
+del_ipt_nat POSTROUTING -o "\$NIC" -j MASQUERADE
+del_ipt FORWARD -i "\$AWG_IFACE" -j ACCEPT
+del_ipt FORWARD -o "\$AWG_IFACE" -m state --state RELATED,ESTABLISHED -j ACCEPT
+
+if [[ "\$IPV6_ENABLED" == "1" ]]; then
+    del_ip6t FORWARD -i "\$AWG_IFACE" -j ACCEPT
+    del_ip6t FORWARD -o "\$AWG_IFACE" -m state --state RELATED,ESTABLISHED -j ACCEPT
+    del_ip6t FORWARD -i "\$NIC" -o "\$AWG_IFACE" -m state --state RELATED,ESTABLISHED -j ACCEPT
+    del_ip6t FORWARD -i "\$NIC" -o "\$AWG_IFACE" -m state --state NEW -j DROP
+    if [[ "\$IPV6_MODE" == "ula" && -n "\$IPV6_SUBNET" ]]; then
+        del_ip6t_nat POSTROUTING -s "\$IPV6_SUBNET" -o "\$NIC" -j MASQUERADE
+    fi
+fi
+exit 0
+EOF
+    mv -f "$tmp" "$postdown" || return 1
+    chmod 700 "$postdown" 2>/dev/null || true
+
+    tmp=$(awg_mktemp) || return 1
+    cat > "$tmp" << EOF
+#!/bin/bash
+# Auto-generated P2P rules for AmneziaWG clients. Do not edit manually.
+set +e
+ACTION="\${1:-up}"
+NIC="\${AWG_MAIN_NIC:-${nic}}"
+AWG_IFACE="\${AWG_IFACE:-awg0}"
+IPV6_MODE="${AWG_IPV6_MODE:-legacy}"
+
+ipt_nat_add() { local chain="\$1"; shift; iptables -t nat -C "\$chain" "\$@" 2>/dev/null || iptables -t nat -A "\$chain" "\$@"; }
+ipt_nat_del() { local chain="\$1"; shift; while iptables -t nat -C "\$chain" "\$@" 2>/dev/null; do iptables -t nat -D "\$chain" "\$@"; done; }
+ipt_fwd_add() { iptables -C FORWARD "\$@" 2>/dev/null || iptables -I FORWARD "\$@"; }
+ipt_fwd_del() { while iptables -C FORWARD "\$@" 2>/dev/null; do iptables -D FORWARD "\$@"; done; }
+ip6t_nat_add() { local chain="\$1"; shift; ip6tables -t nat -C "\$chain" "\$@" 2>/dev/null || ip6tables -t nat -A "\$chain" "\$@"; }
+ip6t_nat_del() { local chain="\$1"; shift; while ip6tables -t nat -C "\$chain" "\$@" 2>/dev/null; do ip6tables -t nat -D "\$chain" "\$@"; done; }
+ip6t_fwd_add() { ip6tables -C FORWARD "\$@" 2>/dev/null || ip6tables -I FORWARD "\$@"; }
+ip6t_fwd_del() { while ip6tables -C FORWARD "\$@" 2>/dev/null; do ip6tables -D FORWARD "\$@"; done; }
+
+case "\$ACTION" in up|down) ;; *) exit 2 ;; esac
+EOF
+
+    local name allowed ports part ipv4 ipv6 p
+    while IFS=$'\t' read -r name allowed ports; do
+        [[ -n "$name" && -n "$allowed" && -n "$ports" ]] || continue
+        ipv4=""; ipv6=""
+        IFS=',' read -ra _allowed_parts <<< "$allowed"
+        for part in "${_allowed_parts[@]}"; do
+            part="${part//[[:space:]]/}"
+            [[ "$part" =~ ^([0-9.]+)/32$ ]] && ipv4="${BASH_REMATCH[1]}"
+            [[ "$part" == *:* && "$part" == */128 ]] && ipv6="${part%/128}"
+        done
+        [[ -n "$ipv4" ]] || continue
+        ports="${ports//[[:space:]]/}"
+        IFS=',' read -ra _ports <<< "$ports"
+        {
+            echo ""
+            echo "# Client: ${name} (${ipv4}${ipv6:+ / ${ipv6}}, P2P: ${ports})"
+            echo 'if [[ "$ACTION" == "up" ]]; then'
+            for p in "${_ports[@]}"; do
+                validate_p2p_port "$p" || continue
+                echo "    ipt_nat_add PREROUTING -i \"\$NIC\" -p tcp --dport ${p} -j DNAT --to-destination ${ipv4}:${p}"
+                echo "    ipt_nat_add PREROUTING -i \"\$NIC\" -p udp --dport ${p} -j DNAT --to-destination ${ipv4}:${p}"
+                echo "    ipt_fwd_add -i \"\$NIC\" -o \"\$AWG_IFACE\" -d ${ipv4} -p tcp --dport ${p} -j ACCEPT"
+                echo "    ipt_fwd_add -i \"\$NIC\" -o \"\$AWG_IFACE\" -d ${ipv4} -p udp --dport ${p} -j ACCEPT"
+                if [[ -n "$ipv6" ]]; then
+                    if [[ "${AWG_IPV6_MODE:-}" == "ula" ]]; then
+                        echo "    ip6t_nat_add PREROUTING -i \"\$NIC\" -p tcp --dport ${p} -j DNAT --to-destination ${ipv6}"
+                        echo "    ip6t_nat_add PREROUTING -i \"\$NIC\" -p udp --dport ${p} -j DNAT --to-destination ${ipv6}"
+                    fi
+                    echo "    ip6t_fwd_add -i \"\$NIC\" -o \"\$AWG_IFACE\" -d ${ipv6} -p tcp --dport ${p} -j ACCEPT"
+                    echo "    ip6t_fwd_add -i \"\$NIC\" -o \"\$AWG_IFACE\" -d ${ipv6} -p udp --dport ${p} -j ACCEPT"
+                fi
+            done
+            echo "else"
+            for p in "${_ports[@]}"; do
+                validate_p2p_port "$p" || continue
+                echo "    ipt_nat_del PREROUTING -i \"\$NIC\" -p tcp --dport ${p} -j DNAT --to-destination ${ipv4}:${p}"
+                echo "    ipt_nat_del PREROUTING -i \"\$NIC\" -p udp --dport ${p} -j DNAT --to-destination ${ipv4}:${p}"
+                echo "    ipt_fwd_del -i \"\$NIC\" -o \"\$AWG_IFACE\" -d ${ipv4} -p tcp --dport ${p} -j ACCEPT"
+                echo "    ipt_fwd_del -i \"\$NIC\" -o \"\$AWG_IFACE\" -d ${ipv4} -p udp --dport ${p} -j ACCEPT"
+                if [[ -n "$ipv6" ]]; then
+                    if [[ "${AWG_IPV6_MODE:-}" == "ula" ]]; then
+                        echo "    ip6t_nat_del PREROUTING -i \"\$NIC\" -p tcp --dport ${p} -j DNAT --to-destination ${ipv6}"
+                        echo "    ip6t_nat_del PREROUTING -i \"\$NIC\" -p udp --dport ${p} -j DNAT --to-destination ${ipv6}"
+                    fi
+                    echo "    ip6t_fwd_del -i \"\$NIC\" -o \"\$AWG_IFACE\" -d ${ipv6} -p tcp --dport ${p} -j ACCEPT"
+                    echo "    ip6t_fwd_del -i \"\$NIC\" -o \"\$AWG_IFACE\" -d ${ipv6} -p udp --dport ${p} -j ACCEPT"
+                fi
+            done
+            echo "fi"
+        } >> "$tmp"
+    done < <(_peer_inventory_tsv)
+    echo "exit 0" >> "$tmp"
+    mv -f "$tmp" "$p2p" || return 1
+    chmod 700 "$p2p" 2>/dev/null || true
     return 0
 }
 
@@ -481,7 +892,10 @@ safe_load_config() {
                 OS_ID|OS_VERSION|OS_CODENAME|AWG_PORT|AWG_TUNNEL_SUBNET|\
                 DISABLE_IPV6|ALLOWED_IPS_MODE|ALLOWED_IPS|AWG_ENDPOINT|\
                 AWG_Jc|AWG_Jmin|AWG_Jmax|AWG_S1|AWG_S2|AWG_S3|AWG_S4|\
-                AWG_H1|AWG_H2|AWG_H3|AWG_H4|AWG_I1|AWG_PRESET|NO_TWEAKS|AWG_APPLY_MODE)
+                AWG_H1|AWG_H2|AWG_H3|AWG_H4|AWG_I1|AWG_PRESET|NO_TWEAKS|AWG_APPLY_MODE|\
+                AWG_IPV6_ENABLED|AWG_IPV6_MODE|AWG_IPV6_SUBNET|AWG_IPV6_NDP_PROXY|\
+                AWG_P2P_ENABLED|AWG_P2P_BASE_PORT|AWG_P2P_PORTS_PER_CLIENT|AWG_FULLCONE_NAT|\
+                AWG_WEB_ENABLED|AWG_WEB_PORT|AWG_WEB_BIND)
                     export "$key=$value"
                     ;;
             esac
@@ -770,15 +1184,20 @@ render_server_config() {
         return 1
     }
 
-    # PostUp/PostDown правила для маршрутизации
-    local postup="iptables -I FORWARD -i %i -j ACCEPT; iptables -t nat -A POSTROUTING -o ${nic} -j MASQUERADE"
-    local postdown="iptables -D FORWARD -i %i -j ACCEPT; iptables -t nat -D POSTROUTING -o ${nic} -j MASQUERADE"
-
-    # IPv6 правила если не отключен
-    if [[ "${DISABLE_IPV6:-1}" -eq 0 ]]; then
-        postup="${postup}; ip6tables -I FORWARD -i %i -j ACCEPT; ip6tables -t nat -A POSTROUTING -o ${nic} -j MASQUERADE"
-        postdown="${postdown}; ip6tables -D FORWARD -i %i -j ACCEPT; ip6tables -t nat -D POSTROUTING -o ${nic} -j MASQUERADE"
+    local address_line="${server_ip}/${subnet_mask}"
+    if awg_ipv6_enabled; then
+        local server_ipv6
+        server_ipv6=$(get_server_ipv6_address) || {
+            log_error "Не удалось вычислить IPv6 адрес сервера из AWG_IPV6_SUBNET=${AWG_IPV6_SUBNET}"
+            return 1
+        }
+        address_line="${address_line}, ${server_ipv6}/64"
     fi
+
+    # Сложные правила NAT/forward/P2P живут во внешних hook-скриптах.
+    generate_firewall_scripts "$nic" || log_warn "Не удалось сгенерировать PostUp/PostDown hook-скрипты."
+    local postup="/bin/bash ${AWG_DIR}/postup.sh"
+    local postdown="/bin/bash ${AWG_DIR}/postdown.sh"
 
     # Формируем конфиг через временный файл (атомарная запись)
     local tmpfile
@@ -787,7 +1206,7 @@ render_server_config() {
     cat > "$tmpfile" << EOF
 [Interface]
 PrivateKey = ${server_privkey}
-Address = ${server_ip}/${subnet_mask}
+Address = ${address_line}
 MTU = 1280
 ListenPort = ${AWG_PORT}
 PostUp = ${postup}
@@ -821,7 +1240,7 @@ EOF
 }
 
 # Рендер клиентского конфига AWG 2.0
-# render_client_config <name> <client_ip> <client_privkey> <server_pubkey> <endpoint> <port>
+# render_client_config <name> <client_ip> <client_privkey> <server_pubkey> <endpoint> <port> [client_ipv6]
 render_client_config() {
     local name="$1"
     local client_ip="$2"
@@ -829,11 +1248,24 @@ render_client_config() {
     local server_pubkey="$4"
     local endpoint="$5"
     local port="$6"
+    local client_ipv6="${7:-}"
 
     load_awg_params || return 1
 
     local conf_file="$AWG_DIR/${name}.conf"
     local allowed_ips="${ALLOWED_IPS:-0.0.0.0/0}"
+    local address_line="${client_ip}/32"
+    if awg_ipv6_enabled; then
+        if [[ -z "$client_ipv6" ]]; then
+            client_ipv6=$(get_client_ipv6_from_server "$name" 2>/dev/null || true)
+        fi
+        if [[ -n "$client_ipv6" ]]; then
+            address_line="${address_line}, ${client_ipv6}/128"
+            if [[ "$allowed_ips" != *"::/0"* ]]; then
+                allowed_ips="${allowed_ips}, ::/0"
+            fi
+        fi
+    fi
 
     local tmpfile
     tmpfile=$(awg_mktemp) || { log_error "Ошибка mktemp"; return 1; }
@@ -841,7 +1273,7 @@ render_client_config() {
     cat > "$tmpfile" << EOF
 [Interface]
 PrivateKey = ${client_privkey}
-Address = ${client_ip}/32
+Address = ${address_line}
 DNS = 1.1.1.1
 MTU = 1280
 Jc = ${AWG_Jc}
@@ -991,11 +1423,13 @@ get_next_client_ip() {
 # только если sub-функция использует TOТ ЖЕ fd что родитель (через
 # inheritance), но это требует передачи fd как аргумента.
 #
-# add_peer_to_server <name> <pubkey> <client_ip>
+# add_peer_to_server <name> <pubkey> <client_ip> [client_ipv6] [p2p_ports]
 add_peer_to_server() {
     local name="$1"
     local pubkey="$2"
     local client_ip="$3"
+    local client_ipv6="${4:-}"
+    local p2p_ports="${5:-}"
 
     if [[ -z "$name" || -z "$pubkey" || -z "$client_ip" ]]; then
         log_error "add_peer_to_server: недостаточно аргументов"
@@ -1028,7 +1462,14 @@ EOF
     if [[ -n "${CLIENT_PSK:-}" ]]; then
         echo "PresharedKey = ${CLIENT_PSK}" >> "$tmpfile"
     fi
-    echo "AllowedIPs = ${client_ip}/32" >> "$tmpfile"
+    if [[ -n "$p2p_ports" ]]; then
+        echo "#_P2PPorts = ${p2p_ports}" >> "$tmpfile"
+    fi
+    if [[ -n "$client_ipv6" ]]; then
+        echo "AllowedIPs = ${client_ip}/32, ${client_ipv6}/128" >> "$tmpfile"
+    else
+        echo "AllowedIPs = ${client_ip}/32" >> "$tmpfile"
+    fi
 
     if ! mv "$tmpfile" "$SERVER_CONF_FILE"; then
         rm -f "$tmpfile"
@@ -1036,6 +1477,7 @@ EOF
         return 1
     fi
     chmod 600 "$SERVER_CONF_FILE"
+    generate_firewall_scripts >/dev/null 2>&1 || log_warn "Не удалось обновить P2P/firewall hook-скрипты."
     log "Пир '$name' добавлен в серверный конфиг."
     return 0
 }
@@ -1118,6 +1560,7 @@ remove_peer_from_server() {
     fi
     chmod 600 "$SERVER_CONF_FILE"
     exec {lock_fd}>&-
+    generate_firewall_scripts >/dev/null 2>&1 || log_warn "Не удалось обновить P2P/firewall hook-скрипты."
     log "Пир '$name' удалён из серверного конфига."
     return 0
 }
@@ -1369,6 +1812,22 @@ generate_client() {
     local client_ip
     client_ip=$(get_next_client_ip) || { exec {lock_fd}>&-; return 1; }
 
+    local client_ipv6="" p2p_ports=""
+    if awg_ipv6_enabled; then
+        client_ipv6=$(get_next_client_ipv6) || {
+            log_error "Не удалось выделить IPv6 адрес для '$name'"
+            exec {lock_fd}>&-
+            return 1
+        }
+    fi
+    if awg_p2p_enabled; then
+        p2p_ports=$(allocate_p2p_ports_for_ipv4 "$client_ip" "${AWG_P2P_PORTS_PER_CLIENT:-3}") || {
+            log_error "Не удалось выделить P2P порты для '$name'"
+            exec {lock_fd}>&-
+            return 1
+        }
+    fi
+
     # Читаем ключи
     local client_privkey client_pubkey server_pubkey
     client_privkey=$(cat "$KEYS_DIR/${name}.private") || { exec {lock_fd}>&-; return 1; }
@@ -1399,7 +1858,7 @@ generate_client() {
     fi
 
     # Конфиг клиента
-    render_client_config "$name" "$client_ip" "$client_privkey" "$server_pubkey" "$endpoint" "${AWG_PORT}" || {
+    render_client_config "$name" "$client_ip" "$client_privkey" "$server_pubkey" "$endpoint" "${AWG_PORT}" "$client_ipv6" || {
         log_error "Откат: удаление ключей '$name'"
         rm -f "$KEYS_DIR/${name}.private" "$KEYS_DIR/${name}.public"
         exec {lock_fd}>&-
@@ -1407,7 +1866,7 @@ generate_client() {
     }
 
     # Добавляем пир в серверный конфиг
-    if ! add_peer_to_server "$name" "$client_pubkey" "$client_ip"; then
+    if ! add_peer_to_server "$name" "$client_pubkey" "$client_ip" "$client_ipv6" "$p2p_ports"; then
         log_error "Откат: удаление файлов '$name'"
         rm -f "$AWG_DIR/${name}.conf" "$KEYS_DIR/${name}.private" "$KEYS_DIR/${name}.public"
         exec {lock_fd}>&-
@@ -1430,7 +1889,11 @@ generate_client() {
         log_warn "QR vpn:// не создан для '$name'."
     fi
 
-    log "Клиент '$name' создан (IP: $client_ip)."
+    local msg="Клиент '$name' создан (IPv4: $client_ip"
+    [[ -n "$client_ipv6" ]] && msg="${msg}, IPv6: $client_ipv6"
+    [[ -n "$p2p_ports" ]] && msg="${msg}, P2P: $p2p_ports"
+    msg="${msg})."
+    log "$msg"
     return 0
 }
 
@@ -1499,13 +1962,9 @@ regenerate_client() {
     fi
 
     # IP клиента из серверного конфига
-    # Ищем блок [Peer] с #_Name = name, затем AllowedIPs
-    client_ip=$(awk -v target="$name" '
-    /^\[Peer\]/ { in_peer=1; found=0; next }
-    in_peer && $0 == "#_Name = " target { found=1; next }
-    in_peer && found && /^AllowedIPs/ { gsub(/AllowedIPs[ \t]*=[ \t]*/, ""); gsub(/\/[0-9]+/, ""); print; exit }
-    /^\[/ && !/^\[Peer\]/ { in_peer=0; found=0 }
-    ' "$SERVER_CONF_FILE")
+    client_ip=$(get_client_ipv4_from_server "$name" 2>/dev/null || true)
+    local client_ipv6=""
+    client_ipv6=$(get_client_ipv6_from_server "$name" 2>/dev/null || true)
 
     if [[ -z "$client_ip" ]]; then
         log_error "IP клиента '$name' не найден в серверном конфиге"
@@ -1559,9 +2018,12 @@ regenerate_client() {
             unset CLIENT_PSK
         fi
     fi
+    if awg_ipv6_enabled && [[ -n "$client_ipv6" && "$current_allowed_ips" != *"::/0"* ]]; then
+        current_allowed_ips="${current_allowed_ips},::/0"
+    fi
 
     # Перегенерация конфига
-    render_client_config "$name" "$client_ip" "$client_privkey" "$server_pubkey" "$endpoint" "${AWG_PORT}" || {
+    render_client_config "$name" "$client_ip" "$client_privkey" "$server_pubkey" "$endpoint" "${AWG_PORT}" "$client_ipv6" || {
         exec {lock_fd}>&-
         unset CLIENT_PSK
         return 1
@@ -1610,6 +2072,257 @@ regenerate_client() {
     unset CLIENT_PSK
 
     log "Конфиг клиента '$name' перегенерирован."
+    return 0
+}
+
+p2p_port_owner() {
+    local needle="$1" name _allowed ports p
+    while IFS=$'\t' read -r name _allowed ports; do
+        IFS=',' read -ra _ports <<< "${ports//[[:space:]]/}"
+        for p in "${_ports[@]}"; do
+            if [[ "$p" == "$needle" ]]; then
+                echo "$name"
+                return 0
+            fi
+        done
+    done < <(_peer_inventory_tsv)
+    return 1
+}
+
+set_peer_p2p_ports() {
+    local name="$1" ports="$2"
+    [[ -n "$name" ]] || return 1
+    local p
+    IFS=',' read -ra _ports <<< "${ports//[[:space:]]/}"
+    local clean=()
+    declare -A seen
+    for p in "${_ports[@]}"; do
+        [[ -z "$p" ]] && continue
+        validate_p2p_port "$p" || { log_error "Невалидный P2P порт: $p"; return 1; }
+        [[ -z "${seen[$p]+x}" ]] || continue
+        seen["$p"]=1
+        clean+=("$p")
+    done
+    ports=$(IFS=','; echo "${clean[*]}")
+
+    local lockfile="${AWG_DIR}/.awg_config.lock" lock_fd
+    exec {lock_fd}>"$lockfile"
+    if ! flock -x -w 10 "$lock_fd"; then
+        log_error "Не удалось получить блокировку конфига"
+        exec {lock_fd}>&-
+        return 1
+    fi
+    if ! grep -qxF "#_Name = ${name}" "$SERVER_CONF_FILE" 2>/dev/null; then
+        log_error "Клиент '$name' не найден"
+        exec {lock_fd}>&-
+        return 1
+    fi
+
+    local tmpfile
+    tmpfile=$(awg_mktemp) || { exec {lock_fd}>&-; return 1; }
+    awk -v target="$name" -v ports="$ports" '
+    function flush_meta_if_needed() {
+        if (in_target && !ports_seen && ports != "") {
+            print "#_P2PPorts = " ports
+            ports_seen=1
+        }
+    }
+    /^\[Peer\]/ { flush_meta_if_needed(); in_peer=1; in_target=0; ports_seen=0; print; next }
+    /^\[/ && !/^\[Peer\]/ { flush_meta_if_needed(); in_peer=0; in_target=0; ports_seen=0; print; next }
+    in_peer && $0 == "#_Name = " target {
+        in_target=1
+        print
+        if (ports != "") {
+            print "#_P2PPorts = " ports
+            ports_seen=1
+        }
+        next
+    }
+    in_peer && in_target && /^#_P2PPorts[[:space:]]*=/ { next }
+    { print }
+    END { flush_meta_if_needed() }
+    ' "$SERVER_CONF_FILE" > "$tmpfile" || {
+        rm -f "$tmpfile"
+        exec {lock_fd}>&-
+        return 1
+    }
+    if ! mv "$tmpfile" "$SERVER_CONF_FILE"; then
+        rm -f "$tmpfile"
+        exec {lock_fd}>&-
+        return 1
+    fi
+    chmod 600 "$SERVER_CONF_FILE"
+    exec {lock_fd}>&-
+    generate_firewall_scripts >/dev/null 2>&1 || log_warn "Не удалось обновить P2P/firewall hook-скрипты."
+    return 0
+}
+
+add_p2p_port_to_peer() {
+    local name="$1" port="${2:-}"
+    [[ -n "$name" ]] || return 1
+    if [[ -z "$port" ]]; then
+        port=$(get_next_p2p_port) || return 1
+    fi
+    validate_p2p_port "$port" || { log_error "Невалидный P2P порт: $port"; return 1; }
+    local owner
+    owner=$(p2p_port_owner "$port" 2>/dev/null || true)
+    if [[ -n "$owner" && "$owner" != "$name" ]]; then
+        log_error "P2P порт $port уже назначен клиенту '$owner'"
+        return 1
+    fi
+    local ports current p found=0
+    current=$(get_peer_p2p_ports "$name")
+    IFS=',' read -ra _ports <<< "${current//[[:space:]]/}"
+    local out=()
+    for p in "${_ports[@]}"; do
+        [[ -z "$p" ]] && continue
+        out+=("$p")
+        [[ "$p" == "$port" ]] && found=1
+    done
+    [[ "$found" -eq 0 ]] && out+=("$port")
+    ports=$(IFS=','; echo "${out[*]}")
+    set_peer_p2p_ports "$name" "$ports"
+    echo "$port"
+}
+
+remove_p2p_port_from_peer() {
+    local name="$1" port="$2"
+    validate_p2p_port "$port" || { log_error "Невалидный P2P порт: $port"; return 1; }
+    local current p
+    current=$(get_peer_p2p_ports "$name")
+    IFS=',' read -ra _ports <<< "${current//[[:space:]]/}"
+    local out=()
+    for p in "${_ports[@]}"; do
+        [[ -z "$p" || "$p" == "$port" ]] && continue
+        out+=("$p")
+    done
+    set_peer_p2p_ports "$name" "$(IFS=','; echo "${out[*]}")"
+}
+
+upgrade_existing_peers_ipv6_p2p() {
+    local do_ipv6="${1:-1}" do_p2p="${2:-1}"
+    local lockfile="${AWG_DIR}/.awg_config.lock" lock_fd
+    exec {lock_fd}>"$lockfile"
+    if ! flock -x -w 30 "$lock_fd"; then
+        log_error "Не удалось получить блокировку конфига"
+        exec {lock_fd}>&-
+        return 1
+    fi
+    [[ -f "$SERVER_CONF_FILE" ]] || { exec {lock_fd}>&-; return 1; }
+    local tmpfile
+    tmpfile=$(awg_mktemp) || { exec {lock_fd}>&-; return 1; }
+    AWG_IPV6_SUBNET="${AWG_IPV6_SUBNET:-}" \
+    AWG_IPV6_ENABLED="${AWG_IPV6_ENABLED:-0}" \
+    AWG_P2P_ENABLED="${AWG_P2P_ENABLED:-0}" \
+    AWG_P2P_BASE_PORT="${AWG_P2P_BASE_PORT:-20000}" \
+    AWG_P2P_PORTS_PER_CLIENT="${AWG_P2P_PORTS_PER_CLIENT:-3}" \
+    python3 - "$SERVER_CONF_FILE" "$tmpfile" "$do_ipv6" "$do_p2p" <<'PY'
+import ipaddress, os, re, sys
+
+src, dst, do_ipv6, do_p2p = sys.argv[1], sys.argv[2], sys.argv[3] == "1", sys.argv[4] == "1"
+data = open(src, encoding="utf-8", errors="ignore").read().splitlines()
+ipv6_enabled = os.environ.get("AWG_IPV6_ENABLED") == "1" and os.environ.get("AWG_IPV6_SUBNET")
+p2p_enabled = os.environ.get("AWG_P2P_ENABLED") == "1"
+net = ipaddress.ip_network(os.environ["AWG_IPV6_SUBNET"], strict=False) if ipv6_enabled else None
+base = int(os.environ.get("AWG_P2P_BASE_PORT", "20000"))
+count = int(os.environ.get("AWG_P2P_PORTS_PER_CLIENT", "3"))
+
+used_v6 = set()
+used_ports = set()
+for line in data:
+    if line.startswith("AllowedIPs"):
+        for token in re.findall(r"([0-9A-Fa-f:]+/128)", line):
+            try:
+                used_v6.add(ipaddress.ip_interface(token).ip)
+            except ValueError:
+                pass
+    if line.startswith("#_P2PPorts"):
+        used_ports.update(int(x) for x in re.findall(r"\d+", line))
+if net:
+    used_v6.add(net.network_address + 1)
+
+def alloc_v6():
+    if not net:
+        return ""
+    for i in range(2, 255):
+        cand = net.network_address + i
+        if cand not in used_v6:
+            used_v6.add(cand)
+            return str(cand)
+    raise SystemExit("no free IPv6 addresses")
+
+def alloc_ports(ipv4):
+    last = int(ipv4.split(".")[-1])
+    out = []
+    for off in (0, 256, 512):
+        p = base + off + last
+        if 1024 <= p <= 65535 and p not in used_ports:
+            used_ports.add(p)
+            out.append(p)
+        if len(out) >= count:
+            return ",".join(map(str, out))
+    p = base + 1
+    while len(out) < count and p <= base + 1024 and p <= 65535:
+        if p not in used_ports:
+            used_ports.add(p)
+            out.append(p)
+        p += 1
+    return ",".join(map(str, out))
+
+out = []
+i = 0
+while i < len(data):
+    line = data[i]
+    if line != "[Peer]":
+        out.append(line)
+        i += 1
+        continue
+    block = [line]
+    i += 1
+    while i < len(data) and data[i] != "[Peer]" and not (data[i].startswith("[") and data[i] != "[Peer]"):
+        block.append(data[i])
+        i += 1
+    name = ""
+    allowed_idx = None
+    p2p_idx = None
+    for idx, bline in enumerate(block):
+        if bline.startswith("#_Name = "):
+            name = bline.split("=", 1)[1].strip()
+        elif bline.startswith("AllowedIPs"):
+            allowed_idx = idx
+        elif bline.startswith("#_P2PPorts"):
+            p2p_idx = idx
+    if name and allowed_idx is not None:
+        allowed = block[allowed_idx].split("=", 1)[1].strip()
+        m4 = re.search(r"(\d+\.\d+\.\d+\.\d+)/32", allowed)
+        has_v6 = re.search(r"[0-9A-Fa-f:]+/128", allowed)
+        if do_ipv6 and ipv6_enabled and m4 and not has_v6:
+            block[allowed_idx] = f"AllowedIPs = {m4.group(1)}/32, {alloc_v6()}/128"
+        if do_p2p and p2p_enabled and m4 and p2p_idx is None:
+            insert_at = 1
+            for idx, bline in enumerate(block):
+                if bline.startswith("#_Name = "):
+                    insert_at = idx + 1
+                    break
+            block.insert(insert_at, f"#_P2PPorts = {alloc_ports(m4.group(1))}")
+    out.extend(block)
+open(dst, "w", encoding="utf-8").write("\n".join(out) + "\n")
+PY
+    local rc=$?
+    if [[ $rc -ne 0 ]]; then
+        rm -f "$tmpfile"
+        exec {lock_fd}>&-
+        log_error "Миграция peer metadata не удалась"
+        return $rc
+    fi
+    if ! mv "$tmpfile" "$SERVER_CONF_FILE"; then
+        rm -f "$tmpfile"
+        exec {lock_fd}>&-
+        return 1
+    fi
+    chmod 600 "$SERVER_CONF_FILE"
+    exec {lock_fd}>&-
+    generate_firewall_scripts >/dev/null 2>&1 || log_warn "Не удалось обновить P2P/firewall hook-скрипты."
     return 0
 }
 

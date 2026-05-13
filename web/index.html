@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AmneziaWG</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main class="shell">
+    <header class="topbar">
+      <h1>AmneziaWG</h1>
+      <div class="actions">
+        <input id="token" type="password" placeholder="Bearer token">
+        <button id="saveToken">Token</button>
+        <button id="addClient">Добавить</button>
+        <button id="refresh">Обновить</button>
+      </div>
+    </header>
+    <section class="metrics">
+      <div><span>Сервис</span><strong id="service">?</strong></div>
+      <div><span>Клиенты</span><strong id="count">0</strong></div>
+      <div><span>IPv6/P2P</span><strong>on</strong></div>
+    </section>
+    <section class="table-wrap">
+      <table>
+        <thead><tr><th>Имя</th><th>IPv4</th><th>IPv6</th><th>P2P</th><th>RX/TX</th><th>Статус</th><th></th></tr></thead>
+        <tbody id="clients"></tbody>
+      </table>
+    </section>
+  </main>
+  <dialog id="modal"><form method="dialog"><h2 id="modalTitle"></h2><div id="modalBody"></div><menu><button>Закрыть</button></menu></form></dialog>
+  <script src="app.js"></script>
+</body>
+</html>

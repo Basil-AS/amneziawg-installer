@@ -59,3 +59,47 @@ load test_helper
     [ "$status" -eq 0 ]
     [ "$output" = "10.9.9.2" ]
 }
+
+@test "get_next_client_ipv6: returns ::2 for empty dual-stack config" {
+    command -v python3 &>/dev/null || skip "python3 not available"
+    export AWG_IPV6_ENABLED=1
+    export AWG_IPV6_SUBNET="fd12:3456:789a:1::/64"
+    create_server_config
+    run get_next_client_ipv6
+    [ "$status" -eq 0 ]
+    [ "$output" = "fd12:3456:789a:1::2" ]
+}
+
+@test "get_next_client_ipv6: skips used IPv6 addresses" {
+    command -v python3 &>/dev/null || skip "python3 not available"
+    export AWG_IPV6_ENABLED=1
+    export AWG_IPV6_SUBNET="fd12:3456:789a:1::/64"
+    create_server_config
+    cat >> "$SERVER_CONF_FILE" <<'EOF'
+
+[Peer]
+#_Name = v6used
+PublicKey = PUB
+AllowedIPs = 10.9.9.2/32, fd12:3456:789a:1::2/128
+EOF
+    run get_next_client_ipv6
+    [ "$status" -eq 0 ]
+    [ "$output" = "fd12:3456:789a:1::3" ]
+}
+
+@test "allocate_p2p_ports_for_ipv4: allocates three deterministic ports" {
+    export AWG_P2P_BASE_PORT=20000
+    export AWG_P2P_PORTS_PER_CLIENT=3
+    create_server_config
+    run allocate_p2p_ports_for_ipv4 "10.9.9.5" 3
+    [ "$status" -eq 0 ]
+    [ "$output" = "20005,20261,20517" ]
+}
+
+@test "validate_p2p_port: limits ports to managed P2P range" {
+    export AWG_P2P_BASE_PORT=20000
+    validate_p2p_port 20001
+    validate_p2p_port 21024
+    run validate_p2p_port 21025
+    [ "$status" -eq 1 ]
+}

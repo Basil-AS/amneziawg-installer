@@ -9,7 +9,7 @@ fi
 # AmneziaWG 2.0 installation and configuration script for Ubuntu/Debian servers
 # Author: @bivlked
 # Version: 5.13.0
-# Date: 2026-05-12
+# Date: 2026-05-13
 # Repository: https://github.com/bivlked/amneziawg-installer
 # ==============================================================================
 
@@ -33,8 +33,8 @@ MANAGE_SCRIPT_PATH="$AWG_DIR/manage_amneziawg.sh"
 # Verified in step5_download_scripts() after curl.
 # Verification is skipped when AWG_BRANCH is overridden (test branch).
 # Format: sha256sum output (hex, 64 chars).
-COMMON_SCRIPT_SHA256="a788844e9097b373ed5a8cf1ea0e00965a8ccd1e187b607809a2dfe550ae1e62"
-MANAGE_SCRIPT_SHA256="e030938342a6f2a26ca2060712ba13f23b84579346b410aa1c9641dedc010124"
+COMMON_SCRIPT_SHA256="RELEASE_PLACEHOLDER"
+MANAGE_SCRIPT_SHA256="RELEASE_PLACEHOLDER"
 
 # CLI flags
 UNINSTALL=0; HELP=0; DIAGNOSTIC=0; VERBOSE=0; NO_COLOR=0; AUTO_YES=0; NO_TWEAKS=0
@@ -42,6 +42,9 @@ FORCE_REINSTALL=0
 _APT_UPDATED=0
 CLI_PORT=""; CLI_SUBNET=""; CLI_DISABLE_IPV6="default"
 CLI_ROUTING_MODE="default"; CLI_CUSTOM_ROUTES=""; CLI_ENDPOINT=""; CLI_NO_TWEAKS=0
+CLI_ENABLE_NATIVE_IPV6=0; CLI_IPV6_SUBNET=""; CLI_UPGRADE_IPV6=0
+CLI_P2P_BASE_PORT=""; CLI_P2P_PORTS_PER_CLIENT=""
+CLI_FULLCONE_NAT=0; CLI_WEB_PORT=""; CLI_WEB_BIND=""; CLI_DISABLE_WEB=0
 
 # --- Auto-cleanup of temporary files ---
 _install_temp_files=()
@@ -65,6 +68,15 @@ while [[ $# -gt 0 ]]; do
         --subnet=*)      CLI_SUBNET="${1#*=}" ;;
         --allow-ipv6)    CLI_DISABLE_IPV6=0 ;;
         --disallow-ipv6) CLI_DISABLE_IPV6=1 ;;
+        --enable-native-ipv6) CLI_ENABLE_NATIVE_IPV6=1; CLI_DISABLE_IPV6=0 ;;
+        --ipv6-subnet=*) CLI_IPV6_SUBNET="${1#*=}" ;;
+        --upgrade-ipv6)  CLI_UPGRADE_IPV6=1; CLI_DISABLE_IPV6=0 ;;
+        --p2p-base-port=*) CLI_P2P_BASE_PORT="${1#*=}" ;;
+        --p2p-ports-per-client=*) CLI_P2P_PORTS_PER_CLIENT="${1#*=}" ;;
+        --fullcone-nat)  CLI_FULLCONE_NAT=1 ;;
+        --web-port=*)    CLI_WEB_PORT="${1#*=}" ;;
+        --web-bind=*)    CLI_WEB_BIND="${1#*=}" ;;
+        --disable-web)   CLI_DISABLE_WEB=1 ;;
         --route-all)     CLI_ROUTING_MODE=1 ;;
         --route-amnezia) CLI_ROUTING_MODE=2 ;;
         --route-custom=*) CLI_ROUTING_MODE=3; CLI_CUSTOM_ROUTES="${1#*=}" ;;
@@ -261,6 +273,16 @@ Options:
   --subnet=SUBNET       Set tunnel subnet (x.x.x.x/yy) non-interactively
   --allow-ipv6          Keep IPv6 enabled non-interactively
   --disallow-ipv6       Force-disable IPv6 non-interactively
+  --enable-native-ipv6  Enable client IPv6: native /64 or ULA/NAT66 fallback
+  --ipv6-subnet=CIDR    Set client IPv6 /64 (for example 2001:db8:1::/64)
+  --upgrade-ipv6        Migrate existing clients to IPv6/P2P metadata
+  --p2p-base-port=PORT  Base P2P port (default 20000; range base+1..base+1024)
+  --p2p-ports-per-client=N
+                        P2P ports for each new client (default 3)
+  --fullcone-nat        Try FULLCONENAT instead of MASQUERADE for IPv4
+  --web-port=PORT       Web panel HTTPS port (default 8443)
+  --web-bind=ADDR       Web panel bind address (default 0.0.0.0)
+  --disable-web         Do not install/start the web panel
   --route-all           Use 'All traffic' mode non-interactively
   --route-amnezia       Use 'Amnezia' mode non-interactively
   --route-custom=NETS   Use 'Custom' mode non-interactively
@@ -536,7 +558,10 @@ safe_load_config() {
                 OS_ID|OS_VERSION|OS_CODENAME|AWG_PORT|AWG_TUNNEL_SUBNET|\
                 DISABLE_IPV6|ALLOWED_IPS_MODE|ALLOWED_IPS|AWG_ENDPOINT|\
                 AWG_Jc|AWG_Jmin|AWG_Jmax|AWG_S1|AWG_S2|AWG_S3|AWG_S4|\
-                AWG_H1|AWG_H2|AWG_H3|AWG_H4|AWG_I1|AWG_PRESET|NO_TWEAKS|AWG_APPLY_MODE)
+                AWG_H1|AWG_H2|AWG_H3|AWG_H4|AWG_I1|AWG_PRESET|NO_TWEAKS|AWG_APPLY_MODE|\
+                AWG_IPV6_ENABLED|AWG_IPV6_MODE|AWG_IPV6_SUBNET|AWG_IPV6_NDP_PROXY|\
+                AWG_P2P_ENABLED|AWG_P2P_BASE_PORT|AWG_P2P_PORTS_PER_CLIENT|AWG_FULLCONE_NAT|\
+                AWG_WEB_ENABLED|AWG_WEB_PORT|AWG_WEB_BIND)
                     export "$key=$value"
                     ;;
             esac
@@ -639,6 +664,111 @@ validate_cidr_list() {
             return 1
         fi
     done
+}
+
+validate_ipv6_subnet() {
+    local subnet="$1"
+    [[ -n "$subnet" && "$subnet" == *:* && "$subnet" == */64 ]] || return 1
+    if command -v python3 >/dev/null 2>&1; then
+        python3 - "$subnet" <<'PY'
+import ipaddress, sys
+try:
+    net = ipaddress.ip_network(sys.argv[1], strict=False)
+    if net.version != 6 or net.prefixlen != 64:
+        raise ValueError
+except Exception:
+    sys.exit(1)
+PY
+    else
+        [[ "$subnet" =~ ^[0-9A-Fa-f:]+/64$ ]]
+    fi
+}
+
+normalize_ipv6_subnet_installer() {
+    local subnet="$1"
+    if command -v python3 >/dev/null 2>&1; then
+        python3 - "$subnet" <<'PY'
+import ipaddress, sys
+net = ipaddress.ip_network(sys.argv[1], strict=False)
+print(str(net))
+PY
+    else
+        echo "$subnet"
+    fi
+}
+
+detect_ipv6_64_subnet() {
+    local addr
+    addr=$(ip -6 -o addr show scope global 2>/dev/null \
+        | awk '{print $4}' \
+        | grep -viE '^(fd|fe80:)' \
+        | head -1)
+    [[ -n "$addr" ]] || return 1
+    if command -v python3 >/dev/null 2>&1; then
+        python3 - "$addr" <<'PY'
+import ipaddress, sys
+try:
+    iface = ipaddress.ip_interface(sys.argv[1])
+    if iface.version != 6:
+        raise ValueError
+    net = ipaddress.ip_network(f"{iface.ip}/64", strict=False)
+    print(str(net))
+except Exception:
+    sys.exit(1)
+PY
+    else
+        echo "${addr%/*}/64"
+    fi
+}
+
+generate_ula_subnet() {
+    local r
+    r=$(od -An -N5 -tx1 /dev/urandom 2>/dev/null | tr -d ' \n')
+    if [[ ${#r} -lt 10 ]]; then
+        r="$(printf '%02x%04x%04x' "$((RANDOM % 256))" "$RANDOM" "$RANDOM")"
+    fi
+    echo "fd${r:0:2}:${r:2:4}:${r:6:4}:1::/64"
+}
+
+configure_ipv6_client_mode() {
+    AWG_IPV6_ENABLED=${AWG_IPV6_ENABLED:-0}
+    AWG_IPV6_MODE=${AWG_IPV6_MODE:-legacy}
+    AWG_IPV6_SUBNET=${AWG_IPV6_SUBNET:-}
+    AWG_IPV6_NDP_PROXY=${AWG_IPV6_NDP_PROXY:-0}
+
+    if [[ "${DISABLE_IPV6:-1}" -eq 1 ]]; then
+        AWG_IPV6_ENABLED=0
+        AWG_IPV6_MODE=legacy
+        AWG_IPV6_SUBNET=""
+        AWG_IPV6_NDP_PROXY=0
+        return 0
+    fi
+
+    AWG_IPV6_ENABLED=1
+    if [[ -n "$CLI_IPV6_SUBNET" ]]; then
+        validate_ipv6_subnet "$CLI_IPV6_SUBNET" || die "Invalid --ipv6-subnet: '$CLI_IPV6_SUBNET'. IPv6 /64 is required."
+        AWG_IPV6_SUBNET=$(normalize_ipv6_subnet_installer "$CLI_IPV6_SUBNET")
+        if [[ "$AWG_IPV6_SUBNET" == fd* || "$AWG_IPV6_SUBNET" == FD* ]]; then
+            AWG_IPV6_MODE=ula
+            AWG_IPV6_NDP_PROXY=0
+            log_warn "Using ULA IPv6 ($AWG_IPV6_SUBNET): this is NAT66 fallback, not public native IPv6."
+        else
+            AWG_IPV6_MODE=native
+            AWG_IPV6_NDP_PROXY=1
+        fi
+    elif [[ -z "$AWG_IPV6_SUBNET" || "$CLI_ENABLE_NATIVE_IPV6" -eq 1 || "$CLI_UPGRADE_IPV6" -eq 1 ]]; then
+        if AWG_IPV6_SUBNET=$(detect_ipv6_64_subnet); then
+            AWG_IPV6_MODE=native
+            AWG_IPV6_NDP_PROXY=1
+            log "Auto-detected client IPv6 /64: $AWG_IPV6_SUBNET"
+        else
+            AWG_IPV6_SUBNET=$(generate_ula_subnet)
+            AWG_IPV6_MODE=ula
+            AWG_IPV6_NDP_PROXY=0
+            log_warn "Public IPv6 /64 not found. Enabled ULA/NAT66 fallback: $AWG_IPV6_SUBNET (not public native IPv6)."
+        fi
+    fi
+    export AWG_IPV6_ENABLED AWG_IPV6_MODE AWG_IPV6_SUBNET AWG_IPV6_NDP_PROXY
 }
 
 configure_routing_mode() {
@@ -1016,9 +1146,10 @@ net.ipv6.conf.all.disable_ipv6 = 1
 net.ipv6.conf.default.disable_ipv6 = 1
 net.ipv6.conf.lo.disable_ipv6 = 1
 SYSEOF
-    else
-        cat >> "$f" << SYSEOF
+else
+    cat >> "$f" << SYSEOF
 net.ipv6.conf.all.forwarding = 1
+net.ipv6.conf.all.proxy_ndp = ${AWG_IPV6_NDP_PROXY:-0}
 SYSEOF
     fi
     sysctl -p "$f" >/dev/null 2>&1 || log_warn "sysctl -p error"
@@ -1058,6 +1189,7 @@ $(if [[ "${DISABLE_IPV6:-1}" -eq 1 ]]; then
 else
     echo "# IPv6 not disabled"
     echo "net.ipv6.conf.all.forwarding = 1"
+    echo "net.ipv6.conf.all.proxy_ndp = ${AWG_IPV6_NDP_PROXY:-0}"
 fi)
 
 # --- TCP/IP Hardening ---
@@ -1146,6 +1278,14 @@ setup_improved_firewall() {
         ufw default allow outgoing || { log_warn "UFW: failed to set default allow outgoing"; ufw_errors=1; }
         ufw limit 22/tcp comment "SSH Rate Limit" || { log_warn "UFW: failed to limit SSH"; ufw_errors=1; }
         ufw allow "${AWG_PORT}/udp" comment "AmneziaWG VPN" || { log_warn "UFW: failed to allow VPN port"; ufw_errors=1; }
+        if [[ "${AWG_WEB_ENABLED:-1}" -eq 1 ]]; then
+            ufw allow "${AWG_WEB_PORT}/tcp" comment "AmneziaWG Web Panel" || { log_warn "UFW: failed to allow Web port"; ufw_errors=1; }
+        fi
+        if [[ "${AWG_P2P_ENABLED:-1}" -eq 1 ]]; then
+            local p2p_from=$((AWG_P2P_BASE_PORT + 1)) p2p_to=$((AWG_P2P_BASE_PORT + 1024))
+            ufw allow "${p2p_from}:${p2p_to}/tcp" comment "AmneziaWG P2P TCP" || log_warn "UFW: failed to allow P2P TCP"
+            ufw allow "${p2p_from}:${p2p_to}/udp" comment "AmneziaWG P2P UDP" || log_warn "UFW: failed to allow P2P UDP"
+        fi
         if [[ -n "$main_nic" ]]; then
             ufw route allow in on awg0 out on "$main_nic" comment "AmneziaWG Routing" \
                 || { log_warn "UFW: failed to add route rule"; ufw_errors=1; }
@@ -1181,6 +1321,14 @@ setup_improved_firewall() {
         log "UFW is active. Updating rules..."
         ufw limit 22/tcp comment "SSH Rate Limit" || { log_warn "UFW: failed to limit SSH"; ufw_errors=1; }
         ufw allow "${AWG_PORT}/udp" comment "AmneziaWG VPN" || { log_warn "UFW: failed to allow VPN port"; ufw_errors=1; }
+        if [[ "${AWG_WEB_ENABLED:-1}" -eq 1 ]]; then
+            ufw allow "${AWG_WEB_PORT}/tcp" comment "AmneziaWG Web Panel" || { log_warn "UFW: failed to allow Web port"; ufw_errors=1; }
+        fi
+        if [[ "${AWG_P2P_ENABLED:-1}" -eq 1 ]]; then
+            local p2p_from=$((AWG_P2P_BASE_PORT + 1)) p2p_to=$((AWG_P2P_BASE_PORT + 1024))
+            ufw allow "${p2p_from}:${p2p_to}/tcp" comment "AmneziaWG P2P TCP" || log_warn "UFW: failed to allow P2P TCP"
+            ufw allow "${p2p_from}:${p2p_to}/udp" comment "AmneziaWG P2P UDP" || log_warn "UFW: failed to allow P2P UDP"
+        fi
         if [[ -n "$main_nic" ]]; then
             ufw route allow in on awg0 out on "$main_nic" comment "AmneziaWG Routing" \
                 || { log_warn "UFW: failed to add route rule"; ufw_errors=1; }
@@ -1433,6 +1581,9 @@ step_uninstall() {
     log "Stopping service..."
     systemctl stop awg-quick@awg0 2>/dev/null
     systemctl disable awg-quick@awg0 2>/dev/null
+    systemctl stop awg-web.service 2>/dev/null
+    systemctl disable awg-web.service 2>/dev/null
+    systemctl stop ndppd 2>/dev/null || true
     modprobe -r amneziawg 2>/dev/null || true
     # v5.12.0+: kernel module auto-repair on kernel upgrade.
     # Remove apt hook and systemd unit BEFORE apt purge so the hook does not
@@ -1468,6 +1619,14 @@ step_uninstall() {
             port_to_del=${port_to_del:-39743}
             # Removing our rules is ALWAYS performed (idempotent)
             ufw delete allow "${port_to_del}/udp" 2>/dev/null
+            local web_port_to_del p2p_base_to_del
+            web_port_to_del=$(safe_read_config_key "AWG_WEB_PORT" "$CONFIG_FILE" 2>/dev/null || true)
+            web_port_to_del=${web_port_to_del:-8443}
+            ufw delete allow "${web_port_to_del}/tcp" 2>/dev/null
+            p2p_base_to_del=$(safe_read_config_key "AWG_P2P_BASE_PORT" "$CONFIG_FILE" 2>/dev/null || true)
+            p2p_base_to_del=${p2p_base_to_del:-20000}
+            ufw delete allow "$((p2p_base_to_del + 1)):$((p2p_base_to_del + 1024))/tcp" 2>/dev/null
+            ufw delete allow "$((p2p_base_to_del + 1)):$((p2p_base_to_del + 1024))/udp" 2>/dev/null
             # To delete a route rule we need an exact match with how it was created:
             # "ufw route allow in on awg0 out on <nic>". Without "out on", UFW will
             # not find the rule and it stays in ufw status. Discussion #41.
@@ -1501,9 +1660,9 @@ step_uninstall() {
     fi
     log "Removing packages..."
     if [[ "$saved_no_tweaks" -eq 0 ]]; then
-        DEBIAN_FRONTEND=noninteractive apt-get purge -y amneziawg-dkms amneziawg-tools fail2ban qrencode 2>/dev/null || log_warn "Purge error."
+        DEBIAN_FRONTEND=noninteractive apt-get purge -y amneziawg-dkms amneziawg-tools fail2ban qrencode ndppd 2>/dev/null || log_warn "Purge error."
     else
-        DEBIAN_FRONTEND=noninteractive apt-get purge -y amneziawg-dkms amneziawg-tools qrencode 2>/dev/null || log_warn "Purge error."
+        DEBIAN_FRONTEND=noninteractive apt-get purge -y amneziawg-dkms amneziawg-tools qrencode ndppd 2>/dev/null || log_warn "Purge error."
     fi
     DEBIAN_FRONTEND=noninteractive apt-get autoremove -y 2>/dev/null || log_warn "Autoremove error."
     log "Removing PPA and files..."
@@ -1513,6 +1672,8 @@ step_uninstall() {
         /etc/apt/sources.list.d/amnezia-ubuntu-ppa-*.sources \
         /etc/apt/keyrings/amnezia-ppa.gpg 2>/dev/null
     rm -rf /etc/amnezia \
+        /etc/ndppd.conf \
+        /etc/systemd/system/awg-web.service \
         /etc/modules-load.d/amneziawg.conf \
         /etc/sysctl.d/99-amneziawg-security.conf \
         /etc/sysctl.d/99-amneziawg-forwarding.conf \
@@ -1588,6 +1749,17 @@ initialize_setup() {
     ALLOWED_IPS_MODE="default"
     ALLOWED_IPS=""
     AWG_ENDPOINT=""
+    AWG_IPV6_ENABLED=0
+    AWG_IPV6_MODE="legacy"
+    AWG_IPV6_SUBNET=""
+    AWG_IPV6_NDP_PROXY=0
+    AWG_P2P_ENABLED=1
+    AWG_P2P_BASE_PORT=20000
+    AWG_P2P_PORTS_PER_CLIENT=3
+    AWG_FULLCONE_NAT=0
+    AWG_WEB_ENABLED=1
+    AWG_WEB_PORT=8443
+    AWG_WEB_BIND="0.0.0.0"
 
     # Load config
     if [[ -f "$CONFIG_FILE" ]]; then
@@ -1601,6 +1773,17 @@ initialize_setup() {
         ALLOWED_IPS_MODE=${ALLOWED_IPS_MODE:-"default"}
         ALLOWED_IPS=${ALLOWED_IPS:-""}
         AWG_ENDPOINT=${AWG_ENDPOINT:-""}
+        AWG_IPV6_ENABLED=${AWG_IPV6_ENABLED:-0}
+        AWG_IPV6_MODE=${AWG_IPV6_MODE:-legacy}
+        AWG_IPV6_SUBNET=${AWG_IPV6_SUBNET:-}
+        AWG_IPV6_NDP_PROXY=${AWG_IPV6_NDP_PROXY:-0}
+        AWG_P2P_ENABLED=${AWG_P2P_ENABLED:-1}
+        AWG_P2P_BASE_PORT=${AWG_P2P_BASE_PORT:-20000}
+        AWG_P2P_PORTS_PER_CLIENT=${AWG_P2P_PORTS_PER_CLIENT:-3}
+        AWG_FULLCONE_NAT=${AWG_FULLCONE_NAT:-0}
+        AWG_WEB_ENABLED=${AWG_WEB_ENABLED:-1}
+        AWG_WEB_PORT=${AWG_WEB_PORT:-8443}
+        AWG_WEB_BIND=${AWG_WEB_BIND:-0.0.0.0}
         log "Settings loaded from file."
     else
         log "Configuration file $CONFIG_FILE not found."
@@ -1610,6 +1793,13 @@ initialize_setup() {
     AWG_PORT=${CLI_PORT:-$AWG_PORT}
     AWG_TUNNEL_SUBNET=${CLI_SUBNET:-$AWG_TUNNEL_SUBNET}
     if [[ "$CLI_DISABLE_IPV6" != "default" ]]; then DISABLE_IPV6=$CLI_DISABLE_IPV6; fi
+    [[ "$CLI_ENABLE_NATIVE_IPV6" -eq 1 || "$CLI_UPGRADE_IPV6" -eq 1 ]] && DISABLE_IPV6=0
+    [[ -n "$CLI_P2P_BASE_PORT" ]] && AWG_P2P_BASE_PORT="$CLI_P2P_BASE_PORT"
+    [[ -n "$CLI_P2P_PORTS_PER_CLIENT" ]] && AWG_P2P_PORTS_PER_CLIENT="$CLI_P2P_PORTS_PER_CLIENT"
+    [[ "$CLI_FULLCONE_NAT" -eq 1 ]] && AWG_FULLCONE_NAT=1
+    [[ -n "$CLI_WEB_PORT" ]] && AWG_WEB_PORT="$CLI_WEB_PORT"
+    [[ -n "$CLI_WEB_BIND" ]] && AWG_WEB_BIND="$CLI_WEB_BIND"
+    [[ "$CLI_DISABLE_WEB" -eq 1 ]] && AWG_WEB_ENABLED=0
     if [[ "$CLI_ROUTING_MODE" != "default" ]]; then
         ALLOWED_IPS_MODE=$CLI_ROUTING_MODE
         if [[ "$CLI_ROUTING_MODE" -eq 3 ]]; then ALLOWED_IPS=$CLI_CUSTOM_ROUTES; fi
@@ -1625,6 +1815,14 @@ initialize_setup() {
     # Validate after CLI override
     validate_port "$AWG_PORT"
     validate_subnet "$AWG_TUNNEL_SUBNET"
+    validate_port "$AWG_P2P_BASE_PORT"
+    if [[ "$AWG_P2P_BASE_PORT" -gt 64511 ]]; then
+        die "Invalid AWG_P2P_BASE_PORT: '$AWG_P2P_BASE_PORT' (must be <= 64511 so base+1..base+1024 fits in TCP/UDP ports)."
+    fi
+    if ! [[ "$AWG_P2P_PORTS_PER_CLIENT" =~ ^[0-9]+$ ]] || [[ "$AWG_P2P_PORTS_PER_CLIENT" -lt 0 ]] || [[ "$AWG_P2P_PORTS_PER_CLIENT" -gt 12 ]]; then
+        die "Invalid AWG_P2P_PORTS_PER_CLIENT: '$AWG_P2P_PORTS_PER_CLIENT' (0-12)."
+    fi
+    validate_port "$AWG_WEB_PORT"
     # AWG_ENDPOINT may have come from CONFIG_FILE via safe_load_config (no CLI override).
     # If the value is present and invalid — log_warn + reset to "" so the installer
     # falls back to auto-detect via get_server_public_ip (audit).
@@ -1661,6 +1859,7 @@ initialize_setup() {
     if [[ "$DISABLE_IPV6" == "default" ]]; then DISABLE_IPV6=1; fi
     if [[ "$ALLOWED_IPS_MODE" == "default" ]]; then ALLOWED_IPS_MODE=2; fi
     if [[ -z "$ALLOWED_IPS" ]]; then configure_routing_mode; fi
+    configure_ipv6_client_mode
 
     # Port check (skip if AWG service is already listening on this port)
     if ! systemctl is-active --quiet awg-quick@awg0 2>/dev/null; then
@@ -1695,6 +1894,17 @@ export DISABLE_IPV6=${DISABLE_IPV6}
 export ALLOWED_IPS_MODE=${ALLOWED_IPS_MODE}
 export ALLOWED_IPS='${ALLOWED_IPS}'
 export AWG_ENDPOINT='${AWG_ENDPOINT}'
+export AWG_IPV6_ENABLED=${AWG_IPV6_ENABLED}
+export AWG_IPV6_MODE='${AWG_IPV6_MODE}'
+export AWG_IPV6_SUBNET='${AWG_IPV6_SUBNET}'
+export AWG_IPV6_NDP_PROXY=${AWG_IPV6_NDP_PROXY}
+export AWG_P2P_ENABLED=${AWG_P2P_ENABLED}
+export AWG_P2P_BASE_PORT=${AWG_P2P_BASE_PORT}
+export AWG_P2P_PORTS_PER_CLIENT=${AWG_P2P_PORTS_PER_CLIENT}
+export AWG_FULLCONE_NAT=${AWG_FULLCONE_NAT}
+export AWG_WEB_ENABLED=${AWG_WEB_ENABLED}
+export AWG_WEB_PORT=${AWG_WEB_PORT}
+export AWG_WEB_BIND='${AWG_WEB_BIND}'
 # AWG 2.0 Parameters
 export AWG_Jc=${AWG_Jc}
 export AWG_Jmin=${AWG_Jmin}
@@ -1719,9 +1929,15 @@ EOF
     chmod 600 "$CONFIG_FILE" || log_warn "chmod $CONFIG_FILE error"
     log "Settings saved."
     export AWG_PORT AWG_TUNNEL_SUBNET DISABLE_IPV6 ALLOWED_IPS_MODE ALLOWED_IPS AWG_ENDPOINT
+    export AWG_IPV6_ENABLED AWG_IPV6_MODE AWG_IPV6_SUBNET AWG_IPV6_NDP_PROXY
+    export AWG_P2P_ENABLED AWG_P2P_BASE_PORT AWG_P2P_PORTS_PER_CLIENT AWG_FULLCONE_NAT
+    export AWG_WEB_ENABLED AWG_WEB_PORT AWG_WEB_BIND
     log "Port: ${AWG_PORT}/udp"
     log "Subnet: ${AWG_TUNNEL_SUBNET}"
     log "IPv6 disable: $DISABLE_IPV6"
+    log "Client IPv6: ${AWG_IPV6_ENABLED} (${AWG_IPV6_MODE:-legacy} ${AWG_IPV6_SUBNET:-})"
+    log "P2P: base=${AWG_P2P_BASE_PORT}, ports/client=${AWG_P2P_PORTS_PER_CLIENT}, fullcone=${AWG_FULLCONE_NAT}"
+    log "Web: enabled=${AWG_WEB_ENABLED}, bind=${AWG_WEB_BIND}:${AWG_WEB_PORT}"
     log "AllowedIPs mode: $ALLOWED_IPS_MODE"
 
     # Loading state
@@ -2062,7 +2278,8 @@ PPASRC
     if [[ "$arch" == "aarch64" || "$arch" == "armv7l" ]]; then
         if _try_install_prebuilt_arm; then
             log "Prebuilt kernel module installed. Installing userspace tools from PPA..."
-            install_packages "amneziawg-tools" "wireguard-tools" "qrencode"
+            install_packages "amneziawg-tools" "wireguard-tools" "qrencode" "python3" "openssl"
+            [[ "${AWG_IPV6_MODE:-}" == "native" && "${AWG_IPV6_NDP_PROXY:-0}" -eq 1 ]] && install_packages "ndppd"
             log "Step 2 completed (prebuilt ARM)."
             request_reboot 3
             return
@@ -2071,7 +2288,10 @@ PPASRC
     fi
 
     local packages=("amneziawg-dkms" "amneziawg-tools" "wireguard-tools" "dkms"
-                    "build-essential" "dpkg-dev" "qrencode")
+                    "build-essential" "dpkg-dev" "qrencode" "python3" "openssl")
+    if [[ "${AWG_IPV6_MODE:-}" == "native" && "${AWG_IPV6_NDP_PROXY:-0}" -eq 1 ]]; then
+        packages+=("ndppd")
+    fi
 
     # Linux headers: on Debian, exact linux-headers-$(uname -r) may not be available
     local current_headers
@@ -2588,6 +2808,382 @@ step5_download_scripts() {
     update_state 6
 }
 
+setup_ndppd_config() {
+    [[ "${AWG_IPV6_ENABLED:-0}" -eq 1 && "${AWG_IPV6_MODE:-}" == "native" && "${AWG_IPV6_NDP_PROXY:-0}" -eq 1 ]] || return 0
+    local nic
+    nic=$(ip route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="dev") print $(i+1); exit}')
+    [[ -n "$nic" ]] || nic="eth0"
+    cat > /etc/ndppd.conf << EOF
+route_ttl 30000
+proxy ${nic} {
+    router yes
+    timeout 500
+    ttl 30000
+    rule ${AWG_IPV6_SUBNET} {
+        static
+    }
+}
+EOF
+    chmod 644 /etc/ndppd.conf
+    systemctl enable ndppd 2>/dev/null || log_warn "Failed to enable ndppd"
+    systemctl restart ndppd 2>/dev/null || log_warn "Failed to restart ndppd"
+    log "ndppd configured for ${AWG_IPV6_SUBNET} via ${nic}."
+}
+
+deploy_web_panel() {
+    [[ "${AWG_WEB_ENABLED:-1}" -eq 1 ]] || { log "Web panel disabled (--disable-web)."; return 0; }
+    log "Deploying AmneziaWG web panel..."
+    local web_dir="$AWG_DIR/web"
+    mkdir -p "$web_dir" || die "Failed to create $web_dir"
+    chmod 700 "$web_dir"
+
+    if [[ ! -f "$web_dir/auth_token" ]]; then
+        od -An -N32 -tx1 /dev/urandom | tr -d ' \n' > "$web_dir/auth_token" || die "Failed to generate web token"
+        chmod 600 "$web_dir/auth_token"
+    fi
+    if [[ ! -f "$web_dir/cert.pem" || ! -f "$web_dir/key.pem" ]]; then
+        openssl req -x509 -nodes -newkey rsa:2048 -days 3650 \
+            -keyout "$web_dir/key.pem" -out "$web_dir/cert.pem" \
+            -subj "/CN=AmneziaWG Web Panel" >/dev/null 2>&1 || die "Failed to generate TLS certificate"
+        chmod 600 "$web_dir/key.pem" "$web_dir/cert.pem"
+    fi
+
+    cat > "$web_dir/server.py" <<'PY'
+#!/usr/bin/env python3
+import json, os, re, ssl, subprocess, time
+from http import HTTPStatus
+from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
+from pathlib import Path
+from urllib.parse import parse_qs, urlparse
+
+AWG_DIR = Path(os.environ.get("AWG_DIR", "/root/awg"))
+WEB_DIR = AWG_DIR / "web"
+MANAGE = AWG_DIR / "manage_amneziawg.sh"
+SERVER_CONF = Path(os.environ.get("SERVER_CONF_FILE", "/etc/amnezia/amneziawg/awg0.conf"))
+TOKEN_FILE = WEB_DIR / "auth_token"
+NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+RATE = {}
+
+def token():
+    return TOKEN_FILE.read_text().strip()
+
+def run_manage(*args, timeout=60):
+    env = os.environ.copy()
+    env["AWG_YES"] = "1"
+    p = subprocess.run(["/bin/bash", str(MANAGE), "--yes", *args], text=True,
+                       stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                       timeout=timeout, env=env)
+    return p.returncode, p.stdout, p.stderr
+
+def parse_peers():
+    peers, cur = [], None
+    if not SERVER_CONF.exists():
+        return peers
+    for line in SERVER_CONF.read_text(errors="ignore").splitlines():
+        if line == "[Peer]":
+            if cur: peers.append(cur)
+            cur = {"name": "", "public_key": "", "ipv4": "", "ipv6": "", "p2p_ports": []}
+        elif cur is not None and line.startswith("#_Name = "):
+            cur["name"] = line.split("=", 1)[1].strip()
+        elif cur is not None and line.startswith("#_P2PPorts"):
+            cur["p2p_ports"] = [int(x) for x in re.findall(r"\d+", line)]
+        elif cur is not None and line.startswith("PublicKey"):
+            cur["public_key"] = line.split("=", 1)[1].strip()
+        elif cur is not None and line.startswith("AllowedIPs"):
+            value = line.split("=", 1)[1]
+            m4 = re.search(r"(\d+\.\d+\.\d+\.\d+)/32", value)
+            m6 = re.search(r"([0-9A-Fa-f:]+)/128", value)
+            if m4: cur["ipv4"] = m4.group(1)
+            if m6: cur["ipv6"] = m6.group(1)
+    if cur: peers.append(cur)
+    return [p for p in peers if p.get("name")]
+
+def stats_map():
+    try:
+        rc, out, _ = run_manage("--json", "stats", timeout=20)
+        if rc == 0:
+            return {x.get("name"): x for x in json.loads(out or "[]")}
+    except Exception:
+        pass
+    return {}
+
+def safe_name(name):
+    if not NAME_RE.match(name or ""):
+        raise ValueError("invalid client name")
+    return name
+
+class Handler(SimpleHTTPRequestHandler):
+    server_version = "AmneziaWGWeb/1.0"
+
+    def log_message(self, fmt, *args):
+        return
+
+    def rate_limited(self):
+        ip = self.client_address[0]
+        now = time.time()
+        bucket = [t for t in RATE.get(ip, []) if now - t < 60]
+        bucket.append(now)
+        RATE[ip] = bucket
+        return len(bucket) > 100
+
+    def authed(self):
+        if self.path.startswith("/api/"):
+            if self.rate_limited():
+                self.send_error(HTTPStatus.TOO_MANY_REQUESTS)
+                return False
+            hdr = self.headers.get("Authorization", "")
+            if hdr != f"Bearer {token()}":
+                self.send_error(HTTPStatus.UNAUTHORIZED)
+                return False
+        return True
+
+    def json_body(self):
+        n = int(self.headers.get("Content-Length", "0") or 0)
+        if n <= 0:
+            return {}
+        return json.loads(self.rfile.read(n).decode("utf-8"))
+
+    def send_json(self, obj, status=200):
+        data = json.dumps(obj, ensure_ascii=False).encode()
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def send_file(self, path, ctype):
+        if not path.exists() or not path.is_file():
+            self.send_error(404)
+            return
+        data = path.read_bytes()
+        self.send_response(200)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def do_GET(self):
+        if not self.authed(): return
+        u = urlparse(self.path)
+        if not u.path.startswith("/api/"):
+            if u.path == "/":
+                self.path = "/index.html"
+            return super().do_GET()
+        if u.path == "/api/status":
+            active = subprocess.run(["systemctl", "is-active", "awg-quick@awg0"], text=True,
+                                    stdout=subprocess.PIPE, stderr=subprocess.DEVNULL).stdout.strip()
+            self.send_json({"service": active, "clients": len(parse_peers()), "version": "5.13.0", "fork": "ipv6-p2p-web"})
+        elif u.path == "/api/clients":
+            sm = stats_map()
+            clients = []
+            for p in parse_peers():
+                p.update(sm.get(p["name"], {}))
+                clients.append(p)
+            self.send_json(clients)
+        elif u.path == "/api/stats":
+            rc, out, err = run_manage("--json", "stats", timeout=20)
+            self.send_json(json.loads(out or "[]") if rc == 0 else {"error": err or out}, 200 if rc == 0 else 500)
+        elif u.path == "/api/server/logs":
+            lines = []
+            for f in (AWG_DIR / "manage_amneziawg.log", AWG_DIR / "install_amneziawg.log"):
+                if f.exists():
+                    lines.extend(f.read_text(errors="ignore").splitlines()[-100:])
+            self.send_json({"lines": lines[-100:]})
+        else:
+            m = re.match(r"^/api/clients/([^/]+)/(config|qr|vpnuri|p2p)$", u.path)
+            if not m:
+                self.send_error(404); return
+            name, kind = safe_name(m.group(1)), m.group(2)
+            if kind == "config":
+                self.send_file(AWG_DIR / f"{name}.conf", "text/plain; charset=utf-8")
+            elif kind == "qr":
+                self.send_file(AWG_DIR / f"{name}.png", "image/png")
+            elif kind == "vpnuri":
+                self.send_file(AWG_DIR / f"{name}.vpnuri", "text/plain; charset=utf-8")
+            else:
+                peer = next((p for p in parse_peers() if p["name"] == name), None)
+                self.send_json({"name": name, "ports": (peer or {}).get("p2p_ports", [])})
+
+    def do_POST(self):
+        if not self.authed(): return
+        u = urlparse(self.path)
+        try:
+            body = self.json_body()
+            if u.path == "/api/clients":
+                args = []
+                if body.get("expires"):
+                    args.append(f"--expires={body['expires']}")
+                args += ["add", safe_name(body.get("name", ""))]
+                rc, out, err = run_manage(*args)
+                self.send_json({"ok": rc == 0, "stdout": out, "stderr": err}, 200 if rc == 0 else 400)
+            elif u.path == "/api/server/restart":
+                rc, out, err = run_manage("restart", timeout=90)
+                self.send_json({"ok": rc == 0, "stdout": out, "stderr": err}, 200 if rc == 0 else 500)
+            else:
+                m = re.match(r"^/api/clients/([^/]+)/p2p$", u.path)
+                if not m:
+                    self.send_error(404); return
+                args = ["p2p", "add", safe_name(m.group(1))]
+                if body.get("port"):
+                    args.append(str(body["port"]))
+                rc, out, err = run_manage(*args)
+                self.send_json({"ok": rc == 0, "stdout": out, "stderr": err}, 200 if rc == 0 else 400)
+        except ValueError as e:
+            self.send_json({"error": str(e)}, 400)
+
+    def do_DELETE(self):
+        if not self.authed(): return
+        u = urlparse(self.path)
+        try:
+            m = re.match(r"^/api/clients/([^/]+)$", u.path)
+            if m:
+                rc, out, err = run_manage("remove", safe_name(m.group(1)))
+                self.send_json({"ok": rc == 0, "stdout": out, "stderr": err}, 200 if rc == 0 else 400)
+                return
+            m = re.match(r"^/api/clients/([^/]+)/p2p$", u.path)
+            if m:
+                qs = parse_qs(u.query)
+                port = (qs.get("port") or [""])[0]
+                rc, out, err = run_manage("p2p", "remove", safe_name(m.group(1)), port)
+                self.send_json({"ok": rc == 0, "stdout": out, "stderr": err}, 200 if rc == 0 else 400)
+                return
+            self.send_error(404)
+        except ValueError as e:
+            self.send_json({"error": str(e)}, 400)
+
+def main():
+    os.chdir(WEB_DIR)
+    bind = os.environ.get("AWG_WEB_BIND", "0.0.0.0")
+    port = int(os.environ.get("AWG_WEB_PORT", "8443"))
+    httpd = ThreadingHTTPServer((bind, port), Handler)
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    ctx.load_cert_chain(WEB_DIR / "cert.pem", WEB_DIR / "key.pem")
+    httpd.socket = ctx.wrap_socket(httpd.socket, server_side=True)
+    httpd.serve_forever()
+
+if __name__ == "__main__":
+    main()
+PY
+    chmod 700 "$web_dir/server.py"
+
+    cat > "$web_dir/index.html" <<'HTML'
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AmneziaWG</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main class="shell">
+    <header class="topbar">
+      <h1>AmneziaWG</h1>
+      <div class="actions">
+        <input id="token" type="password" placeholder="Bearer token">
+        <button id="saveToken">Token</button>
+        <button id="addClient">Add</button>
+        <button id="refresh">Refresh</button>
+      </div>
+    </header>
+    <section class="metrics">
+      <div><span>Service</span><strong id="service">?</strong></div>
+      <div><span>Clients</span><strong id="count">0</strong></div>
+      <div><span>IPv6/P2P</span><strong id="mode">on</strong></div>
+    </section>
+    <section class="table-wrap">
+      <table>
+        <thead><tr><th>Name</th><th>IPv4</th><th>IPv6</th><th>P2P</th><th>RX/TX</th><th>Status</th><th></th></tr></thead>
+        <tbody id="clients"></tbody>
+      </table>
+    </section>
+  </main>
+  <dialog id="modal"><form method="dialog"><h2 id="modalTitle"></h2><div id="modalBody"></div><menu><button>Close</button></menu></form></dialog>
+  <script src="app.js"></script>
+</body>
+</html>
+HTML
+
+    cat > "$web_dir/style.css" <<'CSS'
+:root{color-scheme:dark;--bg:#111418;--panel:#1a2027;--line:#303842;--text:#edf2f7;--muted:#9aa7b4;--accent:#4cc9a6;--danger:#ff6b6b}
+*{box-sizing:border-box}body{margin:0;font-family:Inter,system-ui,Segoe UI,sans-serif;background:#111418;color:var(--text)}
+.shell{max-width:1180px;margin:0 auto;padding:28px}.topbar{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:18px}
+h1{font-size:28px;margin:0}.actions{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end}
+button,input{height:36px;border:1px solid var(--line);border-radius:6px;background:#202731;color:var(--text);padding:0 12px}
+button{cursor:pointer;background:#26313b}button:hover{border-color:var(--accent)}input{min-width:210px}
+.metrics{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin:18px 0}.metrics div,.table-wrap{background:var(--panel);border:1px solid var(--line);border-radius:8px}
+.metrics div{padding:16px}.metrics span{display:block;color:var(--muted);font-size:12px}.metrics strong{font-size:24px}
+.table-wrap{overflow:auto}table{width:100%;border-collapse:collapse}th,td{padding:12px;border-bottom:1px solid var(--line);text-align:left;white-space:nowrap}
+th{color:var(--muted);font-weight:600;font-size:12px}td:last-child{text-align:right}.pill{display:inline-block;padding:3px 7px;border:1px solid var(--line);border-radius:999px;margin:2px;color:var(--accent)}
+.danger{color:var(--danger)}dialog{border:1px solid var(--line);border-radius:8px;background:var(--panel);color:var(--text);max-width:720px;width:calc(100% - 32px)}pre{white-space:pre-wrap;word-break:break-word}
+@media (max-width:760px){.shell{padding:14px}.topbar{align-items:flex-start;flex-direction:column}.actions{justify-content:flex-start}.metrics{grid-template-columns:1fr}input{width:100%}}
+CSS
+
+    cat > "$web_dir/app.js" <<'JS'
+const $ = s => document.querySelector(s);
+let token = localStorage.getItem("awgToken") || "";
+$("#token").value = token;
+$("#saveToken").onclick = () => { token = $("#token").value.trim(); localStorage.setItem("awgToken", token); load(); };
+$("#refresh").onclick = () => load();
+$("#addClient").onclick = async () => {
+  const name = prompt("Client name");
+  if (!name) return;
+  await api("/api/clients", {method:"POST", body:JSON.stringify({name})});
+  load();
+};
+async function api(path, opt={}) {
+  opt.headers = Object.assign({"Authorization":"Bearer "+token}, opt.headers||{});
+  if (opt.body) opt.headers["Content-Type"] = "application/json";
+  const r = await fetch(path, opt);
+  if (!r.ok) throw new Error(await r.text());
+  const ct = r.headers.get("content-type") || "";
+  return ct.includes("application/json") ? r.json() : r.blob();
+}
+function bytes(n){n=Number(n||0);for(const u of ["B","KiB","MiB","GiB"]){if(n<1024)return n.toFixed(u==="B"?0:1)+" "+u;n/=1024}}
+function show(title, body){$("#modalTitle").textContent=title;$("#modalBody").innerHTML=body;$("#modal").showModal()}
+async function load(){
+  try{
+    const st = await api("/api/status"); $("#service").textContent=st.service||"?"; $("#count").textContent=st.clients;
+    const rows = await api("/api/clients"); $("#clients").innerHTML = rows.map(c => `
+      <tr><td>${c.name}</td><td>${c.ipv4||"-"}</td><td>${c.ipv6||"-"}</td>
+      <td>${(c.p2p_ports||[]).map(p=>`<span class="pill">${p}</span>`).join("")||"-"}</td>
+      <td>${bytes(c.rx)} / ${bytes(c.tx)}</td><td>${c.status||"-"}</td>
+      <td><button onclick="cfg('${c.name}')">Conf</button> <button onclick="qr('${c.name}')">QR</button> <button class="danger" onclick="delc('${c.name}')">Delete</button></td></tr>`).join("");
+  }catch(e){show("Error", `<pre>${e.message}</pre>`)}
+}
+async function cfg(n){const b=await api(`/api/clients/${n}/config`); show(n, `<pre>${await b.text()}</pre>`)}
+async function qr(n){const b=await api(`/api/clients/${n}/qr`); const u=URL.createObjectURL(b); show(n, `<img alt="QR" style="max-width:100%" src="${u}">`)}
+async function delc(n){if(confirm(`Delete ${n}?`)){await api(`/api/clients/${n}`,{method:"DELETE"});load()}}
+load();
+JS
+    chmod 600 "$web_dir"/* 2>/dev/null || true
+    chmod 700 "$web_dir/server.py"
+
+    cat > /etc/systemd/system/awg-web.service << EOF
+[Unit]
+Description=AmneziaWG Web Panel
+After=network.target awg-quick@awg0.service
+
+[Service]
+Type=simple
+Environment=AWG_DIR=${AWG_DIR}
+Environment=SERVER_CONF_FILE=${SERVER_CONF_FILE}
+Environment=AWG_WEB_BIND=${AWG_WEB_BIND}
+Environment=AWG_WEB_PORT=${AWG_WEB_PORT}
+ExecStart=/usr/bin/python3 ${web_dir}/server.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    chmod 644 /etc/systemd/system/awg-web.service
+    systemctl daemon-reload
+    systemctl enable awg-web.service 2>/dev/null || log_warn "Failed to enable awg-web.service"
+    log "Web panel deployed. Token: $(cat "$web_dir/auth_token")"
+}
+
+
 # ==============================================================================
 # STEP 6: Config generation (native, without awgcfg.py)
 # ==============================================================================
@@ -2654,8 +3250,22 @@ step6_generate_configs() {
         fi
     done
 
+    if [[ "$CLI_UPGRADE_IPV6" -eq 1 ]]; then
+        log "Migrating existing clients to IPv6/P2P metadata..."
+        upgrade_existing_peers_ipv6_p2p 1 1 || log_warn "Peer metadata migration failed."
+        local upgrade_clients cname
+        upgrade_clients=$(grep '^#_Name = ' "$SERVER_CONF_FILE" | sed 's/^#_Name = //') || upgrade_clients=""
+        while IFS= read -r cname; do
+            [[ -n "$cname" ]] || continue
+            regenerate_client "$cname" || log_warn "Failed to regenerate '$cname' after IPv6 upgrade."
+        done <<< "$upgrade_clients"
+    fi
+
     # Config validation
     validate_awg_config || log_warn "Config validation found issues."
+    generate_firewall_scripts || log_warn "Failed to update firewall/P2P hook scripts."
+    setup_ndppd_config
+    deploy_web_panel
 
     # Set file permissions
     secure_files
@@ -2686,6 +3296,11 @@ step7_start_service() {
         systemctl enable --now awg-quick@awg0 || die "enable --now error."
     fi
     log "Service enabled and started."
+
+    if [[ "${AWG_WEB_ENABLED:-1}" -eq 1 ]]; then
+        log "Starting web panel awg-web.service..."
+        systemctl restart awg-web.service || log_warn "Failed to start awg-web.service"
+    fi
 
     log "Checking service status..."
     local _attempt
@@ -2725,6 +3340,10 @@ step99_finish() {
     log "USEFUL COMMANDS:"
     log "  sudo bash $MANAGE_SCRIPT_PATH help   # Client management"
     log "  systemctl status awg-quick@awg0      # VPN status"
+    if [[ "${AWG_WEB_ENABLED:-1}" -eq 1 ]]; then
+        log "  https://<SERVER_IP>:${AWG_WEB_PORT}              # Web panel"
+        log "  Web token: $(cat "$AWG_DIR/web/auth_token" 2>/dev/null || echo 'see /root/awg/web/auth_token')"
+    fi
     log "  awg show                              # AmneziaWG status"
     log "  ufw status verbose                    # Firewall status"
     log " "
@@ -2768,7 +3387,7 @@ if [[ "$VERBOSE" -eq 1 ]]; then set -x; fi
 if [[ "${AWG_FORCE_REINSTALL:-0}" == "1" ]]; then
     FORCE_REINSTALL=1
 fi
-if [[ "$FORCE_REINSTALL" -ne 1 ]] && [[ -f "$SERVER_CONF_FILE" ]] \
+if [[ "$FORCE_REINSTALL" -ne 1 && "$CLI_UPGRADE_IPV6" -ne 1 ]] && [[ -f "$SERVER_CONF_FILE" ]] \
    && systemctl is-active --quiet awg-quick@awg0 2>/dev/null; then
     log_error "AmneziaWG is already installed and running."
     log_error "To reinstall — pass --force (or AWG_FORCE_REINSTALL=1)."
