@@ -4,9 +4,10 @@
 h1{font-size:28px;margin:0}.actions{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end}
 button,input{height:36px;border:1px solid var(--line);border-radius:6px;background:#202731;color:var(--text);padding:0 12px}
 button{cursor:pointer;background:#26313b}button:hover{border-color:var(--accent)}input{min-width:210px}
-.metrics{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin:18px 0}.metrics div,.table-wrap{background:var(--panel);border:1px solid var(--line);border-radius:8px}
+.metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:18px 0}.metrics div,.dns-panel,.table-wrap{background:var(--panel);border:1px solid var(--line);border-radius:8px}
 .metrics div{padding:16px}.metrics span{display:block;color:var(--muted);font-size:12px}.metrics strong{font-size:24px}
+.dns-panel{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 16px;margin-bottom:12px}.dns-panel span{display:block;font-weight:700}.dns-panel small{color:var(--muted)}.dns-actions{display:flex;gap:8px;flex-wrap:wrap}
 .table-wrap{overflow:auto}table{width:100%;border-collapse:collapse}th,td{padding:12px;border-bottom:1px solid var(--line);text-align:left;white-space:nowrap}
 th{color:var(--muted);font-weight:600;font-size:12px}td:last-child{text-align:right}.pill{display:inline-block;padding:3px 7px;border:1px solid var(--line);border-radius:999px;margin:2px;color:var(--accent)}
 .danger{color:var(--danger)}dialog{border:1px solid var(--line);border-radius:8px;background:var(--panel);color:var(--text);max-width:720px;width:calc(100% - 32px)}pre{white-space:pre-wrap;word-break:break-word}
-@media (max-width:760px){.shell{padding:14px}.topbar{align-items:flex-start;flex-direction:column}.actions{justify-content:flex-start}.metrics{grid-template-columns:1fr}input{width:100%}}
+@media (max-width:760px){.shell{padding:14px}.topbar,.dns-panel{align-items:flex-start;flex-direction:column}.actions{justify-content:flex-start}.metrics{grid-template-columns:1fr}input{width:100%}}

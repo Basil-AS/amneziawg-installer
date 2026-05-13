@@ -20,7 +20,19 @@
     <section class="metrics">
       <div><span>Сервис</span><strong id="service">?</strong></div>
       <div><span>Клиенты</span><strong id="count">0</strong></div>
-      <div><span>IPv6/P2P</span><strong>on</strong></div>
+      <div><span>DNS</span><strong id="dnsMode">?</strong></div>
+      <div><span>AdGuard</span><strong id="adguardState">?</strong></div>
+    </section>
+    <section class="dns-panel">
+      <div>
+        <span id="dnsServers">?</span>
+        <small id="dnsUi">?</small>
+      </div>
+      <div class="dns-actions">
+        <button data-dns-mode="adguard">AdGuard</button>
+        <button data-dns-mode="system">System</button>
+        <button id="restartDns">Restart DNS</button>
+      </div>
     </section>
     <section class="table-wrap">
       <table>

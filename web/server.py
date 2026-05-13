@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import json
+import ipaddress
 import os
 import re
 import ssl
@@ -58,6 +59,55 @@ def parse_peers():
     if cur:
         peers.append(cur)
     return [p for p in peers if p.get("name")]
+
+
+def dns_status():
+    mode = "system"
+    client_dns = "1.1.1.1"
+    adguard_enabled = "0"
+    adguard_port = "3000"
+    cfg = AWG_DIR / "awgsetup_cfg.init"
+    ipv6_enabled = "0"
+    ipv6_subnet = ""
+    if cfg.exists():
+        for line in cfg.read_text(errors="ignore").splitlines():
+            line = line.removeprefix("export ").strip()
+            if "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            value = value.strip().strip("'\"")
+            if key == "AWG_DNS_MODE":
+                mode = value or mode
+            elif key == "AWG_CUSTOM_DNS":
+                client_dns = value or client_dns
+            elif key == "AWG_ADGUARD_ENABLED":
+                adguard_enabled = value or adguard_enabled
+            elif key == "AWG_ADGUARD_PORT":
+                adguard_port = value or adguard_port
+            elif key == "AWG_IPV6_ENABLED":
+                ipv6_enabled = value or ipv6_enabled
+            elif key == "AWG_IPV6_SUBNET":
+                ipv6_subnet = value or ipv6_subnet
+    if mode == "adguard":
+        client_dns = "10.9.9.1"
+        if ipv6_enabled == "1" and ipv6_subnet:
+            try:
+                client_dns += f", {ipaddress.ip_network(ipv6_subnet, strict=False).network_address + 1}"
+            except ValueError:
+                pass
+    active = subprocess.run(
+        ["systemctl", "is-active", "AdGuardHome.service"],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+    ).stdout.strip()
+    return {
+        "mode": mode,
+        "client_dns": client_dns,
+        "adguard_enabled": adguard_enabled == "1",
+        "adguard_service": active or "unknown",
+        "adguard_port": adguard_port,
+    }
 
 
 def safe_name(name):
@@ -121,7 +171,10 @@ class Handler(SimpleHTTPRequestHandler):
             return super().do_GET()
         if u.path == "/api/status":
             active = subprocess.run(["systemctl", "is-active", "awg-quick@awg0"], text=True, stdout=subprocess.PIPE).stdout.strip()
-            self.send_json({"service": active, "clients": len(parse_peers()), "version": "5.13.0", "fork": "ipv6-p2p-web"})
+            self.send_json({"service": active, "clients": len(parse_peers()), "version": "5.13.0", "fork": "ipv6-p2p-web-adguard"})
+            return
+        if u.path == "/api/dns":
+            self.send_json(dns_status())
             return
         if u.path == "/api/clients":
             self.send_json(parse_peers())
@@ -165,6 +218,15 @@ class Handler(SimpleHTTPRequestHandler):
                 p = run_manage(*args, "add", safe_name(body.get("name", "")))
             elif u.path == "/api/server/restart":
                 p = run_manage("restart", timeout=90)
+            elif u.path == "/api/dns/restart":
+                p = run_manage("dns", "restart", timeout=30)
+            elif u.path == "/api/dns/mode":
+                mode = body.get("mode", "")
+                custom = body.get("custom", "")
+                args = ["dns", "set-mode", mode]
+                if custom:
+                    args.append(custom)
+                p = run_manage(*args, timeout=120)
             else:
                 m = re.match(r"^/api/clients/([^/]+)/p2p$", u.path)
                 if not m:

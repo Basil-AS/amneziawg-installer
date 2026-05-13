@@ -61,10 +61,11 @@ This repository is a fork of [bivlked/amneziawg-installer](https://github.com/bi
 * **Full IPv6 for clients:** native `/64` when the VPS/provider routes a public prefix, or explicit `ULA fd.../64 + NAT66` fallback.
 * **P2P ports:** every client gets TCP+UDP ports for torrents, games, and self-hosted services; extra ports are managed through CLI and the web panel.
 * **Full Cone NAT attempt:** `FULLCONENAT` is used when available; otherwise the scripts fall back to `MASQUERADE`.
-* **Web panel:** HTTPS `:8443`, self-signed TLS, bearer token, clients, config/QR/vpnuri, stats, logs, and service restart.
-* **New management commands:** `p2p list/show/add/remove`, `ipv6 status/upgrade`.
+* **Web panel:** HTTPS `:8443`, self-signed TLS, bearer token, clients, config/QR/vpnuri, stats, logs, service restart, and a DNS/AdGuard card.
+* **AdGuard Home DNS:** optional no-Docker install, DNS only on localhost/VPN, clients receive `10.9.9.1` and the server IPv6 address when dual-stack is enabled.
+* **New management commands:** `p2p list/show/add/remove`, `ipv6 status/upgrade`, `dns status/restart/logs/set-mode`.
 * **Generated firewall hooks:** `/root/awg/postup.sh`, `/root/awg/postdown.sh`, `/root/awg/p2p_rules.sh`.
-* **Roadmap:** AdGuard Home as DNS filtering for ads, trackers, telemetry/malware, and noisy DNS requests.
+* **Fork patchset:** upstream version stays `5.13.0`; fork changes are documented as delta on top.
 
 **Important:** the README does not take over future upstream version numbers. If the fork needs its own marker, prefer a separate `FORK_PATCHSET`/`FORK_NAME` instead of bumping the upstream version.
 
@@ -173,15 +174,19 @@ Useful flags:
 --web-port=8443
 --web-bind=0.0.0.0
 --disable-web
+--enable-adguard
+--adguard-port=3000
+--dns-mode=adguard|system|custom
 ```
 
 ### Implementation notes
 
-* New config keys live in `/root/awg/awgsetup_cfg.init`: `AWG_IPV6_*`, `AWG_P2P_*`, `AWG_FULLCONE_NAT`, `AWG_WEB_*`.
+* New config keys live in `/root/awg/awgsetup_cfg.init`: `AWG_IPV6_*`, `AWG_P2P_*`, `AWG_FULLCONE_NAT`, `AWG_WEB_*`, `AWG_DNS_MODE`, `AWG_ADGUARD_*`.
 * Server config uses dual `Address` and external hooks: `/root/awg/postup.sh` and `/root/awg/postdown.sh`.
 * Peer blocks are the source of truth: `AllowedIPs = <ipv4>/32, <ipv6>/128` and `#_P2PPorts = p1,p2,p3`.
 * Default P2P ports for IPv4 last octet `N`: `20000+N`, `20256+N`, `20512+N`; extra ports are allocated from `20001-21024`.
 * Web files live in `/root/awg/web/`; the panel uses self-signed TLS and a bearer token stored in `/root/awg/web/auth_token`.
+* AdGuard Home is installed in `/opt/AdGuardHome`; DNS listens on `127.0.0.1`, `10.9.9.1`, and the server IPv6 address inside the VPN. If it fails, VPN remains usable; fallback: `manage dns set-mode system`.
 
 ### Not finished yet
 
@@ -493,7 +498,7 @@ For the changelog, see **[CHANGELOG.en.md](CHANGELOG.en.md)**.
 
 ### AdGuard Home as VPN DNS
 
-The next planned block for this fork is built-in **AdGuard Home** as a DNS resolver/filter for VPN clients.
+This fork delta includes built-in **AdGuard Home** as a DNS resolver/filter for VPN clients.
 
 Why:
 
@@ -502,17 +507,26 @@ Why:
 * reduce background traffic and make browsing/apps cleaner;
 * allow future per-profile filtering for regular clients, kids' devices, and temporary guests.
 
-Implementation plan:
+Usage:
 
-* add installer flags `--enable-adguard`, `--adguard-port=3000`, `--dns-mode=adguard|system|custom`;
-* install AdGuard Home under `/opt/AdGuardHome` or `/root/awg/adguard`, without Docker;
-* bind DNS to the VPN interface `awg0` so it does not become an open public resolver;
-* set client DNS to the tunnel server address: `10.9.9.1` and, with IPv6, the server IPv6 from `AWG_IPV6_SUBNET`;
-* expose only the required firewall ports: DNS inside VPN, AdGuard web-admin on localhost/VPN unless explicitly changed;
-* add `manage_amneziawg.sh dns status|restart|logs|set-mode`;
-* add an AdGuard/DNS card to the web panel;
-* ship sane default blocklists for ads, trackers, malware/phishing, and telemetry, while keeping aggressive filters optional;
-* migrate existing clients through `regen` so new DNS settings reach `.conf`, QR, and `vpn://`.
+```bash
+sudo bash ./install_amneziawg_en.sh --enable-adguard --dns-mode=adguard
+sudo bash /root/awg/manage_amneziawg.sh dns status
+sudo bash /root/awg/manage_amneziawg.sh dns restart
+sudo bash /root/awg/manage_amneziawg.sh dns logs
+sudo bash /root/awg/manage_amneziawg.sh dns set-mode system
+```
+
+Implemented:
+
+* installer flags `--enable-adguard`, `--adguard-port=3000`, `--dns-mode=adguard|system|custom`;
+* no-Docker AdGuard Home install under `/opt/AdGuardHome`;
+* DNS bind only on localhost/VPN addresses, not as an open public resolver;
+* client DNS: `10.9.9.1` and, with IPv6, the server IPv6 from `AWG_IPV6_SUBNET`;
+* UFW opens DNS/UI only on `awg0`;
+* `manage_amneziawg.sh dns status|restart|logs|set-mode`;
+* AdGuard/DNS card in the web panel;
+* fallback: if AdGuard fails, VPN remains usable and DNS mode can be switched back to `system`.
 
 Safety goals:
 

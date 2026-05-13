@@ -3,6 +3,11 @@ let token = localStorage.getItem("awgToken") || "";
 $("#token").value = token;
 $("#saveToken").onclick = () => { token = $("#token").value.trim(); localStorage.setItem("awgToken", token); load(); };
 $("#refresh").onclick = () => load();
+$("#restartDns").onclick = async () => { await api("/api/dns/restart", {method:"POST", body:"{}"}); load(); };
+document.querySelectorAll("[data-dns-mode]").forEach(btn => btn.onclick = async () => {
+  await api("/api/dns/mode", {method:"POST", body:JSON.stringify({mode:btn.dataset.dnsMode})});
+  load();
+});
 $("#addClient").onclick = async () => {
   const name = prompt("Имя клиента");
   if (!name) return;
@@ -22,6 +27,9 @@ function show(title, body){$("#modalTitle").textContent=title;$("#modalBody").in
 async function load(){
   try{
     const st = await api("/api/status"); $("#service").textContent=st.service||"?"; $("#count").textContent=st.clients;
+    const dns = await api("/api/dns"); $("#dnsMode").textContent=dns.mode||"?"; $("#adguardState").textContent=dns.adguard_service||"?";
+    $("#dnsServers").textContent=`Clients use DNS: ${dns.client_dns||"?"}`;
+    $("#dnsUi").textContent=`AdGuard UI: http://10.9.9.1:${dns.adguard_port||3000}/`;
     const rows = await api("/api/clients"); $("#clients").innerHTML = rows.map(c => `
       <tr><td>${c.name}</td><td>${c.ipv4||"-"}</td><td>${c.ipv6||"-"}</td>
       <td>${(c.p2p_ports||[]).map(p=>`<span class="pill">${p}</span>`).join("")||"-"}</td>
