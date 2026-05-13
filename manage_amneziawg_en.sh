@@ -9,7 +9,7 @@ fi
 # AmneziaWG 2.0 peer management script
 # Author: @bivlked
 # Version: 5.13.0
-# Date: 2026-05-12
+# Date: 2026-05-13
 # Repository: https://github.com/bivlked/amneziawg-installer
 # ==============================================================================
 
@@ -893,12 +893,12 @@ list_clients() {
     fi
 
     if [[ $verbose -eq 1 ]]; then
-        printf "%-20s | %-7s | %-7s | %-15s | %-15s | %s\n" "Client name" "Conf" "QR" "IP address" "Key (start)" "Status"
-        printf -- "-%.0s" {1..95}
+        printf "%-18s | %-5s | %-5s | %-15s | %-30s | %-17s | %-15s | %s\n" "Client name" "Conf" "QR" "IPv4" "IPv6" "P2P" "Key (start)" "Status"
+        printf -- "-%.0s" {1..130}
         echo
     else
-        printf "%-20s | %-7s | %-7s | %s\n" "Client name" "Conf" "QR" "Status"
-        printf -- "-%.0s" {1..50}
+        printf "%-18s | %-15s | %-17s | %s\n" "Client name" "IPv4" "P2P" "Status"
+        printf -- "-%.0s" {1..75}
         echo
     fi
 
@@ -910,7 +910,7 @@ list_clients() {
         if [[ -z "$name" ]]; then continue; fi
         ((tot++))
 
-        local cf="?" png="?" pk="-" ip="-" st="No data"
+        local cf="?" png="?" pk="-" ip="-" ipv6="-" p2p="-" st="No data"
         local color_start="" color_end=""
         if [[ "$NO_COLOR" -eq 0 ]]; then
             color_end="\033[0m"
@@ -919,10 +919,12 @@ list_clients() {
 
         [[ -f "$AWG_DIR/${name}.conf" ]] && cf="+"
         [[ -f "$AWG_DIR/${name}.png" ]] && png="+"
+        ip=$(get_client_ipv4_from_server "$name" 2>/dev/null || echo "-")
+        ipv6=$(get_client_ipv6_from_server "$name" 2>/dev/null || echo "-")
+        p2p=$(get_peer_p2p_ports "$name" 2>/dev/null)
+        [[ -n "$p2p" ]] || p2p="-"
 
         if [[ "$cf" == "+" ]]; then
-            ip=$(grep -oP 'Address = \K[0-9.]+' "$AWG_DIR/${name}.conf" 2>/dev/null) || ip="?"
-
             local current_pk="${_name_to_pk[$name]:-}"
 
             if [[ -n "$current_pk" ]]; then
@@ -962,9 +964,9 @@ list_clients() {
         fi
 
         if [[ $verbose -eq 1 ]]; then
-            printf "%-20s | %-7s | %-7s | %-15s | %-15s | ${color_start}%s${color_end}%s\n" "$name" "$cf" "$png" "$ip" "$pk" "$st" "$exp_str"
+            printf "%-18s | %-5s | %-5s | %-15s | %-30s | %-17s | %-15s | ${color_start}%s${color_end}%s\n" "$name" "$cf" "$png" "$ip" "$ipv6" "$p2p" "$pk" "$st" "$exp_str"
         else
-            printf "%-20s | %-7s | %-7s | ${color_start}%s${color_end}%s\n" "$name" "$cf" "$png" "$st" "$exp_str"
+            printf "%-18s | %-15s | %-17s | ${color_start}%s${color_end}%s\n" "$name" "$ip" "$p2p" "$st" "$exp_str"
         fi
     done <<< "$clients"
     echo ""
@@ -1045,10 +1047,11 @@ stats_clients() {
         local cname="${pk_to_name[$pk]:-unknown}"
         if [[ "$cname" == "unknown" ]]; then continue; fi
 
-        local ip="-"
-        if [[ -f "$AWG_DIR/${cname}.conf" ]]; then
-            ip=$(grep -oP 'Address = \K[0-9.]+' "$AWG_DIR/${cname}.conf" 2>/dev/null) || ip="?"
-        fi
+        local ip="-" ipv6="-" p2p="-"
+        ip=$(get_client_ipv4_from_server "$cname" 2>/dev/null || echo "-")
+        ipv6=$(get_client_ipv6_from_server "$cname" 2>/dev/null || echo "-")
+        p2p=$(get_peer_p2p_ports "$cname" 2>/dev/null)
+        [[ -n "$p2p" ]] || p2p="-"
 
         local hs_str="never"
         local status="Inactive"
@@ -1068,12 +1071,12 @@ stats_clients() {
         total_tx=$((total_tx + tx))
 
         if [[ "$JSON_OUTPUT" -eq 1 ]]; then
-            json_entries+=("{\"name\":\"$(json_escape "$cname")\",\"ip\":\"$(json_escape "$ip")\",\"rx\":$rx,\"tx\":$tx,\"last_handshake\":$handshake,\"status\":\"$(json_escape "$status")\"}")
+            json_entries+=("{\"name\":\"$(json_escape "$cname")\",\"ip\":\"$(json_escape "$ip")\",\"ipv6\":\"$(json_escape "$ipv6")\",\"p2p_ports\":\"$(json_escape "$p2p")\",\"rx\":$rx,\"tx\":$tx,\"last_handshake\":$handshake,\"status\":\"$(json_escape "$status")\"}")
         else
             local rx_h tx_h
             rx_h=$(format_bytes "$rx")
             tx_h=$(format_bytes "$tx")
-            table_rows+=("$(printf "%-15s | %-15s | %-12s | %-12s | %-19s | %s" "$cname" "$ip" "$rx_h" "$tx_h" "$hs_str" "$status")")
+            table_rows+=("$(printf "%-15s | %-15s | %-28s | %-15s | %-12s | %-12s | %-19s | %s" "$cname" "$ip" "$ipv6" "$p2p" "$rx_h" "$tx_h" "$hs_str" "$status")")
         fi
     done < <(echo "$awg_dump" | tail -n +2)
 
@@ -1082,8 +1085,8 @@ stats_clients() {
     else
         log "Client traffic statistics:"
         echo ""
-        printf "%-15s | %-15s | %-12s | %-12s | %-19s | %s\n" "Name" "IP" "Received" "Sent" "Last handshake" "Status"
-        printf -- "-%.0s" {1..95}
+        printf "%-15s | %-15s | %-28s | %-15s | %-12s | %-12s | %-19s | %s\n" "Name" "IPv4" "IPv6" "P2P" "Received" "Sent" "Last handshake" "Status"
+        printf -- "-%.0s" {1..140}
         echo
         for row in "${table_rows[@]}"; do
             echo "$row"
@@ -1121,6 +1124,12 @@ usage() {
     echo "  remove <name> [name2 ...]    Remove client(s)"
     echo "  list [-v]             List clients"
     echo "  stats [--json]        Client traffic statistics"
+    echo "  p2p list              Show P2P ports for all clients"
+    echo "  p2p show <name>       Show client P2P information"
+    echo "  p2p add <name> [port] Add P2P port (auto if omitted)"
+    echo "  p2p remove <name> <port> Remove client P2P port"
+    echo "  ipv6 status           Show IPv6 mode"
+    echo "  ipv6 upgrade          Add IPv6/P2P metadata to existing clients"
     echo "  regen [name]          Regenerate client file(s)"
     echo "  modify <name> <p> <v> Modify a client parameter"
     echo "  backup                Create a backup"
@@ -1257,6 +1266,7 @@ case $COMMAND in
             _removed=0
             for _rname in "${_valid_names[@]}"; do
                 log "Removing '$_rname'..."
+                [[ -x "$AWG_DIR/p2p_rules.sh" ]] && bash "$AWG_DIR/p2p_rules.sh" down 2>/dev/null || true
                 if remove_peer_from_server "$_rname"; then
                     rm -f "$AWG_DIR/$_rname.conf" "$AWG_DIR/$_rname.png" \
                         "$AWG_DIR/$_rname.vpnuri" "$AWG_DIR/$_rname.vpnuri.png"
@@ -1271,6 +1281,7 @@ case $COMMAND in
             done
 
             if [[ $_removed -gt 0 ]]; then
+                bash "$AWG_DIR/postup.sh" 2>/dev/null || log_warn "Failed to apply firewall hooks live; restart awg-quick@awg0 if needed."
                 [[ -n "${_CLI_APPLY_MODE:-}" ]] && export AWG_APPLY_MODE="$_CLI_APPLY_MODE"
                 if [[ "${AWG_SKIP_APPLY:-0}" == "1" ]]; then
                     apply_config
@@ -1291,6 +1302,95 @@ case $COMMAND in
 
     stats)
         stats_clients || _cmd_rc=1
+        ;;
+
+    p2p)
+        safe_load_config "$CONFIG_FILE" 2>/dev/null || true
+        _sub="${ARGS[0]:-list}"
+        case "$_sub" in
+            list)
+                printf "%-20s | %s\n" "Client" "P2P ports"
+                printf -- "-%.0s" {1..55}; echo
+                while IFS= read -r _name; do
+                    [[ -n "$_name" ]] || continue
+                    _ports=$(get_peer_p2p_ports "$_name")
+                    [[ -n "$_ports" ]] || _ports="-"
+                    printf "%-20s | %s\n" "$_name" "$_ports"
+                done < <(grep '^#_Name = ' "$SERVER_CONF_FILE" | sed 's/^#_Name = //' | sort)
+                ;;
+            show)
+                _name="${ARGS[1]:-}"
+                [[ -z "$_name" ]] && die "Client name is required."
+                validate_client_name "$_name" || exit 1
+                if ! grep -qxF "#_Name = ${_name}" "$SERVER_CONF_FILE"; then die "Client '$_name' not found."; fi
+                log "Client: $_name"
+                log "IPv4: $(get_client_ipv4_from_server "$_name" 2>/dev/null || echo '-')"
+                log "IPv6: $(get_client_ipv6_from_server "$_name" 2>/dev/null || echo '-')"
+                log "P2P ports: $(get_peer_p2p_ports "$_name" 2>/dev/null || echo '-')"
+                ;;
+            add)
+                _name="${ARGS[1]:-}"; _port="${ARGS[2]:-}"
+                [[ -z "$_name" ]] && die "Client name is required."
+                validate_client_name "$_name" || exit 1
+                if [[ "${AWG_SKIP_APPLY:-0}" != "1" ]]; then
+                    ensure_amneziawg_kernel_module || die "AmneziaWG kernel module is unavailable."
+                fi
+                if _new_port=$(add_p2p_port_to_peer "$_name" "$_port"); then
+                    bash "$AWG_DIR/postup.sh" 2>/dev/null || log_warn "Failed to apply firewall hooks live; restart awg-quick@awg0 if needed."
+                    log "P2P port $_new_port added to client '$_name'."
+                else
+                    _cmd_rc=1
+                fi
+                ;;
+            remove)
+                _name="${ARGS[1]:-}"; _port="${ARGS[2]:-}"
+                [[ -z "$_name" || -z "$_port" ]] && die "Usage: p2p remove <name> <port>"
+                validate_client_name "$_name" || exit 1
+                [[ -x "$AWG_DIR/p2p_rules.sh" ]] && bash "$AWG_DIR/p2p_rules.sh" down 2>/dev/null || true
+                if remove_p2p_port_from_peer "$_name" "$_port"; then
+                    bash "$AWG_DIR/postup.sh" 2>/dev/null || log_warn "Failed to apply firewall hooks live; restart awg-quick@awg0 if needed."
+                    log "P2P port $_port removed from client '$_name'."
+                else
+                    _cmd_rc=1
+                fi
+                ;;
+            *)
+                die "Unknown p2p command: $_sub"
+                ;;
+        esac
+        ;;
+
+    ipv6)
+        safe_load_config "$CONFIG_FILE" 2>/dev/null || true
+        _sub="${ARGS[0]:-status}"
+        case "$_sub" in
+            status)
+                log "IPv6 enabled: ${AWG_IPV6_ENABLED:-0}"
+                log "IPv6 mode: ${AWG_IPV6_MODE:-legacy}"
+                log "IPv6 subnet: ${AWG_IPV6_SUBNET:-}"
+                log "NDP proxy: ${AWG_IPV6_NDP_PROXY:-0}"
+                ;;
+            upgrade)
+                if [[ "${AWG_IPV6_ENABLED:-0}" != "1" || -z "${AWG_IPV6_SUBNET:-}" ]]; then
+                    die "IPv6 is not enabled in $CONFIG_FILE. Run install_amneziawg_en.sh --upgrade-ipv6."
+                fi
+                if upgrade_existing_peers_ipv6_p2p 1 1; then
+                    _count=0
+                    while IFS= read -r _name; do
+                        [[ -n "$_name" ]] || continue
+                        regenerate_client "$_name" || { log_warn "Regeneration error '$_name'"; _cmd_rc=1; }
+                        _count=$((_count + 1))
+                    done < <(grep '^#_Name = ' "$SERVER_CONF_FILE" | sed 's/^#_Name = //')
+                    bash "$AWG_DIR/postup.sh" 2>/dev/null || log_warn "Failed to apply firewall hooks live; restart awg-quick@awg0 if needed."
+                    log "IPv6/P2P upgrade completed. Processed clients: $_count."
+                else
+                    _cmd_rc=1
+                fi
+                ;;
+            *)
+                die "Unknown ipv6 command: $_sub"
+                ;;
+        esac
         ;;
 
     regen)

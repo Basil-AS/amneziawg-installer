@@ -13,6 +13,14 @@ load test_helper
     grep -q "AllowedIPs = 10.9.9.2/32" "$SERVER_CONF_FILE"
 }
 
+@test "add_peer: writes IPv6 and P2P metadata when provided" {
+    create_server_config
+    add_peer_to_server "dual_client" "PUBKEYV6" "10.9.9.9" "fd12:3456:789a:1::9" "20009,20265,20521"
+    grep -q "#_Name = dual_client" "$SERVER_CONF_FILE"
+    grep -q "#_P2PPorts = 20009,20265,20521" "$SERVER_CONF_FILE"
+    grep -q "AllowedIPs = 10.9.9.9/32, fd12:3456:789a:1::9/128" "$SERVER_CONF_FILE"
+}
+
 @test "add_peer: rejects duplicate name" {
     create_server_config
     add_test_peer "existing" "10.9.9.2"

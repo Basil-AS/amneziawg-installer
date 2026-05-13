@@ -26,6 +26,8 @@ Desktop.ini
 output/
 *.deb
 *.sha256
+__pycache__/
+*.py[cod]
 
 # Secrets
 .env

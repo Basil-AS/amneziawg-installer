@@ -3,7 +3,7 @@
   <b>RU</b> <a href="README.md">Русский</a> | <b>EN</b> English
 </p>
 
-<p align="center"><em>One-command VPN that works where WireGuard gets blocked — self-hosted on any $3 VPS</em></p>
+<p align="center"><em>Fork of the original AmneziaWG installer: upstream-compatible base plus IPv6, P2P ports, and a web panel</em></p>
 
 <p align="center">
   <img src="logo.jpg" alt="AmneziaWG 2.0 VPN Installer — Ubuntu, Debian, Raspberry Pi, ARM64, mobile carrier optimization" width="600">
@@ -20,7 +20,8 @@
   <img src="https://img.shields.io/badge/Architecture-x86__64_|_ARM64_|_ARMv7-green" alt="x86_64 | ARM64 | ARMv7">
   <a href="https://github.com/bivlked/amneziawg-installer/blob/main/LICENSE"><img src="https://img.shields.io/github/license/bivlked/amneziawg-installer" alt="License"></a>
   <img src="https://img.shields.io/badge/Status-Stable-success" alt="Status">
-  <a href="https://github.com/bivlked/amneziawg-installer/releases"><img src="https://img.shields.io/badge/Installer_Version-5.13.0-blue" alt="Version"></a>
+  <a href="https://github.com/bivlked/amneziawg-installer/releases"><img src="https://img.shields.io/badge/Upstream_Base-5.13.0-blue" alt="Upstream base version"></a>
+  <img src="https://img.shields.io/badge/Fork_Delta-IPv6_|_P2P_|_Web-0aa" alt="Fork delta">
   <img src="https://img.shields.io/badge/AmneziaWG-2.0-blueviolet" alt="AWG 2.0">
   <a href="https://github.com/bivlked/amneziawg-installer/actions/workflows/shellcheck.yml"><img src="https://github.com/bivlked/amneziawg-installer/actions/workflows/shellcheck.yml/badge.svg" alt="ShellCheck"></a>
   <a href="https://github.com/bivlked/amneziawg-installer/actions/workflows/test.yml"><img src="https://github.com/bivlked/amneziawg-installer/actions/workflows/test.yml/badge.svg" alt="Tests"></a>
@@ -35,6 +36,7 @@
   <a href="#cli-vs-panel">CLI vs panels</a> •
   <a href="#similar-tools">Similar tools</a> •
   <a href="#quickstart">Quick Start</a> •
+  <a href="#fork-delta">Fork Delta</a> •
   <a href="#features">Features</a> •
   <a href="#carriers">Carriers</a> •
   <a href="#requirements">Requirements</a> •
@@ -43,11 +45,33 @@
   <a href="#after-installation">After installation</a> •
   <a href="#client-management">Management</a> •
   <a href="#additional-information">More</a> •
+  <a href="#roadmap">Roadmap</a> •
   <a href="#faq">FAQ</a> •
   <a href="#troubleshooting">Troubleshooting</a> •
   <a href="#ecosystem">Ecosystem</a> •
   <a href="#license">License</a>
 </p>
+
+<a id="fork-delta"></a>
+## 🔀 This is a fork of the original project
+
+This repository is a fork of [bivlked/amneziawg-installer](https://github.com/bivlked/amneziawg-installer), not a separate upstream release line. The base is intentionally documented as **upstream `v5.13.0`** so future upstream changes can be pulled in more easily and the fork delta stays obvious.
+
+**Main differences from the original:**
+
+* **Full IPv6 for clients:** native `/64` when the VPS/provider routes a public prefix, or explicit `ULA fd.../64 + NAT66` fallback.
+* **P2P ports:** every client gets TCP+UDP ports for torrents, games, and self-hosted services; extra ports are managed through CLI and the web panel.
+* **Full Cone NAT attempt:** `FULLCONENAT` is used when available; otherwise the scripts fall back to `MASQUERADE`.
+* **Web panel:** HTTPS `:8443`, self-signed TLS, bearer token, clients, config/QR/vpnuri, stats, logs, and service restart.
+* **New management commands:** `p2p list/show/add/remove`, `ipv6 status/upgrade`.
+* **Generated firewall hooks:** `/root/awg/postup.sh`, `/root/awg/postdown.sh`, `/root/awg/p2p_rules.sh`.
+* **Roadmap:** AdGuard Home as DNS filtering for ads, trackers, telemetry/malware, and noisy DNS requests.
+
+**Important:** the README does not take over future upstream version numbers. If the fork needs its own marker, prefer a separate `FORK_PATCHSET`/`FORK_NAME` instead of bumping the upstream version.
+
+> Installation commands below keep the original README format and point to upstream `v5.13.0`. To install this fork, replace `bivlked/amneziawg-installer/v5.13.0` with your fork repository, branch, or release tag.
+
+---
 
 <a id="why"></a>
 ## 💡 Why this project
@@ -81,16 +105,16 @@ Works on Ubuntu 24.04/25.10/26.04 and Debian 12/13. Any cheap VPS with 1 GB RAM 
 <a id="cli-vs-panel"></a>
 ## ⚙️ CLI Installer vs Web Panels
 
-> **The goal: set up a VPN on a cheap VPS in 20 minutes.** The script doesn't pull in Docker, a web server, or a database. After installation only AWG and the firewall are running — minimal footprint, maximum resources for VPN.
+> **The goal: set up a VPN on a cheap VPS in 20 minutes.** The script doesn't pull in Docker, a database, or a heavy web stack. After installation AWG, the firewall, and an optional Python stdlib web panel are running — minimal footprint, maximum resources for VPN.
 
 | | This project (CLI) | Docker-based web panels |
 |---|---|---|
 | **AWG module** | Kernel module — runs at kernel level | Userspace inside a container |
-| **Server requirements** | Any VPS with 512 MB RAM | Needs PHP/Python, database, web server, Docker |
-| **Attack surface** | SSH + UDP VPN port | + HTTP panel, database, Docker |
+| **Server requirements** | Any VPS with 512 MB RAM, Python3 for the web panel | Needs PHP/Python, database, web server, Docker |
+| **Attack surface** | SSH + UDP VPN port + HTTPS panel with bearer token | + HTTP panel, database, Docker |
 | **Installation** | Single command on the server, 20 minutes | docker-compose + giving SSH access to the panel |
 | **After reboot** | Resumes installation from the same step | Depends on container and database state |
-| **Web interface** | ❌ None — SSH only | ✅ GUI, browser-based management |
+| **Web interface** | ✅ Lightweight built-in panel, no DB | ✅ GUI, browser-based management |
 | **Multiple protocols** | AmneziaWG only | WireGuard, OpenVPN, VLESS and others |
 
 > Need a VPN without GUI on a dedicated server — this project. Need a web panel with multiple protocols — look for Docker-based solutions.
@@ -138,11 +162,63 @@ All parameters are accepted automatically. Details: [ADVANCED.en.md#cli-params-a
 
 ---
 
+<a id="fork-details"></a>
+## 🌐 Fork implementation details: IPv6 + P2P + Web
+
+This fork delta is built on top of upstream `v5.13.0`. Legacy installs keep working while new or migrated clients can opt into dual-stack IPv6 and P2P metadata.
+
+### Why
+
+* **Real IPv6 for VPN clients.** With a public `/64`, clients receive routed IPv6 addresses without NAT66.
+* **Honest fallback.** If no public `/64` is available, the installer can use `ULA fd.../64 + NAT66` and clearly warns that this is not public native IPv6.
+* **P2P ports.** Each client gets TCP+UDP ports for torrents, games, and self-hosted services.
+* **Better UDP NAT behavior.** `FULLCONENAT` is used when available; otherwise the scripts fall back to `MASQUERADE`. Messengers such as Telegram/WhatsApp still decide themselves whether to use direct P2P or relay.
+* **Web panel.** Browser-based client CRUD, configs, QR codes, stats, logs, and restart actions without typing SSH commands every time.
+
+### How to enable
+
+```bash
+sudo bash ./install_amneziawg_en.sh --enable-native-ipv6
+sudo bash ./install_amneziawg_en.sh --enable-native-ipv6 --ipv6-subnet=2001:db8:1234:1::/64
+sudo bash ./install_amneziawg_en.sh --upgrade-ipv6
+```
+
+Useful flags:
+
+```bash
+--p2p-base-port=20000
+--p2p-ports-per-client=3
+--fullcone-nat
+--web-port=8443
+--web-bind=0.0.0.0
+--disable-web
+```
+
+### Implementation notes
+
+* New config keys live in `/root/awg/awgsetup_cfg.init`: `AWG_IPV6_*`, `AWG_P2P_*`, `AWG_FULLCONE_NAT`, `AWG_WEB_*`.
+* Server config uses dual `Address` and external hooks: `/root/awg/postup.sh` and `/root/awg/postdown.sh`.
+* Peer blocks are the source of truth: `AllowedIPs = <ipv4>/32, <ipv6>/128` and `#_P2PPorts = p1,p2,p3`.
+* Default P2P ports for IPv4 last octet `N`: `20000+N`, `20256+N`, `20512+N`; extra ports are allocated from `20001-21024`.
+* Web files live in `/root/awg/web/`; the panel uses self-signed TLS and a bearer token stored in `/root/awg/web/auth_token`.
+
+### Not finished yet
+
+* `FULLCONENAT` depends on kernel/iptables target availability; `MASQUERADE` is the fallback.
+* Self-signed TLS is expected to trigger a browser warning.
+* Release SHA256 values are still `RELEASE_PLACEHOLDER` until the fork release build.
+* Local checks covered `bash -n`, Python compile, and helper smoke tests; full Bats, ShellCheck, and clean Ubuntu VPS testing still need to run in Linux/CI.
+
+---
+
 <a id="features"></a>
 ## ✨ Features
 
 * **DPI bypass** — AmneziaWG 2.0 with traffic obfuscation. DPI cannot detect the connection
 * **One command — working VPN** — from a clean VPS to a running server with client configs and QR codes
+* **Dual-stack IPv6** — native `/64` when available, or explicit ULA/NAT66 fallback
+* **P2P ports** — automatic TCP+UDP ports per client plus CLI/Web management
+* **Web panel** — HTTPS `:8443`, bearer token, clients, QR/config/vpnuri, stats, and logs
 * **Secure by default** — UFW, Fail2Ban, sysctl hardening, strict file permissions (600/700)
 * **Easy management** — add/remove clients, temporary clients with auto-removal, traffic stats, backups
 * **4 operating systems** — Ubuntu 24.04, Ubuntu 25.10/26.04, Debian 12, Debian 13
@@ -152,7 +228,7 @@ All parameters are accepted automatically. Details: [ADVANCED.en.md#cli-params-a
 <details>
 <summary><strong>All features</strong></summary>
 
-* Native key and config generation via `awg` — no Python or external dependencies
+* Native key and config generation via `awg`; the web panel uses Python3 stdlib only, with no Node/PHP/database
 * Hardware-aware optimization: swap, NIC offloads, network buffers tuned to server specs
 * DKMS — automatic kernel module rebuild on updates
 * `vpn://` URI for one-tap import into Amnezia Client (`.vpnuri` files)
@@ -339,6 +415,9 @@ scp root@SERVER_IP:/root/awg/my_phone.conf .
 * Script settings: `/root/awg/awgsetup_cfg.init`
 * Management script: `/root/awg/manage_amneziawg.sh`
 * Shared functions: `/root/awg/awg_common.sh`
+* Web panel: `/root/awg/web/` (`server.py`, `index.html`, `style.css`, `app.js`, `auth_token`, `cert.pem`, `key.pem`)
+* Firewall hooks: `/root/awg/postup.sh`, `/root/awg/postdown.sh`, `/root/awg/p2p_rules.sh`
+* NDP proxy config for native IPv6: `/etc/ndppd.conf`
 * Client expiry data: `/root/awg/expiry/`
 * Logs: `/root/awg/*.log`
 
@@ -367,6 +446,12 @@ sudo bash /root/awg/manage_amneziawg.sh <command> [arguments]
 | `backup`  |                        | Create a backup                |    No     |
 | `restore` | `[file]`               | Restore from backup            |    No     |
 | `stats`   | `[--json]`                | Per-client traffic statistics    |    No     |
+| `p2p list` | | Show P2P ports for all clients | No |
+| `p2p show` | `<name>` | Show client IPv4/IPv6/P2P info | No |
+| `p2p add` | `<name> [port]` | Add a TCP+UDP P2P port | No (auto) |
+| `p2p remove` | `<name> <port>` | Remove a P2P port | No (auto) |
+| `ipv6 status` | | Show IPv6 mode | No |
+| `ipv6 upgrade` | | Backfill IPv6/P2P metadata for existing clients | No (auto) |
 | `show`    |                        | Run `awg show`                 |    No     |
 | `check`   |                        | Check server status            |    No     |
 | `restart` |                        | Restart AmneziaWG service      |    -      |
@@ -398,6 +483,14 @@ sudo bash /root/awg/manage_amneziawg.sh add guest --expires=7d
 sudo bash /root/awg/manage_amneziawg.sh stats
 sudo bash /root/awg/manage_amneziawg.sh stats --json
 
+# IPv6 / P2P
+sudo bash /root/awg/manage_amneziawg.sh ipv6 status
+sudo bash /root/awg/manage_amneziawg.sh ipv6 upgrade
+sudo bash /root/awg/manage_amneziawg.sh p2p list
+sudo bash /root/awg/manage_amneziawg.sh p2p add my_phone
+sudo bash /root/awg/manage_amneziawg.sh p2p add my_phone 20077
+sudo bash /root/awg/manage_amneziawg.sh p2p remove my_phone 20077
+
 # Maintenance
 sudo bash /root/awg/manage_amneziawg.sh check               # Diagnostics
 sudo bash /root/awg/manage_amneziawg.sh backup               # Backup
@@ -412,6 +505,41 @@ sudo bash /root/awg/manage_amneziawg.sh restart              # Restart
 For detailed information on configuration, security settings, AWG 2.0 parameters, management commands, technical details, and more, see **[ADVANCED.en.md](ADVANCED.en.md)**.
 
 For the changelog, see **[CHANGELOG.en.md](CHANGELOG.en.md)**.
+
+---
+
+<a id="roadmap"></a>
+## 🧭 Roadmap
+
+### AdGuard Home as VPN DNS
+
+The next planned block for this fork is built-in **AdGuard Home** as a DNS resolver/filter for VPN clients.
+
+Why:
+
+* block ads, trackers, telemetry, malware/phishing domains, and noisy DNS requests on the VPN server;
+* provide one DNS setup for all VPN clients without configuring every phone or laptop manually;
+* reduce background traffic and make browsing/apps cleaner;
+* allow future per-profile filtering for regular clients, kids' devices, and temporary guests.
+
+Implementation plan:
+
+* add installer flags `--enable-adguard`, `--adguard-port=3000`, `--dns-mode=adguard|system|custom`;
+* install AdGuard Home under `/opt/AdGuardHome` or `/root/awg/adguard`, without Docker;
+* bind DNS to the VPN interface `awg0` so it does not become an open public resolver;
+* set client DNS to the tunnel server address: `10.9.9.1` and, with IPv6, the server IPv6 from `AWG_IPV6_SUBNET`;
+* expose only the required firewall ports: DNS inside VPN, AdGuard web-admin on localhost/VPN unless explicitly changed;
+* add `manage_amneziawg.sh dns status|restart|logs|set-mode`;
+* add an AdGuard/DNS card to the web panel;
+* ship sane default blocklists for ads, trackers, malware/phishing, and telemetry, while keeping aggressive filters optional;
+* migrate existing clients through `regen` so new DNS settings reach `.conf`, QR, and `vpn://`.
+
+Safety goals:
+
+* AdGuard Home must stay optional;
+* disabling AdGuard must keep the current DNS path working;
+* AdGuard web-admin must not be publicly exposed by default;
+* if AdGuard fails, VPN should remain usable and clients should have a clear fallback DNS path.
 
 ---
 

@@ -75,6 +75,27 @@ EOF
     [ "$AWG_APPLY_MODE" = "restart" ]
 }
 
+@test "safe_load_config: IPv6/P2P/Web keys in whitelist" {
+    cat > "$CONFIG_FILE" <<'EOF'
+export AWG_IPV6_ENABLED=1
+export AWG_IPV6_MODE='ula'
+export AWG_IPV6_SUBNET='fd12:3456:789a:1::/64'
+export AWG_IPV6_NDP_PROXY=0
+export AWG_P2P_ENABLED=1
+export AWG_P2P_BASE_PORT=20000
+export AWG_P2P_PORTS_PER_CLIENT=3
+export AWG_FULLCONE_NAT=1
+export AWG_WEB_ENABLED=1
+export AWG_WEB_PORT=8443
+export AWG_WEB_BIND='0.0.0.0'
+EOF
+    safe_load_config "$CONFIG_FILE"
+    [ "$AWG_IPV6_ENABLED" = "1" ]
+    [ "$AWG_IPV6_MODE" = "ula" ]
+    [ "$AWG_P2P_BASE_PORT" = "20000" ]
+    [ "$AWG_WEB_PORT" = "8443" ]
+}
+
 @test "safe_load_config: unquoted numeric values" {
     echo "export AWG_Jmin=55" > "$CONFIG_FILE"
     safe_load_config "$CONFIG_FILE"

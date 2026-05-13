@@ -14,6 +14,13 @@ setup() {
     export KEYS_DIR="$TEST_DIR/keys"
     export EXPIRY_DIR="$TEST_DIR/expiry"
     export EXPIRY_CRON="$TEST_DIR/awg-expiry-cron"
+    export AWG_IPV6_ENABLED=0
+    export AWG_IPV6_MODE="legacy"
+    export AWG_IPV6_SUBNET=""
+    export AWG_IPV6_NDP_PROXY=0
+    export AWG_P2P_ENABLED=0
+    export AWG_P2P_BASE_PORT=20000
+    export AWG_P2P_PORTS_PER_CLIENT=3
     mkdir -p "$KEYS_DIR" "$EXPIRY_DIR"
 
     # Silent log stubs
@@ -63,6 +70,17 @@ export AWG_TUNNEL_SUBNET='10.9.9.1/24'
 export DISABLE_IPV6=1
 export ALLOWED_IPS_MODE=2
 export ALLOWED_IPS='0.0.0.0/5, 8.0.0.0/7'
+export AWG_IPV6_ENABLED=0
+export AWG_IPV6_MODE='legacy'
+export AWG_IPV6_SUBNET=''
+export AWG_IPV6_NDP_PROXY=0
+export AWG_P2P_ENABLED=0
+export AWG_P2P_BASE_PORT=20000
+export AWG_P2P_PORTS_PER_CLIENT=3
+export AWG_FULLCONE_NAT=0
+export AWG_WEB_ENABLED=1
+export AWG_WEB_PORT=8443
+export AWG_WEB_BIND='0.0.0.0'
 export AWG_Jc=6
 export AWG_Jmin=55
 export AWG_Jmax=380
