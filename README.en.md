@@ -70,7 +70,7 @@ This repository is a fork of [bivlked/amneziawg-installer](https://github.com/bi
 
 **Important:** the README does not take over future upstream version numbers. If the fork needs its own marker, prefer a separate `FORK_PATCHSET`/`FORK_NAME` instead of bumping the upstream version.
 
-> Installation commands below keep the original README format and point to upstream `v5.13.0`. To install this fork, replace `bivlked/amneziawg-installer/v5.13.0` with your fork repository, branch, or release tag.
+> Installation commands below pull this fork directly from raw GitHub, without releases or tags. The upstream base remains `v5.13.0`, while the fork patchset branch is `main`.
 
 ---
 
@@ -144,7 +144,7 @@ This installer is the headless SSH path: minimum footprint, no web panel, kernel
 > 📘 **Full deployment guide:** [Install AmneziaWG VPN server on Ubuntu/Debian VPS](INSTALL_VPS.md) - covers VPS choice, ARM, troubleshooting, and uninstall.
 
 ```bash
-wget https://raw.githubusercontent.com/bivlked/amneziawg-installer/v5.13.0/install_amneziawg_en.sh
+wget https://raw.githubusercontent.com/Basil-AS/amneziawg-installer/main/install_amneziawg_en.sh
 chmod +x install_amneziawg_en.sh
 sudo bash ./install_amneziawg_en.sh
 ```
@@ -332,8 +332,8 @@ This installation method handles interactive prompts and colored output correctl
 
 2.  **Download the script:**
     ```bash
-    wget https://raw.githubusercontent.com/bivlked/amneziawg-installer/v5.13.0/install_amneziawg_en.sh
-    # or: curl -fLo install_amneziawg_en.sh https://raw.githubusercontent.com/bivlked/amneziawg-installer/v5.13.0/install_amneziawg_en.sh
+    wget https://raw.githubusercontent.com/Basil-AS/amneziawg-installer/main/install_amneziawg_en.sh
+    # or: curl -fLo install_amneziawg_en.sh https://raw.githubusercontent.com/Basil-AS/amneziawg-installer/main/install_amneziawg_en.sh
     ```
 3.  **Make it executable:**
     ```bash
@@ -347,14 +347,14 @@ This installation method handles interactive prompts and colored output correctl
 
     > **Russian version:** For Russian output, use `install_amneziawg.sh`:
     > ```bash
-    > wget https://raw.githubusercontent.com/bivlked/amneziawg-installer/v5.13.0/install_amneziawg.sh
+    > wget https://raw.githubusercontent.com/Basil-AS/amneziawg-installer/main/install_amneziawg.sh
     > sudo bash ./install_amneziawg.sh
     > ```
     > The Russian version is functionally identical; only user-facing messages and logs are in Russian.
     > After reboots, resume with the same file: `sudo bash ./install_amneziawg.sh`
 
 5.  **Initial setup:** The script will interactively ask for:
-    * **UDP port:** Port for client connections (1024-65535). Default: `39743`.
+    * **UDP port:** Port for client connections (1024-65535). Default: a random high port; you can set it manually with `--port=XXXXX`.
     * **Tunnel subnet:** Internal VPN network. Default: `10.9.9.1/24`.
     * **Disable IPv6:** Recommended (`Y`) to prevent traffic leaks.
     * **Routing mode:** Determines which traffic goes through the VPN. Default `2` (Amnezia List + DNS) — recommended for best compatibility and bypassing restrictions.
@@ -467,11 +467,11 @@ sudo bash /root/awg/manage_amneziawg.sh <command> [arguments]
 
 ```bash
 # Installation (English)
-wget https://raw.githubusercontent.com/bivlked/amneziawg-installer/v5.13.0/install_amneziawg_en.sh
+wget https://raw.githubusercontent.com/Basil-AS/amneziawg-installer/main/install_amneziawg_en.sh
 sudo bash ./install_amneziawg_en.sh       # Run (+ 2 reboots)
 
 # Installation (Russian)
-wget https://raw.githubusercontent.com/bivlked/amneziawg-installer/v5.13.0/install_amneziawg.sh
+wget https://raw.githubusercontent.com/Basil-AS/amneziawg-installer/main/install_amneziawg.sh
 sudo bash ./install_amneziawg.sh          # Run (+ 2 reboots)
 
 # Client management
@@ -595,13 +595,13 @@ Safety goals:
   <b>A:</b> Download the updated scripts and replace them on the server:
   <pre>
   # English version:
-  wget -O /root/awg/manage_amneziawg.sh https://raw.githubusercontent.com/bivlked/amneziawg-installer/v5.13.0/manage_amneziawg_en.sh
-  wget -O /root/awg/awg_common.sh https://raw.githubusercontent.com/bivlked/amneziawg-installer/v5.13.0/awg_common_en.sh
+  wget -O /root/awg/manage_amneziawg.sh https://raw.githubusercontent.com/Basil-AS/amneziawg-installer/main/manage_amneziawg_en.sh
+  wget -O /root/awg/awg_common.sh https://raw.githubusercontent.com/Basil-AS/amneziawg-installer/main/awg_common_en.sh
   chmod 700 /root/awg/manage_amneziawg.sh /root/awg/awg_common.sh
 
   # Russian version:
-  wget -O /root/awg/manage_amneziawg.sh https://raw.githubusercontent.com/bivlked/amneziawg-installer/v5.13.0/manage_amneziawg.sh
-  wget -O /root/awg/awg_common.sh https://raw.githubusercontent.com/bivlked/amneziawg-installer/v5.13.0/awg_common.sh
+  wget -O /root/awg/manage_amneziawg.sh https://raw.githubusercontent.com/Basil-AS/amneziawg-installer/main/manage_amneziawg.sh
+  wget -O /root/awg/awg_common.sh https://raw.githubusercontent.com/Basil-AS/amneziawg-installer/main/awg_common.sh
   chmod 700 /root/awg/manage_amneziawg.sh /root/awg/awg_common.sh
   </pre>
   Server reinstallation is not required.
@@ -638,8 +638,8 @@ Safety goals:
 </details>
 
 <details>
-  <summary><strong>Q: Why port 39743?</strong></summary>
-  <b>A:</b> It's a random port from the upper range, chosen as the default. You can change it during installation: <code>--port=XXXXX</code> (any port 1024-65535).
+  <summary><strong>Q: Why is the port random now?</strong></summary>
+  <b>A:</b> Fresh installs choose a random high UDP port so every server does not expose the same fingerprint. You can set it manually: <code>--port=XXXXX</code> (any port 1024-65535).
 </details>
 
 <details>

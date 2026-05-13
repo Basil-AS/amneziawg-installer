@@ -24,10 +24,11 @@ STATE_FILE="$AWG_DIR/setup_state"
 LOG_FILE="$AWG_DIR/install_amneziawg.log"
 KEYS_DIR="$AWG_DIR/keys"
 SERVER_CONF_FILE="/etc/amnezia/amneziawg/awg0.conf"
-AWG_BRANCH="${AWG_BRANCH:-v${SCRIPT_VERSION}}"
-COMMON_SCRIPT_URL="https://raw.githubusercontent.com/bivlked/amneziawg-installer/${AWG_BRANCH}/awg_common_en.sh"
+AWG_REPO="${AWG_REPO:-Basil-AS/amneziawg-installer}"
+AWG_BRANCH="${AWG_BRANCH:-main}"
+COMMON_SCRIPT_URL="https://raw.githubusercontent.com/${AWG_REPO}/${AWG_BRANCH}/awg_common_en.sh"
 COMMON_SCRIPT_PATH="$AWG_DIR/awg_common.sh"
-MANAGE_SCRIPT_URL="https://raw.githubusercontent.com/bivlked/amneziawg-installer/${AWG_BRANCH}/manage_amneziawg_en.sh"
+MANAGE_SCRIPT_URL="https://raw.githubusercontent.com/${AWG_REPO}/${AWG_BRANCH}/manage_amneziawg_en.sh"
 MANAGE_SCRIPT_PATH="$AWG_DIR/manage_amneziawg.sh"
 
 # SHA256 checksums of downloaded scripts. Updated at each release.
@@ -620,6 +621,24 @@ validate_port() {
     if ! [[ "$port" =~ ^[0-9]+$ ]] || [[ "$port" -lt 1024 ]] || [[ "$port" -gt 65535 ]]; then
         die "Invalid port: '$port'. Allowed range: 1024-65535."
     fi
+}
+
+generate_random_awg_port() {
+    local min=30000 max=60999 range random_val port attempt
+    range=$((max - min + 1))
+    for attempt in {1..20}; do
+        random_val=$(od -An -tu4 -N4 /dev/urandom 2>/dev/null | tr -d ' ')
+        if [[ -z "$random_val" || ! "$random_val" =~ ^[0-9]+$ ]]; then
+            random_val=$(( (RANDOM << 15) | RANDOM ))
+        fi
+        port=$((min + (random_val % range)))
+        if command -v ss >/dev/null 2>&1 && ss -lun 2>/dev/null | grep -q ":${port} "; then
+            continue
+        fi
+        echo "$port"
+        return 0
+    done
+    echo 39743
 }
 
 validate_subnet() {
@@ -1766,7 +1785,8 @@ initialize_setup() {
     check_os_version
     check_free_space
 
-    local default_port=39743
+    local default_port
+    default_port=$(generate_random_awg_port)
     local default_subnet="10.9.9.1/24"
     local config_exists=0
 
