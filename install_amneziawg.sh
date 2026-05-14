@@ -3105,7 +3105,7 @@ import hashlib, json, os, sys
 path, token = sys.argv[1], sys.argv[2]
 tmp = f"{path}.tmp.{os.getpid()}"
 with open(tmp, "w", encoding="utf-8") as fh:
-    json.dump({"super": hashlib.sha256(token.encode()).hexdigest(), "normal": {}}, fh, indent=2, sort_keys=True)
+    json.dump({"super_token_hash": hashlib.sha256(token.encode()).hexdigest(), "users": {}}, fh, indent=2, sort_keys=True)
     fh.write("\n")
 os.chmod(tmp, 0o600)
 os.replace(tmp, path)
@@ -3118,7 +3118,7 @@ import hashlib, json, os, sys
 path, token = sys.argv[1], sys.argv[2]
 tmp = f"{path}.tmp.{os.getpid()}"
 with open(tmp, "w", encoding="utf-8") as fh:
-    json.dump({"super": hashlib.sha256(token.encode()).hexdigest(), "normal": {}}, fh, indent=2, sort_keys=True)
+    json.dump({"super_token_hash": hashlib.sha256(token.encode()).hexdigest(), "users": {}}, fh, indent=2, sort_keys=True)
     fh.write("\n")
 os.chmod(tmp, 0o600)
 os.replace(tmp, path)
