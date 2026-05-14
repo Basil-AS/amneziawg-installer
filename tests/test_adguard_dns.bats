@@ -54,8 +54,8 @@ CONF
 
 @test "web panel exposes DNS API and card" {
     grep -q 'api/dns' "$BATS_TEST_DIRNAME/../web/server.py"
-    grep -q 'dns-panel' "$BATS_TEST_DIRNAME/../web/panel.js"
-    grep -q 'restartDns' "$BATS_TEST_DIRNAME/../web/panel.js"
+    grep -q 'metricDns' "$BATS_TEST_DIRNAME/../web/app.js"
+    grep -q '/api/dns' "$BATS_TEST_DIRNAME/../web/app.js"
 }
 
 @test "client hosts sync writes and removes names for AdGuard visibility" {

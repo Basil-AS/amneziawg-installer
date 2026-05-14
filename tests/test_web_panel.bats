@@ -11,22 +11,21 @@
     grep -qF 'Authorization' "$BATS_TEST_DIRNAME/../web/server.py"
 }
 
-@test "web index is stealth before auth" {
-    ! grep -qF 'AmneziaWG' "$BATS_TEST_DIRNAME/../web/index.html"
-    grep -qF 'type="password"' "$BATS_TEST_DIRNAME/../web/index.html"
-    ! grep -qF 'id="app"' "$BATS_TEST_DIRNAME/../web/index.html"
-    ! grep -qF 'dialog' "$BATS_TEST_DIRNAME/../web/index.html"
-    ! grep -qF 'api/clients' "$BATS_TEST_DIRNAME/../web/app.js"
-    ! grep -qF 'dns-panel' "$BATS_TEST_DIRNAME/../web/style.css"
-    grep -qF '/api/panel.js' "$BATS_TEST_DIRNAME/../web/app.js"
+@test "web index includes Tailwind and ApexCharts" {
+    grep -q 'cdn.tailwindcss.com' "$BATS_TEST_DIRNAME/../web/index.html"
+    grep -q 'apexcharts' "$BATS_TEST_DIRNAME/../web/index.html"
+    grep -q 'app.js' "$BATS_TEST_DIRNAME/../web/index.html"
 }
 
-@test "web panel exposes token role controls after auth" {
+@test "web panel exposes RBAC and token controls" {
     grep -qF 'tokens.json' "$BATS_TEST_DIRNAME/../web/server.py"
     grep -qF '/api/tokens' "$BATS_TEST_DIRNAME/../web/server.py"
-    grep -qF '/api/panel.js' "$BATS_TEST_DIRNAME/../web/server.py"
-    grep -qF '/api/panel.css' "$BATS_TEST_DIRNAME/../web/server.py"
-    grep -qF 'Reset All' "$BATS_TEST_DIRNAME/../web/panel.js"
-    grep -qF 'Logout' "$BATS_TEST_DIRNAME/../web/panel.js"
-    grep -qF 'Copy' "$BATS_TEST_DIRNAME/../web/panel.js"
+    grep -qF 'super_token_hash' "$BATS_TEST_DIRNAME/../web/server.py"
+}
+
+@test "app.js contains new UI elements (charts, speed, rbac)" {
+    grep -qF 'ApexCharts' "$BATS_TEST_DIRNAME/../web/app.js"
+    grep -qF 'timeAgo' "$BATS_TEST_DIRNAME/../web/app.js"
+    grep -qF 'speedBps' "$BATS_TEST_DIRNAME/../web/app.js"
+    grep -qF 'role === "super"' "$BATS_TEST_DIRNAME/../web/app.js"
 }
