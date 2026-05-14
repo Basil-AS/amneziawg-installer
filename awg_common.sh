@@ -1529,6 +1529,8 @@ sync_clients_hosts() {
 
     if [[ -f "$hosts_file" ]]; then
         awk '
+        /^# --- AWG CLIENTS START ---$/ { skip=1; next }
+        /^# --- AWG CLIENTS END ---$/ { skip=0; next }
         /^# BEGIN AmneziaWG clients$/ { skip=1; next }
         /^# END AmneziaWG clients$/ { skip=0; next }
         !skip { print }
@@ -1537,9 +1539,9 @@ sync_clients_hosts() {
 
     if [[ -s "$body" ]]; then
         {
-            printf '\n# BEGIN AmneziaWG clients\n'
+            printf '\n# --- AWG CLIENTS START ---\n'
             cat "$body"
-            printf '# END AmneziaWG clients\n'
+            printf '# --- AWG CLIENTS END ---\n'
         } >> "$tmp"
     fi
 
