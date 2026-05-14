@@ -196,7 +196,7 @@ def parse_peers():
         elif cur is not None and line.startswith("#_Name = "):
             cur["name"] = line.split("=", 1)[1].strip()
         elif cur is not None and line.startswith("#_P2PPorts"):
-            cur["p2p_ports"] = [int(x) for x in re.findall(r"\d+", line)]
+            cur["p2p_ports"] = [int(x) for x in re.findall(r"\d+", line.split("=", 1)[-1])]
         elif cur is not None and re.match(r"^#?\s*PublicKey", line):
             cur["public_key"] = line.split("=", 1)[1].strip() if "=" in line else ""
             cur["disabled"] = cur["disabled"] or line.startswith("#")
