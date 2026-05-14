@@ -21,6 +21,8 @@ const icons = {
   search: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>',
   key: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="7.5" cy="14.5" r="4.5"/><path d="M11 11 21 1M16 6l2 2M14 8l2 2"/></svg>',
   copy: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="9" y="9" width="11" height="11" rx="2"/><rect x="4" y="4" width="11" height="11" rx="2"/></svg>',
+  help: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M9.5 9a2.6 2.6 0 0 1 5 1c0 2-2.5 2.2-2.5 4"/><path d="M12 17h.01"/></svg>',
+  external: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M14 3h7v7"/><path d="M10 14 21 3"/><path d="M21 14v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5"/></svg>',
 };
 
 const theme = localStorage.getItem("panelTheme") || "light";
@@ -128,6 +130,10 @@ function buttonClasses(extra = "") {
   return `h-9 inline-flex items-center justify-center gap-2 rounded-md border border-[var(--line)] bg-[var(--soft)] px-3 text-sm font-medium text-[var(--text)] transition hover:border-[var(--accent)] ${extra}`;
 }
 
+function primaryButtonClasses(extra = "") {
+  return `h-9 inline-flex items-center justify-center gap-2 rounded-md border border-transparent bg-red-700 px-3 text-sm font-bold text-white transition hover:bg-red-800 ${extra}`;
+}
+
 function iconButton(title, name, extra = "") {
   return `<button title="${esc(title)}" aria-label="${esc(title)}" class="${buttonClasses(`w-9 px-0 ${extra}`)}">${icon(name)}</button>`;
 }
@@ -142,7 +148,7 @@ function renderLogin() {
         </div>
         <label class="block text-xs font-semibold uppercase tracking-wide text-[var(--muted)]" for="tokenInput">Token</label>
         <input id="tokenInput" class="mt-2 h-11 w-full rounded-md border border-[var(--line)] bg-[var(--soft)] px-3 text-[var(--text)] outline-none focus:border-[var(--accent)]" type="password" value="${esc(token)}" autocomplete="current-password" autofocus>
-        <button class="${buttonClasses("mt-4 w-full border-[var(--accent)] bg-[var(--accent)] text-white hover:bg-[var(--accent-hover)] hover:border-[var(--accent-hover)]")}" type="submit">Login</button>
+        <button class="${primaryButtonClasses("mt-4 w-full")}" type="submit">Login</button>
       </form>
     </section>
   `;
@@ -173,7 +179,8 @@ async function renderPanel() {
       </div>
       <div class="flex flex-wrap items-center gap-2">
         <button id="themeToggle" class="${buttonClasses("w-9 px-0")}" title="Theme">${icon(document.documentElement.dataset.theme === "dark" ? "sun" : "moon")}</button>
-        <button id="addClient" class="${buttonClasses("border-[var(--accent)] bg-[var(--accent)] text-white hover:bg-[var(--accent-hover)] hover:border-[var(--accent-hover)]")}">${icon("plus")}<span>Add Client</span></button>
+        <button id="helpButton" class="${buttonClasses("w-9 px-0")}" title="Help & Clients" aria-label="Help & Clients">${icon("help")}</button>
+        <button id="addClient" class="${primaryButtonClasses()}">${icon("plus")}<span>Add Client</span></button>
         <button id="logout" class="${buttonClasses()}">${icon("logout")}<span>Logout</span></button>
       </div>
     </header>
@@ -214,6 +221,7 @@ async function renderPanel() {
     <section id="clientsList" class="mt-4 overflow-hidden rounded-lg border border-[var(--line)] bg-[var(--panel)]"></section>
   `;
   document.querySelector("#themeToggle").onclick = () => setTheme(document.documentElement.dataset.theme === "dark" ? "light" : "dark");
+  document.querySelector("#helpButton").onclick = showHelp;
   document.querySelector("#logout").onclick = logout;
   document.querySelector("#addClient").onclick = addClient;
   document.querySelector("#searchInput").oninput = applySearch;
@@ -225,8 +233,25 @@ async function renderPanel() {
 async function loadAll() {
   const [dns] = await Promise.all([api("/api/dns"), loadClients()]);
   dnsState = dns;
-  document.querySelector("#metricDns").textContent = dns.client_dns || dns.mode || "-";
+  renderDnsMetric();
   if (statusState.role === "super") await loadTokens();
+}
+
+function renderDnsMetric() {
+  const metric = document.querySelector("#metricDns");
+  if (!metric || !dnsState) return;
+  const label = dnsState.client_dns || dnsState.mode || "-";
+  if (dnsState.adguard_enabled) {
+    const url = `${window.location.protocol}//${window.location.hostname}:${dnsState.adguard_port || 3000}`;
+    metric.innerHTML = `
+      <span class="min-w-0 truncate">${esc(label)}</span>
+      <a class="ml-2 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-[var(--line)] bg-[var(--soft)] text-[var(--accent)] transition hover:border-[var(--accent)]" href="${esc(url)}" target="_blank" rel="noopener" title="Open AdGuard" aria-label="Open AdGuard">${icon("external")}</a>
+    `;
+    metric.classList.add("flex", "items-center");
+  } else {
+    metric.textContent = label;
+    metric.classList.remove("flex", "items-center");
+  }
 }
 
 async function loadClients() {
@@ -281,6 +306,8 @@ function renderClients() {
           </div>
           <p class="mt-1 truncate text-sm text-[var(--muted)]">${esc(ip)}</p>
           <p class="mt-1 text-xs text-[var(--muted)]">Last seen ${esc(timeAgo(client.latestHandshakeAt || client.last_handshake))}</p>
+          <p class="mt-1 text-xs text-[var(--muted)]">Endpoint: ${esc(client.endpoint || "-")}</p>
+          <div class="mt-2 flex flex-wrap gap-1">${(client.p2p_ports || []).map(p => '<span class="inline-block px-2 py-0.5 text-[10px] font-medium bg-[var(--soft)] border border-[var(--line)] rounded-full">P2P: ' + esc(p) + '</span>').join('')}</div>
         </div>
         <div class="relative z-10 hidden min-w-32 text-right sm:block">
           <p class="text-sm font-semibold">${esc(speed(client.speedBps))}</p>
@@ -327,6 +354,20 @@ function applySearch() {
   document.querySelectorAll(".client-card").forEach(card => {
     card.classList.toggle("hidden", q && !card.dataset.search.includes(q));
   });
+}
+
+function showHelp() {
+  showModal("Help & Clients", `
+    <div class="text-sm">
+      <p class="mb-4 text-[var(--danger)] font-bold">⚠️ Standard WireGuard clients WILL NOT WORK.</p>
+      <p class="mb-2">Please use the official Amnezia VPN client (version &gt;= 4.8.12.7) with AWG 2.0 protocol support:</p>
+      <ul class="list-disc pl-5 space-y-1 text-[var(--accent)] underline">
+        <li><a href="https://github.com/amnezia-vpn/amnezia-client/releases" target="_blank" rel="noopener">Windows / macOS / Linux</a></li>
+        <li><a href="https://apps.apple.com/app/amnezia-vpn/id1600523087" target="_blank" rel="noopener">iOS (App Store)</a></li>
+        <li><a href="https://play.google.com/store/apps/details?id=org.amnezia.vpn" target="_blank" rel="noopener">Android (Google Play)</a></li>
+      </ul>
+    </div>
+  `);
 }
 
 async function addClient() {
@@ -408,7 +449,7 @@ async function newToken() {
   const ok = await showModal("Generate Token", `
     <div class="grid gap-2">${body}</div>
     <div class="mt-4 flex justify-end">
-      <button id="createTokenConfirm" class="${buttonClasses("border-[var(--accent)] bg-[var(--accent)] text-white hover:bg-[var(--accent-hover)] hover:border-[var(--accent-hover)]")}">${icon("key")}<span>Create</span></button>
+      <button id="createTokenConfirm" class="${primaryButtonClasses()}">${icon("key")}<span>Create</span></button>
     </div>
   `, false);
   if (!ok) return;
@@ -479,7 +520,7 @@ function promptModal(title, placeholder) {
         <input id="promptValue" class="h-11 w-full rounded-md border border-[var(--line)] bg-[var(--soft)] px-3 outline-none focus:border-[var(--accent)]" placeholder="${esc(placeholder)}">
         <div class="mt-4 flex justify-end gap-2">
           <button value="cancel" class="${buttonClasses()}">Cancel</button>
-          <button value="ok" class="${buttonClasses("border-[var(--accent)] bg-[var(--accent)] text-white hover:bg-[var(--accent-hover)] hover:border-[var(--accent-hover)]")}">OK</button>
+          <button value="ok" class="${primaryButtonClasses()}">OK</button>
         </div>
       </form>
     `;

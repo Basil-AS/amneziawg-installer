@@ -261,9 +261,18 @@ def client_stats_map():
     p = run_manage("--json", "stats", timeout=20)
     if p.returncode != 0:
         return {}
-    try:
-        rows = json.loads(p.stdout or "[]")
-    except json.JSONDecodeError:
+    raw_out = p.stdout or ""
+    rows = []
+    for line in raw_out.splitlines():
+        candidate = line.strip()
+        if not (candidate.startswith("[") or candidate.startswith("{")):
+            continue
+        try:
+            rows = json.loads(candidate)
+            break
+        except json.JSONDecodeError:
+            continue
+    else:
         return {}
     out = {}
     iterable = rows if isinstance(rows, list) else []
@@ -381,10 +390,12 @@ class Handler(SimpleHTTPRequestHandler):
             rows = []
             for peer in self.visible_peers(auth):
                 item = dict(peer)
-                item.update(stats.get(peer["name"], {}))
-                item.setdefault("rx", 0)
-                item.setdefault("tx", 0)
-                item.setdefault("latestHandshakeAt", item.get("last_handshake", 0))
+                row_stats = stats.get(peer["name"], {})
+                item["rx"] = row_stats.get("rx", 0)
+                item["tx"] = row_stats.get("tx", 0)
+                item["latestHandshakeAt"] = row_stats.get("latestHandshakeAt", row_stats.get("last_handshake", 0))
+                item["endpoint"] = row_stats.get("endpoint", "")
+                item["status"] = row_stats.get("status", "")
                 rows.append(item)
             self.send_json({"role": "super" if self.is_super(auth) else "user", "clients": rows})
             return
