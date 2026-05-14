@@ -19,6 +19,7 @@ AWG_DIR="${AWG_DIR:-/root/awg}"
 CONFIG_FILE="${CONFIG_FILE:-$AWG_DIR/awgsetup_cfg.init}"
 SERVER_CONF_FILE="${SERVER_CONF_FILE:-/etc/amnezia/amneziawg/awg0.conf}"
 KEYS_DIR="${KEYS_DIR:-$AWG_DIR/keys}"
+AWG_HOSTS_FILE="${AWG_HOSTS_FILE:-/etc/hosts}"
 
 # --- Автоочистка временных файлов ---
 # ВАЖНО: trap НЕ устанавливается здесь, чтобы не перезаписать trap вызывающего скрипта.
@@ -1482,6 +1483,74 @@ get_next_client_ip() {
     return 1
 }
 
+sync_clients_hosts() {
+    local hosts_file="${AWG_HOSTS_FILE:-/etc/hosts}"
+    [[ -f "$SERVER_CONF_FILE" ]] || return 0
+    [[ -n "$hosts_file" ]] || return 0
+
+    local dir tmp body
+    dir=$(dirname "$hosts_file")
+    mkdir -p "$dir" 2>/dev/null || {
+        log_warn "Не удалось создать каталог для hosts: $dir"
+        return 0
+    }
+    tmp=$(awg_mktemp) || return 0
+    body=$(awg_mktemp) || return 0
+
+    awk '
+    function emit() {
+        if (name != "" && ipv4 != "") {
+            print ipv4 " " name " " name ".awg"
+            if (ipv6 != "") print ipv6 " " name " " name ".awg"
+        }
+    }
+    /^\[Peer\]/ { emit(); name=""; ipv4=""; ipv6=""; in_peer=1; next }
+    /^\[/ && !/^\[Peer\]/ { emit(); name=""; ipv4=""; ipv6=""; in_peer=0; next }
+    in_peer && /^#_Name = / { name=$0; sub(/^#_Name = /, "", name); next }
+    in_peer && /^AllowedIPs[[:space:]]*=/ {
+        line=$0
+        sub(/^AllowedIPs[[:space:]]*=[[:space:]]*/, "", line)
+        gsub(/,/, " ", line)
+        n=split(line, parts, /[[:space:]]+/)
+        for (i=1; i<=n; i++) {
+            token=parts[i]
+            if (token ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+\/32$/) {
+                sub(/\/32$/, "", token)
+                ipv4=token
+            } else if (token ~ /^[0-9A-Fa-f:]+\/128$/) {
+                sub(/\/128$/, "", token)
+                ipv6=token
+            }
+        }
+        next
+    }
+    END { emit() }
+    ' "$SERVER_CONF_FILE" > "$body" 2>/dev/null || return 0
+
+    if [[ -f "$hosts_file" ]]; then
+        awk '
+        /^# BEGIN AmneziaWG clients$/ { skip=1; next }
+        /^# END AmneziaWG clients$/ { skip=0; next }
+        !skip { print }
+        ' "$hosts_file" > "$tmp" 2>/dev/null || cp "$hosts_file" "$tmp" 2>/dev/null || return 0
+    fi
+
+    if [[ -s "$body" ]]; then
+        {
+            printf '\n# BEGIN AmneziaWG clients\n'
+            cat "$body"
+            printf '# END AmneziaWG clients\n'
+        } >> "$tmp"
+    fi
+
+    if mv "$tmp" "$hosts_file"; then
+        chmod 644 "$hosts_file" 2>/dev/null || true
+        log_debug "hosts обновлён для клиентов AmneziaWG: $hosts_file"
+    else
+        log_warn "Не удалось обновить hosts для клиентов: $hosts_file"
+    fi
+}
+
 # Добавление [Peer] в серверный конфиг (атомарно через tmpfile + mv).
 #
 # КОНТРАКТ БЛОКИРОВКИ: вызывающий код ОБЯЗАН держать exclusive flock на
@@ -1554,6 +1623,7 @@ EOF
     fi
     chmod 600 "$SERVER_CONF_FILE"
     generate_firewall_scripts >/dev/null 2>&1 || log_warn "Не удалось обновить P2P/firewall hook-скрипты."
+    sync_clients_hosts
     log "Пир '$name' добавлен в серверный конфиг."
     return 0
 }
@@ -1637,6 +1707,7 @@ remove_peer_from_server() {
     chmod 600 "$SERVER_CONF_FILE"
     exec {lock_fd}>&-
     generate_firewall_scripts >/dev/null 2>&1 || log_warn "Не удалось обновить P2P/firewall hook-скрипты."
+    sync_clients_hosts
     log "Пир '$name' удалён из серверного конфига."
     return 0
 }

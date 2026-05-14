@@ -13,7 +13,7 @@ import time
 from http import HTTPStatus
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 AWG_DIR = Path(os.environ.get("AWG_DIR", "/root/awg"))
 WEB_DIR = AWG_DIR / "web"
@@ -269,9 +269,18 @@ class Handler(SimpleHTTPRequestHandler):
             return
         u = urlparse(self.path)
         if role == "static":
+            if unquote(u.path).lstrip("/") in {"panel.js", "panel.css"}:
+                self.send_error(404)
+                return
             self.path = "/index.html" if u.path == "/" else self.path
             return super().do_GET()
 
+        if u.path == "/api/panel.js":
+            self.send_file(WEB_DIR / "panel.js", "application/javascript; charset=utf-8")
+            return
+        if u.path == "/api/panel.css":
+            self.send_file(WEB_DIR / "panel.css", "text/css; charset=utf-8")
+            return
         if u.path == "/api/status":
             active = subprocess.run(
                 ["systemctl", "is-active", "awg-quick@awg0"],

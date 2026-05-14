@@ -54,6 +54,25 @@ CONF
 
 @test "web panel exposes DNS API and card" {
     grep -q 'api/dns' "$BATS_TEST_DIRNAME/../web/server.py"
-    grep -q 'dns-panel' "$BATS_TEST_DIRNAME/../web/app.js"
-    grep -q 'restartDns' "$BATS_TEST_DIRNAME/../web/app.js"
+    grep -q 'dns-panel' "$BATS_TEST_DIRNAME/../web/panel.js"
+    grep -q 'restartDns' "$BATS_TEST_DIRNAME/../web/panel.js"
+}
+
+@test "client hosts sync writes and removes names for AdGuard visibility" {
+    create_server_config
+    cat >> "$SERVER_CONF_FILE" <<'CONF'
+
+[Peer]
+#_Name = phone
+PublicKey = TESTPHONE
+AllowedIPs = 10.9.9.2/32, fd12:3456:789a:1::2/128
+CONF
+    run sync_clients_hosts
+    [ "$status" -eq 0 ]
+    grep -q '^10\.9\.9\.2 phone phone\.awg$' "$AWG_HOSTS_FILE"
+    grep -q '^fd12:3456:789a:1::2 phone phone\.awg$' "$AWG_HOSTS_FILE"
+
+    run remove_peer_from_server phone
+    [ "$status" -eq 0 ]
+    ! grep -q 'phone\.awg' "$AWG_HOSTS_FILE"
 }

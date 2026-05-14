@@ -12,6 +12,7 @@ setup() {
     export AWG_DIR="$TEST_DIR"
     export CONFIG_FILE="$TEST_DIR/awgsetup_cfg.init"
     export SERVER_CONF_FILE="$TEST_DIR/awg0.conf"
+    export AWG_HOSTS_FILE="$TEST_DIR/hosts"
     export KEYS_DIR="$TEST_DIR/keys"
     export EXPIRY_DIR="$TEST_DIR/expiry"
     export EXPIRY_CRON="$TEST_DIR/awg-expiry-cron"
@@ -23,6 +24,7 @@ setup() {
     export AWG_P2P_BASE_PORT=20000
     export AWG_P2P_PORTS_PER_CLIENT=3
     mkdir -p "$KEYS_DIR" "$EXPIRY_DIR"
+    printf '127.0.0.1 localhost\n' > "$AWG_HOSTS_FILE"
 
     # Silent log stubs
     log()       { :; }

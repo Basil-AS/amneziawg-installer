@@ -14,11 +14,19 @@
 @test "web index is stealth before auth" {
     ! grep -qF 'AmneziaWG' "$BATS_TEST_DIRNAME/../web/index.html"
     grep -qF 'type="password"' "$BATS_TEST_DIRNAME/../web/index.html"
-    grep -qF 'id="app" hidden' "$BATS_TEST_DIRNAME/../web/index.html"
+    ! grep -qF 'id="app"' "$BATS_TEST_DIRNAME/../web/index.html"
+    ! grep -qF 'dialog' "$BATS_TEST_DIRNAME/../web/index.html"
+    ! grep -qF 'api/clients' "$BATS_TEST_DIRNAME/../web/app.js"
+    ! grep -qF 'dns-panel' "$BATS_TEST_DIRNAME/../web/style.css"
+    grep -qF '/api/panel.js' "$BATS_TEST_DIRNAME/../web/app.js"
 }
 
 @test "web panel exposes token role controls after auth" {
     grep -qF 'tokens.json' "$BATS_TEST_DIRNAME/../web/server.py"
     grep -qF '/api/tokens' "$BATS_TEST_DIRNAME/../web/server.py"
-    grep -qF 'Reset All' "$BATS_TEST_DIRNAME/../web/app.js"
+    grep -qF '/api/panel.js' "$BATS_TEST_DIRNAME/../web/server.py"
+    grep -qF '/api/panel.css' "$BATS_TEST_DIRNAME/../web/server.py"
+    grep -qF 'Reset All' "$BATS_TEST_DIRNAME/../web/panel.js"
+    grep -qF 'Logout' "$BATS_TEST_DIRNAME/../web/panel.js"
+    grep -qF 'Copy' "$BATS_TEST_DIRNAME/../web/panel.js"
 }
