@@ -120,12 +120,34 @@ _awg_bool() {
     esac
 }
 
+normalize_awg_ipv6_mode() {
+    case "${1:-legacy}" in
+        routed|ndp|nat66|legacy) echo "${1:-legacy}" ;;
+        native) echo "ndp" ;;
+        ula) echo "nat66" ;;
+        disabled|off|0) echo "legacy" ;;
+        *) return 1 ;;
+    esac
+}
+
+awg_ipv6_mode() {
+    normalize_awg_ipv6_mode "${AWG_IPV6_MODE:-legacy}" 2>/dev/null || echo "legacy"
+}
+
 awg_ipv6_enabled() {
     _awg_bool "${AWG_IPV6_ENABLED:-0}" && [[ -n "${AWG_IPV6_SUBNET:-}" ]]
 }
 
 awg_p2p_enabled() {
     _awg_bool "${AWG_P2P_ENABLED:-0}"
+}
+
+awg_server_name() {
+    local name="${AWG_SERVER_NAME:-MyVPN}"
+    name="${name//$'\r'/ }"
+    name="${name//$'\n'/ }"
+    [[ -n "${name//[[:space:]]/}" ]] || name="MyVPN"
+    printf '%s' "$name"
 }
 
 awg_dns_mode() {
@@ -163,8 +185,8 @@ normalize_ipv6_subnet() {
 import ipaddress, sys
 try:
     net = ipaddress.ip_network(sys.argv[1], strict=False)
-    if net.version != 6 or net.prefixlen != 64:
-        raise ValueError("expected IPv6 /64")
+    if net.version != 6 or net.prefixlen < 48 or net.prefixlen > 64:
+        raise ValueError("expected IPv6 /48../64")
     print(str(net))
 except Exception:
     sys.exit(1)
@@ -381,6 +403,11 @@ IPV6_MODE="${AWG_IPV6_MODE:-legacy}"
 IPV6_SUBNET="${AWG_IPV6_SUBNET:-}"
 P2P_RULES="${p2p}"
 
+case "\$IPV6_MODE" in
+    native) IPV6_MODE="ndp" ;;
+    ula) IPV6_MODE="nat66" ;;
+esac
+
 ipt_add() { local table="\$1" chain="\$2"; shift 2; iptables -t "\$table" -C "\$chain" "\$@" 2>/dev/null || iptables -t "\$table" -A "\$chain" "\$@"; }
 ipt_ins() { local chain="\$1"; shift; iptables -C "\$chain" "\$@" 2>/dev/null || iptables -I "\$chain" "\$@"; }
 ip6t_add() { local table="\$1" chain="\$2"; shift 2; ip6tables -t "\$table" -C "\$chain" "\$@" 2>/dev/null || ip6tables -t "\$table" -A "\$chain" "\$@"; }
@@ -403,11 +430,13 @@ if [[ "\$IPV6_ENABLED" == "1" ]]; then
     ip6t_ins FORWARD -i "\$AWG_IFACE" -j ACCEPT
     ip6t_ins FORWARD -o "\$AWG_IFACE" -m state --state RELATED,ESTABLISHED -j ACCEPT
     ip6t_ins FORWARD -i "\$NIC" -o "\$AWG_IFACE" -m state --state RELATED,ESTABLISHED -j ACCEPT
-    if [[ "\$IPV6_MODE" == "ula" && -n "\$IPV6_SUBNET" ]]; then
+    if [[ "\$IPV6_MODE" == "nat66" && -n "\$IPV6_SUBNET" ]]; then
         ip6t_add nat POSTROUTING -s "\$IPV6_SUBNET" -o "\$NIC" -j MASQUERADE
     fi
-    ip6tables -C FORWARD -i "\$NIC" -o "\$AWG_IFACE" -m state --state NEW -j DROP 2>/dev/null || \
-        ip6tables -A FORWARD -i "\$NIC" -o "\$AWG_IFACE" -m state --state NEW -j DROP
+    if [[ "\$IPV6_MODE" == "nat66" ]]; then
+        ip6tables -C FORWARD -i "\$NIC" -o "\$AWG_IFACE" -m state --state NEW -j DROP 2>/dev/null || \
+            ip6tables -A FORWARD -i "\$NIC" -o "\$AWG_IFACE" -m state --state NEW -j DROP
+    fi
 fi
 
 [[ -x "\$P2P_RULES" ]] && "\$P2P_RULES" up
@@ -428,6 +457,11 @@ IPV6_MODE="${AWG_IPV6_MODE:-legacy}"
 IPV6_SUBNET="${AWG_IPV6_SUBNET:-}"
 P2P_RULES="${p2p}"
 
+case "\$IPV6_MODE" in
+    native) IPV6_MODE="ndp" ;;
+    ula) IPV6_MODE="nat66" ;;
+esac
+
 del_ipt_nat() { local chain="\$1"; shift; while iptables -t nat -C "\$chain" "\$@" 2>/dev/null; do iptables -t nat -D "\$chain" "\$@"; done; }
 del_ipt() { local chain="\$1"; shift; while iptables -C "\$chain" "\$@" 2>/dev/null; do iptables -D "\$chain" "\$@"; done; }
 del_ip6t_nat() { local chain="\$1"; shift; while ip6tables -t nat -C "\$chain" "\$@" 2>/dev/null; do ip6tables -t nat -D "\$chain" "\$@"; done; }
@@ -446,7 +480,7 @@ if [[ "\$IPV6_ENABLED" == "1" ]]; then
     del_ip6t FORWARD -o "\$AWG_IFACE" -m state --state RELATED,ESTABLISHED -j ACCEPT
     del_ip6t FORWARD -i "\$NIC" -o "\$AWG_IFACE" -m state --state RELATED,ESTABLISHED -j ACCEPT
     del_ip6t FORWARD -i "\$NIC" -o "\$AWG_IFACE" -m state --state NEW -j DROP
-    if [[ "\$IPV6_MODE" == "ula" && -n "\$IPV6_SUBNET" ]]; then
+    if [[ "\$IPV6_MODE" == "nat66" && -n "\$IPV6_SUBNET" ]]; then
         del_ip6t_nat POSTROUTING -s "\$IPV6_SUBNET" -o "\$NIC" -j MASQUERADE
     fi
 fi
@@ -464,6 +498,11 @@ ACTION="\${1:-up}"
 NIC="\${AWG_MAIN_NIC:-${nic}}"
 AWG_IFACE="\${AWG_IFACE:-awg0}"
 IPV6_MODE="${AWG_IPV6_MODE:-legacy}"
+
+case "\$IPV6_MODE" in
+    native) IPV6_MODE="ndp" ;;
+    ula) IPV6_MODE="nat66" ;;
+esac
 
 ipt_nat_add() { local chain="\$1"; shift; iptables -t nat -C "\$chain" "\$@" 2>/dev/null || iptables -t nat -A "\$chain" "\$@"; }
 ipt_nat_del() { local chain="\$1"; shift; while iptables -t nat -C "\$chain" "\$@" 2>/dev/null; do iptables -t nat -D "\$chain" "\$@"; done; }
@@ -501,7 +540,7 @@ EOF
                 echo "    ipt_fwd_add -i \"\$NIC\" -o \"\$AWG_IFACE\" -d ${ipv4} -p tcp --dport ${p} -j ACCEPT"
                 echo "    ipt_fwd_add -i \"\$NIC\" -o \"\$AWG_IFACE\" -d ${ipv4} -p udp --dport ${p} -j ACCEPT"
                 if [[ -n "$ipv6" ]]; then
-                    if [[ "${AWG_IPV6_MODE:-}" == "ula" ]]; then
+                    if [[ "$(awg_ipv6_mode)" == "nat66" ]]; then
                         echo "    ip6t_nat_add PREROUTING -i \"\$NIC\" -p tcp --dport ${p} -j DNAT --to-destination ${ipv6}"
                         echo "    ip6t_nat_add PREROUTING -i \"\$NIC\" -p udp --dport ${p} -j DNAT --to-destination ${ipv6}"
                     fi
@@ -517,7 +556,7 @@ EOF
                 echo "    ipt_fwd_del -i \"\$NIC\" -o \"\$AWG_IFACE\" -d ${ipv4} -p tcp --dport ${p} -j ACCEPT"
                 echo "    ipt_fwd_del -i \"\$NIC\" -o \"\$AWG_IFACE\" -d ${ipv4} -p udp --dport ${p} -j ACCEPT"
                 if [[ -n "$ipv6" ]]; then
-                    if [[ "${AWG_IPV6_MODE:-}" == "ula" ]]; then
+                    if [[ "$(awg_ipv6_mode)" == "nat66" ]]; then
                         echo "    ip6t_nat_del PREROUTING -i \"\$NIC\" -p tcp --dport ${p} -j DNAT --to-destination ${ipv6}"
                         echo "    ip6t_nat_del PREROUTING -i \"\$NIC\" -p udp --dport ${p} -j DNAT --to-destination ${ipv6}"
                     fi
@@ -925,7 +964,8 @@ safe_load_config() {
                 AWG_IPV6_ENABLED|AWG_IPV6_MODE|AWG_IPV6_SUBNET|AWG_IPV6_NDP_PROXY|\
                 AWG_P2P_ENABLED|AWG_P2P_BASE_PORT|AWG_P2P_PORTS_PER_CLIENT|AWG_FULLCONE_NAT|\
                 AWG_WEB_ENABLED|AWG_WEB_PORT|AWG_WEB_BIND|\
-                AWG_DNS_MODE|AWG_CUSTOM_DNS|AWG_ADGUARD_ENABLED|AWG_ADGUARD_PORT|AWG_ADGUARD_DIR)
+                AWG_DNS_MODE|AWG_CUSTOM_DNS|AWG_ADGUARD_ENABLED|AWG_ADGUARD_PORT|AWG_ADGUARD_DIR|\
+                AWG_SERVER_NAME)
                     export "$key=$value"
                     ;;
             esac
@@ -1214,7 +1254,8 @@ render_server_config() {
         return 1
     }
 
-    local address_line="${server_ip}/${subnet_mask}"
+    local address_line="${server_ip}/${subnet_mask}" server_name
+    server_name=$(awg_server_name)
     if awg_ipv6_enabled; then
         local server_ipv6
         server_ipv6=$(get_server_ipv6_address) || {
@@ -1235,6 +1276,7 @@ render_server_config() {
 
     cat > "$tmpfile" << EOF
 [Interface]
+# Name = ${server_name}
 PrivateKey = ${server_privkey}
 Address = ${address_line}
 MTU = 1280
@@ -1282,7 +1324,8 @@ render_client_config() {
 
     load_awg_params || return 1
 
-    local conf_file="$AWG_DIR/${name}.conf"
+    local conf_file="$AWG_DIR/${name}.conf" server_name
+    server_name=$(awg_server_name)
     local allowed_ips="${ALLOWED_IPS:-0.0.0.0/0}"
     local dns_servers
     dns_servers=$(awg_dns_servers)
@@ -1304,6 +1347,7 @@ render_client_config() {
 
     cat > "$tmpfile" << EOF
 [Interface]
+# Name = ${server_name}
 PrivateKey = ${client_privkey}
 Address = ${address_line}
 DNS = ${dns_servers}
@@ -1652,7 +1696,7 @@ generate_vpn_uri() {
 
     load_awg_params || return 1
 
-    local client_privkey client_ip server_pubkey endpoint allowed_ips client_psk
+    local client_privkey client_ip server_pubkey endpoint allowed_ips client_psk server_name
     client_privkey=$(grep -oP 'PrivateKey\s*=\s*\K\S+' "$conf_file") || return 1
     client_ip=$(grep -oP 'Address\s*=\s*\K[0-9./]+' "$conf_file") || return 1
     _ensure_server_public_key || return 1
@@ -1677,13 +1721,14 @@ generate_vpn_uri() {
     # tr -d ' \r' — спирает пробелы И CR (на CRLF-конфигах '.+' жадно
     # затягивает \r в значение, что ломает JSON.allowed_ips).
     allowed_ips=$(grep -oP 'AllowedIPs\s*=\s*\K.+' "$conf_file" | tr -d ' \r') || allowed_ips="0.0.0.0/0"
+    server_name=$(awg_server_name)
 
     local vpn_uri perl_err
     perl_err=$(awg_mktemp) || perl_err="/tmp/awg_perl_err.$$"
     # shellcheck disable=SC2016
     vpn_uri=$(perl -MCompress::Zlib -MMIME::Base64 -e '
         my ($conf_path, $h1,$h2,$h3,$h4, $jc,$jmin,$jmax,
-            $s1,$s2,$s3,$s4, $i1, $port, $ep, $cip, $cpk, $spk, $aips, $psk) = @ARGV;
+            $s1,$s2,$s3,$s4, $i1, $port, $ep, $cip, $cpk, $spk, $aips, $psk, $server_name) = @ARGV;
 
         open my $fh, "<", $conf_path or die;
         local $/; my $raw = <$fh>; close $fh;
@@ -1719,13 +1764,15 @@ generate_vpn_uri() {
         $inner .= qq("server_pub_key":"$spk"});
 
         my $einner = je($inner);
+        my $ename = je($server_name);
         my $outer = "{";
         $outer .= qq("containers":[{"awg":{"isThirdPartyConfig":true,);
         $outer .= qq("last_config":"$einner",);
         $outer .= qq("port":"$port","protocol_version":"2",);
         $outer .= qq("transport_proto":"udp"\},"container":"amnezia-awg"\}],);
         $outer .= qq("defaultContainer":"amnezia-awg",);
-        $outer .= qq("description":"AWG Server",);
+        $outer .= qq("name":"$ename","defaultName":"$ename",);
+        $outer .= qq("description":"$ename",);
         $outer .= qq("dns1":"1.1.1.1","dns2":"1.0.0.1",);
         $outer .= qq("hostName":"$ep"});
 
@@ -1740,7 +1787,7 @@ generate_vpn_uri() {
         "$AWG_Jc" "$AWG_Jmin" "$AWG_Jmax" \
         "$AWG_S1" "$AWG_S2" "$AWG_S3" "$AWG_S4" \
         "$AWG_I1" "$AWG_PORT" "$endpoint" \
-        "$client_ip" "$client_privkey" "$server_pubkey" "$allowed_ips" "$client_psk" 2>"$perl_err"
+        "$client_ip" "$client_privkey" "$server_pubkey" "$allowed_ips" "$client_psk" "$server_name" 2>"$perl_err"
     )
 
     if [[ -z "$vpn_uri" ]]; then

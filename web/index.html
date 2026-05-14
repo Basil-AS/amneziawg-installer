@@ -3,45 +3,17 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>AmneziaWG</title>
+  <title></title>
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
-  <main class="shell">
-    <header class="topbar">
-      <h1>AmneziaWG</h1>
-      <div class="actions">
-        <input id="token" type="password" placeholder="Bearer token">
-        <button id="saveToken">Token</button>
-        <button id="addClient">Добавить</button>
-        <button id="refresh">Обновить</button>
-      </div>
-    </header>
-    <section class="metrics">
-      <div><span>Сервис</span><strong id="service">?</strong></div>
-      <div><span>Клиенты</span><strong id="count">0</strong></div>
-      <div><span>DNS</span><strong id="dnsMode">?</strong></div>
-      <div><span>AdGuard</span><strong id="adguardState">?</strong></div>
-    </section>
-    <section class="dns-panel">
-      <div>
-        <span id="dnsServers">?</span>
-        <small id="dnsUi">?</small>
-      </div>
-      <div class="dns-actions">
-        <button data-dns-mode="adguard">AdGuard</button>
-        <button data-dns-mode="system">System</button>
-        <button id="restartDns">Restart DNS</button>
-      </div>
-    </section>
-    <section class="table-wrap">
-      <table>
-        <thead><tr><th>Имя</th><th>IPv4</th><th>IPv6</th><th>P2P</th><th>RX/TX</th><th>Статус</th><th></th></tr></thead>
-        <tbody id="clients"></tbody>
-      </table>
-    </section>
+  <main id="login" class="login-shell">
+    <form id="loginForm" autocomplete="off">
+      <input id="token" type="password" autocomplete="current-password" autofocus>
+    </form>
   </main>
-  <dialog id="modal"><form method="dialog"><h2 id="modalTitle"></h2><div id="modalBody"></div><menu><button>Закрыть</button></menu></form></dialog>
+  <main id="app" hidden></main>
+  <dialog id="modal"><form method="dialog"><h2 id="modalTitle"></h2><div id="modalBody"></div><menu><button>Close</button></menu></form></dialog>
   <script src="app.js"></script>
 </body>
 </html>
