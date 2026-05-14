@@ -1014,6 +1014,7 @@ elif action == "add":
     token = secrets.token_urlsafe(32)
     data["users"][digest(token)] = []
     save(data)
+    print("Token created. By default, it has access to 0 clients. Log in to the Web Panel with the Super Token to assign clients to this user.")
     print(token)
 elif action == "revoke":
     matches = [key for key in data["users"] if key == name or key.startswith(name)]
@@ -1281,11 +1282,11 @@ list_clients() {
                 local handshake="${_pk_to_hs[$current_pk]:-0}"
                 if [[ "$handshake" =~ ^[0-9]+$ && "$handshake" -gt 0 ]]; then
                     local diff=$((now - handshake))
-                    if [[ $diff -lt 180 ]]; then
+                    if [[ $diff -ge 0 && $diff -lt 180 ]]; then
                         st="Активен"
                         [[ "$NO_COLOR" -eq 0 ]] && color_start="\033[0;32m"
                         ((act++))
-                    elif [[ $diff -lt 86400 ]]; then
+                    elif [[ $diff -ge 0 && $diff -lt 86400 ]]; then
                         st="Недавно"
                         [[ "$NO_COLOR" -eq 0 ]] && color_start="\033[0;33m"
                         ((act++))
@@ -1408,9 +1409,9 @@ stats_clients() {
             local now
             now=$(date +%s)
             local diff=$((now - handshake))
-            if [[ $diff -lt 180 ]]; then
+            if [[ $diff -ge 0 && $diff -lt 180 ]]; then
                 status="Активен"
-            elif [[ $diff -lt 86400 ]]; then
+            elif [[ $diff -ge 0 && $diff -lt 86400 ]]; then
                 status="Недавно"
             fi
             hs_str=$(date -d "@$handshake" '+%F %T' 2>/dev/null || echo "$handshake")
@@ -1574,6 +1575,7 @@ case $COMMAND in
         done
 
         if [[ $_added -gt 0 ]]; then
+            sync_clients_hosts
             [[ -n "${_CLI_APPLY_MODE:-}" ]] && export AWG_APPLY_MODE="$_CLI_APPLY_MODE"
             if [[ "${AWG_SKIP_APPLY:-0}" == "1" ]]; then
                 # apply_config сам залогирует и вернёт 0
@@ -1641,6 +1643,7 @@ case $COMMAND in
             done
 
             if [[ $_removed -gt 0 ]]; then
+                sync_clients_hosts
                 bash "$AWG_DIR/postup.sh" 2>/dev/null || log_warn "Не удалось применить firewall hooks live; перезапустите awg-quick@awg0."
                 [[ -n "${_CLI_APPLY_MODE:-}" ]] && export AWG_APPLY_MODE="$_CLI_APPLY_MODE"
                 if [[ "${AWG_SKIP_APPLY:-0}" == "1" ]]; then
@@ -1788,7 +1791,11 @@ case $COMMAND in
     set-name)
         safe_load_config "$CONFIG_FILE" 2>/dev/null || true
         [[ -z "${ARGS[0]:-}" ]] && die "Использование: set-name \"Новое Имя\""
-        set_server_name "${ARGS[*]}" || _cmd_rc=1
+        if set_server_name "${ARGS[*]}"; then
+            sync_clients_hosts
+        else
+            _cmd_rc=1
+        fi
         ;;
 
     web)
