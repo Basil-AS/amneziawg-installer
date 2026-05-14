@@ -9,6 +9,7 @@ import secrets
 import shlex
 import ssl
 import subprocess
+import threading
 import time
 from http import HTTPStatus
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
@@ -22,8 +23,9 @@ SERVER_CONF = Path(os.environ.get("SERVER_CONF_FILE", "/etc/amnezia/amneziawg/aw
 TOKEN_FILE = WEB_DIR / "tokens.json"
 LEGACY_TOKEN_FILE = WEB_DIR / "auth_token"
 NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
-TOKEN_NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,63}$")
+TOKEN_HASH_RE = re.compile(r"^[0-9a-f]{64}$")
 RATE = {}
+TOKENS_LOCK = threading.Lock()
 
 
 def run_manage(*args, timeout=60):
@@ -45,11 +47,27 @@ def token_hash(token):
 
 def write_tokens(data):
     WEB_DIR.mkdir(parents=True, exist_ok=True)
+    clean = {
+        "super_token_hash": data["super_token_hash"],
+        "users": data.get("users", {}),
+    }
     tmp = TOKEN_FILE.with_name(f"{TOKEN_FILE.name}.tmp.{os.getpid()}")
-    tmp.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    tmp.write_text(json.dumps(clean, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     os.chmod(tmp, 0o600)
     os.replace(tmp, TOKEN_FILE)
     os.chmod(TOKEN_FILE, 0o600)
+
+
+def clean_client_list(value):
+    if not isinstance(value, list):
+        return []
+    out, seen = [], set()
+    for item in value:
+        name = str(item)
+        if NAME_RE.fullmatch(name) and name not in seen:
+            out.append(name)
+            seen.add(name)
+    return out
 
 
 def load_tokens():
@@ -62,19 +80,26 @@ def load_tokens():
     if not isinstance(data, dict):
         data = {}
 
-    normal = data.get("normal")
-    if not isinstance(normal, dict):
-        normal = {}
-    normal = {str(k): str(v) for k, v in normal.items() if TOKEN_NAME_RE.fullmatch(str(k))}
-
-    super_hash = data.get("super")
-    if not isinstance(super_hash, str) or not re.fullmatch(r"[0-9a-f]{64}", super_hash):
+    super_hash = data.get("super_token_hash") or data.get("super")
+    if not isinstance(super_hash, str) or not TOKEN_HASH_RE.fullmatch(super_hash):
         legacy = LEGACY_TOKEN_FILE.read_text(errors="ignore").strip() if LEGACY_TOKEN_FILE.exists() else ""
-        if legacy:
-            super_hash = token_hash(legacy)
-        else:
-            super_hash = token_hash(secrets.token_urlsafe(32))
-    clean = {"super": super_hash, "normal": normal}
+        super_hash = token_hash(legacy) if legacy else token_hash(secrets.token_urlsafe(32))
+
+    users = data.get("users")
+    if not isinstance(users, dict):
+        users = {}
+    legacy_normal = data.get("normal")
+    if isinstance(legacy_normal, dict):
+        for value in legacy_normal.values():
+            if isinstance(value, str) and TOKEN_HASH_RE.fullmatch(value):
+                users.setdefault(value, [])
+
+    clean_users = {}
+    for digest, clients in users.items():
+        if isinstance(digest, str) and TOKEN_HASH_RE.fullmatch(digest):
+            clean_users[digest] = clean_client_list(clients)
+
+    clean = {"super_token_hash": super_hash, "users": clean_users}
     if clean != data or not TOKEN_FILE.exists():
         write_tokens(clean)
     return clean
@@ -88,12 +113,40 @@ def authenticate(header):
         return None
     digest = token_hash(token)
     data = load_tokens()
-    if hmac.compare_digest(digest, data.get("super", "")):
-        return "super"
-    for name, item in data.get("normal", {}).items():
-        if hmac.compare_digest(digest, item):
-            return f"normal:{name}"
+    if hmac.compare_digest(digest, data.get("super_token_hash", "")):
+        return {"role": "super", "hash": digest, "clients": None}
+    for user_hash, clients in data.get("users", {}).items():
+        if hmac.compare_digest(digest, user_hash):
+            return {"role": "user", "hash": digest, "clients": clients}
     return None
+
+
+def mutate_user_clients(user_hash, client_name=None, remove=False):
+    if not user_hash or not client_name:
+        return
+    with TOKENS_LOCK:
+        data = load_tokens()
+        users = data.setdefault("users", {})
+        clients = clean_client_list(users.get(user_hash, []))
+        if remove:
+            clients = [name for name in clients if name != client_name]
+        elif client_name not in clients:
+            clients.append(client_name)
+        users[user_hash] = clients
+        write_tokens(data)
+
+
+def remove_client_from_all_tokens(client_name):
+    with TOKENS_LOCK:
+        data = load_tokens()
+        changed = False
+        for user_hash, clients in list(data.get("users", {}).items()):
+            clean = [name for name in clean_client_list(clients) if name != client_name]
+            if clean != clients:
+                data["users"][user_hash] = clean
+                changed = True
+        if changed:
+            write_tokens(data)
 
 
 def parse_config():
@@ -129,18 +182,26 @@ def parse_peers():
     if not SERVER_CONF.exists():
         return peers
     for line in SERVER_CONF.read_text(errors="ignore").splitlines():
-        if line == "[Peer]":
+        if line in {"[Peer]", "# [Peer]"}:
             if cur:
                 peers.append(cur)
-            cur = {"name": "", "public_key": "", "ipv4": "", "ipv6": "", "p2p_ports": []}
+            cur = {
+                "name": "",
+                "public_key": "",
+                "ipv4": "",
+                "ipv6": "",
+                "p2p_ports": [],
+                "disabled": line == "# [Peer]",
+            }
         elif cur is not None and line.startswith("#_Name = "):
             cur["name"] = line.split("=", 1)[1].strip()
         elif cur is not None and line.startswith("#_P2PPorts"):
             cur["p2p_ports"] = [int(x) for x in re.findall(r"\d+", line)]
-        elif cur is not None and line.startswith("PublicKey"):
-            cur["public_key"] = line.split("=", 1)[1].strip()
-        elif cur is not None and line.startswith("AllowedIPs"):
-            value = line.split("=", 1)[1]
+        elif cur is not None and re.match(r"^#?\s*PublicKey", line):
+            cur["public_key"] = line.split("=", 1)[1].strip() if "=" in line else ""
+            cur["disabled"] = cur["disabled"] or line.startswith("#")
+        elif cur is not None and re.match(r"^#?\s*AllowedIPs", line):
+            value = line.split("=", 1)[1] if "=" in line else ""
             m4 = re.search(r"(\d+\.\d+\.\d+\.\d+)/32", value)
             m6 = re.search(r"([0-9A-Fa-f:]+)/128", value)
             if m4:
@@ -184,10 +245,10 @@ def safe_name(name):
     return name
 
 
-def safe_token_name(name):
-    if not TOKEN_NAME_RE.fullmatch(name or ""):
-        raise ValueError("invalid token name")
-    return name
+def safe_token_hash(value):
+    if not TOKEN_HASH_RE.fullmatch(value or ""):
+        raise ValueError("invalid token hash")
+    return value
 
 
 def require_server_name(name):
@@ -204,18 +265,25 @@ def client_stats_map():
         rows = json.loads(p.stdout or "[]")
     except json.JSONDecodeError:
         return {}
-    return {row.get("name"): row for row in rows if isinstance(row, dict)}
+    out = {}
+    iterable = rows if isinstance(rows, list) else []
+    for row in iterable:
+        if isinstance(row, dict) and row.get("name"):
+            if "last_handshake" in row:
+                row["latestHandshakeAt"] = row.get("last_handshake")
+            out[row["name"]] = row
+    return out
 
 
 class Handler(SimpleHTTPRequestHandler):
-    server_version = "Panel/1.0"
+    server_version = "Panel/1.0 fork delta/patchset"
 
     def log_message(self, fmt, *args):
         return
 
-    def api_role(self):
+    def api_auth(self):
         if not self.path.startswith("/api/"):
-            return "static"
+            return {"role": "static"}
         ip = self.client_address[0]
         now = time.time()
         bucket = [t for t in RATE.get(ip, []) if now - t < 60]
@@ -224,21 +292,37 @@ class Handler(SimpleHTTPRequestHandler):
         if len(bucket) > 100:
             self.send_error(HTTPStatus.TOO_MANY_REQUESTS)
             return None
-        role = authenticate(self.headers.get("Authorization", ""))
-        if not role:
+        auth = authenticate(self.headers.get("Authorization", ""))
+        if not auth:
             self.send_error(HTTPStatus.UNAUTHORIZED)
             return None
-        return role
+        return auth
 
     @staticmethod
-    def is_super(role):
-        return role == "super"
+    def is_super(auth):
+        return auth.get("role") == "super"
 
-    def require_super(self, role):
-        if not self.is_super(role):
+    def require_super(self, auth):
+        if not self.is_super(auth):
             self.send_error(HTTPStatus.FORBIDDEN)
             return False
         return True
+
+    def can_access_client(self, auth, name):
+        return self.is_super(auth) or name in set(auth.get("clients") or [])
+
+    def require_client_access(self, auth, name):
+        if not self.can_access_client(auth, name):
+            self.send_error(HTTPStatus.FORBIDDEN)
+            return False
+        return True
+
+    def visible_peers(self, auth):
+        rows = parse_peers()
+        if self.is_super(auth):
+            return rows
+        allowed = set(auth.get("clients") or [])
+        return [row for row in rows if row.get("name") in allowed]
 
     def send_json(self, obj, status=200):
         data = json.dumps(obj, ensure_ascii=False).encode()
@@ -264,23 +348,17 @@ class Handler(SimpleHTTPRequestHandler):
         self.wfile.write(data)
 
     def do_GET(self):
-        role = self.api_role()
-        if role is None:
+        auth = self.api_auth()
+        if auth is None:
             return
         u = urlparse(self.path)
-        if role == "static":
+        if auth["role"] == "static":
             if unquote(u.path).lstrip("/") in {"panel.js", "panel.css"}:
                 self.send_error(404)
                 return
             self.path = "/index.html" if u.path == "/" else self.path
             return super().do_GET()
 
-        if u.path == "/api/panel.js":
-            self.send_file(WEB_DIR / "panel.js", "application/javascript; charset=utf-8")
-            return
-        if u.path == "/api/panel.css":
-            self.send_file(WEB_DIR / "panel.css", "text/css; charset=utf-8")
-            return
         if u.path == "/api/status":
             active = subprocess.run(
                 ["systemctl", "is-active", "awg-quick@awg0"],
@@ -291,10 +369,10 @@ class Handler(SimpleHTTPRequestHandler):
             cfg = parse_config()
             self.send_json({
                 "service": active,
-                "clients": len(parse_peers()),
+                "clients": len(self.visible_peers(auth)),
                 "version": "5.13.0",
                 "fork": "fork delta/patchset",
-                "role": "super" if self.is_super(role) else "normal",
+                "role": "super" if self.is_super(auth) else "user",
                 "server_name": cfg["AWG_SERVER_NAME"],
             })
             return
@@ -304,23 +382,32 @@ class Handler(SimpleHTTPRequestHandler):
         if u.path == "/api/clients":
             stats = client_stats_map()
             rows = []
-            for peer in parse_peers():
+            for peer in self.visible_peers(auth):
                 item = dict(peer)
                 item.update(stats.get(peer["name"], {}))
+                item.setdefault("rx", 0)
+                item.setdefault("tx", 0)
+                item.setdefault("latestHandshakeAt", item.get("last_handshake", 0))
                 rows.append(item)
-            self.send_json(rows)
+            self.send_json({"role": "super" if self.is_super(auth) else "user", "clients": rows})
             return
         if u.path == "/api/stats":
-            p = run_manage("--json", "stats", timeout=20)
-            self.send_json(json.loads(p.stdout or "[]") if p.returncode == 0 else {"error": p.stderr or p.stdout}, 200 if p.returncode == 0 else 500)
+            rows = list(client_stats_map().values())
+            if not self.is_super(auth):
+                allowed = set(auth.get("clients") or [])
+                rows = [row for row in rows if row.get("name") in allowed]
+            self.send_json(rows)
             return
         if u.path == "/api/tokens":
-            if not self.require_super(role):
+            if not self.require_super(auth):
                 return
             data = load_tokens()
-            self.send_json({"normal": sorted(data.get("normal", {}).keys())})
+            users = [{"hash": key, "clients": value} for key, value in sorted(data.get("users", {}).items())]
+            self.send_json({"users": users})
             return
         if u.path == "/api/server/logs":
+            if not self.require_super(auth):
+                return
             lines = []
             for f in (AWG_DIR / "manage_amneziawg.log", AWG_DIR / "install_amneziawg.log"):
                 if f.exists():
@@ -332,6 +419,8 @@ class Handler(SimpleHTTPRequestHandler):
             self.send_error(404)
             return
         name, kind = safe_name(m.group(1)), m.group(2)
+        if not self.require_client_access(auth, name):
+            return
         if kind == "config":
             self.send_file(AWG_DIR / f"{name}.conf", "text/plain; charset=utf-8")
         elif kind == "qr":
@@ -343,24 +432,35 @@ class Handler(SimpleHTTPRequestHandler):
             self.send_json({"name": name, "ports": (peer or {}).get("p2p_ports", [])})
 
     def do_POST(self):
-        role = self.api_role()
-        if role is None:
+        auth = self.api_auth()
+        if auth is None:
             return
         u = urlparse(self.path)
         try:
             body = self.json_body()
             if u.path == "/api/clients":
+                name = safe_name(body.get("name", ""))
                 args = []
                 if body.get("expires"):
                     args.append(f"--expires={body['expires']}")
-                p = run_manage(*args, "add", safe_name(body.get("name", "")))
+                p = run_manage(*args, "add", name)
+                if p.returncode == 0 and not self.is_super(auth):
+                    mutate_user_clients(auth["hash"], name)
             elif u.path == "/api/server/restart":
+                if not self.require_super(auth):
+                    return
                 p = run_manage("restart", timeout=90)
             elif u.path == "/api/server/name":
+                if not self.require_super(auth):
+                    return
                 p = run_manage("set-name", require_server_name(body.get("name", "")), timeout=180)
             elif u.path == "/api/dns/restart":
+                if not self.require_super(auth):
+                    return
                 p = run_manage("dns", "restart", timeout=30)
             elif u.path == "/api/dns/mode":
+                if not self.require_super(auth):
+                    return
                 mode = body.get("mode", "")
                 custom = body.get("custom", "")
                 args = ["dns", "set-mode", mode]
@@ -368,66 +468,83 @@ class Handler(SimpleHTTPRequestHandler):
                     args.append(custom)
                 p = run_manage(*args, timeout=120)
             elif u.path == "/api/tokens":
-                if not self.require_super(role):
+                if not self.require_super(auth):
                     return
-                data = load_tokens()
-                name = safe_token_name(body.get("name", ""))
-                if name in data["normal"]:
-                    self.send_json({"error": "token exists"}, 400)
-                    return
+                clients = clean_client_list(body.get("clients", []))
                 token = secrets.token_urlsafe(32)
-                data["normal"][name] = token_hash(token)
-                write_tokens(data)
-                self.send_json({"name": name, "token": token})
+                digest = token_hash(token)
+                with TOKENS_LOCK:
+                    data = load_tokens()
+                    data.setdefault("users", {})[digest] = clients
+                    write_tokens(data)
+                self.send_json({"token": token, "token_hash": digest, "clients": clients})
                 return
             elif u.path == "/api/tokens/reset-all":
-                if not self.require_super(role):
+                if not self.require_super(auth):
                     return
                 token = secrets.token_urlsafe(32)
-                write_tokens({"super": token_hash(token), "normal": {}})
+                write_tokens({"super_token_hash": token_hash(token), "users": {}})
                 self.send_json({"super_token": token})
                 return
             else:
-                m = re.match(r"^/api/clients/([^/]+)/p2p$", u.path)
+                m = re.match(r"^/api/clients/([^/]+)/(p2p|toggle)$", u.path)
                 if not m:
                     self.send_error(404)
                     return
-                args = ["p2p", "add", safe_name(m.group(1))]
-                if body.get("port"):
-                    args.append(str(body["port"]))
-                p = run_manage(*args)
+                name, action = safe_name(m.group(1)), m.group(2)
+                if not self.require_client_access(auth, name):
+                    return
+                if action == "toggle":
+                    p = run_manage("toggle", name, timeout=45)
+                else:
+                    args = ["p2p", "add", name]
+                    if body.get("port"):
+                        args.append(str(body["port"]))
+                    p = run_manage(*args)
             self.send_json({"ok": p.returncode == 0, "stdout": p.stdout, "stderr": p.stderr}, 200 if p.returncode == 0 else 400)
         except ValueError as exc:
             self.send_json({"error": str(exc)}, 400)
 
     def do_DELETE(self):
-        role = self.api_role()
-        if role is None:
+        auth = self.api_auth()
+        if auth is None:
             return
         u = urlparse(self.path)
         try:
             m = re.match(r"^/api/clients/([^/]+)$", u.path)
             if m:
-                p = run_manage("remove", safe_name(m.group(1)))
+                name = safe_name(m.group(1))
+                if not self.require_client_access(auth, name):
+                    return
+                p = run_manage("remove", name)
+                if p.returncode == 0:
+                    if self.is_super(auth):
+                        remove_client_from_all_tokens(name)
+                    else:
+                        mutate_user_clients(auth["hash"], name, remove=True)
             else:
                 m = re.match(r"^/api/clients/([^/]+)/p2p$", u.path)
                 if m:
+                    name = safe_name(m.group(1))
+                    if not self.require_client_access(auth, name):
+                        return
                     port = (parse_qs(u.query).get("port") or [""])[0]
-                    p = run_manage("p2p", "remove", safe_name(m.group(1)), port)
+                    p = run_manage("p2p", "remove", name, port)
                 else:
                     m = re.match(r"^/api/tokens/([^/]+)$", u.path)
                     if not m:
                         self.send_error(404)
                         return
-                    if not self.require_super(role):
+                    if not self.require_super(auth):
                         return
-                    data = load_tokens()
-                    name = safe_token_name(m.group(1))
-                    if name not in data["normal"]:
-                        self.send_json({"error": "token not found"}, 404)
-                        return
-                    del data["normal"][name]
-                    write_tokens(data)
+                    digest = safe_token_hash(m.group(1))
+                    with TOKENS_LOCK:
+                        data = load_tokens()
+                        if digest not in data.get("users", {}):
+                            self.send_json({"error": "token not found"}, 404)
+                            return
+                        del data["users"][digest]
+                        write_tokens(data)
                     self.send_json({"ok": True})
                     return
             self.send_json({"ok": p.returncode == 0, "stdout": p.stdout, "stderr": p.stderr}, 200 if p.returncode == 0 else 400)

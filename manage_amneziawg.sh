@@ -972,15 +972,27 @@ def load():
         data = {}
     if not isinstance(data, dict):
         data = {}
-    normal = data.get("normal")
-    if not isinstance(normal, dict):
-        normal = {}
-    super_hash = data.get("super")
+    users = data.get("users")
+    if not isinstance(users, dict):
+        users = {}
+    legacy_normal = data.get("normal")
+    if isinstance(legacy_normal, dict):
+        for value in legacy_normal.values():
+            if isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value):
+                users.setdefault(value, [])
+    clean_users = {}
+    for key, value in users.items():
+        if not isinstance(key, str) or not re.fullmatch(r"[0-9a-f]{64}", key):
+            continue
+        if not isinstance(value, list):
+            value = []
+        clean_users[key] = [str(item) for item in value if re.fullmatch(r"^[A-Za-z0-9_-]{1,63}$", str(item))]
+    super_hash = data.get("super_token_hash") or data.get("super")
     if not isinstance(super_hash, str) or not re.fullmatch(r"[0-9a-f]{64}", super_hash):
         token = secrets.token_urlsafe(32)
         super_hash = digest(token)
         data["_new_super_token"] = token
-    return {"super": super_hash, "normal": {str(k): str(v) for k, v in normal.items()}}
+    return {"super_token_hash": super_hash, "users": clean_users}
 
 def save(data):
     tmp = path.with_name(path.name + f".tmp.{os.getpid()}")
@@ -993,33 +1005,154 @@ data = load()
 if action == "list":
     save(data)
     print("super: present")
-    for key in sorted(data["normal"]):
-        print(f"normal: {key}")
+    for key, clients in sorted(data["users"].items()):
+        suffix = ",".join(clients) if clients else "-"
+        print(f"user: {key[:12]}... clients={suffix}")
 elif action == "add":
     if not name_re.fullmatch(name):
         raise SystemExit("invalid token name")
-    if name in data["normal"]:
-        raise SystemExit("token already exists")
     token = secrets.token_urlsafe(32)
-    data["normal"][name] = digest(token)
+    data["users"][digest(token)] = []
     save(data)
     print(token)
 elif action == "revoke":
-    if not name_re.fullmatch(name):
-        raise SystemExit("invalid token name")
-    if name not in data["normal"]:
+    matches = [key for key in data["users"] if key == name or key.startswith(name)]
+    if len(matches) != 1:
         raise SystemExit("token not found")
-    del data["normal"][name]
+    del data["users"][matches[0]]
     save(data)
-    print(f"revoked: {name}")
+    print(f"revoked: {matches[0]}")
 elif action == "reset-super":
     token = secrets.token_urlsafe(32)
-    data["super"] = digest(token)
+    data["super_token_hash"] = digest(token)
+    data["users"] = {}
     save(data)
     print(token)
 else:
     raise SystemExit("unknown action")
 PY
+}
+
+toggle_client() {
+    local name="$1"
+    [[ -z "$name" ]] && { log_error "Использование: toggle <имя>"; return 1; }
+    validate_client_name "$name" || return 1
+
+    if [[ "${AWG_SKIP_APPLY:-0}" != "1" ]]; then
+        ensure_amneziawg_kernel_module \
+            || die "Модуль ядра amneziawg недоступен. Запустите 'manage repair-module' и повторите."
+    fi
+
+    local toggle_lockfile="${AWG_DIR}/.awg_config.lock"
+    local toggle_lock_fd
+    exec {toggle_lock_fd}>"$toggle_lockfile"
+    if ! flock -x -w 10 "$toggle_lock_fd"; then
+        log_error "Не удалось получить блокировку конфигурации (другая операция выполняется)"
+        exec {toggle_lock_fd}>&-
+        return 1
+    fi
+
+    if ! grep -qxF "#_Name = ${name}" "$SERVER_CONF_FILE"; then
+        exec {toggle_lock_fd}>&-
+        log_error "Клиент '$name' не найден."
+        return 1
+    fi
+
+    local tmp state state_file
+    tmp=$(mktemp) || { exec {toggle_lock_fd}>&-; log_error "Ошибка mktemp"; return 1; }
+    state_file=$(mktemp) || { rm -f "$tmp"; exec {toggle_lock_fd}>&-; log_error "Ошибка mktemp"; return 1; }
+    if ! awk -v target="$name" -v state_file="$state_file" '
+        function is_header(line) { return line == "[Peer]" || line == "# [Peer]" }
+        function is_cfg(line) { return line ~ /^(PublicKey|PresharedKey|AllowedIPs|Endpoint|PersistentKeepalive)[[:space:]]*=/ }
+        function is_commented_cfg(line) { return line ~ /^# (PublicKey|PresharedKey|AllowedIPs|Endpoint|PersistentKeepalive)[[:space:]]*=/ }
+        function flush_block(    i, disabled, has_target, out) {
+            if (block_len == 0) return
+            has_target = 0
+            disabled = 0
+            for (i = 1; i <= block_len; i++) {
+                if (block[i] == "#_Name = " target) has_target = 1
+                if (block[i] == "# [Peer]" || block[i] ~ /^# PublicKey[[:space:]]*=/) disabled = 1
+            }
+            if (!has_target) {
+                for (i = 1; i <= block_len; i++) print block[i]
+            } else {
+                found = 1
+                state = disabled ? "enabled" : "disabled"
+                for (i = 1; i <= block_len; i++) {
+                    out = block[i]
+                    if (disabled) {
+                        if (out == "# [Peer]") out = "[Peer]"
+                        else if (is_commented_cfg(out)) out = substr(out, 3)
+                    } else {
+                        if (out == "[Peer]") out = "# [Peer]"
+                        else if (is_cfg(out)) out = "# " out
+                    }
+                    print out
+                }
+            }
+            block_len = 0
+        }
+        {
+            if (is_header($0)) {
+                flush_block()
+                block[++block_len] = $0
+                next
+            }
+            if (block_len > 0) {
+                block[++block_len] = $0
+                next
+            }
+            print
+        }
+        END {
+            flush_block()
+            if (!found) state = "missing"
+            print state > state_file
+        }
+    ' "$SERVER_CONF_FILE" > "$tmp"; then
+        rm -f "$tmp" "$state_file"
+        exec {toggle_lock_fd}>&-
+        log_error "Ошибка обработки $SERVER_CONF_FILE"
+        return 1
+    fi
+    state=$(tr -d '[:space:]' < "$state_file" 2>/dev/null || true)
+    rm -f "$state_file"
+
+    if [[ "$state" == "missing" || -z "$state" ]]; then
+        rm -f "$tmp"
+        exec {toggle_lock_fd}>&-
+        log_error "Клиент '$name' не найден."
+        return 1
+    fi
+
+    if ! cp "$SERVER_CONF_FILE" "${SERVER_CONF_FILE}.bak-toggle-$(date +%F_%H-%M-%S)"; then
+        rm -f "$tmp"
+        exec {toggle_lock_fd}>&-
+        log_error "Не удалось создать бэкап $SERVER_CONF_FILE"
+        return 1
+    fi
+    if ! cat "$tmp" > "$SERVER_CONF_FILE"; then
+        rm -f "$tmp"
+        exec {toggle_lock_fd}>&-
+        log_error "Не удалось обновить $SERVER_CONF_FILE"
+        return 1
+    fi
+    rm -f "$tmp"
+
+    [[ -n "${_CLI_APPLY_MODE:-}" ]] && export AWG_APPLY_MODE="$_CLI_APPLY_MODE"
+    if [[ "${AWG_SKIP_APPLY:-0}" == "1" ]]; then
+        apply_config
+        log "Клиент '$name' переключён: $state. Применение отложено (AWG_SKIP_APPLY=1)."
+    elif apply_config; then
+        log "Клиент '$name' переключён: $state. Конфигурация применена."
+    else
+        exec {toggle_lock_fd}>&-
+        log_error "Клиент '$name' переключён в конфиге, но apply_config упал. Проверьте: systemctl status awg-quick@awg0"
+        return 1
+    fi
+
+    exec {toggle_lock_fd}>&-
+    return 0
 }
 
 regenerate_all_clients_for_dns() {
@@ -1338,6 +1471,7 @@ usage() {
     echo "Команды:"
     echo "  add <имя> [имя2 ...]        Добавить клиента(ов). --expires применяется ко всем"
     echo "  remove <имя> [имя2 ...]     Удалить клиента(ов)"
+    echo "  toggle <имя>          Включить/выключить клиента без удаления"
     echo "  list [-v]             Показать список клиентов"
     echo "  stats [--json]        Статистика трафика по клиентам"
     echo "  p2p list              Показать P2P порты всех клиентов"
@@ -1520,6 +1654,11 @@ case $COMMAND in
                 fi
             fi
         fi
+        ;;
+
+    toggle)
+        [[ -z "$CLIENT_NAME" ]] && die "Не указано имя клиента."
+        toggle_client "$CLIENT_NAME" || _cmd_rc=1
         ;;
 
     list)

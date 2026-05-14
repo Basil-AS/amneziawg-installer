@@ -3,15 +3,42 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title></title>
-  <link rel="stylesheet" href="style.css">
+  <title>AmneziaWG Panel</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/apexcharts"></script>
+  <style>
+:root {
+  /* Light Mode (wg-easy) */
+  --bg: #f5f7f8;
+  --panel: #ffffff;
+  --soft: #eef2f4;
+  --line: #d5dde3;
+  --text: #17202a;
+  --muted: #62717e;
+  --accent: #991b1b;
+  --accent-hover: #dc2626;
+  --danger: #b42318;
+}
+:root[data-theme="dark"], .dark {
+  /* Dark Mode (wg-easy) */
+  --bg: #101316;
+  --panel: #181d22;
+  --soft: #20272e;
+  --line: #323b44;
+  --text: #eef3f7;
+  --muted: #9ba8b5;
+  --accent: #991b1b;
+  --accent-hover: #dc2626;
+  --danger: #ef6461;
+}
+html { color-scheme: light; }
+:root[data-theme="dark"] { color-scheme: dark; }
+.apexcharts-tooltip { color: #17202a; }
+  </style>
 </head>
-<body>
-  <main id="login" class="login-shell">
-    <form id="loginForm" autocomplete="off">
-      <input id="token" type="password" autocomplete="current-password" autofocus>
-    </form>
-  </main>
+<body class="bg-[var(--bg)] text-[var(--text)] font-sans antialiased min-h-screen">
+  <main id="app" class="max-w-4xl mx-auto p-4"></main>
+  <div id="toastHost" class="fixed bottom-4 right-4 z-50 grid gap-2"></div>
   <script src="app.js"></script>
 </body>
 </html>
