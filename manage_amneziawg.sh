@@ -854,22 +854,37 @@ validate_dns_list() {
     [[ "$value" =~ ^[0-9a-fA-F.:,\ ]+$ ]] || return 1
 }
 
+shell_quote() {
+    local s="$1"
+    s="${s//\'/\'\\\'\'}"
+    printf "'%s'" "$s"
+}
+
+validate_server_name() {
+    local name="$1"
+    [[ -n "${name//[[:space:]]/}" ]] || return 1
+    [[ "$name" != *$'\n'* && "$name" != *$'\r'* ]] || return 1
+    [[ ${#name} -le 128 ]] || return 1
+}
+
 set_config_value() {
     local key="$1" value="$2"
     [[ -f "$CONFIG_FILE" ]] || { log_error "Не найден $CONFIG_FILE"; return 1; }
-    case "$value" in *$'\n'*|*$'\r'*|*\'*) log_error "Невалидное значение для $key"; return 1 ;; esac
+    case "$value" in *$'\n'*|*$'\r'*) log_error "Невалидное значение для $key"; return 1 ;; esac
+    local quoted
+    quoted=$(shell_quote "$value")
     local tmp
     tmp=$(mktemp "${CONFIG_FILE}.tmp.XXXXXX") || return 1
-    if awk -v key="$key" -v value="$value" '
+    if awk -v key="$key" -v quoted="$quoted" '
         BEGIN { done=0 }
         $0 ~ "^(export[[:space:]]+)?" key "=" {
-            print "export " key "='\''" value "'\''"
+            print "export " key "=" quoted
             done=1
             next
         }
         { print }
         END {
-            if (!done) print "export " key "='\''" value "'\''"
+            if (!done) print "export " key "=" quoted
         }
     ' "$CONFIG_FILE" > "$tmp"; then
         mv -f "$tmp" "$CONFIG_FILE" || { rm -f "$tmp"; return 1; }
@@ -878,6 +893,133 @@ set_config_value() {
     fi
     rm -f "$tmp"
     return 1
+}
+
+update_server_conf_name() {
+    local name="$1"
+    validate_server_name "$name" || { log_error "Некорректное имя сервера."; return 1; }
+    [[ -f "$SERVER_CONF_FILE" ]] || { log_error "Не найден $SERVER_CONF_FILE"; return 1; }
+    local tmp
+    tmp=$(mktemp "${SERVER_CONF_FILE}.tmp.XXXXXX") || return 1
+    if awk -v name="$name" '
+        /^\[Interface\]/ {
+            print
+            print "# Name = " name
+            in_iface=1
+            done=1
+            next
+        }
+        in_iface && /^# Name = / { next }
+        in_iface && /^\[/ { in_iface=0; print; next }
+        { print }
+        END { if (!done) exit 2 }
+    ' "$SERVER_CONF_FILE" > "$tmp"; then
+        mv -f "$tmp" "$SERVER_CONF_FILE" || { rm -f "$tmp"; return 1; }
+        chmod 600 "$SERVER_CONF_FILE" 2>/dev/null || true
+        return 0
+    fi
+    rm -f "$tmp"
+    return 1
+}
+
+regenerate_all_clients_for_name() {
+    local name rc=0
+    while IFS= read -r name; do
+        [[ -n "$name" ]] || continue
+        regenerate_client "$name" || { log_warn "Ошибка перегенерации '$name'"; rc=1; }
+    done < <(grep '^#_Name = ' "$SERVER_CONF_FILE" 2>/dev/null | sed 's/^#_Name = //')
+    return "$rc"
+}
+
+set_server_name() {
+    local name="$1"
+    validate_server_name "$name" || { log_error "Использование: set-name \"Новое Имя\""; return 1; }
+    set_config_value "AWG_SERVER_NAME" "$name" || return 1
+    export AWG_SERVER_NAME="$name"
+    update_server_conf_name "$name" || return 1
+    regenerate_all_clients_for_name || return 1
+    log "Имя сервера установлено: $name. Клиентские конфиги и vpn:// перегенерированы."
+}
+
+web_token_py() {
+    local action="$1" name="${2:-}"
+    local token_file="$AWG_DIR/web/tokens.json"
+    mkdir -p "$AWG_DIR/web" || return 1
+    python3 - "$token_file" "$action" "$name" <<'PY'
+import hashlib
+import json
+import os
+import re
+import secrets
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+action = sys.argv[2]
+name = sys.argv[3]
+name_re = re.compile(r"^[A-Za-z0-9_-]{1,63}$")
+
+def digest(token):
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+def load():
+    if path.exists():
+        try:
+            data = json.loads(path.read_text())
+        except Exception:
+            data = {}
+    else:
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+    normal = data.get("normal")
+    if not isinstance(normal, dict):
+        normal = {}
+    super_hash = data.get("super")
+    if not isinstance(super_hash, str) or not re.fullmatch(r"[0-9a-f]{64}", super_hash):
+        token = secrets.token_urlsafe(32)
+        super_hash = digest(token)
+        data["_new_super_token"] = token
+    return {"super": super_hash, "normal": {str(k): str(v) for k, v in normal.items()}}
+
+def save(data):
+    tmp = path.with_name(path.name + f".tmp.{os.getpid()}")
+    tmp.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, path)
+    os.chmod(path, 0o600)
+
+data = load()
+if action == "list":
+    save(data)
+    print("super: present")
+    for key in sorted(data["normal"]):
+        print(f"normal: {key}")
+elif action == "add":
+    if not name_re.fullmatch(name):
+        raise SystemExit("invalid token name")
+    if name in data["normal"]:
+        raise SystemExit("token already exists")
+    token = secrets.token_urlsafe(32)
+    data["normal"][name] = digest(token)
+    save(data)
+    print(token)
+elif action == "revoke":
+    if not name_re.fullmatch(name):
+        raise SystemExit("invalid token name")
+    if name not in data["normal"]:
+        raise SystemExit("token not found")
+    del data["normal"][name]
+    save(data)
+    print(f"revoked: {name}")
+elif action == "reset-super":
+    token = secrets.token_urlsafe(32)
+    data["super"] = digest(token)
+    save(data)
+    print(token)
+else:
+    raise SystemExit("unknown action")
+PY
 }
 
 regenerate_all_clients_for_dns() {
@@ -1208,6 +1350,11 @@ usage() {
     echo "  dns restart           Перезапустить AdGuard Home"
     echo "  dns logs              Показать последние логи AdGuard Home"
     echo "  dns set-mode <режим>  Сменить DNS: adguard, system или custom [DNS]"
+    echo "  set-name \"ИМЯ\"       Сменить имя сервера и перегенерировать клиентов"
+    echo "  web token list        Показать токены веб-панели"
+    echo "  web token add <name>  Создать обычный токен и вывести его значение"
+    echo "  web token revoke <name> Удалить обычный токен"
+    echo "  web token reset-super Перегенерировать super token"
     echo "  regen [имя]           Перегенерировать файлы клиента(ов)"
     echo "  modify <имя> <пар> <зн> Изменить параметр клиента"
     echo "  backup                Создать бэкап"
@@ -1495,6 +1642,39 @@ case $COMMAND in
                 ;;
             *)
                 die "Неизвестная dns команда: $_sub"
+                ;;
+        esac
+        ;;
+
+    set-name)
+        safe_load_config "$CONFIG_FILE" 2>/dev/null || true
+        [[ -z "${ARGS[0]:-}" ]] && die "Использование: set-name \"Новое Имя\""
+        set_server_name "${ARGS[*]}" || _cmd_rc=1
+        ;;
+
+    web)
+        _sub="${ARGS[0]:-}"
+        if [[ "$_sub" != "token" ]]; then
+            die "Использование: web token list|add <name>|revoke <name>|reset-super"
+        fi
+        _token_cmd="${ARGS[1]:-list}"
+        case "$_token_cmd" in
+            list)
+                web_token_py "list" || _cmd_rc=1
+                ;;
+            add)
+                [[ -z "${ARGS[2]:-}" ]] && die "Использование: web token add <name>"
+                web_token_py "add" "${ARGS[2]}" || _cmd_rc=1
+                ;;
+            revoke)
+                [[ -z "${ARGS[2]:-}" ]] && die "Использование: web token revoke <name>"
+                web_token_py "revoke" "${ARGS[2]}" || _cmd_rc=1
+                ;;
+            reset-super)
+                web_token_py "reset-super" || _cmd_rc=1
+                ;;
+            *)
+                die "Неизвестная web token команда: $_token_cmd"
                 ;;
         esac
         ;;

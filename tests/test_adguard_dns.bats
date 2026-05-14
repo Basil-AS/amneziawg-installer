@@ -45,6 +45,7 @@ CONF
 
 @test "installer and manage expose AdGuard DNS controls" {
     grep -q -- '--enable-adguard' "$BATS_TEST_DIRNAME/../install_amneziawg.sh"
+    grep -q -- '--disable-adguard' "$BATS_TEST_DIRNAME/../install_amneziawg.sh"
     grep -q -- '--dns-mode=MODE' "$BATS_TEST_DIRNAME/../install_amneziawg.sh"
     grep -q 'deploy_adguard_home' "$BATS_TEST_DIRNAME/../install_amneziawg.sh"
     grep -q 'dns set-mode' "$BATS_TEST_DIRNAME/../manage_amneziawg.sh"
@@ -53,6 +54,6 @@ CONF
 
 @test "web panel exposes DNS API and card" {
     grep -q 'api/dns' "$BATS_TEST_DIRNAME/../web/server.py"
-    grep -q 'dns-panel' "$BATS_TEST_DIRNAME/../web/index.html"
+    grep -q 'dns-panel' "$BATS_TEST_DIRNAME/../web/app.js"
     grep -q 'restartDns' "$BATS_TEST_DIRNAME/../web/app.js"
 }
