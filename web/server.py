@@ -353,9 +353,6 @@ class Handler(SimpleHTTPRequestHandler):
             return
         u = urlparse(self.path)
         if auth["role"] == "static":
-            if unquote(u.path).lstrip("/") in {"panel.js", "panel.css"}:
-                self.send_error(404)
-                return
             self.path = "/index.html" if u.path == "/" else self.path
             return super().do_GET()
 
