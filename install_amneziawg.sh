@@ -3137,7 +3137,7 @@ PY
 
     local asset web_base src tmp_asset
     web_base="https://raw.githubusercontent.com/${AWG_REPO}/${AWG_BRANCH}/web"
-    for asset in server.py index.html style.css app.js; do
+    for asset in server.py index.html style.css app.js panel.js panel.css; do
         tmp_asset="$web_dir/${asset}.tmp.$$"
         if curl -fsSL --connect-timeout 10 --max-time 60 -o "$tmp_asset" "${web_base}/${asset}"; then
             mv -f "$tmp_asset" "$web_dir/$asset"
