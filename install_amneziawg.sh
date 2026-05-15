@@ -3004,12 +3004,21 @@ deploy_adguard_home() {
         return 0
     fi
 
+    AG_USERNAME="${AG_USERNAME:-admin}"
+    install_packages python3-bcrypt
     AG_PASSWORD="${AG_PASSWORD:-$(LC_ALL=C tr -dc 'A-Za-z0-9' </dev/urandom | head -c 15)}"
     if [[ -z "$AG_PASSWORD" ]]; then
         AG_PASSWORD="$(openssl rand -base64 24 | tr -dc 'A-Za-z0-9' | head -c 15)"
     fi
     [[ -n "$AG_PASSWORD" ]] || die "AdGuard Home: не удалось сгенерировать пароль администратора"
-    AG_HASH=$("$ag_bin" --hash "$AG_PASSWORD" 2>/dev/null) || die "AdGuard Home: не удалось сгенерировать bcrypt-хеш"
+    AG_HASH=$(AG_PASSWORD="$AG_PASSWORD" python3 - <<'PY'
+import os
+import bcrypt
+
+password = os.environ["AG_PASSWORD"].encode()
+print(bcrypt.hashpw(password, bcrypt.gensalt(rounds=10, prefix=b"2b")).decode())
+PY
+) || die "AdGuard Home: не удалось сгенерировать bcrypt-хеш"
     [[ -n "$AG_HASH" ]] || die "AdGuard Home: пустой bcrypt-хеш пароля"
 
     if [[ "${AWG_IPV6_ENABLED:-0}" == "1" && -n "${AWG_IPV6_SUBNET:-}" ]]; then
@@ -3028,7 +3037,7 @@ PY
 bind_host: 10.9.9.1
 bind_port: ${ag_port}
 users:
-  - name: admin
+  - name: ${AG_USERNAME}
     password: ${AG_HASH}
 auth_attempts: 5
 block_auth_min: 15
@@ -3359,6 +3368,7 @@ step99_finish() {
         fi
     fi
     if [[ "${AWG_ADGUARD_ENABLED:-0}" -eq 1 && -n "${AG_PASSWORD:-}" ]]; then
+        log_warn "  !!! AdGuard Home Admin Login: ${AG_USERNAME:-admin}"
         log_warn "  !!! AdGuard Home Admin Password: ${AG_PASSWORD}"
         log_warn "  AdGuard Home Admin URL: http://10.9.9.1:${AWG_ADGUARD_PORT:-3000}"
     fi
