@@ -196,7 +196,8 @@ def parse_peers():
         elif cur is not None and line.startswith("#_Name = "):
             cur["name"] = line.split("=", 1)[1].strip()
         elif cur is not None and line.startswith("#_P2PPorts"):
-            cur["p2p_ports"] = [int(x) for x in re.findall(r"\d+", line.split("=", 1)[-1])]
+            value = line.split("=", 1)[1] if "=" in line else ""
+            cur["p2p_ports"] = [int(x) for x in re.findall(r"\d+", value)]
         elif cur is not None and re.match(r"^#?\s*PublicKey", line):
             cur["public_key"] = line.split("=", 1)[1].strip() if "=" in line else ""
             cur["disabled"] = cur["disabled"] or line.startswith("#")
@@ -394,7 +395,8 @@ class Handler(SimpleHTTPRequestHandler):
                 item["rx"] = row_stats.get("rx", 0)
                 item["tx"] = row_stats.get("tx", 0)
                 item["latestHandshakeAt"] = row_stats.get("latestHandshakeAt", row_stats.get("last_handshake", 0))
-                item["endpoint"] = row_stats.get("endpoint", "")
+                endpoint = row_stats.get("endpoint", "")
+                item["endpoint"] = "" if endpoint in {"", "-", "(none)", "none"} else endpoint
                 item["status"] = row_stats.get("status", "")
                 rows.append(item)
             self.send_json({"role": "super" if self.is_super(auth) else "user", "clients": rows})

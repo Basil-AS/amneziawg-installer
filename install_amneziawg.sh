@@ -2972,7 +2972,7 @@ deploy_adguard_home() {
     local ag_dir="${AWG_ADGUARD_DIR:-/opt/AdGuardHome}"
     local ag_port="${AWG_ADGUARD_PORT:-3000}"
     local ag_bin="$ag_dir/AdGuardHome"
-    local ag_arch url tmp tgz server_v6=""
+    local ag_arch url tmp tgz server_v6="" AG_HASH=""
 
     case "$(uname -m)" in
         x86_64|amd64) ag_arch="amd64" ;;
@@ -3004,6 +3004,15 @@ deploy_adguard_home() {
         return 0
     fi
 
+    install_packages apache2-utils
+    AG_PASSWORD="${AG_PASSWORD:-$(LC_ALL=C tr -dc 'A-Za-z0-9' </dev/urandom | head -c 15)}"
+    if [[ -z "$AG_PASSWORD" ]]; then
+        AG_PASSWORD="$(openssl rand -base64 24 | tr -dc 'A-Za-z0-9' | head -c 15)"
+    fi
+    [[ -n "$AG_PASSWORD" ]] || die "AdGuard Home: не удалось сгенерировать пароль администратора"
+    AG_HASH=$(htpasswd -B -C 10 -n -b admin "$AG_PASSWORD" | cut -d":" -f2-) || die "AdGuard Home: не удалось сгенерировать bcrypt-хеш пароля"
+    [[ -n "$AG_HASH" ]] || die "AdGuard Home: пустой bcrypt-хеш пароля"
+
     if [[ "${AWG_IPV6_ENABLED:-0}" == "1" && -n "${AWG_IPV6_SUBNET:-}" ]]; then
         server_v6=$(python3 - "$AWG_IPV6_SUBNET" <<'PY'
 import ipaddress, sys
@@ -3019,7 +3028,9 @@ PY
     cat > "$ag_dir/AdGuardHome.yaml" << EOF
 bind_host: 10.9.9.1
 bind_port: ${ag_port}
-users: []
+users:
+  - name: admin
+    password: ${AG_HASH}
 auth_attempts: 5
 block_auth_min: 15
 http_proxy: ""
@@ -3347,6 +3358,10 @@ step99_finish() {
         else
             log "  Web token reset: sudo bash $MANAGE_SCRIPT_PATH web token reset-super"
         fi
+    fi
+    if [[ "${AWG_ADGUARD_ENABLED:-0}" -eq 1 && -n "${AG_PASSWORD:-}" ]]; then
+        log_warn "  !!! AdGuard Home Admin Password: ${AG_PASSWORD}"
+        log_warn "  AdGuard Home Admin URL: http://10.9.9.1:${AWG_ADGUARD_PORT:-3000}"
     fi
     log "  awg show                              # Статус AmneziaWG"
     log "  ufw status verbose                    # Статус Firewall"

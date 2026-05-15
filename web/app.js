@@ -5,7 +5,9 @@ let statusState = null;
 let dnsState = null;
 let latestClients = [];
 let pollTimer = null;
-const previousBytes = new Map();
+const previousRx = new Map();
+const previousTx = new Map();
+const previousSampleAt = new Map();
 const speedHistory = new Map();
 const charts = new Map();
 
@@ -81,6 +83,22 @@ function speed(n) {
   return `${bytes(n)}/s`;
 }
 
+function nameHash(value) {
+  let hash = 0;
+  for (const ch of String(value || "")) {
+    hash = ((hash << 5) - hash + ch.charCodeAt(0)) | 0;
+  }
+  return Math.abs(hash);
+}
+
+function normalizeP2pPorts(value) {
+  const source = Array.isArray(value) ? value : String(value || "").split(/[,\s]+/);
+  const seen = new Set();
+  return source
+    .map(port => Number.parseInt(String(port).trim(), 10))
+    .filter(port => Number.isInteger(port) && port > 0 && port <= 65535 && !seen.has(port) && seen.add(port));
+}
+
 function timeAgo(value) {
   const ts = Number(value || 0);
   if (!ts) return "never";
@@ -109,7 +127,10 @@ async function avatarHtml(name) {
     return `<img class="w-10 h-10 rounded-full bg-[var(--soft)]" src="https://gravatar.com/avatar/${hash}?d=identicon" alt="">`;
   }
   const first = esc((label[0] || "?").toUpperCase());
-  return `<div class="w-10 h-10 bg-[var(--soft)] rounded-full grid place-items-center text-sm font-bold text-[var(--muted)]">${first}</div>`;
+  const hue = nameHash(label) % 360;
+  const bg = `hsl(${hue} 72% 42%)`;
+  const ring = `hsl(${hue} 82% 32%)`;
+  return `<div class="w-10 h-10 rounded-full grid place-items-center text-sm font-bold text-white shadow-sm ring-2 ring-inset" style="background:${bg};--tw-ring-color:${ring}">${first}</div>`;
 }
 
 function setTheme(next) {
@@ -185,7 +206,7 @@ async function renderPanel() {
       </div>
     </header>
 
-    <section class="grid gap-3 sm:grid-cols-3">
+    <section class="grid gap-3 sm:grid-cols-4">
       <div class="rounded-lg border border-[var(--line)] bg-[var(--panel)] p-4">
         <p class="text-xs font-semibold uppercase text-[var(--muted)]">Active</p>
         <strong id="metricActive" class="mt-2 block text-2xl">0</strong>
@@ -194,9 +215,9 @@ async function renderPanel() {
         <p class="text-xs font-semibold uppercase text-[var(--muted)]">Clients</p>
         <strong id="metricClients" class="mt-2 block text-2xl">0</strong>
       </div>
-      <div class="rounded-lg border border-[var(--line)] bg-[var(--panel)] p-4">
+      <div class="min-w-0 rounded-lg border border-[var(--line)] bg-[var(--panel)] p-4 sm:col-span-2">
         <p class="text-xs font-semibold uppercase text-[var(--muted)]">DNS</p>
-        <strong id="metricDns" class="mt-2 block truncate text-2xl">-</strong>
+        <strong id="metricDns" class="mt-2 flex min-w-0 items-center text-lg sm:text-2xl">-</strong>
       </div>
     </section>
 
@@ -242,9 +263,9 @@ function renderDnsMetric() {
   if (!metric || !dnsState) return;
   const label = dnsState.client_dns || dnsState.mode || "-";
   if (dnsState.adguard_enabled) {
-    const url = `${window.location.protocol}//${window.location.hostname}:${dnsState.adguard_port || 3000}`;
+    const url = `http://10.9.9.1:${dnsState.adguard_port || 3000}`;
     metric.innerHTML = `
-      <span class="min-w-0 truncate">${esc(label)}</span>
+      <span class="min-w-0 flex-1 truncate">${esc(label)}</span>
       <a class="ml-2 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-[var(--line)] bg-[var(--soft)] text-[var(--accent)] transition hover:border-[var(--accent)]" href="${esc(url)}" target="_blank" rel="noopener" title="Open AdGuard" aria-label="Open AdGuard">${icon("external")}</a>
     `;
     metric.classList.add("flex", "items-center");
@@ -259,18 +280,32 @@ async function loadClients() {
   const payload = await api("/api/clients");
   const rows = Array.isArray(payload) ? payload : (payload.clients || []);
   latestClients = await Promise.all(rows.map(async client => {
-    const total = Number(client.rx || 0) + Number(client.tx || 0);
-    const prev = previousBytes.get(client.name);
-    let bps = 0;
-    if (prev && now > prev.time && total >= prev.total) {
-      bps = (total - prev.total) / ((now - prev.time) / 1000);
+    const rx = Number(client.rx || 0);
+    const tx = Number(client.tx || 0);
+    const prevTime = previousSampleAt.get(client.name);
+    const prevRxBytes = previousRx.get(client.name);
+    const prevTxBytes = previousTx.get(client.name);
+    let rxSpeed = 0;
+    let txSpeed = 0;
+    if (prevTime && now > prevTime) {
+      const elapsed = (now - prevTime) / 1000;
+      if (rx >= Number(prevRxBytes || 0)) rxSpeed = (rx - Number(prevRxBytes || 0)) / elapsed;
+      if (tx >= Number(prevTxBytes || 0)) txSpeed = (tx - Number(prevTxBytes || 0)) / elapsed;
     }
-    previousBytes.set(client.name, {total, time: now});
+    previousRx.set(client.name, rx);
+    previousTx.set(client.name, tx);
+    previousSampleAt.set(client.name, now);
     const history = speedHistory.get(client.name) || [];
-    history.push(Math.max(0, Math.round(bps)));
+    history.push(Math.max(0, Math.round(rxSpeed + txSpeed)));
     while (history.length > 30) history.shift();
     speedHistory.set(client.name, history);
-    return Object.assign({}, client, {speedBps: bps, totalBytes: total, avatar: await avatarHtml(client.name)});
+    return Object.assign({}, client, {
+      rxSpeedBps: rxSpeed,
+      txSpeedBps: txSpeed,
+      totalBytes: rx + tx,
+      p2p_ports: normalizeP2pPorts(client.p2p_ports),
+      avatar: await avatarHtml(client.name),
+    });
   }));
   renderClients();
   document.querySelector("#metricClients").textContent = latestClients.length;
@@ -289,11 +324,12 @@ function renderClients() {
   host.innerHTML = latestClients.map(client => {
     const online = isOnline(client);
     const ip = [client.ipv4 || client.ip, client.ipv6].filter(Boolean).join(" / ") || "-";
-    const search = `${client.name} ${ip}`.toLowerCase();
+    const endpoint = client.endpoint || "-";
+    const search = `${client.name} ${ip} ${endpoint} ${(client.p2p_ports || []).join(" ")}`.toLowerCase();
     return `
-      <article class="client-card bg-[var(--panel)] border-b border-[var(--line)] p-4 flex items-center gap-4 relative overflow-hidden last:border-b-0" data-name="${esc(client.name)}" data-search="${esc(search)}">
+      <article class="client-card bg-[var(--panel)] border-b border-[var(--line)] p-4 flex flex-col gap-4 relative overflow-hidden last:border-b-0 sm:flex-row sm:items-center" data-name="${esc(client.name)}" data-search="${esc(search)}">
         <div id="chart-${esc(client.name)}" class="pointer-events-none absolute inset-x-0 bottom-0 z-0 h-full opacity-20"></div>
-        <div class="relative z-10 shrink-0">
+        <div class="relative z-10 shrink-0 self-start sm:self-auto">
           ${client.avatar}
           <span class="absolute -right-0.5 -bottom-0.5 grid h-3.5 w-3.5 place-items-center">
             ${online ? '<span class="absolute inline-flex h-full w-full rounded-full bg-green-500 opacity-75 animate-ping"></span><span class="relative inline-flex h-3 w-3 rounded-full bg-green-600 ring-2 ring-[var(--panel)]"></span>' : '<span class="relative inline-flex h-3 w-3 rounded-full bg-[var(--muted)] ring-2 ring-[var(--panel)]"></span>'}
@@ -306,14 +342,14 @@ function renderClients() {
           </div>
           <p class="mt-1 truncate text-sm text-[var(--muted)]">${esc(ip)}</p>
           <p class="mt-1 text-xs text-[var(--muted)]">Last seen ${esc(timeAgo(client.latestHandshakeAt || client.last_handshake))}</p>
-          <p class="mt-1 text-xs text-[var(--muted)]">Endpoint: ${esc(client.endpoint || "-")}</p>
+          <p class="mt-1 truncate text-xs text-[var(--muted)]">Endpoint: ${esc(endpoint)}</p>
           <div class="mt-2 flex flex-wrap gap-1">${(client.p2p_ports || []).map(p => '<span class="inline-block px-2 py-0.5 text-[10px] font-medium bg-[var(--soft)] border border-[var(--line)] rounded-full">P2P: ' + esc(p) + '</span>').join('')}</div>
         </div>
-        <div class="relative z-10 hidden min-w-32 text-right sm:block">
-          <p class="text-sm font-semibold">${esc(speed(client.speedBps))}</p>
+        <div class="relative z-10 min-w-0 text-left sm:min-w-36 sm:text-right">
+          <p class="flex flex-wrap gap-x-3 gap-y-1 text-sm font-semibold sm:justify-end"><span>↓ ${esc(speed(client.rxSpeedBps))}</span><span>↑ ${esc(speed(client.txSpeedBps))}</span></p>
           <p class="mt-1 text-xs text-[var(--muted)]">${esc(bytes(client.rx))} down · ${esc(bytes(client.tx))} up</p>
         </div>
-        <div class="relative z-10 flex shrink-0 flex-wrap justify-end gap-1">
+        <div class="relative z-10 flex w-full shrink-0 flex-wrap justify-end gap-1 sm:w-auto">
           <button data-action="toggle" title="${client.disabled ? "Enable Client" : "Disable Client"}" class="${buttonClasses("w-9 px-0")}">${icon("power")}</button>
           <button data-action="config" title="Config" class="${buttonClasses("w-9 px-0")}">${icon("file")}</button>
           <button data-action="qr" title="QR code" class="${buttonClasses("w-9 px-0")}">${icon("qr")}</button>
@@ -360,12 +396,66 @@ function showHelp() {
   showModal("Help & Clients", `
     <div class="text-sm">
       <p class="mb-4 text-[var(--danger)] font-bold">⚠️ Standard WireGuard clients WILL NOT WORK.</p>
-      <p class="mb-2">Please use the official Amnezia VPN client (version &gt;= 4.8.12.7) with AWG 2.0 protocol support:</p>
-      <ul class="list-disc pl-5 space-y-1 text-[var(--accent)] underline">
-        <li><a href="https://github.com/amnezia-vpn/amnezia-client/releases" target="_blank" rel="noopener">Windows / macOS / Linux</a></li>
-        <li><a href="https://apps.apple.com/app/amnezia-vpn/id1600523087" target="_blank" rel="noopener">iOS (App Store)</a></li>
-        <li><a href="https://play.google.com/store/apps/details?id=org.amnezia.vpn" target="_blank" rel="noopener">Android (Google Play)</a></li>
-      </ul>
+      <div class="overflow-x-auto rounded-lg border border-[var(--line)]">
+        <table class="min-w-[720px] w-full border-collapse text-left text-xs">
+          <thead class="bg-[var(--soft)] text-[var(--muted)]">
+            <tr>
+              <th class="px-3 py-2 font-semibold">Client</th>
+              <th class="px-3 py-2 font-semibold">Platforms</th>
+              <th class="px-3 py-2 font-semibold">AWG 1.x</th>
+              <th class="px-3 py-2 font-semibold">AWG 2.0</th>
+              <th class="px-3 py-2 font-semibold">Notes</th>
+            </tr>
+          </thead>
+          <tbody class="divide-y divide-[var(--line)]">
+            <tr>
+              <td class="px-3 py-2 font-semibold"><a class="text-[var(--accent)] underline" href="https://github.com/amnezia-vpn/amnezia-client/releases" target="_blank" rel="noopener">Amnezia VPN</a></td>
+              <td class="px-3 py-2">Win/Mac/Lin/Android/iOS</td>
+              <td class="px-3 py-2">✅</td>
+              <td class="px-3 py-2">✅ (&gt;= 4.8.12.7)</td>
+              <td class="px-3 py-2">Recommended. Supports vpn:// URI.</td>
+            </tr>
+            <tr>
+              <td class="px-3 py-2 font-semibold">AmneziaWG</td>
+              <td class="px-3 py-2">Android/Windows</td>
+              <td class="px-3 py-2">✅</td>
+              <td class="px-3 py-2">✅ (&gt;= 2.0.0)</td>
+              <td class="px-3 py-2">Lightweight tunnel manager (.conf).</td>
+            </tr>
+            <tr>
+              <td class="px-3 py-2 font-semibold">WG Tunnel</td>
+              <td class="px-3 py-2">Android</td>
+              <td class="px-3 py-2">✅</td>
+              <td class="px-3 py-2">⚠️</td>
+              <td class="px-3 py-2">FOSS, auto-tunneling.</td>
+            </tr>
+            <tr>
+              <td class="px-3 py-2 font-semibold"><a class="text-[var(--accent)] underline" href="https://apps.apple.com/app/amnezia-vpn/id1600523087" target="_blank" rel="noopener">AmneziaWG</a></td>
+              <td class="px-3 py-2">iOS</td>
+              <td class="px-3 py-2">✅</td>
+              <td class="px-3 py-2">✅</td>
+              <td class="px-3 py-2">Native App Store client.</td>
+            </tr>
+            <tr>
+              <td class="px-3 py-2 font-semibold">WireSock VPN Client</td>
+              <td class="px-3 py-2">Windows</td>
+              <td class="px-3 py-2">✅</td>
+              <td class="px-3 py-2">✅</td>
+              <td class="px-3 py-2">Commercial.</td>
+            </tr>
+            <tr>
+              <td class="px-3 py-2 font-semibold">Standard WireGuard</td>
+              <td class="px-3 py-2">All</td>
+              <td class="px-3 py-2">❌</td>
+              <td class="px-3 py-2">❌</td>
+              <td class="px-3 py-2">Does not support AWG parameters.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <blockquote class="mt-4 rounded-md border-l-4 border-[var(--danger)] bg-[var(--soft)] px-3 py-2 text-[var(--muted)]">
+        Если клиент выдает ошибку про неизвестный параметр (S3, S4, I1, H1) — используйте клиент с полной поддержкой AWG 2.0.
+      </blockquote>
     </div>
   `);
 }
