@@ -1508,10 +1508,24 @@ sync_clients_hosts() {
     body=$(awg_mktemp) || return 0
 
     awk '
+    function dns_alias(src, out) {
+        out=tolower(src)
+        gsub(/[^a-z0-9-]/, "-", out)
+        gsub(/-+/, "-", out)
+        sub(/^-+/, "", out)
+        sub(/-+$/, "", out)
+        if (out == "") out="client"
+        if (length(out) > 63) {
+            out=substr(out, 1, 63)
+            sub(/-+$/, "", out)
+        }
+        return out ".awg"
+    }
     function emit() {
         if (name != "" && ipv4 != "") {
-            print ipv4 " " name " " name ".awg"
-            if (ipv6 != "") print ipv6 " " name " " name ".awg"
+            alias=dns_alias(name)
+            print ipv4 " " name " " alias
+            if (ipv6 != "") print ipv6 " " name " " alias
         }
     }
     /^\[Peer\]/ { emit(); name=""; ipv4=""; ipv6=""; in_peer=1; next }
@@ -1643,7 +1657,10 @@ def render_clients(peers):
 def render_rewrites(peers):
     entries = []
     for peer in peers:
-        domain = f"{peer['name']}.awg"
+        label = re.sub(r"[^a-z0-9-]+", "-", peer["name"].lower())
+        label = re.sub(r"-+", "-", label).strip("-") or "client"
+        label = label[:63].rstrip("-") or "client"
+        domain = f"{label}.awg"
         for client_id in peer["ids"]:
             entries.append((domain, client_id))
     if not entries:

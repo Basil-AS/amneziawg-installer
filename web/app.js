@@ -729,7 +729,7 @@ async function loadTokens() {
         <p class="mt-1 text-xs text-[var(--muted)]">${esc((row.clients || []).join(", ") || "no clients")}</p>
       </div>
       <div class="flex flex-wrap gap-2">
-        <button data-rotate="${esc(row.hash)}" class="${buttonClasses()}">${icon("key")}<span>Rotate</span></button>
+        <button data-rotate="${esc(row.hash)}" title="Rotate user token" class="${buttonClasses()}">${icon("key")}<span>Rotate Token</span></button>
         <button data-revoke="${esc(row.hash)}" class="${buttonClasses("text-[var(--danger)]")}">${icon("trash")}<span>Revoke</span></button>
       </div>
     </div>

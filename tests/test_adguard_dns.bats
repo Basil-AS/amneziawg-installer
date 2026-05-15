@@ -63,18 +63,18 @@ CONF
     cat >> "$SERVER_CONF_FILE" <<'CONF'
 
 [Peer]
-#_Name = phone
+#_Name = my_phone
 PublicKey = TESTPHONE
 AllowedIPs = 10.9.9.2/32, fd12:3456:789a:1::2/128
 CONF
     run sync_clients_hosts
     [ "$status" -eq 0 ]
-    grep -q '^10\.9\.9\.2 phone phone\.awg$' "$AWG_HOSTS_FILE"
-    grep -q '^fd12:3456:789a:1::2 phone phone\.awg$' "$AWG_HOSTS_FILE"
+    grep -q '^10\.9\.9\.2 my_phone my-phone\.awg$' "$AWG_HOSTS_FILE"
+    grep -q '^fd12:3456:789a:1::2 my_phone my-phone\.awg$' "$AWG_HOSTS_FILE"
 
-    run remove_peer_from_server phone
+    run remove_peer_from_server my_phone
     [ "$status" -eq 0 ]
-    ! grep -q 'phone\.awg' "$AWG_HOSTS_FILE"
+    ! grep -q 'my-phone\.awg' "$AWG_HOSTS_FILE"
 }
 
 @test "adguard client sync writes persistent clients and DNS rewrites" {
@@ -98,17 +98,17 @@ CONF
     cat >> "$SERVER_CONF_FILE" <<'CONF'
 
 [Peer]
-#_Name = phone
+#_Name = my_phone
 PublicKey = TESTPHONE
 AllowedIPs = 10.9.9.2/32, fd12:3456:789a:1::2/128
 CONF
 
     run sync_adguard_clients
     [ "$status" -eq 0 ]
-    grep -q 'name: "phone"' "$AWG_ADGUARD_DIR/AdGuardHome.yaml"
+    grep -q 'name: "my_phone"' "$AWG_ADGUARD_DIR/AdGuardHome.yaml"
     grep -q '        - "10.9.9.2"' "$AWG_ADGUARD_DIR/AdGuardHome.yaml"
     grep -q '        - "fd12:3456:789a:1::2"' "$AWG_ADGUARD_DIR/AdGuardHome.yaml"
-    grep -q 'domain: "phone.awg"' "$AWG_ADGUARD_DIR/AdGuardHome.yaml"
+    grep -q 'domain: "my-phone.awg"' "$AWG_ADGUARD_DIR/AdGuardHome.yaml"
     grep -q 'answer: "10.9.9.2"' "$AWG_ADGUARD_DIR/AdGuardHome.yaml"
     grep -q 'runtime_sources:' "$AWG_ADGUARD_DIR/AdGuardHome.yaml"
     grep -q 'hosts: true' "$AWG_ADGUARD_DIR/AdGuardHome.yaml"
