@@ -1722,6 +1722,54 @@ case $COMMAND in
                     _cmd_rc=1
                 fi
                 ;;
+            toggle)
+                _name="${ARGS[1]:-}"
+                [[ -z "$_name" ]] && die "Использование: p2p toggle <имя>"
+                validate_client_name "$_name" || exit 1
+                if ! grep -qxF "#_Name = ${_name}" "$SERVER_CONF_FILE"; then die "Клиент '$_name' не найден."; fi
+
+                _lockfile="${AWG_DIR}/.awg_config.lock"
+                exec {_lock_fd}>"$_lockfile"
+                if ! flock -x -w 10 "$_lock_fd"; then
+                    log_error "Не удалось получить блокировку конфига"
+                    exec {_lock_fd}>&-
+                    _cmd_rc=1
+                else
+                    _p2p_state=$(awk -v target="$_name" '
+                        function is_header(line) { return line == "[Peer]" || line == "# [Peer]" }
+                        is_header($0) { in_peer=1; found=0; next }
+                        in_peer && $0 == "#_Name = " target { found=1; next }
+                        in_peer && found && /^#_P2PPorts(_Disabled)?[[:space:]]*=/ {
+                            print NR ":" ($0 ~ /^#_P2PPorts_Disabled[[:space:]]*=/ ? "disabled" : "enabled")
+                            exit
+                        }
+                        in_peer && /^\[/ && !is_header($0) { in_peer=0; found=0 }
+                    ' "$SERVER_CONF_FILE")
+
+                    if [[ -z "$_p2p_state" ]]; then
+                        log_error "У клиента '$_name' нет P2P портов."
+                        _cmd_rc=1
+                    else
+                        _p2p_line="${_p2p_state%%:*}"
+                        _p2p_mode="${_p2p_state#*:}"
+                        if [[ "$_p2p_mode" == "enabled" ]]; then
+                            sed -i "${_p2p_line}s/^#_P2PPorts[[:space:]]*=[[:space:]]*/#_P2PPorts_Disabled = /" "$SERVER_CONF_FILE" || _cmd_rc=1
+                            _p2p_next="выключены"
+                        else
+                            sed -i "${_p2p_line}s/^#_P2PPorts_Disabled[[:space:]]*=[[:space:]]*/#_P2PPorts = /" "$SERVER_CONF_FILE" || _cmd_rc=1
+                            _p2p_next="включены"
+                        fi
+                        [[ "$_cmd_rc" -eq 0 ]] && chmod 600 "$SERVER_CONF_FILE"
+                    fi
+                    exec {_lock_fd}>&-
+                fi
+                if [[ "$_cmd_rc" -eq 0 ]]; then
+                    generate_firewall_scripts >/dev/null 2>&1 || log_warn "Не удалось обновить P2P/firewall hook-скрипты."
+                    bash "$AWG_DIR/postdown.sh" 2>/dev/null || true
+                    bash "$AWG_DIR/postup.sh" 2>/dev/null || log_warn "Не удалось применить firewall hooks live; перезапустите awg-quick@awg0."
+                    log "P2P порты клиента '$_name' $_p2p_next."
+                fi
+                ;;
             *)
                 die "Неизвестная p2p команда: $_sub"
                 ;;
