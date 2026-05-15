@@ -30,6 +30,8 @@
     grep -qF 'role === "super"' "$BATS_TEST_DIRNAME/../web/app.js"
     grep -qF 'Top Clients' "$BATS_TEST_DIRNAME/../web/app.js"
     grep -qF 'traffic_total' "$BATS_TEST_DIRNAME/../web/app.js"
+    grep -qF 'data-rotate' "$BATS_TEST_DIRNAME/../web/app.js"
+    grep -qF '/rotate' "$BATS_TEST_DIRNAME/../web/server.py"
 }
 
 @test "traffic history keeps persistent totals across counter resets" {
@@ -73,6 +75,40 @@ server.TRAFFIC_FILE.write_text(json.dumps({"last": {"beta": {"rx": 1000, "tx": 1
 server.update_traffic_history([{"name": "beta", "rx": 1200, "tx": 120}])
 history = server.load_traffic_history()
 assert history["totals"]["beta"] == {"rx": 1200, "tx": 120}
+PY
+    rm -rf "$tmp"
+}
+
+@test "web token rotation preserves client access list" {
+    command -v python3 &>/dev/null || skip "python3 not available"
+    local tmp
+    tmp=$(mktemp -d)
+    mkdir -p "$tmp/web"
+    AWG_DIR="$tmp" SERVER_CONF_FILE="$tmp/awg0.conf" REPO_ROOT="$BATS_TEST_DIRNAME/.." python3 - <<'PY'
+import importlib.util
+import os
+from pathlib import Path
+
+spec = importlib.util.spec_from_file_location("panel_server", Path(os.environ["REPO_ROOT"]) / "web" / "server.py")
+server = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(server)
+
+old_token = "old-user-token"
+old_hash = server.token_hash(old_token)
+server.write_tokens({
+    "super_token_hash": server.token_hash("super-token"),
+    "users": {old_hash: ["my_phone", "my_laptop"]},
+})
+result = server.rotate_user_token(old_hash)
+assert result is not None
+assert result["clients"] == ["my_phone", "my_laptop"]
+assert result["token_hash"] != old_hash
+assert server.token_hash(result["token"]) == result["token_hash"]
+
+data = server.load_tokens()
+assert old_hash not in data["users"]
+assert data["users"][result["token_hash"]] == ["my_phone", "my_laptop"]
+assert server.rotate_user_token(old_hash) is None
 PY
     rm -rf "$tmp"
 }
