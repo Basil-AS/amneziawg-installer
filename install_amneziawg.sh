@@ -3004,13 +3004,12 @@ deploy_adguard_home() {
         return 0
     fi
 
-    install_packages apache2-utils
     AG_PASSWORD="${AG_PASSWORD:-$(LC_ALL=C tr -dc 'A-Za-z0-9' </dev/urandom | head -c 15)}"
     if [[ -z "$AG_PASSWORD" ]]; then
         AG_PASSWORD="$(openssl rand -base64 24 | tr -dc 'A-Za-z0-9' | head -c 15)"
     fi
     [[ -n "$AG_PASSWORD" ]] || die "AdGuard Home: не удалось сгенерировать пароль администратора"
-    AG_HASH=$(htpasswd -B -C 10 -n -b admin "$AG_PASSWORD" | cut -d":" -f2-) || die "AdGuard Home: не удалось сгенерировать bcrypt-хеш пароля"
+    AG_HASH=$("$ag_bin" --hash "$AG_PASSWORD" 2>/dev/null) || die "AdGuard Home: не удалось сгенерировать bcrypt-хеш"
     [[ -n "$AG_HASH" ]] || die "AdGuard Home: пустой bcrypt-хеш пароля"
 
     if [[ "${AWG_IPV6_ENABLED:-0}" == "1" && -n "${AWG_IPV6_SUBNET:-}" ]]; then
