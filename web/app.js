@@ -28,6 +28,7 @@ const icons = {
   help: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M9.5 9a2.6 2.6 0 0 1 5 1c0 2-2.5 2.2-2.5 4"/><path d="M12 17h.01"/></svg>',
   external: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M14 3h7v7"/><path d="M10 14 21 3"/><path d="M21 14v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5"/></svg>',
   shield: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M9 12.75 11.25 15 15 9.75"/><path d="M12 3.75c2.1 1.95 4.95 3 7.88 3-.42 6.15-3.25 10.69-7.88 13.5-4.63-2.81-7.46-7.35-7.88-13.5 2.93 0 5.78-1.05 7.88-3Z"/></svg>',
+  link: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M10.5 13.5 13.5 10.5"/><path d="M8.5 15.5 7 17a4 4 0 0 1-5.7-5.6l2.1-2.1A4 4 0 0 1 9 9"/><path d="M15.5 8.5 17 7a4 4 0 0 1 5.7 5.6l-2.1 2.1A4 4 0 0 1 15 15"/></svg>',
 };
 
 const theme = localStorage.getItem("panelTheme") || "light";
@@ -439,6 +440,7 @@ function renderClients() {
           <button data-action="toggle" title="${client.disabled ? "Enable Client" : "Disable Client"}" class="${buttonClasses("w-9 px-0")}">${icon("power")}</button>
           <button data-action="toggle-p2p" title="Toggle P2P Ports" class="${buttonClasses(shieldClass)}">${icon("shield")}</button>
           <button data-action="config" title="Config" class="${buttonClasses("w-9 px-0")}">${icon("file")}</button>
+          <button data-action="vpnuri" title="vpn:// URI" class="${buttonClasses("w-9 px-0")}">${icon("link")}</button>
           <button data-action="qr" title="QR code" class="${buttonClasses("w-9 px-0")}">${icon("qr")}</button>
           <button data-action="delete" title="Delete" class="${buttonClasses("w-9 px-0 text-[var(--danger)]")}">${icon("trash")}</button>
         </div>
@@ -564,6 +566,7 @@ async function clientAction(name, action) {
   try {
     if (action === "config") return showConfig(name);
     if (action === "qr") return showQr(name);
+    if (action === "vpnuri") return showVpnUri(name);
     if (action === "toggle") {
       await api(`/api/clients/${encodeURIComponent(name)}/toggle`, {method: "POST", body: "{}"});
       showToast("Client toggled");
@@ -596,6 +599,24 @@ async function showQr(name) {
   const blob = await api(`/api/clients/${encodeURIComponent(name)}/qr`);
   const url = URL.createObjectURL(blob);
   showModal(name, `<img class="mx-auto max-h-[70vh] max-w-full rounded-md bg-white p-2" alt="QR" src="${url}">`);
+}
+
+async function showVpnUri(name) {
+  const blob = await api(`/api/clients/${encodeURIComponent(name)}/vpnuri`);
+  const uri = (await blob.text()).trim();
+  showModal(name, `
+    <div class="grid gap-3">
+      <textarea readonly class="h-32 w-full resize-none rounded-md border border-[var(--line)] bg-[var(--soft)] p-3 font-mono text-xs text-[var(--text)] outline-none">${esc(uri)}</textarea>
+      <div class="flex flex-wrap justify-end gap-2">
+        <a href="${esc(uri)}" class="${buttonClasses()}">${icon("external")}<span>Open</span></a>
+        <button id="copyVpnUri" class="${buttonClasses()}">${icon("copy")}<span>Copy</span></button>
+      </div>
+    </div>
+  `);
+  document.querySelector("#copyVpnUri").onclick = async () => {
+    await navigator.clipboard.writeText(uri);
+    showToast("vpn:// URI copied");
+  };
 }
 
 async function loadTokens() {
