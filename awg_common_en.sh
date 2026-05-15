@@ -1517,6 +1517,147 @@ sync_clients_hosts() {
     fi
 }
 
+sync_adguard_clients() {
+    local ag_dir="${AWG_ADGUARD_DIR:-/opt/AdGuardHome}"
+    local ag_yaml="$ag_dir/AdGuardHome.yaml"
+    [[ -f "$SERVER_CONF_FILE" && -f "$ag_yaml" ]] || return 0
+
+    python3 - "$SERVER_CONF_FILE" "$ag_yaml" <<'PY'
+import json
+import re
+import sys
+from pathlib import Path
+
+server_conf = Path(sys.argv[1])
+ag_yaml = Path(sys.argv[2])
+
+def parse_peers(path):
+    peers = []
+    cur = None
+    for raw in path.read_text(encoding="utf-8", errors="ignore").splitlines():
+        line = raw.strip()
+        if line == "[Peer]":
+            if cur and cur.get("name") and cur.get("ids"):
+                peers.append(cur)
+            cur = {"name": "", "ids": []}
+            continue
+        if cur is None:
+            continue
+        if line.startswith("#_Name = "):
+            cur["name"] = line.split("=", 1)[1].strip()
+            continue
+        if re.match(r"^AllowedIPs\s*=", line):
+            value = line.split("=", 1)[1]
+            for token in re.split(r"[,\s]+", value):
+                token = token.strip()
+                if token.endswith("/32") or token.endswith("/128"):
+                    cur["ids"].append(token.rsplit("/", 1)[0])
+    if cur and cur.get("name") and cur.get("ids"):
+        peers.append(cur)
+    return peers
+
+def top_level(line):
+    return line and not line.startswith((" ", "\t")) and ":" in line
+
+def remove_top_block(lines, key):
+    out = []
+    i = 0
+    needle = f"{key}:"
+    while i < len(lines):
+        if lines[i].strip() == needle and not lines[i].startswith((" ", "\t")):
+            i += 1
+            while i < len(lines) and not top_level(lines[i]):
+                i += 1
+            continue
+        out.append(lines[i])
+        i += 1
+    return out
+
+def render_clients(peers):
+    out = ["clients:"]
+    if peers:
+        out.append("  persistent:")
+        for peer in peers:
+            out.append(f"    - name: {json.dumps(peer['name'], ensure_ascii=False)}")
+            out.append("      ids:")
+            for client_id in peer["ids"]:
+                out.append(f"        - {json.dumps(client_id, ensure_ascii=False)}")
+    else:
+        out.append("  persistent: []")
+    out.extend([
+        "  runtime_sources:",
+        "    whois: true",
+        "    arp: true",
+        "    rdns: true",
+        "    dhcp: true",
+        "    hosts: true",
+    ])
+    return out
+
+def render_rewrites(peers):
+    entries = []
+    for peer in peers:
+        domain = f"{peer['name']}.awg"
+        for client_id in peer["ids"]:
+            entries.append((domain, client_id))
+    if not entries:
+        return ["  rewrites: []"]
+    out = ["  rewrites:"]
+    for domain, answer in entries:
+        out.append(f"    - domain: {json.dumps(domain, ensure_ascii=False)}")
+        out.append(f"      answer: {json.dumps(answer, ensure_ascii=False)}")
+    return out
+
+def upsert_filtering_rewrites(lines, peers):
+    rewrites = render_rewrites(peers)
+    out = []
+    i = 0
+    found_filtering = False
+    while i < len(lines):
+        line = lines[i]
+        if line.strip() == "filtering:" and not line.startswith((" ", "\t")):
+            found_filtering = True
+            out.append(line)
+            out.extend(rewrites)
+            i += 1
+            while i < len(lines) and not top_level(lines[i]):
+                if re.match(r"^  rewrites\s*:", lines[i]):
+                    i += 1
+                    while i < len(lines) and not top_level(lines[i]) and not re.match(r"^  [A-Za-z0-9_-]+:", lines[i]):
+                        i += 1
+                    continue
+                out.append(lines[i])
+                i += 1
+            continue
+        out.append(line)
+        i += 1
+    if not found_filtering:
+        out.extend(["filtering:", *rewrites])
+    return out
+
+peers = parse_peers(server_conf)
+lines = ag_yaml.read_text(encoding="utf-8", errors="ignore").splitlines()
+lines = remove_top_block(lines, "clients")
+lines = upsert_filtering_rewrites(lines, peers)
+
+insert_at = len(lines)
+for idx, line in enumerate(lines):
+    if line.startswith("log:") or line.startswith("os:") or line.startswith("schema_version:"):
+        insert_at = idx
+        break
+lines[insert_at:insert_at] = render_clients(peers)
+
+new_text = "\n".join(lines).rstrip() + "\n"
+old_text = ag_yaml.read_text(encoding="utf-8", errors="ignore")
+if new_text != old_text:
+    tmp = ag_yaml.with_name(f"{ag_yaml.name}.tmp")
+    tmp.write_text(new_text, encoding="utf-8")
+    tmp.chmod(0o600)
+    tmp.replace(ag_yaml)
+    ag_yaml.chmod(0o600)
+PY
+}
+
 # Добавление [Peer] в серверный конфиг (атомарно через tmpfile + mv).
 #
 # КОНТРАКТ БЛОКИРОВКИ: вызывающий код ОБЯЗАН держать exclusive flock на

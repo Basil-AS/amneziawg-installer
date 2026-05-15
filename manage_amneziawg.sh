@@ -1492,7 +1492,8 @@ usage() {
     echo "  ipv6 status           Показать режим IPv6"
     echo "  ipv6 upgrade          Выдать IPv6/P2P metadata существующим клиентам"
     echo "  dns status            Показать режим DNS и статус AdGuard Home"
-    echo "  dns restart           Перезапустить AdGuard Home"
+    echo "  dns restart           Синхронизировать клиентов и перезапустить AdGuard Home"
+    echo "  dns sync-clients      Синхронизировать клиентов в AdGuard Home"
     echo "  dns logs              Показать последние логи AdGuard Home"
     echo "  dns set-mode <режим>  Сменить DNS: adguard, system или custom [DNS]"
     echo "  set-name \"ИМЯ\"       Сменить имя сервера и перегенерировать клиентов"
@@ -1828,10 +1829,22 @@ case $COMMAND in
                 dns_status
                 ;;
             restart)
-                if systemctl restart AdGuardHome.service; then
-                    log "AdGuard Home перезапущен."
+                sync_clients_hosts
+                systemctl stop AdGuardHome.service 2>/dev/null || true
+                if sync_adguard_clients && systemctl start AdGuardHome.service; then
+                    log "Клиенты синхронизированы, AdGuard Home перезапущен."
                 else
-                    log_warn "AdGuard Home не перезапустился. VPN не менялся."
+                    log_warn "AdGuard Home не перезапустился или клиенты не синхронизировались. VPN не менялся."
+                    _cmd_rc=1
+                fi
+                ;;
+            sync-clients)
+                sync_clients_hosts
+                systemctl stop AdGuardHome.service 2>/dev/null || true
+                if sync_adguard_clients && systemctl start AdGuardHome.service; then
+                    log "Клиенты синхронизированы в AdGuard Home."
+                else
+                    log_warn "Не удалось синхронизировать клиентов AdGuard Home. VPN не менялся."
                     _cmd_rc=1
                 fi
                 ;;

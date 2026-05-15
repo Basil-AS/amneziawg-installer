@@ -1208,7 +1208,8 @@ usage() {
     echo "  ipv6 status           Show IPv6 mode"
     echo "  ipv6 upgrade          Add IPv6/P2P metadata to existing clients"
     echo "  dns status            Show DNS mode and AdGuard Home status"
-    echo "  dns restart           Restart AdGuard Home"
+    echo "  dns restart           Sync clients and restart AdGuard Home"
+    echo "  dns sync-clients      Sync VPN clients into AdGuard Home"
     echo "  dns logs              Show recent AdGuard Home logs"
     echo "  dns set-mode <mode>   Change DNS: adguard, system, or custom [DNS]"
     echo "  regen [name]          Regenerate client file(s)"
@@ -1482,10 +1483,22 @@ case $COMMAND in
                 dns_status
                 ;;
             restart)
-                if systemctl restart AdGuardHome.service; then
-                    log "AdGuard Home restarted."
+                sync_clients_hosts
+                systemctl stop AdGuardHome.service 2>/dev/null || true
+                if sync_adguard_clients && systemctl start AdGuardHome.service; then
+                    log "Clients synced, AdGuard Home restarted."
                 else
-                    log_warn "AdGuard Home did not restart. VPN was not changed."
+                    log_warn "AdGuard Home did not restart or clients were not synced. VPN was not changed."
+                    _cmd_rc=1
+                fi
+                ;;
+            sync-clients)
+                sync_clients_hosts
+                systemctl stop AdGuardHome.service 2>/dev/null || true
+                if sync_adguard_clients && systemctl start AdGuardHome.service; then
+                    log "Clients synced into AdGuard Home."
+                else
+                    log_warn "Failed to sync AdGuard Home clients. VPN was not changed."
                     _cmd_rc=1
                 fi
                 ;;
