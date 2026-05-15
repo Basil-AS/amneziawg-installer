@@ -83,14 +83,6 @@ function speed(n) {
   return `${bytes(n)}/s`;
 }
 
-function nameHash(value) {
-  let hash = 0;
-  for (const ch of String(value || "")) {
-    hash = ((hash << 5) - hash + ch.charCodeAt(0)) | 0;
-  }
-  return Math.abs(hash);
-}
-
 function normalizeP2pPorts(value) {
   const source = Array.isArray(value) ? value : String(value || "").split(/[,\s]+/);
   const seen = new Set();
@@ -114,23 +106,43 @@ function isOnline(client) {
     Date.now() / 1000 - Number(client.latestHandshakeAt || client.last_handshake) < 180;
 }
 
-async function sha256(value) {
+function fallbackHashBytes(value) {
+  let hash = 2166136261;
+  const bytes = [];
+  for (const ch of String(value || "")) {
+    hash ^= ch.charCodeAt(0);
+    hash = Math.imul(hash, 16777619);
+  }
+  for (let i = 0; i < 32; i++) {
+    hash ^= hash >>> 13;
+    hash = Math.imul(hash, 1597334677);
+    bytes.push((hash >>> ((i % 4) * 8)) & 255);
+  }
+  return bytes;
+}
+
+async function sha256Bytes(value) {
   const data = new TextEncoder().encode(value);
-  const hash = await crypto.subtle.digest("SHA-256", data);
-  return Array.from(new Uint8Array(hash)).map(b => b.toString(16).padStart(2, "0")).join("");
+  if (!globalThis.crypto?.subtle) return fallbackHashBytes(value);
+  const hash = await globalThis.crypto.subtle.digest("SHA-256", data);
+  return Array.from(new Uint8Array(hash));
 }
 
 async function avatarHtml(name) {
-  const label = String(name || "?").trim();
-  if (label.includes("@") && crypto.subtle) {
-    const hash = await sha256(label.toLowerCase());
-    return `<img class="w-10 h-10 rounded-full bg-[var(--soft)]" src="https://gravatar.com/avatar/${hash}?d=identicon" alt="">`;
+  const label = String(name || "?").trim().toLowerCase();
+  const bytes = await sha256Bytes(label);
+  const hue = Math.round((bytes[0] / 255) * 359);
+  const fg = `hsl(${hue} 68% 38%)`;
+  const bg = "var(--soft)";
+  const cells = [];
+  for (let y = 0; y < 5; y++) {
+    for (let x = 0; x < 3; x++) {
+      if ((bytes[1 + y * 3 + x] & 1) !== 0) continue;
+      cells.push(`<rect x="${x}" y="${y}" width="1" height="1" fill="${fg}"/>`);
+      if (x !== 2) cells.push(`<rect x="${4 - x}" y="${y}" width="1" height="1" fill="${fg}"/>`);
+    }
   }
-  const first = esc((label[0] || "?").toUpperCase());
-  const hue = nameHash(label) % 360;
-  const bg = `hsl(${hue} 72% 42%)`;
-  const ring = `hsl(${hue} 82% 32%)`;
-  return `<div class="w-10 h-10 rounded-full grid place-items-center text-sm font-bold text-white shadow-sm ring-2 ring-inset" style="background:${bg};--tw-ring-color:${ring}">${first}</div>`;
+  return `<svg class="w-10 h-10 rounded-md bg-[var(--soft)] shadow-sm ring-1 ring-[var(--line)]" viewBox="0 0 5 5" role="img" aria-label="${esc(name || "client")} identicon" shape-rendering="crispEdges"><rect width="5" height="5" fill="${bg}"/>${cells.join("")}</svg>`;
 }
 
 function setTheme(next) {
