@@ -62,16 +62,17 @@ def write_tokens(data):
 
 def load_traffic_history():
     if not TRAFFIC_FILE.exists():
-        return {"last": {}, "days": {}}
+        return {"last": {}, "days": {}, "totals": {}}
     try:
         data = json.loads(TRAFFIC_FILE.read_text(encoding="utf-8"))
     except Exception:
-        return {"last": {}, "days": {}}
+        return {"last": {}, "days": {}, "totals": {}}
     if not isinstance(data, dict):
-        return {"last": {}, "days": {}}
+        return {"last": {}, "days": {}, "totals": {}}
     last = data.get("last") if isinstance(data.get("last"), dict) else {}
     days = data.get("days") if isinstance(data.get("days"), dict) else {}
-    return {"last": last, "days": days}
+    totals = data.get("totals") if isinstance(data.get("totals"), dict) else {}
+    return {"last": last, "days": days, "totals": totals}
 
 
 def write_traffic_history(data):
@@ -83,6 +84,33 @@ def write_traffic_history(data):
     os.chmod(TRAFFIC_FILE, 0o600)
 
 
+def _traffic_pair(values):
+    if not isinstance(values, dict):
+        return {"rx": 0, "tx": 0}
+    return {
+        "rx": max(0, int(values.get("rx") or 0)),
+        "tx": max(0, int(values.get("tx") or 0)),
+    }
+
+
+def _sum_days_for_client(days, name):
+    rx = tx = 0
+    if not isinstance(days, dict):
+        return {"rx": 0, "tx": 0}
+    for day_rows in days.values():
+        values = day_rows.get(name, {}) if isinstance(day_rows, dict) else {}
+        pair = _traffic_pair(values)
+        rx += pair["rx"]
+        tx += pair["tx"]
+    return {"rx": rx, "tx": tx}
+
+
+def _add_traffic_delta(bucket, name, rx_delta, tx_delta):
+    entry = bucket.setdefault(name, {"rx": 0, "tx": 0})
+    entry["rx"] = max(0, int(entry.get("rx") or 0)) + rx_delta
+    entry["tx"] = max(0, int(entry.get("tx") or 0)) + tx_delta
+
+
 def update_traffic_history(rows):
     today = time.strftime("%Y-%m-%d", time.localtime())
     cutoff = time.time() - 29 * 86400
@@ -91,9 +119,11 @@ def update_traffic_history(rows):
         for offset in range(30)
     }
     with TRAFFIC_LOCK:
+        history_existed = TRAFFIC_FILE.exists()
         data = load_traffic_history()
         last = data.setdefault("last", {})
         days = data.setdefault("days", {})
+        totals = data.setdefault("totals", {})
         day = days.setdefault(today, {})
         changed = False
         for row in rows:
@@ -103,13 +133,21 @@ def update_traffic_history(rows):
             rx = max(0, int(row.get("rx") or 0))
             tx = max(0, int(row.get("tx") or 0))
             prev = last.get(name) if isinstance(last.get(name), dict) else None
+            if not isinstance(totals.get(name), dict):
+                seeded = _sum_days_for_client(days, name)
+                if history_existed and prev is not None:
+                    prev_pair = _traffic_pair(prev)
+                    seeded["rx"] = max(seeded["rx"], prev_pair["rx"])
+                    seeded["tx"] = max(seeded["tx"], prev_pair["tx"])
+                totals[name] = seeded
+                changed = True
             if prev is not None:
-                rx_delta = max(0, rx - int(prev.get("rx") or 0))
-                tx_delta = max(0, tx - int(prev.get("tx") or 0))
+                prev_pair = _traffic_pair(prev)
+                rx_delta = rx - prev_pair["rx"] if rx >= prev_pair["rx"] else rx
+                tx_delta = tx - prev_pair["tx"] if tx >= prev_pair["tx"] else tx
                 if rx_delta or tx_delta:
-                    entry = day.setdefault(name, {"rx": 0, "tx": 0})
-                    entry["rx"] = int(entry.get("rx") or 0) + rx_delta
-                    entry["tx"] = int(entry.get("tx") or 0) + tx_delta
+                    _add_traffic_delta(day, name, rx_delta, tx_delta)
+                    _add_traffic_delta(totals, name, rx_delta, tx_delta)
                     changed = True
             if last.get(name) != {"rx": rx, "tx": tx}:
                 last[name] = {"rx": rx, "tx": tx}
@@ -122,18 +160,27 @@ def update_traffic_history(rows):
             write_traffic_history(data)
 
 
-def traffic_summary(auth, stats=None):
+def traffic_summary(auth, stats=None, names=None):
     stats = stats or client_stats_map()
-    if auth.get("role") == "super":
+    if names is not None:
+        allowed = set(names)
+    elif auth.get("role") == "super":
         allowed = None
     else:
         allowed = set(auth.get("clients") or [])
     rows = [row for row in stats.values() if allowed is None or row.get("name") in allowed]
-    current = {
+    current_live = {
         "rx": sum(max(0, int(row.get("rx") or 0)) for row in rows),
         "tx": sum(max(0, int(row.get("tx") or 0)) for row in rows),
     }
     history = load_traffic_history()
+    persistent = {"rx": 0, "tx": 0}
+    for name, values in history.get("totals", {}).items():
+        if allowed is not None and name not in allowed:
+            continue
+        pair = _traffic_pair(values)
+        persistent["rx"] += pair["rx"]
+        persistent["tx"] += pair["tx"]
     days = []
     for offset in range(29, -1, -1):
         date = time.strftime("%Y-%m-%d", time.localtime(time.time() - offset * 86400))
@@ -149,7 +196,9 @@ def traffic_summary(auth, stats=None):
         days.append({"date": date, "rx": rx, "tx": tx, "total": rx + tx})
     last_30d = {"rx": sum(day["rx"] for day in days), "tx": sum(day["tx"] for day in days)}
     return {
-        "current": {**current, "total": current["rx"] + current["tx"]},
+        "current_live": {**current_live, "total": current_live["rx"] + current_live["tx"]},
+        "current": {**persistent, "total": persistent["rx"] + persistent["tx"]},
+        "total": {**persistent, "total": persistent["rx"] + persistent["tx"]},
         "last_30d": {**last_30d, "total": last_30d["rx"] + last_30d["tx"]},
         "days": days,
     }
@@ -165,6 +214,12 @@ def client_traffic_30d(name, history=None):
             rx += max(0, int(values.get("rx") or 0))
             tx += max(0, int(values.get("tx") or 0))
     return {"rx": rx, "tx": tx, "total": rx + tx}
+
+
+def client_traffic_total(name, history=None):
+    history = history or load_traffic_history()
+    pair = _traffic_pair(history.get("totals", {}).get(name, {}))
+    return {"rx": pair["rx"], "tx": pair["tx"], "total": pair["rx"] + pair["tx"]}
 
 
 def clean_client_list(value):
@@ -501,13 +556,15 @@ class Handler(SimpleHTTPRequestHandler):
         if u.path == "/api/clients":
             stats = client_stats_map()
             history = load_traffic_history()
+            visible = self.visible_peers(auth)
             rows = []
-            for peer in self.visible_peers(auth):
+            for peer in visible:
                 item = dict(peer)
                 row_stats = stats.get(peer["name"], {})
                 item["rx"] = row_stats.get("rx", 0)
                 item["tx"] = row_stats.get("tx", 0)
                 item["traffic_30d"] = client_traffic_30d(peer["name"], history)
+                item["traffic_total"] = client_traffic_total(peer["name"], history)
                 item["latestHandshakeAt"] = row_stats.get("latestHandshakeAt", row_stats.get("last_handshake", 0))
                 endpoint = row_stats.get("endpoint", "")
                 item["endpoint"] = "" if endpoint in {"", "-", "(none)", "none"} else endpoint
@@ -516,7 +573,7 @@ class Handler(SimpleHTTPRequestHandler):
             self.send_json({
                 "role": "super" if self.is_super(auth) else "user",
                 "clients": rows,
-                "traffic": traffic_summary(auth, stats),
+                "traffic": traffic_summary(auth, stats, [peer["name"] for peer in visible]),
             })
             return
         if u.path == "/api/stats":
@@ -527,7 +584,7 @@ class Handler(SimpleHTTPRequestHandler):
             self.send_json(rows)
             return
         if u.path == "/api/traffic":
-            self.send_json(traffic_summary(auth))
+            self.send_json(traffic_summary(auth, names=[peer["name"] for peer in self.visible_peers(auth)]))
             return
         if u.path == "/api/tokens":
             if not self.require_super(auth):
