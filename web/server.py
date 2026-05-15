@@ -21,11 +21,13 @@ WEB_DIR = AWG_DIR / "web"
 MANAGE = AWG_DIR / "manage_amneziawg.sh"
 SERVER_CONF = Path(os.environ.get("SERVER_CONF_FILE", "/etc/amnezia/amneziawg/awg0.conf"))
 TOKEN_FILE = WEB_DIR / "tokens.json"
+TRAFFIC_FILE = WEB_DIR / "traffic_history.json"
 LEGACY_TOKEN_FILE = WEB_DIR / "auth_token"
 NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 TOKEN_HASH_RE = re.compile(r"^[0-9a-f]{64}$")
 RATE = {}
 TOKENS_LOCK = threading.Lock()
+TRAFFIC_LOCK = threading.Lock()
 
 
 def run_manage(*args, timeout=60):
@@ -56,6 +58,101 @@ def write_tokens(data):
     os.chmod(tmp, 0o600)
     os.replace(tmp, TOKEN_FILE)
     os.chmod(TOKEN_FILE, 0o600)
+
+
+def load_traffic_history():
+    if not TRAFFIC_FILE.exists():
+        return {"last": {}, "days": {}}
+    try:
+        data = json.loads(TRAFFIC_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return {"last": {}, "days": {}}
+    if not isinstance(data, dict):
+        return {"last": {}, "days": {}}
+    last = data.get("last") if isinstance(data.get("last"), dict) else {}
+    days = data.get("days") if isinstance(data.get("days"), dict) else {}
+    return {"last": last, "days": days}
+
+
+def write_traffic_history(data):
+    WEB_DIR.mkdir(parents=True, exist_ok=True)
+    tmp = TRAFFIC_FILE.with_name(f"{TRAFFIC_FILE.name}.tmp.{os.getpid()}")
+    tmp.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, TRAFFIC_FILE)
+    os.chmod(TRAFFIC_FILE, 0o600)
+
+
+def update_traffic_history(rows):
+    today = time.strftime("%Y-%m-%d", time.localtime())
+    cutoff = time.time() - 29 * 86400
+    keep_days = {
+        time.strftime("%Y-%m-%d", time.localtime(cutoff + offset * 86400))
+        for offset in range(30)
+    }
+    with TRAFFIC_LOCK:
+        data = load_traffic_history()
+        last = data.setdefault("last", {})
+        days = data.setdefault("days", {})
+        day = days.setdefault(today, {})
+        changed = False
+        for row in rows:
+            name = str(row.get("name", ""))
+            if not NAME_RE.fullmatch(name):
+                continue
+            rx = max(0, int(row.get("rx") or 0))
+            tx = max(0, int(row.get("tx") or 0))
+            prev = last.get(name) if isinstance(last.get(name), dict) else None
+            if prev is not None:
+                rx_delta = max(0, rx - int(prev.get("rx") or 0))
+                tx_delta = max(0, tx - int(prev.get("tx") or 0))
+                if rx_delta or tx_delta:
+                    entry = day.setdefault(name, {"rx": 0, "tx": 0})
+                    entry["rx"] = int(entry.get("rx") or 0) + rx_delta
+                    entry["tx"] = int(entry.get("tx") or 0) + tx_delta
+                    changed = True
+            if last.get(name) != {"rx": rx, "tx": tx}:
+                last[name] = {"rx": rx, "tx": tx}
+                changed = True
+        for date in list(days):
+            if date not in keep_days:
+                del days[date]
+                changed = True
+        if changed:
+            write_traffic_history(data)
+
+
+def traffic_summary(auth, stats=None):
+    stats = stats or client_stats_map()
+    if Handler.is_super(auth):
+        allowed = None
+    else:
+        allowed = set(auth.get("clients") or [])
+    rows = [row for row in stats.values() if allowed is None or row.get("name") in allowed]
+    current = {
+        "rx": sum(max(0, int(row.get("rx") or 0)) for row in rows),
+        "tx": sum(max(0, int(row.get("tx") or 0)) for row in rows),
+    }
+    history = load_traffic_history()
+    days = []
+    for offset in range(29, -1, -1):
+        date = time.strftime("%Y-%m-%d", time.localtime(time.time() - offset * 86400))
+        day_rows = history.get("days", {}).get(date, {})
+        rx = tx = 0
+        if isinstance(day_rows, dict):
+            for name, values in day_rows.items():
+                if allowed is not None and name not in allowed:
+                    continue
+                if isinstance(values, dict):
+                    rx += max(0, int(values.get("rx") or 0))
+                    tx += max(0, int(values.get("tx") or 0))
+        days.append({"date": date, "rx": rx, "tx": tx, "total": rx + tx})
+    last_30d = {"rx": sum(day["rx"] for day in days), "tx": sum(day["tx"] for day in days)}
+    return {
+        "current": {**current, "total": current["rx"] + current["tx"]},
+        "last_30d": {**last_30d, "total": last_30d["rx"] + last_30d["tx"]},
+        "days": days,
+    }
 
 
 def clean_client_list(value):
@@ -282,6 +379,7 @@ def client_stats_map():
             if "last_handshake" in row:
                 row["latestHandshakeAt"] = row.get("last_handshake")
             out[row["name"]] = row
+    update_traffic_history(out.values())
     return out
 
 
@@ -399,7 +497,11 @@ class Handler(SimpleHTTPRequestHandler):
                 item["endpoint"] = "" if endpoint in {"", "-", "(none)", "none"} else endpoint
                 item["status"] = row_stats.get("status", "")
                 rows.append(item)
-            self.send_json({"role": "super" if self.is_super(auth) else "user", "clients": rows})
+            self.send_json({
+                "role": "super" if self.is_super(auth) else "user",
+                "clients": rows,
+                "traffic": traffic_summary(auth, stats),
+            })
             return
         if u.path == "/api/stats":
             rows = list(client_stats_map().values())
@@ -407,6 +509,9 @@ class Handler(SimpleHTTPRequestHandler):
                 allowed = set(auth.get("clients") or [])
                 rows = [row for row in rows if row.get("name") in allowed]
             self.send_json(rows)
+            return
+        if u.path == "/api/traffic":
+            self.send_json(traffic_summary(auth))
             return
         if u.path == "/api/tokens":
             if not self.require_super(auth):
