@@ -255,15 +255,23 @@ get_client_ipv6_from_server() {
 }
 
 get_peer_p2p_ports() {
-    local name="$1" ports
-    ports=$(_extract_peer_value "$name" "#_P2PPorts")
-    ports="${ports//[[:space:]]/}"
-    echo "$ports"
+    local name="$1"
+    awk -v target="$name" '
+    /^\[Peer\]/ { in_peer=1; found=0; next }
+    /^\[/ && !/^\[Peer\]/ { in_peer=0; found=0 }
+    in_peer && $0 == "#_Name = " target { found=1; next }
+    in_peer && found && /^#_P2PPorts(_Disabled)?[[:space:]]*=/ {
+        sub(/^[^=]+=[ \t]*/, "")
+        gsub(/[[:space:]]/, "")
+        print
+        exit
+    }
+    ' "$SERVER_CONF_FILE" 2>/dev/null
 }
 
 _p2p_used_ports_stream() {
     [[ -f "$SERVER_CONF_FILE" ]] || return 0
-    sed -n 's/^#_P2PPorts[[:space:]]*=[[:space:]]*//p' "$SERVER_CONF_FILE" \
+    awk '/^#_P2PPorts(_Disabled)?[[:space:]]*=/ { sub(/^[^=]+=[ \t]*/, ""); print }' "$SERVER_CONF_FILE" \
         | tr ',' '\n' \
         | sed 's/[[:space:]]//g' \
         | grep -E '^[0-9]+$' || true
@@ -367,7 +375,8 @@ PY
 
 _peer_inventory_tsv() {
     [[ -f "$SERVER_CONF_FILE" ]] || return 0
-    awk '
+    local include_disabled="${1:-0}"
+    awk -v include_disabled="$include_disabled" '
     function flush() {
         if (name != "") print name "\t" allowed "\t" ports
     }
@@ -375,6 +384,7 @@ _peer_inventory_tsv() {
     /^\[/ && !/^\[Peer\]/ { flush(); name=""; allowed=""; ports=""; in_peer=0; next }
     in_peer && /^#_Name = / { name=$0; sub(/^#_Name = /, "", name); next }
     in_peer && /^#_P2PPorts[[:space:]]*=/ { ports=$0; sub(/^#_P2PPorts[[:space:]]*=[[:space:]]*/, "", ports); next }
+    include_disabled != "0" && in_peer && /^#_P2PPorts_Disabled[[:space:]]*=/ { ports=$0; sub(/^#_P2PPorts_Disabled[[:space:]]*=[[:space:]]*/, "", ports); next }
     in_peer && /^AllowedIPs[[:space:]]*=/ { allowed=$0; sub(/^AllowedIPs[[:space:]]*=[[:space:]]*/, "", allowed); next }
     END { flush() }
     ' "$SERVER_CONF_FILE"
@@ -1610,7 +1620,7 @@ EOF
         echo "PresharedKey = ${CLIENT_PSK}" >> "$tmpfile"
     fi
     if [[ -n "$p2p_ports" ]]; then
-        echo "#_P2PPorts = ${p2p_ports}" >> "$tmpfile"
+        echo "#_P2PPorts_Disabled = ${p2p_ports}" >> "$tmpfile"
     fi
     if [[ -n "$client_ipv6" ]]; then
         echo "AllowedIPs = ${client_ip}/32, ${client_ipv6}/128" >> "$tmpfile"
@@ -2237,7 +2247,7 @@ p2p_port_owner() {
                 return 0
             fi
         done
-    done < <(_peer_inventory_tsv)
+    done < <(_peer_inventory_tsv all)
     return 1
 }
 
@@ -2272,10 +2282,20 @@ set_peer_p2p_ports() {
 
     local tmpfile
     tmpfile=$(awg_mktemp) || { exec {lock_fd}>&-; return 1; }
-    awk -v target="$name" -v ports="$ports" '
+    local p2p_key="#_P2PPorts_Disabled"
+    if awk -v target="$name" '
+        /^\[Peer\]/ { in_peer=1; found=0; next }
+        /^\[/ && !/^\[Peer\]/ { in_peer=0; found=0 }
+        in_peer && $0 == "#_Name = " target { found=1; next }
+        in_peer && found && /^#_P2PPorts[[:space:]]*=/ { found_enabled=1; exit }
+        END { exit found_enabled ? 0 : 1 }
+    ' "$SERVER_CONF_FILE" 2>/dev/null; then
+        p2p_key="#_P2PPorts"
+    fi
+    awk -v target="$name" -v ports="$ports" -v p2p_key="$p2p_key" '
     function flush_meta_if_needed() {
         if (in_target && !ports_seen && ports != "") {
-            print "#_P2PPorts = " ports
+            print p2p_key " = " ports
             ports_seen=1
         }
     }
@@ -2285,12 +2305,12 @@ set_peer_p2p_ports() {
         in_target=1
         print
         if (ports != "") {
-            print "#_P2PPorts = " ports
+            print p2p_key " = " ports
             ports_seen=1
         }
         next
     }
-    in_peer && in_target && /^#_P2PPorts[[:space:]]*=/ { next }
+    in_peer && in_target && /^#_P2PPorts(_Disabled)?[[:space:]]*=/ { next }
     { print }
     END { flush_meta_if_needed() }
     ' "$SERVER_CONF_FILE" > "$tmpfile" || {
@@ -2456,7 +2476,7 @@ while i < len(data):
                 if bline.startswith("#_Name = "):
                     insert_at = idx + 1
                     break
-            block.insert(insert_at, f"#_P2PPorts = {alloc_ports(m4.group(1))}")
+            block.insert(insert_at, f"#_P2PPorts_Disabled = {alloc_ports(m4.group(1))}")
     out.extend(block)
 open(dst, "w", encoding="utf-8").write("\n".join(out) + "\n")
 PY

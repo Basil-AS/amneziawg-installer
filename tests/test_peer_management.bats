@@ -17,8 +17,36 @@ load test_helper
     create_server_config
     add_peer_to_server "dual_client" "PUBKEYV6" "10.9.9.9" "fd12:3456:789a:1::9" "20009,20265,20521"
     grep -q "#_Name = dual_client" "$SERVER_CONF_FILE"
-    grep -q "#_P2PPorts = 20009,20265,20521" "$SERVER_CONF_FILE"
+    grep -q "#_P2PPorts_Disabled = 20009,20265,20521" "$SERVER_CONF_FILE"
     grep -q "AllowedIPs = 10.9.9.9/32, fd12:3456:789a:1::9/128" "$SERVER_CONF_FILE"
+}
+
+@test "p2p metadata defaults to disabled and firewall ignores disabled ports" {
+    create_server_config
+    add_test_peer "p2p_client" "10.9.9.9"
+    set_peer_p2p_ports "p2p_client" "20009,20265,20521"
+    grep -q "#_P2PPorts_Disabled = 20009,20265,20521" "$SERVER_CONF_FILE"
+
+    run generate_firewall_scripts "eth0"
+    [ "$status" -eq 0 ]
+    run grep -q "20009" "$AWG_DIR/p2p_rules.sh"
+    [ "$status" -eq 1 ]
+}
+
+@test "enabled p2p metadata is still rendered into firewall rules" {
+    create_server_config
+    cat >> "$SERVER_CONF_FILE" << 'CONF'
+
+[Peer]
+#_Name = p2p_client
+PublicKey = TESTPUBKEY_p2p_client
+#_P2PPorts = 20009,20265,20521
+AllowedIPs = 10.9.9.9/32
+CONF
+
+    run generate_firewall_scripts "eth0"
+    [ "$status" -eq 0 ]
+    grep -q "20009" "$AWG_DIR/p2p_rules.sh"
 }
 
 @test "add_peer: rejects duplicate name" {
