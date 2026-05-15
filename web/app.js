@@ -3,6 +3,7 @@ const toastHost = document.querySelector("#toastHost");
 let token = localStorage.getItem("panelToken") || "";
 let statusState = null;
 let dnsState = null;
+let trafficState = null;
 let latestClients = [];
 let pollTimer = null;
 const previousRx = new Map();
@@ -10,6 +11,7 @@ const previousTx = new Map();
 const previousSampleAt = new Map();
 const speedHistory = new Map();
 const charts = new Map();
+let trafficChart = null;
 
 const icons = {
   sun: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3v2.2M12 18.8V21M4.2 4.2l1.6 1.6M18.2 18.2l1.6 1.6M3 12h2.2M18.8 12H21M4.2 19.8l1.6-1.6M18.2 5.8l1.6-1.6"/><circle cx="12" cy="12" r="4"/></svg>',
@@ -201,6 +203,10 @@ function renderLogin() {
 
 async function renderPanel() {
   clearInterval(pollTimer);
+  if (trafficChart) {
+    trafficChart.destroy();
+    trafficChart = null;
+  }
   app.innerHTML = `
     <header class="flex flex-col gap-4 py-4 sm:flex-row sm:items-center sm:justify-between">
       <div class="flex items-center gap-3">
@@ -218,7 +224,7 @@ async function renderPanel() {
       </div>
     </header>
 
-    <section class="grid gap-3 sm:grid-cols-4">
+    <section class="grid gap-3 sm:grid-cols-2 lg:grid-cols-6">
       <div class="rounded-lg border border-[var(--line)] bg-[var(--panel)] p-4">
         <p class="text-xs font-semibold uppercase text-[var(--muted)]">Active</p>
         <strong id="metricActive" class="mt-2 block text-2xl">0</strong>
@@ -226,6 +232,16 @@ async function renderPanel() {
       <div class="rounded-lg border border-[var(--line)] bg-[var(--panel)] p-4">
         <p class="text-xs font-semibold uppercase text-[var(--muted)]">Clients</p>
         <strong id="metricClients" class="mt-2 block text-2xl">0</strong>
+      </div>
+      <div class="rounded-lg border border-[var(--line)] bg-[var(--panel)] p-4">
+        <p class="text-xs font-semibold uppercase text-[var(--muted)]">Traffic Total</p>
+        <strong id="metricTrafficTotal" class="mt-2 block text-2xl">-</strong>
+        <p id="metricTrafficTotalSub" class="mt-1 text-xs text-[var(--muted)]">-</p>
+      </div>
+      <div class="rounded-lg border border-[var(--line)] bg-[var(--panel)] p-4">
+        <p class="text-xs font-semibold uppercase text-[var(--muted)]">30 Days</p>
+        <strong id="metricTraffic30d" class="mt-2 block text-2xl">-</strong>
+        <p id="metricTraffic30dSub" class="mt-1 text-xs text-[var(--muted)]">-</p>
       </div>
       <div class="min-w-0 rounded-lg border border-[var(--line)] bg-[var(--panel)] p-4 sm:col-span-2">
         <p class="text-xs font-semibold uppercase text-[var(--muted)]">DNS</p>
@@ -238,6 +254,14 @@ async function renderPanel() {
         <span class="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--muted)]">${icon("search")}</span>
         <input id="searchInput" class="h-11 w-full rounded-md border border-[var(--line)] bg-[var(--soft)] pl-10 pr-3 text-[var(--text)] outline-none focus:border-[var(--accent)]" placeholder="Search by name or IP" autocomplete="off">
       </div>
+    </section>
+
+    <section class="mt-3 rounded-lg border border-[var(--line)] bg-[var(--panel)] p-4">
+      <div class="flex flex-wrap items-center justify-between gap-3">
+        <h2 class="text-base font-semibold">Traffic</h2>
+        <p id="trafficUpdated" class="text-xs text-[var(--muted)]">Last 30 days</p>
+      </div>
+      <div id="trafficChart" class="mt-3 h-44"></div>
     </section>
 
     <section id="accessPanel" class="mt-3 rounded-lg border border-[var(--line)] bg-[var(--panel)] p-4 ${statusState.role === "super" ? "" : "hidden"}">
@@ -291,6 +315,7 @@ async function loadClients() {
   const now = Date.now();
   const payload = await api("/api/clients");
   const rows = Array.isArray(payload) ? payload : (payload.clients || []);
+  trafficState = Array.isArray(payload) ? null : payload.traffic;
   latestClients = await Promise.all(rows.map(async client => {
     const rx = Number(client.rx || 0);
     const tx = Number(client.tx || 0);
@@ -324,7 +349,47 @@ async function loadClients() {
   renderClients();
   document.querySelector("#metricClients").textContent = latestClients.length;
   document.querySelector("#metricActive").textContent = latestClients.filter(isOnline).length;
+  renderTraffic();
   applySearch();
+}
+
+function renderTraffic() {
+  if (!trafficState) return;
+  const total = trafficState.current || {};
+  const last30 = trafficState.last_30d || {};
+  const totalMetric = document.querySelector("#metricTrafficTotal");
+  const totalSub = document.querySelector("#metricTrafficTotalSub");
+  const last30Metric = document.querySelector("#metricTraffic30d");
+  const last30Sub = document.querySelector("#metricTraffic30dSub");
+  if (totalMetric) totalMetric.textContent = bytes(total.total || 0);
+  if (totalSub) totalSub.textContent = `↓ ${bytes(total.rx || 0)} · ↑ ${bytes(total.tx || 0)}`;
+  if (last30Metric) last30Metric.textContent = bytes(last30.total || 0);
+  if (last30Sub) last30Sub.textContent = `↓ ${bytes(last30.rx || 0)} · ↑ ${bytes(last30.tx || 0)}`;
+
+  const updated = document.querySelector("#trafficUpdated");
+  if (updated) updated.textContent = `${(trafficState.days || []).length || 30} day window`;
+  if (!window.ApexCharts) return;
+  const el = document.querySelector("#trafficChart");
+  if (!el) return;
+  if (trafficChart) trafficChart.destroy();
+  const days = trafficState.days || [];
+  trafficChart = new ApexCharts(el, {
+    chart: {type: "bar", height: "100%", toolbar: {show: false}, animations: {enabled: false}},
+    series: [{name: "Traffic", data: days.map(day => Number(day.total || 0))}],
+    colors: ["var(--accent)"],
+    plotOptions: {bar: {borderRadius: 3, columnWidth: "70%"}},
+    dataLabels: {enabled: false},
+    grid: {borderColor: "var(--line)", strokeDashArray: 3},
+    xaxis: {
+      categories: days.map(day => String(day.date || "").slice(5)),
+      labels: {style: {colors: "var(--muted)"}, rotate: -45, hideOverlappingLabels: true},
+      axisBorder: {show: false},
+      axisTicks: {show: false},
+    },
+    yaxis: {labels: {style: {colors: "var(--muted)"}, formatter: value => bytes(value)}},
+    tooltip: {y: {formatter: value => bytes(value)}},
+  });
+  trafficChart.render();
 }
 
 function renderClients() {
