@@ -304,16 +304,18 @@ async function loadClients() {
       if (rx >= Number(prevRxBytes || 0)) rxSpeed = (rx - Number(prevRxBytes || 0)) / elapsed;
       if (tx >= Number(prevTxBytes || 0)) txSpeed = (tx - Number(prevTxBytes || 0)) / elapsed;
     }
+    const speedBps = rxSpeed + txSpeed;
     previousRx.set(client.name, rx);
     previousTx.set(client.name, tx);
     previousSampleAt.set(client.name, now);
     const history = speedHistory.get(client.name) || [];
-    history.push(Math.max(0, Math.round(rxSpeed + txSpeed)));
+    history.push(Math.max(0, Math.round(speedBps)));
     while (history.length > 30) history.shift();
     speedHistory.set(client.name, history);
     return Object.assign({}, client, {
       rxSpeedBps: rxSpeed,
       txSpeedBps: txSpeed,
+      speedBps,
       totalBytes: rx + tx,
       p2p_ports: normalizeP2pPorts(client.p2p_ports),
       avatar: await avatarHtml(client.name),
