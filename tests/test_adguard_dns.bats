@@ -76,3 +76,40 @@ CONF
     [ "$status" -eq 0 ]
     ! grep -q 'phone\.awg' "$AWG_HOSTS_FILE"
 }
+
+@test "adguard client sync writes persistent clients and DNS rewrites" {
+    create_server_config
+    export AWG_ADGUARD_DIR="$TEST_DIR/AdGuardHome"
+    mkdir -p "$AWG_ADGUARD_DIR"
+    cat > "$AWG_ADGUARD_DIR/AdGuardHome.yaml" <<'CONF'
+http:
+  address: 10.9.9.1:3000
+filtering:
+  protection_enabled: true
+  rewrites: []
+clients:
+  persistent: []
+  runtime_sources:
+    hosts: false
+log:
+  enabled: true
+schema_version: 34
+CONF
+    cat >> "$SERVER_CONF_FILE" <<'CONF'
+
+[Peer]
+#_Name = phone
+PublicKey = TESTPHONE
+AllowedIPs = 10.9.9.2/32, fd12:3456:789a:1::2/128
+CONF
+
+    run sync_adguard_clients
+    [ "$status" -eq 0 ]
+    grep -q 'name: "phone"' "$AWG_ADGUARD_DIR/AdGuardHome.yaml"
+    grep -q '        - "10.9.9.2"' "$AWG_ADGUARD_DIR/AdGuardHome.yaml"
+    grep -q '        - "fd12:3456:789a:1::2"' "$AWG_ADGUARD_DIR/AdGuardHome.yaml"
+    grep -q 'domain: "phone.awg"' "$AWG_ADGUARD_DIR/AdGuardHome.yaml"
+    grep -q 'answer: "10.9.9.2"' "$AWG_ADGUARD_DIR/AdGuardHome.yaml"
+    grep -q 'runtime_sources:' "$AWG_ADGUARD_DIR/AdGuardHome.yaml"
+    grep -q 'hosts: true' "$AWG_ADGUARD_DIR/AdGuardHome.yaml"
+}
