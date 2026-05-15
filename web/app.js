@@ -365,9 +365,9 @@ function renderTraffic() {
   const last30Metric = document.querySelector("#metricTraffic30d");
   const last30Sub = document.querySelector("#metricTraffic30dSub");
   if (totalMetric) totalMetric.textContent = bytes(total.total || 0);
-  if (totalSub) totalSub.textContent = `↓ ${bytes(total.rx || 0)} · ↑ ${bytes(total.tx || 0)}`;
+  if (totalSub) totalSub.textContent = `Down ${bytes(total.rx || 0)} · Up ${bytes(total.tx || 0)}`;
   if (last30Metric) last30Metric.textContent = bytes(last30.total || 0);
-  if (last30Sub) last30Sub.textContent = `↓ ${bytes(last30.rx || 0)} · ↑ ${bytes(last30.tx || 0)}`;
+  if (last30Sub) last30Sub.textContent = `Down ${bytes(last30.rx || 0)} · Up ${bytes(last30.tx || 0)}`;
 
   const updated = document.querySelector("#trafficUpdated");
   if (updated) updated.textContent = `${(trafficState.days || []).length || 30} day window`;
@@ -433,8 +433,8 @@ function renderClients() {
         </div>
         <div class="relative z-10 min-w-0 text-left sm:min-w-36 sm:text-right">
           <p class="flex flex-wrap gap-x-3 gap-y-1 text-sm font-semibold sm:justify-end"><span>↓ ${esc(speed(client.rxSpeedBps))}</span><span>↑ ${esc(speed(client.txSpeedBps))}</span></p>
-          <p class="mt-1 text-xs text-[var(--muted)]">Total: ↓ ${esc(bytes(client.rx))} · ↑ ${esc(bytes(client.tx))}</p>
-          <p class="mt-1 text-xs text-[var(--muted)]">30d: ↓ ${esc(bytes(client30d.rx || 0))} · ↑ ${esc(bytes(client30d.tx || 0))}</p>
+          <p class="mt-1 text-xs text-[var(--muted)]">Total: Down ${esc(bytes(client.rx))} · Up ${esc(bytes(client.tx))}</p>
+          <p class="mt-1 text-xs text-[var(--muted)]">30d: Down ${esc(bytes(client30d.rx || 0))} · Up ${esc(bytes(client30d.tx || 0))}</p>
         </div>
         <div class="relative z-10 flex w-full shrink-0 flex-wrap justify-end gap-1 sm:w-auto">
           <button data-action="toggle" title="${client.disabled ? "Enable Client" : "Disable Client"}" class="${buttonClasses("w-9 px-0")}">${icon("power")}</button>
