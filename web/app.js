@@ -6,6 +6,7 @@ let dnsState = null;
 let trafficState = null;
 let latestClients = [];
 let pollTimer = null;
+let topTrafficMode = localStorage.getItem("topTrafficMode") || "30d";
 const previousRx = new Map();
 const previousTx = new Map();
 const previousSampleAt = new Map();
@@ -85,6 +86,12 @@ function bytes(n) {
 
 function speed(n) {
   return `${bytes(n)}/s`;
+}
+
+function trafficText(rx, tx, mode = "traffic") {
+  return mode === "now"
+    ? `↓ ${speed(rx)} · ↑ ${speed(tx)}`
+    : `Down ${bytes(rx)} · Up ${bytes(tx)}`;
 }
 
 function normalizeP2pPorts(value) {
@@ -266,6 +273,18 @@ async function renderPanel() {
       <div id="trafficChart" class="mt-3 h-44"></div>
     </section>
 
+    <section id="topTrafficPanel" class="mt-3 rounded-lg border border-[var(--line)] bg-[var(--panel)] p-4">
+      <div class="flex flex-wrap items-center justify-between gap-3">
+        <h2 class="text-base font-semibold">Top Clients</h2>
+        <div class="flex rounded-md border border-[var(--line)] bg-[var(--soft)] p-1">
+          <button data-top-mode="30d" class="top-mode h-8 rounded px-3 text-xs font-semibold transition">30d</button>
+          <button data-top-mode="total" class="top-mode h-8 rounded px-3 text-xs font-semibold transition">Total</button>
+          <button data-top-mode="now" class="top-mode h-8 rounded px-3 text-xs font-semibold transition">Now</button>
+        </div>
+      </div>
+      <div id="topClientsList" class="mt-3 grid gap-2"></div>
+    </section>
+
     <section id="accessPanel" class="mt-3 rounded-lg border border-[var(--line)] bg-[var(--panel)] p-4 ${statusState.role === "super" ? "" : "hidden"}">
       <div class="flex flex-wrap items-center justify-between gap-3">
         <div>
@@ -343,7 +362,8 @@ async function loadClients() {
       rxSpeedBps: rxSpeed,
       txSpeedBps: txSpeed,
       speedBps,
-      totalBytes: rx + tx,
+      traffic_total: client.traffic_total || {rx: 0, tx: 0, total: 0},
+      totalBytes: Number(client.traffic_total?.total || 0),
       traffic_30d: client.traffic_30d || {rx: 0, tx: 0, total: 0},
       p2p_ports: normalizeP2pPorts(client.p2p_ports),
       avatar: await avatarHtml(client.name),
@@ -353,21 +373,22 @@ async function loadClients() {
   document.querySelector("#metricClients").textContent = latestClients.length;
   document.querySelector("#metricActive").textContent = latestClients.filter(isOnline).length;
   renderTraffic();
+  renderTopClients();
   applySearch();
 }
 
 function renderTraffic() {
   if (!trafficState) return;
-  const total = trafficState.current || {};
+  const total = trafficState.total || trafficState.current || {};
   const last30 = trafficState.last_30d || {};
   const totalMetric = document.querySelector("#metricTrafficTotal");
   const totalSub = document.querySelector("#metricTrafficTotalSub");
   const last30Metric = document.querySelector("#metricTraffic30d");
   const last30Sub = document.querySelector("#metricTraffic30dSub");
   if (totalMetric) totalMetric.textContent = bytes(total.total || 0);
-  if (totalSub) totalSub.textContent = `Down ${bytes(total.rx || 0)} · Up ${bytes(total.tx || 0)}`;
+  if (totalSub) totalSub.textContent = trafficText(total.rx || 0, total.tx || 0);
   if (last30Metric) last30Metric.textContent = bytes(last30.total || 0);
-  if (last30Sub) last30Sub.textContent = `Down ${bytes(last30.rx || 0)} · Up ${bytes(last30.tx || 0)}`;
+  if (last30Sub) last30Sub.textContent = trafficText(last30.rx || 0, last30.tx || 0);
 
   const updated = document.querySelector("#trafficUpdated");
   if (updated) updated.textContent = `${(trafficState.days || []).length || 30} day window`;
@@ -395,6 +416,82 @@ function renderTraffic() {
   trafficChart.render();
 }
 
+function topClientStats(client, mode) {
+  if (mode === "now") {
+    const rx = Number(client.rxSpeedBps || 0);
+    const tx = Number(client.txSpeedBps || 0);
+    return {rx, tx, total: rx + tx};
+  }
+  const data = mode === "total" ? (client.traffic_total || {}) : (client.traffic_30d || {});
+  const rx = Number(data.rx || 0);
+  const tx = Number(data.tx || 0);
+  return {rx, tx, total: Number(data.total || rx + tx)};
+}
+
+function renderTopClients() {
+  const host = document.querySelector("#topClientsList");
+  if (!host) return;
+  document.querySelectorAll("[data-top-mode]").forEach(btn => {
+    const active = btn.dataset.topMode === topTrafficMode;
+    btn.className = `top-mode h-8 rounded px-3 text-xs font-semibold transition ${active ? "bg-[var(--accent)] text-white" : "text-[var(--muted)] hover:text-[var(--text)]"}`;
+    btn.onclick = () => {
+      topTrafficMode = btn.dataset.topMode;
+      localStorage.setItem("topTrafficMode", topTrafficMode);
+      renderTopClients();
+    };
+  });
+  const rows = latestClients
+    .map(client => ({client, stats: topClientStats(client, topTrafficMode)}))
+    .filter(row => row.stats.total > 0)
+    .sort((a, b) => b.stats.total - a.stats.total)
+    .slice(0, 10);
+  if (!rows.length) {
+    host.innerHTML = `<p class="rounded-md border border-[var(--line)] bg-[var(--soft)] px-3 py-4 text-center text-sm text-[var(--muted)]">No traffic yet</p>`;
+    return;
+  }
+  const max = Math.max(...rows.map(row => row.stats.total), 1);
+  host.innerHTML = rows.map(({client, stats}, index) => {
+    const totalPct = Math.max(2, Math.min(100, (stats.total / max) * 100));
+    const rxPct = stats.total > 0 ? Math.max(0, Math.min(100, (stats.rx / stats.total) * 100)) : 0;
+    const txPct = Math.max(0, 100 - rxPct);
+    const amount = topTrafficMode === "now" ? speed(stats.total) : bytes(stats.total);
+    return `
+      <button data-jump-client="${esc(client.name)}" class="w-full rounded-md border border-[var(--line)] bg-[var(--soft)] px-3 py-2 text-left transition hover:border-[var(--accent)]">
+        <div class="flex flex-wrap items-center justify-between gap-2">
+          <div class="min-w-0">
+            <span class="mr-2 text-xs font-semibold text-[var(--muted)]">${index + 1}</span>
+            <span class="font-semibold">${esc(client.name)}</span>
+          </div>
+          <strong class="text-sm">${esc(amount)}</strong>
+        </div>
+        <div class="mt-2 h-2 overflow-hidden rounded-full bg-[var(--panel)]">
+          <div class="flex h-full overflow-hidden rounded-full" style="width:${totalPct}%">
+            <span class="h-full bg-[var(--accent)]" style="width:${rxPct}%"></span>
+            <span class="h-full bg-[var(--muted)]" style="width:${txPct}%"></span>
+          </div>
+        </div>
+        <p class="mt-1 text-xs text-[var(--muted)]">${esc(trafficText(stats.rx, stats.tx, topTrafficMode))}</p>
+      </button>
+    `;
+  }).join("");
+  host.querySelectorAll("[data-jump-client]").forEach(btn => {
+    btn.onclick = () => jumpToClient(btn.dataset.jumpClient);
+  });
+}
+
+function jumpToClient(name) {
+  const search = document.querySelector("#searchInput");
+  if (search && search.value) {
+    search.value = "";
+    applySearch();
+  }
+  const card = Array.from(document.querySelectorAll(".client-card")).find(item => item.dataset.name === name);
+  if (!card) return;
+  card.scrollIntoView({behavior: "smooth", block: "center"});
+  card.classList.add("ring-2", "ring-[var(--accent)]");
+  setTimeout(() => card.classList.remove("ring-2", "ring-[var(--accent)]"), 1200);
+}
+
 function renderClients() {
   charts.forEach(chart => chart.destroy());
   charts.clear();
@@ -408,6 +505,7 @@ function renderClients() {
     const ip = [client.ipv4 || client.ip, client.ipv6].filter(Boolean).join(" / ") || "-";
     const endpoint = client.endpoint || "-";
     const client30d = client.traffic_30d || {};
+    const clientTotal = client.traffic_total || {};
     const p2pDisabled = (client.p2p_ports || []).length > 0 && client.p2p_enabled === false;
     const p2pBadgeClass = `inline-block px-2 py-0.5 text-[10px] font-medium bg-[var(--soft)] border border-[var(--line)] rounded-full${p2pDisabled ? " opacity-50" : ""}`;
     const shieldClass = p2pDisabled ? "w-9 px-0 opacity-50" : "w-9 px-0";
@@ -433,8 +531,8 @@ function renderClients() {
         </div>
         <div class="relative z-10 min-w-0 text-left sm:min-w-36 sm:text-right">
           <p class="flex flex-wrap gap-x-3 gap-y-1 text-sm font-semibold sm:justify-end"><span>↓ ${esc(speed(client.rxSpeedBps))}</span><span>↑ ${esc(speed(client.txSpeedBps))}</span></p>
-          <p class="mt-1 text-xs text-[var(--muted)]">Total: Down ${esc(bytes(client.rx))} · Up ${esc(bytes(client.tx))}</p>
-          <p class="mt-1 text-xs text-[var(--muted)]">30d: Down ${esc(bytes(client30d.rx || 0))} · Up ${esc(bytes(client30d.tx || 0))}</p>
+          <p class="mt-1 text-xs text-[var(--muted)]">Total: ${esc(trafficText(clientTotal.rx || 0, clientTotal.tx || 0))}</p>
+          <p class="mt-1 text-xs text-[var(--muted)]">30d: ${esc(trafficText(client30d.rx || 0, client30d.tx || 0))}</p>
         </div>
         <div class="relative z-10 flex w-full shrink-0 flex-wrap justify-end gap-1 sm:w-auto">
           <button data-action="toggle" title="${client.disabled ? "Enable Client" : "Disable Client"}" class="${buttonClasses("w-9 px-0")}">${icon("power")}</button>
