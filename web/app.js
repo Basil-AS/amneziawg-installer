@@ -27,6 +27,7 @@ const icons = {
   copy: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="9" y="9" width="11" height="11" rx="2"/><rect x="4" y="4" width="11" height="11" rx="2"/></svg>',
   help: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M9.5 9a2.6 2.6 0 0 1 5 1c0 2-2.5 2.2-2.5 4"/><path d="M12 17h.01"/></svg>',
   external: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M14 3h7v7"/><path d="M10 14 21 3"/><path d="M21 14v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5"/></svg>',
+  shield: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M9 12.75 11.25 15 15 9.75"/><path d="M12 3.75c2.1 1.95 4.95 3 7.88 3-.42 6.15-3.25 10.69-7.88 13.5-4.63-2.81-7.46-7.35-7.88-13.5 2.93 0 5.78-1.05 7.88-3Z"/></svg>',
 };
 
 const theme = localStorage.getItem("panelTheme") || "light";
@@ -342,6 +343,7 @@ async function loadClients() {
       txSpeedBps: txSpeed,
       speedBps,
       totalBytes: rx + tx,
+      traffic_30d: client.traffic_30d || {rx: 0, tx: 0, total: 0},
       p2p_ports: normalizeP2pPorts(client.p2p_ports),
       avatar: await avatarHtml(client.name),
     });
@@ -404,6 +406,10 @@ function renderClients() {
     const online = isOnline(client);
     const ip = [client.ipv4 || client.ip, client.ipv6].filter(Boolean).join(" / ") || "-";
     const endpoint = client.endpoint || "-";
+    const client30d = client.traffic_30d || {};
+    const p2pDisabled = (client.p2p_ports || []).length > 0 && client.p2p_enabled === false;
+    const p2pBadgeClass = `inline-block px-2 py-0.5 text-[10px] font-medium bg-[var(--soft)] border border-[var(--line)] rounded-full${p2pDisabled ? " opacity-50" : ""}`;
+    const shieldClass = p2pDisabled ? "w-9 px-0 opacity-50" : "w-9 px-0";
     const search = `${client.name} ${ip} ${endpoint} ${(client.p2p_ports || []).join(" ")}`.toLowerCase();
     return `
       <article class="client-card bg-[var(--panel)] border-b border-[var(--line)] p-4 flex flex-col gap-4 relative overflow-hidden last:border-b-0 sm:flex-row sm:items-center" data-name="${esc(client.name)}" data-search="${esc(search)}">
@@ -422,14 +428,16 @@ function renderClients() {
           <p class="mt-1 truncate text-sm text-[var(--muted)]">${esc(ip)}</p>
           <p class="mt-1 text-xs text-[var(--muted)]">Last seen ${esc(timeAgo(client.latestHandshakeAt || client.last_handshake))}</p>
           <p class="mt-1 truncate text-xs text-[var(--muted)]">Endpoint: ${esc(endpoint)}</p>
-          <div class="mt-2 flex flex-wrap gap-1">${(client.p2p_ports || []).map(p => '<span class="inline-block px-2 py-0.5 text-[10px] font-medium bg-[var(--soft)] border border-[var(--line)] rounded-full">P2P: ' + esc(p) + '</span>').join('')}</div>
+          <div class="mt-2 flex flex-wrap gap-1">${(client.p2p_ports || []).map(p => `<span class="${p2pBadgeClass}">P2P: ${esc(p)}${p2pDisabled ? " (off)" : ""}</span>`).join('')}</div>
         </div>
         <div class="relative z-10 min-w-0 text-left sm:min-w-36 sm:text-right">
           <p class="flex flex-wrap gap-x-3 gap-y-1 text-sm font-semibold sm:justify-end"><span>↓ ${esc(speed(client.rxSpeedBps))}</span><span>↑ ${esc(speed(client.txSpeedBps))}</span></p>
-          <p class="mt-1 text-xs text-[var(--muted)]">${esc(bytes(client.rx))} down · ${esc(bytes(client.tx))} up</p>
+          <p class="mt-1 text-xs text-[var(--muted)]">Total: ↓ ${esc(bytes(client.rx))} · ↑ ${esc(bytes(client.tx))}</p>
+          <p class="mt-1 text-xs text-[var(--muted)]">30d: ↓ ${esc(bytes(client30d.rx || 0))} · ↑ ${esc(bytes(client30d.tx || 0))}</p>
         </div>
         <div class="relative z-10 flex w-full shrink-0 flex-wrap justify-end gap-1 sm:w-auto">
           <button data-action="toggle" title="${client.disabled ? "Enable Client" : "Disable Client"}" class="${buttonClasses("w-9 px-0")}">${icon("power")}</button>
+          <button data-action="toggle-p2p" title="Toggle P2P Ports" class="${buttonClasses(shieldClass)}">${icon("shield")}</button>
           <button data-action="config" title="Config" class="${buttonClasses("w-9 px-0")}">${icon("file")}</button>
           <button data-action="qr" title="QR code" class="${buttonClasses("w-9 px-0")}">${icon("qr")}</button>
           <button data-action="delete" title="Delete" class="${buttonClasses("w-9 px-0 text-[var(--danger)]")}">${icon("trash")}</button>
@@ -559,6 +567,11 @@ async function clientAction(name, action) {
     if (action === "toggle") {
       await api(`/api/clients/${encodeURIComponent(name)}/toggle`, {method: "POST", body: "{}"});
       showToast("Client toggled");
+      return loadClients();
+    }
+    if (action === "toggle-p2p") {
+      await api(`/api/clients/${encodeURIComponent(name)}/p2p/toggle`, {method: "POST", body: "{}"});
+      showToast("P2P ports toggled");
       return loadClients();
     }
     if (action === "delete") {

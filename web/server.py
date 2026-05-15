@@ -124,7 +124,7 @@ def update_traffic_history(rows):
 
 def traffic_summary(auth, stats=None):
     stats = stats or client_stats_map()
-    if Handler.is_super(auth):
+    if auth.get("role") == "super":
         allowed = None
     else:
         allowed = set(auth.get("clients") or [])
@@ -153,6 +153,18 @@ def traffic_summary(auth, stats=None):
         "last_30d": {**last_30d, "total": last_30d["rx"] + last_30d["tx"]},
         "days": days,
     }
+
+
+def client_traffic_30d(name, history=None):
+    history = history or load_traffic_history()
+    rx = tx = 0
+    for offset in range(29, -1, -1):
+        date = time.strftime("%Y-%m-%d", time.localtime(time.time() - offset * 86400))
+        values = history.get("days", {}).get(date, {}).get(name, {})
+        if isinstance(values, dict):
+            rx += max(0, int(values.get("rx") or 0))
+            tx += max(0, int(values.get("tx") or 0))
+    return {"rx": rx, "tx": tx, "total": rx + tx}
 
 
 def clean_client_list(value):
@@ -288,13 +300,15 @@ def parse_peers():
                 "ipv4": "",
                 "ipv6": "",
                 "p2p_ports": [],
+                "p2p_enabled": True,
                 "disabled": line == "# [Peer]",
             }
         elif cur is not None and line.startswith("#_Name = "):
             cur["name"] = line.split("=", 1)[1].strip()
-        elif cur is not None and line.startswith("#_P2PPorts"):
+        elif cur is not None and re.match(r"^#_P2PPorts(_Disabled)?\s*=", line):
             value = line.split("=", 1)[1] if "=" in line else ""
             cur["p2p_ports"] = [int(x) for x in re.findall(r"\d+", value)]
+            cur["p2p_enabled"] = not line.startswith("#_P2PPorts_Disabled")
         elif cur is not None and re.match(r"^#?\s*PublicKey", line):
             cur["public_key"] = line.split("=", 1)[1].strip() if "=" in line else ""
             cur["disabled"] = cur["disabled"] or line.startswith("#")
@@ -486,12 +500,14 @@ class Handler(SimpleHTTPRequestHandler):
             return
         if u.path == "/api/clients":
             stats = client_stats_map()
+            history = load_traffic_history()
             rows = []
             for peer in self.visible_peers(auth):
                 item = dict(peer)
                 row_stats = stats.get(peer["name"], {})
                 item["rx"] = row_stats.get("rx", 0)
                 item["tx"] = row_stats.get("tx", 0)
+                item["traffic_30d"] = client_traffic_30d(peer["name"], history)
                 item["latestHandshakeAt"] = row_stats.get("latestHandshakeAt", row_stats.get("last_handshake", 0))
                 endpoint = row_stats.get("endpoint", "")
                 item["endpoint"] = "" if endpoint in {"", "-", "(none)", "none"} else endpoint
@@ -603,13 +619,16 @@ class Handler(SimpleHTTPRequestHandler):
                 return
             else:
                 m = re.match(r"^/api/clients/([^/]+)/(p2p|toggle)$", u.path)
-                if not m:
+                p2p_toggle = re.match(r"^/api/clients/([^/]+)/p2p/toggle$", u.path)
+                if not m and not p2p_toggle:
                     self.send_error(404)
                     return
-                name, action = safe_name(m.group(1)), m.group(2)
+                name = safe_name((m or p2p_toggle).group(1))
                 if not self.require_client_access(auth, name):
                     return
-                if action == "toggle":
+                if p2p_toggle:
+                    p = run_manage("p2p", "toggle", name, timeout=45)
+                elif m.group(2) == "toggle":
                     p = run_manage("toggle", name, timeout=45)
                 else:
                     args = ["p2p", "add", name]
