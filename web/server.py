@@ -313,6 +313,21 @@ def remove_client_from_all_tokens(client_name):
             write_tokens(data)
 
 
+def rotate_user_token(old_digest):
+    old_digest = safe_token_hash(old_digest)
+    token = secrets.token_urlsafe(32)
+    new_digest = token_hash(token)
+    with TOKENS_LOCK:
+        data = load_tokens()
+        users = data.setdefault("users", {})
+        if old_digest not in users:
+            return None
+        clients = clean_client_list(users.pop(old_digest, []))
+        users[new_digest] = clients
+        write_tokens(data)
+    return {"token": token, "token_hash": new_digest, "clients": clients}
+
+
 def parse_config():
     cfg = AWG_DIR / "awgsetup_cfg.init"
     out = {
@@ -666,6 +681,15 @@ class Handler(SimpleHTTPRequestHandler):
                     data.setdefault("users", {})[digest] = clients
                     write_tokens(data)
                 self.send_json({"token": token, "token_hash": digest, "clients": clients})
+                return
+            elif re.match(r"^/api/tokens/[^/]+/rotate$", u.path):
+                if not self.require_super(auth):
+                    return
+                result = rotate_user_token(re.match(r"^/api/tokens/([^/]+)/rotate$", u.path).group(1))
+                if result is None:
+                    self.send_json({"error": "token not found"}, 404)
+                    return
+                self.send_json(result)
                 return
             elif u.path == "/api/tokens/reset-all":
                 if not self.require_super(auth):

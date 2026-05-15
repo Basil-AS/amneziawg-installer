@@ -728,9 +728,34 @@ async function loadTokens() {
         <p class="truncate font-mono text-xs">${esc(row.hash)}</p>
         <p class="mt-1 text-xs text-[var(--muted)]">${esc((row.clients || []).join(", ") || "no clients")}</p>
       </div>
-      <button data-revoke="${esc(row.hash)}" class="${buttonClasses("text-[var(--danger)]")}">${icon("trash")}<span>Revoke</span></button>
+      <div class="flex flex-wrap gap-2">
+        <button data-rotate="${esc(row.hash)}" class="${buttonClasses()}">${icon("key")}<span>Rotate</span></button>
+        <button data-revoke="${esc(row.hash)}" class="${buttonClasses("text-[var(--danger)]")}">${icon("trash")}<span>Revoke</span></button>
+      </div>
     </div>
   `).join("") : `<p class="text-sm text-[var(--muted)]">No user tokens yet.</p>`;
+  panel.querySelectorAll("[data-rotate]").forEach(btn => {
+    btn.onclick = async () => {
+      const result = await api(`/api/tokens/${encodeURIComponent(btn.dataset.rotate)}/rotate`, {method: "POST", body: "{}"});
+      try {
+        if (navigator.clipboard) await navigator.clipboard.writeText(result.token);
+      } catch {
+        // Clipboard access depends on browser policy; the token is still displayed.
+      }
+      showModal("Rotated Token", `
+        <p class="mb-2 text-sm text-[var(--muted)]">Access list preserved: ${esc((result.clients || []).join(", ") || "no clients")}.</p>
+        <div class="flex gap-2">
+          <pre class="min-w-0 flex-1 overflow-auto rounded-md bg-[var(--soft)] p-3 text-xs">${esc(result.token)}</pre>
+          <button id="copyRotatedToken" class="${buttonClasses("w-9 px-0")}">${icon("copy")}</button>
+        </div>
+      `);
+      document.querySelector("#copyRotatedToken").onclick = async () => {
+        await navigator.clipboard.writeText(result.token);
+        showToast("Token copied");
+      };
+      await loadTokens();
+    };
+  });
   panel.querySelectorAll("[data-revoke]").forEach(btn => {
     btn.onclick = async () => {
       await api(`/api/tokens/${encodeURIComponent(btn.dataset.revoke)}`, {method: "DELETE"});

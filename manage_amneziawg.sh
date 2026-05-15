@@ -1023,6 +1023,16 @@ elif action == "revoke":
     del data["users"][matches[0]]
     save(data)
     print(f"revoked: {matches[0]}")
+elif action == "rotate":
+    matches = [key for key in data["users"] if key == name or key.startswith(name)]
+    if len(matches) != 1:
+        raise SystemExit("token not found")
+    clients = data["users"].pop(matches[0])
+    token = secrets.token_urlsafe(32)
+    data["users"][digest(token)] = clients
+    save(data)
+    print("Token rotated. Client access list preserved.")
+    print(token)
 elif action == "reset-super":
     token = secrets.token_urlsafe(32)
     data["super_token_hash"] = digest(token)
@@ -1488,7 +1498,8 @@ usage() {
     echo "  set-name \"ИМЯ\"       Сменить имя сервера и перегенерировать клиентов"
     echo "  web token list        Показать токены веб-панели"
     echo "  web token add <name>  Создать обычный токен и вывести его значение"
-    echo "  web token revoke <name> Удалить обычный токен"
+    echo "  web token revoke <hash> Удалить обычный токен"
+    echo "  web token rotate <hash> Заменить обычный токен, сохранив доступы"
     echo "  web token reset-super Перегенерировать super token"
     echo "  regen [имя]           Перегенерировать файлы клиента(ов)"
     echo "  modify <имя> <пар> <зн> Изменить параметр клиента"
@@ -1849,7 +1860,7 @@ case $COMMAND in
     web)
         _sub="${ARGS[0]:-}"
         if [[ "$_sub" != "token" ]]; then
-            die "Использование: web token list|add <name>|revoke <name>|reset-super"
+            die "Использование: web token list|add <name>|revoke <hash>|rotate <hash>|reset-super"
         fi
         _token_cmd="${ARGS[1]:-list}"
         case "$_token_cmd" in
@@ -1861,8 +1872,12 @@ case $COMMAND in
                 web_token_py "add" "${ARGS[2]}" || _cmd_rc=1
                 ;;
             revoke)
-                [[ -z "${ARGS[2]:-}" ]] && die "Использование: web token revoke <name>"
+                [[ -z "${ARGS[2]:-}" ]] && die "Использование: web token revoke <hash>"
                 web_token_py "revoke" "${ARGS[2]}" || _cmd_rc=1
+                ;;
+            rotate)
+                [[ -z "${ARGS[2]:-}" ]] && die "Использование: web token rotate <hash>"
+                web_token_py "rotate" "${ARGS[2]}" || _cmd_rc=1
                 ;;
             reset-super)
                 web_token_py "reset-super" || _cmd_rc=1
