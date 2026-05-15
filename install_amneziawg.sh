@@ -3036,6 +3036,7 @@ PY
     cat > "$ag_dir/AdGuardHome.yaml" << EOF
 bind_host: 10.9.9.1
 bind_port: ${ag_port}
+web_session_ttl: 720
 users:
   - name: ${AG_USERNAME}
     password: ${AG_HASH}
