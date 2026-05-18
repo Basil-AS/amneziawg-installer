@@ -52,6 +52,147 @@
   <a href="#license">License</a>
 </p>
 
+<a id="quickstart"></a>
+# AmneziaWG Installer Fork
+
+This is an `amneziawg-installer` fork with a lightweight Python stdlib web panel, HTTPS, bearer token / `tokens.json`, RBAC access tokens, IPv6 `routed|ndp|nat66|legacy`, P2P/DNAT, AdGuard Home integration, `vpn://` URIs, QR/config integration, and UDP/voice diagnostics.
+
+## 🚀 Quick Start
+
+### Safe default installation
+
+```bash
+git clone https://github.com/<OWNER>/<REPO>.git
+cd amneziawg-installer
+sudo bash install_amneziawg_en.sh
+```
+
+If you run the installer directly through `curl`, use your own repository and branch:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/<OWNER>/<REPO>/<BRANCH>/install_amneziawg_en.sh -o install_amneziawg_en.sh
+sudo bash install_amneziawg_en.sh
+```
+
+### Accessing the web panel
+
+By default, the web panel is reachable only from inside the VPN:
+
+```text
+https://10.9.9.1:8443
+```
+
+Connect a VPN client and open that address in a browser. If you intentionally installed with `--web-bind=127.0.0.1`, use an SSH tunnel as a fallback:
+
+```bash
+ssh -L 8443:127.0.0.1:8443 root@SERVER_IP
+```
+
+Then open:
+
+```text
+https://127.0.0.1:8443
+```
+
+### Public web panel, only when you really need it
+
+```bash
+sudo bash install_amneziawg_en.sh --web-bind=0.0.0.0 --web-port=8443
+```
+
+> Exposing the web panel to the whole internet is not recommended. Prefer a firewall allowlist, VPN, SSH tunnel, or a reverse proxy with extra authentication. Keep the bearer token long and secret; do not publish `tokens.json`, client configs, QR codes, or `vpn://` URIs.
+
+## Common installation scenarios
+
+```bash
+# Minimal install
+sudo bash install_amneziawg_en.sh
+
+# Web panel inside the VPN only (default)
+sudo bash install_amneziawg_en.sh --web-bind=10.9.9.1 --web-port=8443
+
+# Web panel on localhost only, when you want an SSH tunnel
+sudo bash install_amneziawg_en.sh --web-bind=127.0.0.1 --web-port=8443
+
+# Public web panel — only when you intentionally want one
+sudo bash install_amneziawg_en.sh --web-bind=0.0.0.0 --web-port=8443
+
+# IPv6 through NDP proxy
+sudo bash install_amneziawg_en.sh --enable-native-ipv6 --ipv6-mode=ndp
+
+# IPv6 NAT66/ULA fallback
+sudo bash install_amneziawg_en.sh --enable-native-ipv6 --ipv6-mode=nat66
+
+# Routed IPv6 when the server has a routed prefix
+sudo bash install_amneziawg_en.sh --enable-native-ipv6 --ipv6-mode=routed --ipv6-subnet=2001:db8:1234:1::/64
+
+# AdGuard Home integration
+sudo bash install_amneziawg_en.sh --enable-adguard --dns-mode=adguard
+```
+
+P2P/DNAT is configured after installation:
+
+```bash
+sudo /root/awg/manage_amneziawg.sh p2p add CLIENT_NAME PORT
+sudo /root/awg/manage_amneziawg.sh p2p remove CLIENT_NAME PORT
+sudo /root/awg/manage_amneziawg.sh p2p toggle CLIENT_NAME
+```
+
+## Important installer flags
+
+| Flag | Purpose | Example |
+| --- | --- | --- |
+| `--yes` | Run without interactive confirmations | `sudo bash install_amneziawg_en.sh --yes` |
+| `--web-bind=ADDR` | Address the web panel listens on. Default: VPN gateway `10.9.9.1` | `--web-bind=0.0.0.0` |
+| `--web-port=PORT` | Web panel HTTPS port | `--web-port=8443` |
+| `--disable-web` | Do not deploy the web panel | `--disable-web` |
+| `--enable-native-ipv6` | Compatibility alias for enabling client IPv6 | `--enable-native-ipv6` |
+| `--disallow-ipv6` | Force-disable IPv6 | `--disallow-ipv6` |
+| `--ipv6-mode=MODE` | IPv6 mode: `routed`, `ndp`, `nat66` | `--ipv6-mode=ndp` |
+| `--ipv6-subnet=CIDR` | Client IPv6 prefix | `--ipv6-subnet=2001:db8:1::/64` |
+| `--upgrade-ipv6` | Add IPv6/P2P metadata to existing clients | `--upgrade-ipv6` |
+| `--p2p-base-port=PORT` | Base P2P port range | `--p2p-base-port=20000` |
+| `--p2p-ports-per-client=N` | P2P ports assigned to each new client | `--p2p-ports-per-client=3` |
+| `--fullcone-nat` | Try `FULLCONENAT`, otherwise fall back to `MASQUERADE` | `--fullcone-nat` |
+| `--enable-adguard` | Install AdGuard Home | `--enable-adguard` |
+| `--dns-mode=MODE` | DNS mode: `adguard`, `system`, `custom` | `--dns-mode=adguard` |
+| `--route-all` | Route all traffic through the VPN | `--route-all` |
+| `--route-amnezia` | Use the Amnezia route list | `--route-amnezia` |
+| `--endpoint=IP` | External server IP when the VPS is behind NAT | `--endpoint=203.0.113.10` |
+| `--preset=TYPE` | Obfuscation preset: `default` or `mobile` | `--preset=mobile` |
+| `--no-tweaks` | Skip hardening/optimization | `--no-tweaks` |
+
+See `sudo bash install_amneziawg_en.sh --help` for the full list.
+
+## Post-install management commands
+
+```bash
+sudo /root/awg/manage_amneziawg.sh list
+sudo /root/awg/manage_amneziawg.sh add CLIENT_NAME
+sudo /root/awg/manage_amneziawg.sh remove CLIENT_NAME
+sudo /root/awg/manage_amneziawg.sh toggle CLIENT_NAME
+sudo /root/awg/manage_amneziawg.sh stats
+sudo /root/awg/manage_amneziawg.sh restart
+sudo /root/awg/manage_amneziawg.sh web token list
+sudo /root/awg/manage_amneziawg.sh set-name "My VPN"
+sudo /root/awg/manage_amneziawg.sh voice-check
+sudo /root/awg/manage_amneziawg.sh udp-check
+sudo /root/awg/manage_amneziawg.sh dns status
+sudo /root/awg/manage_amneziawg.sh dns restart
+```
+
+## Security notes
+
+* The web panel binds to VPN gateway `10.9.9.1` by default and is reachable only by connected VPN clients.
+* Static serving is restricted to an allowlist: `index.html`, `style.css`, `app.js`, `favicon.svg`.
+* Private files such as `tokens.json`, `auth_token`, `key.pem`, `cert.pem`, and `server.py` are not served over static HTTP.
+* `tokens.json` stores token hashes, but it still must remain private.
+* Do not publish client configs, QR codes, or `vpn://` URIs.
+* For localhost-only access, use `--web-bind=127.0.0.1` plus an SSH tunnel; for a public panel, use a firewall allowlist, VPN, or a reverse proxy with additional authentication.
+
+
+---
+
 <a id="fork-delta"></a>
 ## 🔀 This is a fork of the original project
 
@@ -134,34 +275,8 @@ There are a few other ways to get AmneziaWG running. Each picks a different trad
 | **[spcfox/amnezia-wg-easy](https://github.com/spcfox/amnezia-wg-easy)** | Docker fork of wg-easy | Existing wg-easy users who specifically want AmneziaWG instead of plain WireGuard |
 | **[Amnezia VPN app](https://amnezia.org/)** | Desktop GUI + SSH deploy | Click-through setup with no terminal; prefer a graphical client |
 
-This installer is the headless SSH path: minimum footprint, no web panel, kernel-level AmneziaWG, ARM prebuilts for cheap boxes. If you already run Docker and want a browser-based peer manager, **wg-easy** is the more natural fit. If you want point-and-click deployment, the **Amnezia VPN** desktop client includes its own SSH deployment workflow.
+This installer is the SSH-first path without a heavy stack: a lightweight Python stdlib web panel, kernel-level AmneziaWG, and ARM prebuilts for cheap boxes. If you already run Docker and want a multi-protocol GUI suite, **wg-easy** is the more natural fit. If you want point-and-click deployment, the **Amnezia VPN** desktop client includes its own SSH deployment workflow.
 
----
-
-<a id="quickstart"></a>
-## 🚀 Quick Start
-
-> 📘 **Full deployment guide:** [Install AmneziaWG VPN server on Ubuntu/Debian VPS](INSTALL_VPS.md) - covers VPS choice, ARM, troubleshooting, and uninstall.
-
-```bash
-wget https://raw.githubusercontent.com/Basil-AS/amneziawg-installer/main/install_amneziawg_en.sh
-chmod +x install_amneziawg_en.sh
-sudo bash ./install_amneziawg_en.sh
-```
-
-> 3 commands to start. 2 reboots along the way. About 20 minutes to a working VPN. [Learn more →](#installation)
-
-<details>
-<summary><strong>Non-interactive installation (for automation)</strong></summary>
-
-```bash
-sudo bash ./install_amneziawg_en.sh --yes --route-all
-```
-
-All parameters are accepted automatically. Details: [ADVANCED.en.md#cli-params-adv](ADVANCED.en.md#cli-params-adv)
-</details>
-
----
 
 <a id="fork-details"></a>
 ## 🌐 Fork implementation details: IPv6 + P2P + Web
@@ -209,7 +324,7 @@ Useful flags:
 --p2p-ports-per-client=3
 --fullcone-nat
 --web-port=8443
---web-bind=0.0.0.0
+--web-bind=10.9.9.1
 --disable-web
 --enable-adguard
 --adguard-port=3000
@@ -222,7 +337,7 @@ Useful flags:
 * Server config uses dual `Address` and external hooks: `/root/awg/postup.sh` and `/root/awg/postdown.sh`.
 * Peer blocks are the source of truth: `AllowedIPs = <ipv4>/32, <ipv6>/128` and `#_P2PPorts = p1,p2,p3`.
 * Default P2P ports for IPv4 last octet `N`: `20000+N`, `20256+N`, `20512+N`; extra ports are allocated from `20001-21024`.
-* Web files live in `/root/awg/web/`; the panel uses self-signed TLS and a bearer token stored in `/root/awg/web/auth_token`.
+* Web files live in `/root/awg/web/`; the panel listens on VPN gateway `10.9.9.1:8443` by default, uses self-signed TLS, and stores bearer-token hashes/RBAC records in `/root/awg/web/tokens.json`.
 * AdGuard Home is installed in `/opt/AdGuardHome`; DNS listens on `127.0.0.1`, `10.9.9.1`, and the server IPv6 address inside the VPN. If it fails, VPN remains usable; fallback: `manage dns set-mode system`.
 
 ### Not finished yet

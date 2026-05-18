@@ -290,7 +290,8 @@ show_help() {
                         Количество P2P портов для нового клиента (умолч. 3)
   --fullcone-nat        Пробовать FULLCONENAT вместо MASQUERADE для IPv4
   --web-port=PORT       Порт веб-панели HTTPS (умолч. 8443)
-  --web-bind=ADDR       Адрес bind веб-панели (умолч. 0.0.0.0)
+  --web-bind=ADDR       Адрес bind веб-панели (умолч. 10.9.9.1, внутри VPN)
+                        0.0.0.0 открывает панель наружу; используйте только осознанно
   --disable-web         Не устанавливать и не запускать веб-панель
   --enable-adguard      Установить AdGuard Home (по умолчанию включено)
   --disable-adguard     Не устанавливать AdGuard Home и использовать системный DNS
@@ -1913,7 +1914,7 @@ initialize_setup() {
     AWG_FULLCONE_NAT=0
     AWG_WEB_ENABLED=1
     AWG_WEB_PORT=8443
-    AWG_WEB_BIND="0.0.0.0"
+    AWG_WEB_BIND="10.9.9.1"
     AWG_DNS_MODE="adguard"
     AWG_CUSTOM_DNS="1.1.1.1"
     AWG_ADGUARD_ENABLED=1
@@ -1943,7 +1944,7 @@ initialize_setup() {
         AWG_FULLCONE_NAT=${AWG_FULLCONE_NAT:-0}
         AWG_WEB_ENABLED=${AWG_WEB_ENABLED:-1}
         AWG_WEB_PORT=${AWG_WEB_PORT:-8443}
-        AWG_WEB_BIND=${AWG_WEB_BIND:-0.0.0.0}
+        AWG_WEB_BIND=${AWG_WEB_BIND:-${AWG_TUNNEL_SUBNET%/*}}
         AWG_DNS_MODE=${AWG_DNS_MODE:-adguard}
         AWG_CUSTOM_DNS=${AWG_CUSTOM_DNS:-1.1.1.1}
         AWG_ADGUARD_ENABLED=${AWG_ADGUARD_ENABLED:-1}
@@ -3212,15 +3213,17 @@ PY
     local asset web_base src tmp_asset
     web_base="https://raw.githubusercontent.com/${AWG_REPO}/${AWG_BRANCH}/web"
     for asset in server.py index.html style.css app.js favicon.svg; do
+        src="${INSTALLER_DIR}/web/${asset}"
+        if [[ -f "$src" ]]; then
+            cp -a "$src" "$web_dir/$asset" || die "Не удалось скопировать web asset $asset"
+            continue
+        fi
         tmp_asset="$web_dir/${asset}.tmp.$$"
         if curl -fsSL --connect-timeout 10 --max-time 60 -o "$tmp_asset" "${web_base}/${asset}"; then
             mv -f "$tmp_asset" "$web_dir/$asset"
         else
             rm -f "$tmp_asset"
-            src="${INSTALLER_DIR}/web/${asset}"
-            if [[ -f "$src" ]]; then
-                cp -a "$src" "$web_dir/$asset" || die "Не удалось скопировать web asset $asset"
-            elif [[ "$asset" == "favicon.svg" ]]; then
+            if [[ "$asset" == "favicon.svg" ]]; then
                 log_warn "favicon.svg не найден; веб-панель продолжит работу без favicon."
             else
                 die "Не удалось скачать web asset $asset из ${web_base}"
@@ -3233,7 +3236,9 @@ PY
     cat > /etc/systemd/system/awg-web.service << EOF
 [Unit]
 Description=VPN Web Panel
-After=network.target awg-quick@awg0.service
+After=network-online.target awg-quick@awg0.service
+Wants=network-online.target
+Requires=awg-quick@awg0.service
 
 [Service]
 Type=simple
@@ -3243,7 +3248,7 @@ Environment=AWG_WEB_BIND=${AWG_WEB_BIND}
 Environment=AWG_WEB_PORT=${AWG_WEB_PORT}
 ExecStart=/usr/bin/python3 ${web_dir}/server.py
 Restart=on-failure
-RestartSec=5
+RestartSec=3
 
 [Install]
 WantedBy=multi-user.target
