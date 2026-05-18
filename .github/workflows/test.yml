@@ -3,9 +3,9 @@ name: Tests
 on:
   push:
     branches: [main]
-    paths: ['*.sh', 'scripts/**', 'tests/**']
+    paths: ['*.sh', 'scripts/**', 'tests/**', 'web/**']
   pull_request:
-    paths: ['*.sh', 'scripts/**', 'tests/**']
+    paths: ['*.sh', 'scripts/**', 'tests/**', 'web/**']
 
 permissions:
   contents: read
@@ -26,3 +26,6 @@ jobs:
 
       - name: Run unit tests
         run: bats tests/*.bats
+
+      - name: Compile web panel server
+        run: python3 -m py_compile web/server.py

@@ -115,6 +115,10 @@ cp "$KO_PATH" "$MODULE_INSTALL_PATH/amneziawg.ko"
 KO_FILE="$MODULE_INSTALL_PATH/amneziawg.ko"
 if xz --check=crc32 --lzma2=dict=1MiB -f "$KO_FILE" 2>/dev/null; then
     KO_XZ="${KO_FILE}.xz"
+    if [[ -f "$KO_FILE" && -f "$KO_XZ" ]]; then
+        echo "ERROR: both $KO_FILE and $KO_XZ exist after compression — refusing ambiguous package contents." >&2
+        exit 1
+    fi
     # Sanity: kernel-compatible streams round-trip through `xz -d` and `xz -t`.
     # Catches preset/filter mismatches at build time instead of in users' dmesg.
     if xz -t "$KO_XZ" 2>/dev/null && xz -d -c "$KO_XZ" >/dev/null 2>&1; then

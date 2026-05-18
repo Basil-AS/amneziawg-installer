@@ -857,22 +857,37 @@ validate_dns_list() {
     [[ "$value" =~ ^[0-9a-fA-F.:,\ ]+$ ]] || return 1
 }
 
+shell_quote() {
+    local s="$1"
+    s="${s//\'/\'\\\'\'}"
+    printf "'%s'" "$s"
+}
+
+validate_server_name() {
+    local name="$1"
+    [[ -n "${name//[[:space:]]/}" ]] || return 1
+    [[ "$name" != *$'\n'* && "$name" != *$'\r'* ]] || return 1
+    [[ ${#name} -le 128 ]] || return 1
+}
+
 set_config_value() {
     local key="$1" value="$2"
     [[ -f "$CONFIG_FILE" ]] || { log_error "Not found: $CONFIG_FILE"; return 1; }
-    case "$value" in *$'\n'*|*$'\r'*|*\'*) log_error "Invalid value for $key"; return 1 ;; esac
+    case "$value" in *$'\n'*|*$'\r'*) log_error "Invalid value for $key"; return 1 ;; esac
+    local quoted
+    quoted=$(shell_quote "$value")
     local tmp
     tmp=$(mktemp "${CONFIG_FILE}.tmp.XXXXXX") || return 1
-    if awk -v key="$key" -v value="$value" '
+    if awk -v key="$key" -v quoted="$quoted" '
         BEGIN { done=0 }
         $0 ~ "^(export[[:space:]]+)?" key "=" {
-            print "export " key "='\''" value "'\''"
+            print "export " key "=" quoted
             done=1
             next
         }
         { print }
         END {
-            if (!done) print "export " key "='\''" value "'\''"
+            if (!done) print "export " key "=" quoted
         }
     ' "$CONFIG_FILE" > "$tmp"; then
         mv -f "$tmp" "$CONFIG_FILE" || { rm -f "$tmp"; return 1; }
@@ -881,6 +896,277 @@ set_config_value() {
     fi
     rm -f "$tmp"
     return 1
+}
+
+update_server_conf_name() {
+    local name="$1"
+    validate_server_name "$name" || { log_error "Invalid server name."; return 1; }
+    [[ -f "$SERVER_CONF_FILE" ]] || { log_error "Not found: $SERVER_CONF_FILE"; return 1; }
+    local tmp
+    tmp=$(mktemp "${SERVER_CONF_FILE}.tmp.XXXXXX") || return 1
+    if awk -v name="$name" '
+        /^\[Interface\]/ {
+            print
+            print "# Name = " name
+            in_iface=1
+            done=1
+            next
+        }
+        in_iface && /^# Name = / { next }
+        in_iface && /^\[/ { in_iface=0; print; next }
+        { print }
+        END { if (!done) exit 2 }
+    ' "$SERVER_CONF_FILE" > "$tmp"; then
+        mv -f "$tmp" "$SERVER_CONF_FILE" || { rm -f "$tmp"; return 1; }
+        chmod 600 "$SERVER_CONF_FILE" 2>/dev/null || true
+        return 0
+    fi
+    rm -f "$tmp"
+    return 1
+}
+
+regenerate_all_clients_for_name() {
+    local name rc=0
+    while IFS= read -r name; do
+        [[ -n "$name" ]] || continue
+        regenerate_client "$name" || { log_warn "Failed to regenerate '$name'"; rc=1; }
+    done < <(grep '^#_Name = ' "$SERVER_CONF_FILE" 2>/dev/null | sed 's/^#_Name = //')
+    return "$rc"
+}
+
+set_server_name() {
+    local name="$1"
+    validate_server_name "$name" || { log_error "Использование: set-name \"Новое Имя\""; return 1; }
+    set_config_value "AWG_SERVER_NAME" "$name" || return 1
+    export AWG_SERVER_NAME="$name"
+    update_server_conf_name "$name" || return 1
+    regenerate_all_clients_for_name || return 1
+    log "Server name set: $name. Client configs and vpn:// files regenerated."
+}
+
+web_token_py() {
+    local action="$1" name="${2:-}"
+    local token_file="$AWG_DIR/web/tokens.json"
+    mkdir -p "$AWG_DIR/web" || return 1
+    python3 - "$token_file" "$action" "$name" <<'PY'
+import hashlib
+import json
+import os
+import re
+import secrets
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+action = sys.argv[2]
+name = sys.argv[3]
+name_re = re.compile(r"^[A-Za-z0-9_-]{1,63}$")
+
+def digest(token):
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+def load():
+    if path.exists():
+        try:
+            data = json.loads(path.read_text())
+        except Exception:
+            data = {}
+    else:
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+    users = data.get("users")
+    if not isinstance(users, dict):
+        users = {}
+    legacy_normal = data.get("normal")
+    if isinstance(legacy_normal, dict):
+        for value in legacy_normal.values():
+            if isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value):
+                users.setdefault(value, [])
+    clean_users = {}
+    for key, value in users.items():
+        if not isinstance(key, str) or not re.fullmatch(r"[0-9a-f]{64}", key):
+            continue
+        if not isinstance(value, list):
+            value = []
+        clean_users[key] = [str(item) for item in value if re.fullmatch(r"^[A-Za-z0-9_-]{1,63}$", str(item))]
+    super_hash = data.get("super_token_hash") or data.get("super")
+    if not isinstance(super_hash, str) or not re.fullmatch(r"[0-9a-f]{64}", super_hash):
+        token = secrets.token_urlsafe(32)
+        super_hash = digest(token)
+        data["_new_super_token"] = token
+    return {"super_token_hash": super_hash, "users": clean_users}
+
+def save(data):
+    tmp = path.with_name(path.name + f".tmp.{os.getpid()}")
+    tmp.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, path)
+    os.chmod(path, 0o600)
+
+data = load()
+if action == "list":
+    save(data)
+    print("super: present")
+    for key, clients in sorted(data["users"].items()):
+        suffix = ",".join(clients) if clients else "-"
+        print(f"user: {key[:12]}... clients={suffix}")
+elif action == "add":
+    if not name_re.fullmatch(name):
+        raise SystemExit("invalid token name")
+    token = secrets.token_urlsafe(32)
+    data["users"][digest(token)] = []
+    save(data)
+    print("Token created. By default, it has access to 0 clients. Log in to the Web Panel with the Super Token to assign clients to this user.")
+    print(token)
+elif action == "revoke":
+    matches = [key for key in data["users"] if key == name or key.startswith(name)]
+    if len(matches) != 1:
+        raise SystemExit("token not found")
+    del data["users"][matches[0]]
+    save(data)
+    print(f"revoked: {matches[0]}")
+elif action == "rotate":
+    matches = [key for key in data["users"] if key == name or key.startswith(name)]
+    if len(matches) != 1:
+        raise SystemExit("token not found")
+    clients = data["users"].pop(matches[0])
+    token = secrets.token_urlsafe(32)
+    data["users"][digest(token)] = clients
+    save(data)
+    print("Token rotated. Client access list preserved.")
+    print(token)
+elif action == "reset-super":
+    token = secrets.token_urlsafe(32)
+    data["super_token_hash"] = digest(token)
+    data["users"] = {}
+    save(data)
+    print(token)
+else:
+    raise SystemExit("unknown action")
+PY
+}
+
+toggle_client() {
+    local name="$1"
+    [[ -z "$name" ]] && { log_error "Использование: toggle <имя>"; return 1; }
+    validate_client_name "$name" || return 1
+
+    if [[ "${AWG_SKIP_APPLY:-0}" != "1" ]]; then
+        ensure_amneziawg_kernel_module \
+            || die "Модуль ядра amneziawg недоступен. Запустите 'manage repair-module' и повторите."
+    fi
+
+    local toggle_lockfile="${AWG_DIR}/.awg_config.lock"
+    local toggle_lock_fd
+    exec {toggle_lock_fd}>"$toggle_lockfile"
+    if ! flock -x -w 10 "$toggle_lock_fd"; then
+        log_error "Не удалось получить блокировку конфигурации (другая операция выполняется)"
+        exec {toggle_lock_fd}>&-
+        return 1
+    fi
+
+    if ! grep -qxF "#_Name = ${name}" "$SERVER_CONF_FILE"; then
+        exec {toggle_lock_fd}>&-
+        log_error "Клиент '$name' не найден."
+        return 1
+    fi
+
+    local tmp state state_file
+    tmp=$(mktemp) || { exec {toggle_lock_fd}>&-; log_error "Ошибка mktemp"; return 1; }
+    state_file=$(mktemp) || { rm -f "$tmp"; exec {toggle_lock_fd}>&-; log_error "Ошибка mktemp"; return 1; }
+    if ! awk -v target="$name" -v state_file="$state_file" '
+        function is_header(line) { return line == "[Peer]" || line == "# [Peer]" }
+        function is_cfg(line) { return line ~ /^(PublicKey|PresharedKey|AllowedIPs|Endpoint|PersistentKeepalive)[[:space:]]*=/ }
+        function is_commented_cfg(line) { return line ~ /^# (PublicKey|PresharedKey|AllowedIPs|Endpoint|PersistentKeepalive)[[:space:]]*=/ }
+        function flush_block(    i, disabled, has_target, out) {
+            if (block_len == 0) return
+            has_target = 0
+            disabled = 0
+            for (i = 1; i <= block_len; i++) {
+                if (block[i] == "#_Name = " target) has_target = 1
+                if (block[i] == "# [Peer]" || block[i] ~ /^# PublicKey[[:space:]]*=/) disabled = 1
+            }
+            if (!has_target) {
+                for (i = 1; i <= block_len; i++) print block[i]
+            } else {
+                found = 1
+                state = disabled ? "enabled" : "disabled"
+                for (i = 1; i <= block_len; i++) {
+                    out = block[i]
+                    if (disabled) {
+                        if (out == "# [Peer]") out = "[Peer]"
+                        else if (is_commented_cfg(out)) out = substr(out, 3)
+                    } else {
+                        if (out == "[Peer]") out = "# [Peer]"
+                        else if (is_cfg(out)) out = "# " out
+                    }
+                    print out
+                }
+            }
+            block_len = 0
+        }
+        {
+            if (is_header($0)) {
+                flush_block()
+                block[++block_len] = $0
+                next
+            }
+            if (block_len > 0) {
+                block[++block_len] = $0
+                next
+            }
+            print
+        }
+        END {
+            flush_block()
+            if (!found) state = "missing"
+            print state > state_file
+        }
+    ' "$SERVER_CONF_FILE" > "$tmp"; then
+        rm -f "$tmp" "$state_file"
+        exec {toggle_lock_fd}>&-
+        log_error "Ошибка обработки $SERVER_CONF_FILE"
+        return 1
+    fi
+    state=$(tr -d '[:space:]' < "$state_file" 2>/dev/null || true)
+    rm -f "$state_file"
+
+    if [[ "$state" == "missing" || -z "$state" ]]; then
+        rm -f "$tmp"
+        exec {toggle_lock_fd}>&-
+        log_error "Клиент '$name' не найден."
+        return 1
+    fi
+
+    if ! cp "$SERVER_CONF_FILE" "${SERVER_CONF_FILE}.bak-toggle-$(date +%F_%H-%M-%S)"; then
+        rm -f "$tmp"
+        exec {toggle_lock_fd}>&-
+        log_error "Не удалось создать бэкап $SERVER_CONF_FILE"
+        return 1
+    fi
+    if ! cat "$tmp" > "$SERVER_CONF_FILE"; then
+        rm -f "$tmp"
+        exec {toggle_lock_fd}>&-
+        log_error "Не удалось обновить $SERVER_CONF_FILE"
+        return 1
+    fi
+    rm -f "$tmp"
+
+    [[ -n "${_CLI_APPLY_MODE:-}" ]] && export AWG_APPLY_MODE="$_CLI_APPLY_MODE"
+    if [[ "${AWG_SKIP_APPLY:-0}" == "1" ]]; then
+        apply_config
+        log "Клиент '$name' переключён: $state. Применение отложено (AWG_SKIP_APPLY=1)."
+    elif apply_config; then
+        log "Клиент '$name' переключён: $state. Конфигурация применена."
+    else
+        exec {toggle_lock_fd}>&-
+        log_error "Клиент '$name' переключён в конфиге, но apply_config упал. Проверьте: systemctl status awg-quick@awg0"
+        return 1
+    fi
+
+    exec {toggle_lock_fd}>&-
+    return 0
 }
 
 regenerate_all_clients_for_dns() {
@@ -1247,6 +1533,7 @@ usage() {
     echo "  p2p show <name>       Show client P2P information"
     echo "  p2p add <name> [port] Add P2P port (auto if omitted)"
     echo "  p2p remove <name> <port> Remove client P2P port"
+    echo "  p2p toggle <name>     Enable/disable existing client P2P ports"
     echo "  ipv6 status           Show IPv6 mode"
     echo "  ipv6 upgrade          Add IPv6/P2P metadata to existing clients"
     echo "  dns status            Show DNS mode and AdGuard Home status"
@@ -1254,6 +1541,12 @@ usage() {
     echo "  dns sync-clients      Sync VPN clients into AdGuard Home"
     echo "  dns logs              Show recent AdGuard Home logs"
     echo "  dns set-mode <mode>   Change DNS: adguard, system, or custom [DNS]"
+    echo "  set-name "NAME"       Change server name and regenerate clients"
+    echo "  web token list        Show web panel tokens"
+    echo "  web token add <name>  Create a user token and print its value"
+    echo "  web token revoke <hash> Revoke a user token"
+    echo "  web token rotate <hash> Rotate a user token while preserving access"
+    echo "  web token reset-super Regenerate the super token"
     echo "  regen [name]          Regenerate client file(s)"
     echo "  modify <name> <p> <v> Modify a client parameter"
     echo "  backup                Create a backup"
@@ -1420,6 +1713,11 @@ case $COMMAND in
         fi
         ;;
 
+    toggle)
+        [[ -z "$CLIENT_NAME" ]] && die "Client name not specified."
+        toggle_client "$CLIENT_NAME" || _cmd_rc=1
+        ;;
+
     list)
         list_clients || _cmd_rc=1
         ;;
@@ -1482,6 +1780,54 @@ case $COMMAND in
                     _cmd_rc=1
                 fi
                 ;;
+            toggle)
+                _name="${ARGS[1]:-}"
+                [[ -z "$_name" ]] && die "Usage: p2p toggle <name>"
+                validate_client_name "$_name" || exit 1
+                if ! grep -qxF "#_Name = ${_name}" "$SERVER_CONF_FILE"; then die "Client '$_name' not found."; fi
+
+                _lockfile="${AWG_DIR}/.awg_config.lock"
+                exec {_lock_fd}>"$_lockfile"
+                if ! flock -x -w 10 "$_lock_fd"; then
+                    log_error "Failed to acquire config lock"
+                    exec {_lock_fd}>&-
+                    _cmd_rc=1
+                else
+                    _p2p_state=$(awk -v target="$_name" '
+                        function is_header(line) { return line == "[Peer]" || line == "# [Peer]" }
+                        is_header($0) { in_peer=1; found=0; next }
+                        in_peer && $0 == "#_Name = " target { found=1; next }
+                        in_peer && found && /^#_P2PPorts(_Disabled)?[[:space:]]*=/ {
+                            print NR ":" ($0 ~ /^#_P2PPorts_Disabled[[:space:]]*=/ ? "disabled" : "enabled")
+                            exit
+                        }
+                        in_peer && /^\[/ && !is_header($0) { in_peer=0; found=0 }
+                    ' "$SERVER_CONF_FILE")
+
+                    if [[ -z "$_p2p_state" ]]; then
+                        log_error "Client '$_name' has no P2P ports."
+                        _cmd_rc=1
+                    else
+                        _p2p_line="${_p2p_state%%:*}"
+                        _p2p_mode="${_p2p_state#*:}"
+                        if [[ "$_p2p_mode" == "enabled" ]]; then
+                            sed -i "${_p2p_line}s/^#_P2PPorts[[:space:]]*=[[:space:]]*/#_P2PPorts_Disabled = /" "$SERVER_CONF_FILE" || _cmd_rc=1
+                            _p2p_next="disabled"
+                        else
+                            sed -i "${_p2p_line}s/^#_P2PPorts_Disabled[[:space:]]*=[[:space:]]*/#_P2PPorts = /" "$SERVER_CONF_FILE" || _cmd_rc=1
+                            _p2p_next="enabled"
+                        fi
+                        [[ "$_cmd_rc" -eq 0 ]] && chmod 600 "$SERVER_CONF_FILE"
+                    fi
+                    exec {_lock_fd}>&-
+                fi
+                if [[ "$_cmd_rc" -eq 0 ]]; then
+                    generate_firewall_scripts >/dev/null 2>&1 || log_warn "Failed to update P2P/firewall hook scripts."
+                    bash "$AWG_DIR/postdown.sh" 2>/dev/null || true
+                    bash "$AWG_DIR/postup.sh" 2>/dev/null || log_warn "Failed to apply firewall hooks live; restart awg-quick@awg0 if needed."
+                    log "Client P2P ports '$_name' $_p2p_next."
+                fi
+                ;;
             *)
                 die "Unknown p2p command: $_sub"
                 ;;
@@ -1494,7 +1840,7 @@ case $COMMAND in
         case "$_sub" in
             status)
                 log "IPv6 enabled: ${AWG_IPV6_ENABLED:-0}"
-                log "IPv6 mode: ${AWG_IPV6_MODE:-legacy}"
+                log "IPv6 mode: $(awg_ipv6_mode)"
                 log "IPv6 subnet: ${AWG_IPV6_SUBNET:-}"
                 log "NDP proxy: ${AWG_IPV6_NDP_PROXY:-0}"
                 ;;
@@ -1556,6 +1902,47 @@ case $COMMAND in
                 ;;
             *)
                 die "Unknown dns command: $_sub"
+                ;;
+        esac
+        ;;
+
+    set-name)
+        safe_load_config "$CONFIG_FILE" 2>/dev/null || true
+        [[ -z "${ARGS[0]:-}" ]] && die "Использование: set-name \"Новое Имя\""
+        if set_server_name "${ARGS[*]}"; then
+            sync_clients_hosts
+        else
+            _cmd_rc=1
+        fi
+        ;;
+
+    web)
+        _sub="${ARGS[0]:-}"
+        if [[ "$_sub" != "token" ]]; then
+            die "Usage: web token list|add <name>|revoke <hash>|rotate <hash>|reset-super"
+        fi
+        _token_cmd="${ARGS[1]:-list}"
+        case "$_token_cmd" in
+            list)
+                web_token_py "list" || _cmd_rc=1
+                ;;
+            add)
+                [[ -z "${ARGS[2]:-}" ]] && die "Usage: web token add <name>"
+                web_token_py "add" "${ARGS[2]}" || _cmd_rc=1
+                ;;
+            revoke)
+                [[ -z "${ARGS[2]:-}" ]] && die "Usage: web token revoke <hash>"
+                web_token_py "revoke" "${ARGS[2]}" || _cmd_rc=1
+                ;;
+            rotate)
+                [[ -z "${ARGS[2]:-}" ]] && die "Usage: web token rotate <hash>"
+                web_token_py "rotate" "${ARGS[2]}" || _cmd_rc=1
+                ;;
+            reset-super)
+                web_token_py "reset-super" || _cmd_rc=1
+                ;;
+            *)
+                die "Unknown web token command: $_token_cmd"
                 ;;
         esac
         ;;
