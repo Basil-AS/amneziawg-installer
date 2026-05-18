@@ -20,6 +20,7 @@
 @test "web panel exposes RBAC and token controls" {
     grep -qF 'tokens.json' "$BATS_TEST_DIRNAME/../web/server.py"
     grep -qF '/api/tokens' "$BATS_TEST_DIRNAME/../web/server.py"
+    grep -qF '/api/tokens/([^/]+)/name' "$BATS_TEST_DIRNAME/../web/server.py"
     grep -qF 'super_token_hash' "$BATS_TEST_DIRNAME/../web/server.py"
 }
 
@@ -31,6 +32,8 @@
     grep -qF 'Top Clients' "$BATS_TEST_DIRNAME/../web/app.js"
     grep -qF 'traffic_total' "$BATS_TEST_DIRNAME/../web/app.js"
     grep -qF 'data-rotate' "$BATS_TEST_DIRNAME/../web/app.js"
+    grep -qF 'data-edit-name' "$BATS_TEST_DIRNAME/../web/app.js"
+    grep -qF 'tokenTraffic' "$BATS_TEST_DIRNAME/../web/app.js"
     grep -qF '/rotate' "$BATS_TEST_DIRNAME/../web/server.py"
 }
 
@@ -79,7 +82,7 @@ PY
     rm -rf "$tmp"
 }
 
-@test "web token rotation preserves client access list" {
+@test "web token loading migrates legacy lists and rotation preserves user records" {
     command -v python3 &>/dev/null || skip "python3 not available"
     local tmp
     tmp=$(mktemp -d)
@@ -99,15 +102,21 @@ server.write_tokens({
     "super_token_hash": server.token_hash("super-token"),
     "users": {old_hash: ["my_phone", "my_laptop"]},
 })
+data = server.load_tokens()
+assert data["users"][old_hash] == {"name": "", "clients": ["my_phone", "my_laptop"]}
+
+data["users"][old_hash]["name"] = "Alice"
+server.write_tokens(data)
 result = server.rotate_user_token(old_hash)
 assert result is not None
+assert result["name"] == "Alice"
 assert result["clients"] == ["my_phone", "my_laptop"]
 assert result["token_hash"] != old_hash
 assert server.token_hash(result["token"]) == result["token_hash"]
 
 data = server.load_tokens()
 assert old_hash not in data["users"]
-assert data["users"][result["token_hash"]] == ["my_phone", "my_laptop"]
+assert data["users"][result["token_hash"]] == {"name": "Alice", "clients": ["my_phone", "my_laptop"]}
 assert server.rotate_user_token(old_hash) is None
 PY
     rm -rf "$tmp"
