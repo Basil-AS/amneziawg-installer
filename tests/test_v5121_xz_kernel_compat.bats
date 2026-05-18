@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# shellcheck disable=SC2016
 # v5.12.1 Issue #76 — kernel-compatible xz preset for ARM prebuilts.
 #
 # Background: until v5.12.0 build-arm-deb.sh used `xz -9` which produced

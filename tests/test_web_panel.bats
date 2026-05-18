@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# shellcheck disable=SC2016
 
 @test "web/server.py compiles with Python stdlib" {
     command -v python3 &>/dev/null || skip "python3 not available"
@@ -12,23 +13,33 @@
     grep -qF 'validate_bind_addr "$AWG_WEB_BIND"' "$BATS_TEST_DIRNAME/../install_amneziawg.sh"
     grep -qF 'allow_web_panel_ufw()' "$BATS_TEST_DIRNAME/../install_amneziawg.sh"
     grep -qF 'Веб-панель привязана публично' "$BATS_TEST_DIRNAME/../install_amneziawg.sh"
-    ! grep -qF 'ufw allow "${p2p_from}:${p2p_to}/tcp"' "$BATS_TEST_DIRNAME/../install_amneziawg.sh"
+    if grep -qF 'ufw allow "${p2p_from}:${p2p_to}/tcp"' "$BATS_TEST_DIRNAME/../install_amneziawg.sh"; then
+        fail "installer must not open the full P2P range globally"
+    fi
 }
 
 @test "web panel defaults to VPN gateway instead of public bind" {
     grep -qF 'AWG_WEB_BIND="10.9.9.1"' "$BATS_TEST_DIRNAME/../install_amneziawg.sh"
     grep -qF 'AWG_WEB_BIND="10.9.9.1"' "$BATS_TEST_DIRNAME/../install_amneziawg_en.sh"
     grep -qF '10.9.9.1", int(os.environ.get("AWG_WEB_PORT", "8443"))' "$BATS_TEST_DIRNAME/../web/server.py"
-    ! grep -qF 'AWG_WEB_BIND="0.0.0.0"' "$BATS_TEST_DIRNAME/../install_amneziawg.sh"
+    if grep -qF 'AWG_WEB_BIND="0.0.0.0"' "$BATS_TEST_DIRNAME/../install_amneziawg.sh"; then
+        fail "web panel must not default to public bind"
+    fi
     grep -qF 'After=network-online.target' "$BATS_TEST_DIRNAME/../install_amneziawg.sh"
-    ! grep -qF 'Requires=awg-quick@awg0.service' "$BATS_TEST_DIRNAME/../install_amneziawg.sh"
+    if grep -qF 'Requires=awg-quick@awg0.service' "$BATS_TEST_DIRNAME/../install_amneziawg.sh"; then
+        fail "web panel service must not hard-require awg-quick"
+    fi
     grep -qF 'RestartSec=3' "$BATS_TEST_DIRNAME/../install_amneziawg.sh"
 }
 
 @test "English installer deploys repository web assets instead of legacy inline panel" {
     local installer="$BATS_TEST_DIRNAME/../install_amneziawg_en.sh"
-    ! grep -qF 'TOKEN_FILE = WEB_DIR / "auth_token"' "$installer"
-    ! grep -qF 'cat > "$web_dir/server.py"' "$installer"
+    if grep -qF 'TOKEN_FILE = WEB_DIR / "auth_token"' "$installer"; then
+        fail "EN installer must not deploy legacy inline token file panel"
+    fi
+    if grep -qF 'cat > "$web_dir/server.py"' "$installer"; then
+        fail "EN installer must deploy repository web assets, not inline server.py"
+    fi
     grep -qF 'tokens.json' "$installer"
     for asset in server.py index.html style.css app.js favicon.svg; do
         grep -qF "for asset in server.py index.html style.css app.js favicon.svg" "$installer"
@@ -37,7 +48,9 @@
 }
 
 @test "web index uses only local assets" {
-    ! grep -qE 'cdn\\.tailwindcss\\.com|cdn\\.jsdelivr\\.net|unpkg\\.com|cdnjs\\.cloudflare\\.com|https?://' "$BATS_TEST_DIRNAME/../web/index.html"
+    if grep -qE 'cdn\\.tailwindcss\\.com|cdn\\.jsdelivr\\.net|unpkg\\.com|cdnjs\\.cloudflare\\.com|https?://' "$BATS_TEST_DIRNAME/../web/index.html"; then
+        fail "web index must use local assets only"
+    fi
     grep -q 'style.css' "$BATS_TEST_DIRNAME/../web/index.html"
     grep -q 'app.js' "$BATS_TEST_DIRNAME/../web/index.html"
 }
@@ -64,13 +77,19 @@
     grep -qF 'sys_version = ""' "$BATS_TEST_DIRNAME/../web/server.py"
     grep -qF 'class LimitedThreadingHTTPServer' "$BATS_TEST_DIRNAME/../web/server.py"
     grep -qF 'threading.BoundedSemaphore' "$BATS_TEST_DIRNAME/../web/server.py"
-    ! grep -qF 'httpd = ThreadingHTTPServer(' "$BATS_TEST_DIRNAME/../web/server.py"
-    ! grep -qF 'f.read_text(errors="ignore").splitlines()[-100:]' "$BATS_TEST_DIRNAME/../web/server.py"
+    if grep -qF 'httpd = ThreadingHTTPServer(' "$BATS_TEST_DIRNAME/../web/server.py"; then
+        fail "web server must use the bounded threading server"
+    fi
+    if grep -qF 'f.read_text(errors="ignore").splitlines()[-100:]' "$BATS_TEST_DIRNAME/../web/server.py"; then
+        fail "web logs must use bounded tail helper"
+    fi
 }
 
 @test "web static allowlist excludes private panel files" {
     grep -qF 'STATIC_FILES = {' "$BATS_TEST_DIRNAME/../web/server.py"
-    ! grep -qF 'super().do_GET()' "$BATS_TEST_DIRNAME/../web/server.py"
+    if grep -qF 'super().do_GET()' "$BATS_TEST_DIRNAME/../web/server.py"; then
+        fail "static file handling must stay allowlist-based"
+    fi
     command -v python3 &>/dev/null || skip "python3 not available"
     AWG_DIR="$(mktemp -d)" SERVER_CONF_FILE="/tmp/awg0.conf" REPO_ROOT="$BATS_TEST_DIRNAME/.." python3 - <<'PY'
 import importlib.util
@@ -118,7 +137,9 @@ PY
     grep -qF 'aria-label' "$app"
     grep -qF 'navigator.clipboard?.writeText' "$app"
     grep -qF 'document.execCommand("copy")' "$app"
-    ! grep -qE 'console\.log.*(config|token)|localStorage.*config' "$BATS_TEST_DIRNAME/../web/"*
+    if grep -qE 'console\.log.*(config|token)|localStorage.*config' "$BATS_TEST_DIRNAME/../web/"*; then
+        fail "web assets must not log configs/tokens or store config text in localStorage"
+    fi
 }
 
 @test "config download endpoint is authenticated, RBAC protected, and no-store" {
@@ -438,6 +459,8 @@ PY
         grep -qF 'if [[ ! -f "$web_dir/cert.pem" || ! -f "$web_dir/key.pem" ]]; then' "$installer"
         grep -qF 'chmod 600 "$web_dir/key.pem"' "$installer"
         grep -qF 'chmod 644 "$web_dir/cert.pem"' "$installer"
-        ! grep -qF 'openssl req -x509 -nodes -newkey rsa:2048 -days 3650 -keyout "$web_dir/key.pem"' "$installer"
+        if grep -qF 'openssl req -x509 -nodes -newkey rsa:2048 -days 3650 -keyout "$web_dir/key.pem"' "$installer"; then
+            fail "installer must not unconditionally overwrite the web TLS key"
+        fi
     done
 }

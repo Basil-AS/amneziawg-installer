@@ -83,7 +83,9 @@ CONF
     create_server_config
     add_test_peer "to_remove" "10.9.9.2"
     remove_peer_from_server "to_remove"
-    ! grep -q "#_Name = to_remove" "$SERVER_CONF_FILE"
+    if grep -q "#_Name = to_remove" "$SERVER_CONF_FILE"; then
+        fail "removed peer must not remain in server config"
+    fi
 }
 
 @test "remove_peer: error on non-existent peer" {
@@ -101,7 +103,9 @@ CONF
     remove_peer_from_server "remove_me"
     grep -q "#_Name = keep_me" "$SERVER_CONF_FILE"
     grep -q "#_Name = also_keep" "$SERVER_CONF_FILE"
-    ! grep -q "#_Name = remove_me" "$SERVER_CONF_FILE"
+    if grep -q "#_Name = remove_me" "$SERVER_CONF_FILE"; then
+        fail "removed peer must not remain in server config"
+    fi
 }
 
 @test "remove_peer: no excessive trailing newlines after removal" {

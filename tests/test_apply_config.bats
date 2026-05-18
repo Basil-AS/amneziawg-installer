@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# shellcheck disable=SC1091,SC2030,SC2031,SC2317
 # Tests for apply_config() modes in awg_common.sh
 #
 # NOTE: This file uses its own setup() (not just test_helper's) because it

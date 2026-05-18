@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# shellcheck disable=SC2030,SC2031
 # Tests for get_next_client_ip() in awg_common.sh
 
 load test_helper

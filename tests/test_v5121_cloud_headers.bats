@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# shellcheck disable=SC2030,SC2031,SC2317
 # v5.12.1 cloud-headers fallback in awg_common._install_kernel_headers().
 #
 # Background: installer's step 2 has smart kernel-headers detection that
@@ -79,7 +80,9 @@ teardown() {
     [ -f "$AWG_DIR/.apt_calls" ]
     grep -q "linux-headers-6.12.85+deb13-arm64" "$AWG_DIR/.apt_calls"
     grep -q "linux-headers-arm64" "$AWG_DIR/.apt_calls"
-    ! grep -q "linux-headers-cloud-arm64" "$AWG_DIR/.apt_calls"
+    if grep -q "linux-headers-cloud-arm64" "$AWG_DIR/.apt_calls"; then
+        fail "standard arm64 kernel must not request cloud headers"
+    fi
 }
 
 @test "v5.12.1: Debian amd64 standard kernel does not request linux-headers-cloud-amd64" {
@@ -88,7 +91,9 @@ teardown() {
     run _install_kernel_headers "6.1.0-28-amd64"
     [ "$status" -eq 1 ]
     grep -q "linux-headers-amd64" "$AWG_DIR/.apt_calls"
-    ! grep -q "linux-headers-cloud-amd64" "$AWG_DIR/.apt_calls"
+    if grep -q "linux-headers-cloud-amd64" "$AWG_DIR/.apt_calls"; then
+        fail "standard amd64 kernel must not request cloud headers"
+    fi
 }
 
 # ---------- cloud kernel: cloud meta in candidates, BEFORE generic ----------
@@ -139,7 +144,9 @@ teardown() {
     [ "$status" -eq 1 ]
     grep -q "linux-headers-6.8.0-57-generic" "$AWG_DIR/.apt_calls"
     grep -q "linux-headers-generic" "$AWG_DIR/.apt_calls"
-    ! grep -q "linux-headers-cloud-" "$AWG_DIR/.apt_calls"
+    if grep -q "linux-headers-cloud-" "$AWG_DIR/.apt_calls"; then
+        fail "Ubuntu generic kernel must not request Debian cloud headers"
+    fi
 }
 
 # ---------- EN mirror: same behaviour from awg_common_en.sh ----------
@@ -171,5 +178,7 @@ teardown() {
         _install_kernel_headers "6.12.85+deb13-arm64" || true
     )
     [ -f "$AWG_DIR/.apt_calls" ]
-    ! grep -q "linux-headers-cloud-arm64" "$AWG_DIR/.apt_calls"
+    if grep -q "linux-headers-cloud-arm64" "$AWG_DIR/.apt_calls"; then
+        fail "EN standard arm64 kernel must not request cloud headers"
+    fi
 }

@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# shellcheck disable=SC2030,SC2031
 
 load test_helper
 
@@ -74,7 +75,9 @@ CONF
 
     run remove_peer_from_server my_phone
     [ "$status" -eq 0 ]
-    ! grep -q 'my-phone\.awg' "$AWG_HOSTS_FILE"
+    if grep -q 'my-phone\.awg' "$AWG_HOSTS_FILE"; then
+        fail "client host aliases must be removed from hosts file"
+    fi
 }
 
 @test "adguard client sync writes persistent clients and DNS rewrites" {

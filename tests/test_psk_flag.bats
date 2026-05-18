@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# shellcheck disable=SC2030,SC2031
 # Tests for --psk flag / CLIENT_PSK env contract (v5.11.1 Phase C).
 #
 # Covers:
