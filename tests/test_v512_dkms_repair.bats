@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# shellcheck disable=SC2016
 # v5.12.0 DKMS auto-repair regression tests.
 #
 # Epic MyAI-ae13 — guarantees the amneziawg kernel module is rebuilt and
@@ -265,7 +266,9 @@ _extract_logrotate() {
 
 @test "v5.12: helper body has no AI markers" {
     helper=$(_extract_helper "$BATS_TEST_DIRNAME/../install_amneziawg.sh")
-    ! echo "$helper" | grep -iE 'однако|таким образом|comprehensive|leveraging|seamless|tailored|delve|moreover|furthermore'
+    if echo "$helper" | grep -iE 'однако|таким образом|comprehensive|leveraging|seamless|tailored|delve|moreover|furthermore'; then
+        fail "helper body must not contain AI-style filler markers"
+    fi
 }
 
 @test "v5.12: helper body parses with bash -n (extracted)" {

@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# shellcheck disable=SC2016
 # v5.13.0 idempotency / --force safety guard (MyAI-cq9g, Issue #78).
 #
 # Background: re-running the installer on a configured server silently

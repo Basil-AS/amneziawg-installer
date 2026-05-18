@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# shellcheck disable=SC2317
 # Tests for apt_update_tolerant() — inline в install_amneziawg.sh с v5.10.2.
 # До v5.10.2 функция жила в awg_common.sh и грузилась через source; после v5.10.1
 # hotfix — inline в install (нужна в шагах 1-2 до скачивания awg_common.sh).

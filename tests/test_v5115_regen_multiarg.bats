@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# shellcheck disable=SC2016
 # v5.11.5 hotfix regression tests.
 #
 # Two bundled fixes:

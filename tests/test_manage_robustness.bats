@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# shellcheck disable=SC2016
 # Tests for manage/backup robustness hardening (v5.11 Phase 2).
 #
 # Covers:

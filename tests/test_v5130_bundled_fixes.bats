@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# shellcheck disable=SC2016
 # v5.13.0 bundled robustness fixes (rolled in alongside PPA noble fallback):
 #
 # 1. MyAI-rcgr — manage_amneziawg.sh log_msg now routes WARN to stderr
@@ -95,15 +96,19 @@ run_warn_routed() {
     grep -q "awk '!/\^\[\[:space:\]\]\*#/ && \\\$1 == \"/swapfile\" && \\\$3 == \"swap\"" \
         "$BATS_TEST_DIRNAME/../install_amneziawg.sh"
     # Old substring grep must be gone.
-    ! grep -q "grep -q '/swapfile' /etc/fstab" \
-        "$BATS_TEST_DIRNAME/../install_amneziawg.sh"
+    if grep -q "grep -q '/swapfile' /etc/fstab" \
+        "$BATS_TEST_DIRNAME/../install_amneziawg.sh"; then
+        fail "RU install must not use substring grep for /swapfile"
+    fi
 }
 
 @test "v5.13.0 i31a: EN install uses awk field check for /swapfile in fstab" {
     grep -q "awk '!/\^\[\[:space:\]\]\*#/ && \\\$1 == \"/swapfile\" && \\\$3 == \"swap\"" \
         "$BATS_TEST_DIRNAME/../install_amneziawg_en.sh"
-    ! grep -q "grep -q '/swapfile' /etc/fstab" \
-        "$BATS_TEST_DIRNAME/../install_amneziawg_en.sh"
+    if grep -q "grep -q '/swapfile' /etc/fstab" \
+        "$BATS_TEST_DIRNAME/../install_amneziawg_en.sh"; then
+        fail "EN install must not use substring grep for /swapfile"
+    fi
 }
 
 # ---- functional: simulate the awk check on various fstab contents ----

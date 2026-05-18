@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# shellcheck disable=SC2317
 # Tests for installer state machine hardening (v5.11).
 #
 # Covers:

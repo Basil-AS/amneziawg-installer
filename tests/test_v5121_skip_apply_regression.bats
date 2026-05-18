@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# shellcheck disable=SC2016,SC2030,SC2031
 # v5.12.1 regression test: AWG_SKIP_APPLY=1 must not trigger
 # `ensure_amneziawg_kernel_module || die` in `manage add` / `manage remove`.
 #
@@ -122,7 +123,8 @@ run_gate() {
 
 @test "v5.12.1 runtime: AWG_SKIP_APPLY=1 -> ensure_amneziawg_kernel_module is skipped" {
     export AWG_SKIP_APPLY=1
-    ! run_gate
+    run run_gate
+    [ "$status" -ne 0 ]
 }
 
 @test "v5.12.1 runtime: AWG_SKIP_APPLY=yes (string non-1) -> ensure is called (string equality with literal 1)" {

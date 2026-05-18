@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# shellcheck disable=SC2016
 # v5.13.0 PPA noble fallback for Ubuntu non-LTS releases.
 #
 # Background: PPA Amnezia (ppa:amnezia/ppa on Launchpad) publishes packages
@@ -101,7 +102,7 @@
     has_stale=0
     for hd in "$tmpdir"/*/build; do
         [[ -e "$hd" ]] || continue
-        hd_kern="${hd#$tmpdir/}"
+        hd_kern="${hd#"$tmpdir"/}"
         hd_kern="${hd_kern%/build}"
         if [[ "$hd_kern" != "$running" ]]; then
             has_stale=1
@@ -119,7 +120,7 @@
     has_stale=0
     for hd in "$tmpdir"/*/build; do
         [[ -e "$hd" ]] || continue
-        hd_kern="${hd#$tmpdir/}"
+        hd_kern="${hd#"$tmpdir"/}"
         hd_kern="${hd_kern%/build}"
         if [[ "$hd_kern" != "$running" ]]; then
             has_stale=1

@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# shellcheck disable=SC2016
 # Tests for restore_backup rollback infrastructure (v5.11 Phase 2 / A5.1).
 #
 # Covers:
