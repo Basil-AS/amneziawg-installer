@@ -29,6 +29,7 @@ const icons = {
   copy: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="9" y="9" width="11" height="11" rx="2"/><rect x="4" y="4" width="11" height="11" rx="2"/></svg>',
   help: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M9.5 9a2.6 2.6 0 0 1 5 1c0 2-2.5 2.2-2.5 4"/><path d="M12 17h.01"/></svg>',
   external: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M14 3h7v7"/><path d="M10 14 21 3"/><path d="M21 14v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5"/></svg>',
+  github: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 .5a11.5 11.5 0 0 0-3.64 22.41c.58.11.79-.25.79-.56v-2.17c-3.22.7-3.9-1.37-3.9-1.37-.53-1.34-1.29-1.7-1.29-1.7-1.05-.72.08-.71.08-.71 1.16.08 1.77 1.19 1.77 1.19 1.03 1.77 2.7 1.26 3.36.96.1-.75.4-1.26.73-1.55-2.57-.29-5.27-1.29-5.27-5.73 0-1.27.45-2.3 1.19-3.11-.12-.29-.52-1.47.11-3.07 0 0 .97-.31 3.17 1.19a10.93 10.93 0 0 1 5.78 0c2.2-1.5 3.17-1.19 3.17-1.19.63 1.6.23 2.78.11 3.07.74.81 1.19 1.84 1.19 3.11 0 4.45-2.71 5.43-5.29 5.72.42.36.79 1.07.79 2.16v3.2c0 .31.21.68.8.56A11.5 11.5 0 0 0 12 .5Z"/></svg>',
   shield: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M9 12.75 11.25 15 15 9.75"/><path d="M12 3.75c2.1 1.95 4.95 3 7.88 3-.42 6.15-3.25 10.69-7.88 13.5-4.63-2.81-7.46-7.35-7.88-13.5 2.93 0 5.78-1.05 7.88-3Z"/></svg>',
   link: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M10.5 13.5 13.5 10.5"/><path d="M8.5 15.5 7 17a4 4 0 0 1-5.7-5.6l2.1-2.1A4 4 0 0 1 9 9"/><path d="M15.5 8.5 17 7a4 4 0 0 1 5.7 5.6l-2.1 2.1A4 4 0 0 1 15 15"/></svg>',
   pencil: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="m4 20 4.2-1 10.6-10.6a2.1 2.1 0 0 0-3-3L5.2 16 4 20Z"/><path d="m14.5 6.5 3 3"/></svg>',
@@ -194,7 +195,8 @@ function renderLogin() {
       </form>
     </section>
   `;
-  document.querySelector("#loginForm").onsubmit = async event => {
+  const loginForm = document.querySelector("#loginForm");
+  loginForm.onsubmit = async event => {
     event.preventDefault();
     token = document.querySelector("#tokenInput").value.trim();
     try {
@@ -206,6 +208,11 @@ function renderLogin() {
       showToast("Token rejected", "error");
     }
   };
+  document.querySelector("#tokenInput").addEventListener("keydown", event => {
+    if (event.key !== "Enter") return;
+    event.preventDefault();
+    loginForm.requestSubmit();
+  });
 }
 
 async function renderPanel() {
@@ -226,7 +233,7 @@ async function renderPanel() {
       <div class="flex flex-wrap items-center gap-2">
         <button id="themeToggle" class="${buttonClasses("w-9 px-0")}" title="Theme">${icon(document.documentElement.dataset.theme === "dark" ? "sun" : "moon")}</button>
         <button id="helpButton" class="${buttonClasses("w-9 px-0")}" title="Help & Clients" aria-label="Help & Clients">${icon("help")}</button>
-        <a href="https://github.com/Basil-AS/amneziawg-installer" target="_blank" rel="noopener" class="${buttonClasses("w-9 px-0")}" title="Repository" aria-label="Repository">${icon("external")}</a>
+        <a href="https://github.com/Basil-AS/amneziawg-installer" target="_blank" rel="noopener" class="${buttonClasses("w-9 px-0")}" title="Repository" aria-label="Repository">${icon("github")}</a>
         <button id="addClient" class="${primaryButtonClasses()}">${icon("plus")}<span>Add Client</span></button>
         <button id="logout" class="${buttonClasses()}">${icon("logout")}<span>Logout</span></button>
       </div>
@@ -581,9 +588,12 @@ function applySearch() {
 
 function showHelp() {
   showModal("Help & Clients", `
-    <div class="text-sm">
-      <p class="mb-4 text-[var(--danger)] font-bold">⚠️ Standard WireGuard clients WILL NOT WORK.</p>
-      <div class="overflow-x-auto rounded-lg border border-[var(--line)]">
+    <div class="grid gap-4 text-sm">
+      <p class="rounded-md border border-[var(--danger)] bg-[var(--soft)] px-3 py-2 font-bold text-[var(--danger)]">⚠️ Standard WireGuard clients WILL NOT WORK.</p>
+
+      <section>
+        <h3 class="mb-2 text-xs font-semibold uppercase tracking-wide text-[var(--muted)]">Compatibility</h3>
+        <div class="overflow-x-auto rounded-lg border border-[var(--line)]">
         <table class="min-w-[720px] w-full border-collapse text-left text-xs">
           <thead class="bg-[var(--soft)] text-[var(--muted)]">
             <tr>
@@ -617,7 +627,7 @@ function showHelp() {
               <td class="px-3 py-2">FOSS, auto-tunneling.</td>
             </tr>
             <tr>
-              <td class="px-3 py-2 font-semibold"><a class="text-[var(--accent)] underline" href="https://apps.apple.com/app/amnezia-vpn/id1600523087" target="_blank" rel="noopener">AmneziaWG</a></td>
+              <td class="px-3 py-2 font-semibold"><a class="text-[var(--accent)] underline" href="https://apps.apple.com/app/amneziawg/id6478942365" target="_blank" rel="noopener">AmneziaWG</a></td>
               <td class="px-3 py-2">iOS</td>
               <td class="px-3 py-2">✅</td>
               <td class="px-3 py-2">✅</td>
@@ -639,8 +649,64 @@ function showHelp() {
             </tr>
           </tbody>
         </table>
-      </div>
-      <blockquote class="mt-4 rounded-md border-l-4 border-[var(--danger)] bg-[var(--soft)] px-3 py-2 text-[var(--muted)]">
+        </div>
+      </section>
+
+      <section>
+        <h3 class="mb-2 text-xs font-semibold uppercase tracking-wide text-[var(--muted)]">Downloads by platform</h3>
+        <div class="grid gap-3 lg:grid-cols-2">
+          <article class="rounded-lg border border-[var(--line)] bg-[var(--soft)] p-3">
+            <h4 class="font-semibold">Android</h4>
+            <div class="mt-2 grid gap-2">
+              <div class="flex flex-wrap items-center justify-between gap-2"><span>WG Tunnel</span><span class="flex gap-2"><a class="text-[var(--accent)] underline" href="https://github.com/zaneschepke/wgtunnel" target="_blank" rel="noopener">GitHub</a><a class="text-[var(--accent)] underline" href="https://github.com/wgtunnel/wgtunnel/releases/latest" target="_blank" rel="noopener">Скачать</a></span></div>
+              <div class="flex flex-wrap items-center justify-between gap-2"><span>AmneziaWG</span><span class="flex gap-2"><a class="text-[var(--accent)] underline" href="https://github.com/amnezia-vpn/amneziawg-android" target="_blank" rel="noopener">GitHub</a><a class="text-[var(--accent)] underline" href="https://github.com/amnezia-vpn/amneziawg-android/releases/latest" target="_blank" rel="noopener">Скачать</a></span></div>
+              <div class="flex flex-wrap items-center justify-between gap-2"><span>AmneziaVPN</span><span class="flex gap-2"><a class="text-[var(--accent)] underline" href="https://github.com/amnezia-vpn/amnezia-client" target="_blank" rel="noopener">GitHub</a><a class="text-[var(--accent)] underline" href="https://github.com/amnezia-vpn/amnezia-client/releases/latest" target="_blank" rel="noopener">Скачать</a></span></div>
+            </div>
+          </article>
+
+          <article class="rounded-lg border border-[var(--line)] bg-[var(--soft)] p-3">
+            <h4 class="font-semibold">Windows</h4>
+            <div class="mt-2 grid gap-2">
+              <div>
+                <div class="flex flex-wrap items-center justify-between gap-2"><span>AmneziaWG <span class="text-[var(--muted)]">(Мод с AWG 1.5)</span></span><span class="flex gap-2"><a class="text-[var(--accent)] underline" href="https://github.com/RomikB/amneziawg-windows-client" target="_blank" rel="noopener">GitHub</a><a class="text-[var(--accent)] underline" href="https://github.com/RomikB/amneziawg-windows-client/releases/latest" target="_blank" rel="noopener">Скачать</a></span></div>
+                <a class="mt-1 inline-block text-xs text-[var(--accent)] underline" href="https://github.com/stunndard/golangwin7patch/releases/latest" target="_blank" rel="noopener">Патч для Win7</a>
+              </div>
+              <div class="flex flex-wrap items-center justify-between gap-2"><span>WireSock</span><span class="flex gap-2"><a class="text-[var(--accent)] underline" href="https://www.wiresock.net/" target="_blank" rel="noopener">Сайт</a><a class="text-[var(--accent)] underline" href="https://www.wiresock.net/wiresock-secure-connect/download" target="_blank" rel="noopener">Скачать</a></span></div>
+              <div class="flex flex-wrap items-center justify-between gap-2"><span>Clash <span class="text-[var(--muted)]">(Прокси-клиент)</span></span><span class="flex gap-2"><a class="text-[var(--accent)] underline" href="https://github.com/clash-verge-rev/clash-verge-rev" target="_blank" rel="noopener">GitHub</a><a class="text-[var(--accent)] underline" href="https://github.com/clash-verge-rev/clash-verge-rev/releases/latest" target="_blank" rel="noopener">Скачать</a></span></div>
+              <div class="flex flex-wrap items-center justify-between gap-2"><span>AmneziaVPN</span><span class="flex gap-2"><a class="text-[var(--accent)] underline" href="https://github.com/amnezia-vpn/amnezia-client" target="_blank" rel="noopener">GitHub</a><a class="text-[var(--accent)] underline" href="https://github.com/amnezia-vpn/amnezia-client/releases/latest" target="_blank" rel="noopener">Скачать</a></span></div>
+            </div>
+          </article>
+
+          <article class="rounded-lg border border-[var(--line)] bg-[var(--soft)] p-3">
+            <h4 class="font-semibold">iOS</h4>
+            <div class="mt-2 grid gap-2">
+              <div class="flex flex-wrap items-center justify-between gap-2"><span>AmneziaWG</span><a class="text-[var(--accent)] underline" href="https://apps.apple.com/app/amneziawg/id6478942365" target="_blank" rel="noopener">App Store</a></div>
+              <div class="flex flex-wrap items-center justify-between gap-2"><span>DefaultVPN</span><a class="text-[var(--accent)] underline" href="https://apps.apple.com/app/defaultvpn/id6744577928" target="_blank" rel="noopener">App Store</a></div>
+              <div class="flex flex-wrap items-center justify-between gap-2"><span>Clash Mi</span><a class="text-[var(--accent)] underline" href="https://apps.apple.com/app/clash-mi/id6744321968" target="_blank" rel="noopener">App Store</a></div>
+              <div class="flex flex-wrap items-center justify-between gap-2"><span>AmneziaVPN <span class="text-[var(--muted)]">(Недоступен в RU)</span></span><a class="text-[var(--accent)] underline" href="https://apps.apple.com/app/amnezia-vpn/id1600529900" target="_blank" rel="noopener">App Store</a></div>
+            </div>
+          </article>
+
+          <article class="rounded-lg border border-[var(--line)] bg-[var(--soft)] p-3">
+            <h4 class="font-semibold">macOS</h4>
+            <div class="mt-2 grid gap-2">
+              <div class="flex flex-wrap items-center justify-between gap-2"><span>AmneziaWG</span><a class="text-[var(--accent)] underline" href="https://apps.apple.com/app/amneziawg/id6478942365" target="_blank" rel="noopener">App Store</a></div>
+              <div class="flex flex-wrap items-center justify-between gap-2"><span>Clash</span><span class="flex gap-2"><a class="text-[var(--accent)] underline" href="https://github.com/clash-verge-rev/clash-verge-rev" target="_blank" rel="noopener">GitHub</a><a class="text-[var(--accent)] underline" href="https://github.com/clash-verge-rev/clash-verge-rev/releases/latest" target="_blank" rel="noopener">Скачать</a></span></div>
+            </div>
+          </article>
+
+          <article class="rounded-lg border border-[var(--line)] bg-[var(--soft)] p-3 lg:col-span-2">
+            <h4 class="font-semibold">Роутеры</h4>
+            <div class="mt-2 grid gap-2 sm:grid-cols-3">
+              <div class="flex flex-wrap items-center justify-between gap-2"><span>Keenetic</span><a class="text-[var(--accent)] underline" href="https://gitlab.com/ShidlaSGC/keenetic-entware-awg-go/-/blob/main/README.md" target="_blank" rel="noopener">Установка</a></div>
+              <div class="flex flex-wrap items-center justify-between gap-2"><span>OpenWRT #1</span><a class="text-[var(--accent)] underline" href="tg://resolve?domain=itdogchat&amp;post=44512&amp;comment=755535">Инструкция</a></div>
+              <div class="flex flex-wrap items-center justify-between gap-2"><span>OpenWRT #2</span><a class="text-[var(--accent)] underline" href="tg://resolve?domain=itdogchat&amp;post=44512&amp;comment=759893">Инструкция</a></div>
+            </div>
+          </article>
+        </div>
+      </section>
+
+      <blockquote class="rounded-md border-l-4 border-[var(--danger)] bg-[var(--soft)] px-3 py-2 text-[var(--muted)]">
         Если клиент выдает ошибку про неизвестный параметр (S3, S4, I1, H1) — используйте клиент с полной поддержкой AWG 2.0.
       </blockquote>
     </div>
@@ -844,6 +910,15 @@ async function createTokenFromModal(dialog) {
   await loadTokens();
 }
 
+function confirmDialogOnEnter(dialog, onConfirm) {
+  dialog.addEventListener("keydown", event => {
+    if (event.key !== "Enter" || event.target instanceof HTMLTextAreaElement) return;
+    if (event.target instanceof HTMLButtonElement || event.target instanceof HTMLAnchorElement) return;
+    event.preventDefault();
+    onConfirm();
+  });
+}
+
 function showModal(title, body, closeOnButton = true) {
   return new Promise(resolve => {
     const dialog = document.createElement("dialog");
@@ -872,6 +947,13 @@ function showModal(title, body, closeOnButton = true) {
       event.preventDefault();
       await createTokenFromModal(dialog);
     };
+    confirmDialogOnEnter(dialog, () => {
+      if (create) {
+        create.click();
+        return;
+      }
+      dialog.close("ok");
+    });
     if (closeOnButton) resolve(true);
   });
 }
@@ -897,7 +979,13 @@ function promptModal(title, placeholder, value = "") {
       resolve(value);
     }, {once: true});
     dialog.showModal();
-    dialog.querySelector("#promptValue").focus();
+    const input = dialog.querySelector("#promptValue");
+    input.addEventListener("keydown", event => {
+      if (event.key !== "Enter") return;
+      event.preventDefault();
+      dialog.close("ok");
+    });
+    input.focus();
   });
 }
 
@@ -921,6 +1009,7 @@ function confirmModal(title, message) {
       dialog.remove();
       resolve(ok);
     }, {once: true});
+    confirmDialogOnEnter(dialog, () => dialog.close("ok"));
     dialog.showModal();
   });
 }
