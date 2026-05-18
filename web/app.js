@@ -5,6 +5,7 @@ let statusState = null;
 let dnsState = null;
 let trafficState = null;
 let latestClients = [];
+let latestTokens = [];
 let pollTimer = null;
 let topTrafficMode = localStorage.getItem("topTrafficMode") || "30d";
 const previousRx = new Map();
@@ -30,6 +31,7 @@ const icons = {
   external: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M14 3h7v7"/><path d="M10 14 21 3"/><path d="M21 14v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5"/></svg>',
   shield: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M9 12.75 11.25 15 15 9.75"/><path d="M12 3.75c2.1 1.95 4.95 3 7.88 3-.42 6.15-3.25 10.69-7.88 13.5-4.63-2.81-7.46-7.35-7.88-13.5 2.93 0 5.78-1.05 7.88-3Z"/></svg>',
   link: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M10.5 13.5 13.5 10.5"/><path d="M8.5 15.5 7 17a4 4 0 0 1-5.7-5.6l2.1-2.1A4 4 0 0 1 9 9"/><path d="M15.5 8.5 17 7a4 4 0 0 1 5.7 5.6l-2.1 2.1A4 4 0 0 1 15 15"/></svg>',
+  pencil: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="m4 20 4.2-1 10.6-10.6a2.1 2.1 0 0 0-3-3L5.2 16 4 20Z"/><path d="m14.5 6.5 3 3"/></svg>',
 };
 
 const theme = localStorage.getItem("panelTheme") || "light";
@@ -186,12 +188,8 @@ function renderLogin() {
   app.innerHTML = `
     <section class="min-h-screen grid place-items-center">
       <form id="loginForm" class="w-full max-w-sm rounded-lg border border-[var(--line)] bg-[var(--panel)] p-5 shadow-sm">
-        <div class="mb-5">
-          <h1 class="text-xl font-semibold">AmneziaWG</h1>
-          <p class="mt-1 text-sm text-[var(--muted)]">fork delta/patchset web panel</p>
-        </div>
-        <label class="block text-xs font-semibold uppercase tracking-wide text-[var(--muted)]" for="tokenInput">Token</label>
-        <input id="tokenInput" class="mt-2 h-11 w-full rounded-md border border-[var(--line)] bg-[var(--soft)] px-3 text-[var(--text)] outline-none focus:border-[var(--accent)]" type="password" value="${esc(token)}" autocomplete="current-password" autofocus>
+        <label class="sr-only" for="tokenInput">Token</label>
+        <input id="tokenInput" class="h-11 w-full rounded-md border border-[var(--line)] bg-[var(--soft)] px-3 text-[var(--text)] outline-none focus:border-[var(--accent)]" type="password" value="${esc(token)}" placeholder="Token" autocomplete="current-password" autofocus>
         <button class="${primaryButtonClasses("mt-4 w-full")}" type="submit">Login</button>
       </form>
     </section>
@@ -228,6 +226,7 @@ async function renderPanel() {
       <div class="flex flex-wrap items-center gap-2">
         <button id="themeToggle" class="${buttonClasses("w-9 px-0")}" title="Theme">${icon(document.documentElement.dataset.theme === "dark" ? "sun" : "moon")}</button>
         <button id="helpButton" class="${buttonClasses("w-9 px-0")}" title="Help & Clients" aria-label="Help & Clients">${icon("help")}</button>
+        <a href="https://github.com/Basil-AS/amneziawg-installer" target="_blank" rel="noopener" class="${buttonClasses("w-9 px-0")}" title="Repository" aria-label="Repository">${icon("external")}</a>
         <button id="addClient" class="${primaryButtonClasses()}">${icon("plus")}<span>Add Client</span></button>
         <button id="logout" class="${buttonClasses()}">${icon("logout")}<span>Logout</span></button>
       </div>
@@ -374,6 +373,7 @@ async function loadClients() {
   document.querySelector("#metricActive").textContent = latestClients.filter(isOnline).length;
   renderTraffic();
   renderTopClients();
+  if (statusState.role === "super") renderTokenList();
   applySearch();
 }
 
@@ -718,22 +718,62 @@ async function showVpnUri(name) {
 }
 
 async function loadTokens() {
+  const data = await api("/api/tokens");
+  latestTokens = data.users || [];
+  renderTokenList();
+}
+
+function tokenTraffic(clients) {
+  const allowed = new Set(clients || []);
+  return latestClients.reduce((total, client) => {
+    if (!allowed.has(client.name)) return total;
+    const item = client.traffic_total || {};
+    total.rx += Number(item.rx || 0);
+    total.tx += Number(item.tx || 0);
+    total.total += Number(item.total || Number(item.rx || 0) + Number(item.tx || 0));
+    return total;
+  }, {rx: 0, tx: 0, total: 0});
+}
+
+function renderTokenList() {
   const panel = document.querySelector("#tokenList");
   if (!panel) return;
-  const data = await api("/api/tokens");
-  const rows = data.users || [];
-  panel.innerHTML = rows.length ? rows.map(row => `
+  panel.innerHTML = latestTokens.length ? latestTokens.map(row => {
+    const stats = tokenTraffic(row.clients);
+    const label = row.name || "Unnamed token";
+    return `
     <div class="flex flex-wrap items-center justify-between gap-3 rounded-md border border-[var(--line)] bg-[var(--soft)] px-3 py-2">
       <div class="min-w-0">
+        <p class="truncate text-sm font-semibold">${esc(label)}</p>
         <p class="truncate font-mono text-xs">${esc(row.hash)}</p>
         <p class="mt-1 text-xs text-[var(--muted)]">${esc((row.clients || []).join(", ") || "no clients")}</p>
+        <p class="mt-1 text-xs text-[var(--muted)]">Traffic: ${esc(bytes(stats.total))} (${esc(trafficText(stats.rx, stats.tx))})</p>
       </div>
       <div class="flex flex-wrap gap-2">
+        <button data-edit-name="${esc(row.hash)}" title="Edit Name" class="${buttonClasses("w-9 px-0")}">${icon("pencil")}</button>
         <button data-rotate="${esc(row.hash)}" title="Rotate user token" class="${buttonClasses()}">${icon("key")}<span>Rotate Token</span></button>
         <button data-revoke="${esc(row.hash)}" class="${buttonClasses("text-[var(--danger)]")}">${icon("trash")}<span>Revoke</span></button>
       </div>
     </div>
-  `).join("") : `<p class="text-sm text-[var(--muted)]">No user tokens yet.</p>`;
+  `;
+  }).join("") : `<p class="text-sm text-[var(--muted)]">No user tokens yet.</p>`;
+  panel.querySelectorAll("[data-edit-name]").forEach(btn => {
+    btn.onclick = async () => {
+      const row = latestTokens.find(item => item.hash === btn.dataset.editName);
+      const name = await promptModal("Edit Name", "Token name", row?.name || "");
+      if (name === null) return;
+      try {
+        await api(`/api/tokens/${encodeURIComponent(btn.dataset.editName)}/name`, {
+          method: "PUT",
+          body: JSON.stringify({name}),
+        });
+        showToast("Token name updated");
+        await loadTokens();
+      } catch {
+        showToast("Could not update token name", "error");
+      }
+    };
+  });
   panel.querySelectorAll("[data-rotate]").forEach(btn => {
     btn.onclick = async () => {
       const result = await api(`/api/tokens/${encodeURIComponent(btn.dataset.rotate)}/rotate`, {method: "POST", body: "{}"});
@@ -836,14 +876,14 @@ function showModal(title, body, closeOnButton = true) {
   });
 }
 
-function promptModal(title, placeholder) {
+function promptModal(title, placeholder, value = "") {
   return new Promise(resolve => {
     const dialog = document.createElement("dialog");
     dialog.className = "w-[min(420px,calc(100vw-32px))] rounded-lg border border-[var(--line)] bg-[var(--panel)] p-0 text-[var(--text)] shadow-xl backdrop:bg-black/55";
     dialog.innerHTML = `
       <form method="dialog" class="p-4">
         <h2 class="mb-4 text-base font-semibold">${esc(title)}</h2>
-        <input id="promptValue" class="h-11 w-full rounded-md border border-[var(--line)] bg-[var(--soft)] px-3 outline-none focus:border-[var(--accent)]" placeholder="${esc(placeholder)}">
+        <input id="promptValue" class="h-11 w-full rounded-md border border-[var(--line)] bg-[var(--soft)] px-3 outline-none focus:border-[var(--accent)]" placeholder="${esc(placeholder)}" value="${esc(value)}">
         <div class="mt-4 flex justify-end gap-2">
           <button value="cancel" class="${buttonClasses()}">Cancel</button>
           <button value="ok" class="${primaryButtonClasses()}">OK</button>
@@ -852,7 +892,7 @@ function promptModal(title, placeholder) {
     `;
     document.body.appendChild(dialog);
     dialog.addEventListener("close", () => {
-      const value = dialog.returnValue === "ok" ? dialog.querySelector("#promptValue").value.trim() : "";
+      const value = dialog.returnValue === "ok" ? dialog.querySelector("#promptValue").value.trim() : null;
       dialog.remove();
       resolve(value);
     }, {once: true});

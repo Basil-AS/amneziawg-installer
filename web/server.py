@@ -234,6 +234,26 @@ def clean_client_list(value):
     return out
 
 
+def clean_token_name(value):
+    if not isinstance(value, str):
+        return ""
+    value = value.strip()
+    if "\n" in value or "\r" in value or len(value) > 128:
+        raise ValueError("invalid token name")
+    return value
+
+
+def clean_user_record(value):
+    if isinstance(value, list):
+        return {"name": "", "clients": clean_client_list(value)}
+    if isinstance(value, dict):
+        return {
+            "name": clean_token_name(value.get("name", "")),
+            "clients": clean_client_list(value.get("clients", [])),
+        }
+    return {"name": "", "clients": []}
+
+
 def load_tokens():
     data = {}
     if TOKEN_FILE.exists():
@@ -259,9 +279,9 @@ def load_tokens():
                 users.setdefault(value, [])
 
     clean_users = {}
-    for digest, clients in users.items():
+    for digest, value in users.items():
         if isinstance(digest, str) and TOKEN_HASH_RE.fullmatch(digest):
-            clean_users[digest] = clean_client_list(clients)
+            clean_users[digest] = clean_user_record(value)
 
     clean = {"super_token_hash": super_hash, "users": clean_users}
     if clean != data or not TOKEN_FILE.exists():
@@ -279,9 +299,9 @@ def authenticate(header):
     data = load_tokens()
     if hmac.compare_digest(digest, data.get("super_token_hash", "")):
         return {"role": "super", "hash": digest, "clients": None}
-    for user_hash, clients in data.get("users", {}).items():
+    for user_hash, record in data.get("users", {}).items():
         if hmac.compare_digest(digest, user_hash):
-            return {"role": "user", "hash": digest, "clients": clients}
+            return {"role": "user", "hash": digest, "clients": record.get("clients", [])}
     return None
 
 
@@ -291,12 +311,14 @@ def mutate_user_clients(user_hash, client_name=None, remove=False):
     with TOKENS_LOCK:
         data = load_tokens()
         users = data.setdefault("users", {})
-        clients = clean_client_list(users.get(user_hash, []))
+        record = clean_user_record(users.get(user_hash, {}))
+        clients = record["clients"]
         if remove:
             clients = [name for name in clients if name != client_name]
         elif client_name not in clients:
             clients.append(client_name)
-        users[user_hash] = clients
+        record["clients"] = clients
+        users[user_hash] = record
         write_tokens(data)
 
 
@@ -304,10 +326,12 @@ def remove_client_from_all_tokens(client_name):
     with TOKENS_LOCK:
         data = load_tokens()
         changed = False
-        for user_hash, clients in list(data.get("users", {}).items()):
-            clean = [name for name in clean_client_list(clients) if name != client_name]
-            if clean != clients:
-                data["users"][user_hash] = clean
+        for user_hash, value in list(data.get("users", {}).items()):
+            record = clean_user_record(value)
+            clean = [name for name in record["clients"] if name != client_name]
+            if clean != record["clients"]:
+                record["clients"] = clean
+                data["users"][user_hash] = record
                 changed = True
         if changed:
             write_tokens(data)
@@ -322,10 +346,10 @@ def rotate_user_token(old_digest):
         users = data.setdefault("users", {})
         if old_digest not in users:
             return None
-        clients = clean_client_list(users.pop(old_digest, []))
-        users[new_digest] = clients
+        record = clean_user_record(users.pop(old_digest, {}))
+        users[new_digest] = record
         write_tokens(data)
-    return {"token": token, "token_hash": new_digest, "clients": clients}
+    return {"token": token, "token_hash": new_digest, "name": record["name"], "clients": record["clients"]}
 
 
 def parse_config():
@@ -605,7 +629,7 @@ class Handler(SimpleHTTPRequestHandler):
             if not self.require_super(auth):
                 return
             data = load_tokens()
-            users = [{"hash": key, "clients": value} for key, value in sorted(data.get("users", {}).items())]
+            users = [{"hash": key, "name": value["name"], "clients": value["clients"]} for key, value in sorted(data.get("users", {}).items())]
             self.send_json({"users": users})
             return
         if u.path == "/api/server/logs":
@@ -678,9 +702,9 @@ class Handler(SimpleHTTPRequestHandler):
                 digest = token_hash(token)
                 with TOKENS_LOCK:
                     data = load_tokens()
-                    data.setdefault("users", {})[digest] = clients
+                    data.setdefault("users", {})[digest] = {"name": "", "clients": clients}
                     write_tokens(data)
-                self.send_json({"token": token, "token_hash": digest, "clients": clients})
+                self.send_json({"token": token, "token_hash": digest, "name": "", "clients": clients})
                 return
             elif re.match(r"^/api/tokens/[^/]+/rotate$", u.path):
                 if not self.require_super(auth):
@@ -717,6 +741,35 @@ class Handler(SimpleHTTPRequestHandler):
                         args.append(str(body["port"]))
                     p = run_manage(*args)
             self.send_json({"ok": p.returncode == 0, "stdout": p.stdout, "stderr": p.stderr}, 200 if p.returncode == 0 else 400)
+        except ValueError as exc:
+            self.send_json({"error": str(exc)}, 400)
+
+
+    def do_PUT(self):
+        auth = self.api_auth()
+        if auth is None:
+            return
+        u = urlparse(self.path)
+        try:
+            m = re.match(r"^/api/tokens/([^/]+)/name$", u.path)
+            if not m:
+                self.send_error(404)
+                return
+            if not self.require_super(auth):
+                return
+            digest = safe_token_hash(m.group(1))
+            body = self.json_body()
+            name = clean_token_name(body.get("name", ""))
+            with TOKENS_LOCK:
+                data = load_tokens()
+                if digest not in data.get("users", {}):
+                    self.send_json({"error": "token not found"}, 404)
+                    return
+                record = clean_user_record(data["users"][digest])
+                record["name"] = name
+                data["users"][digest] = record
+                write_tokens(data)
+            self.send_json({"ok": True, "hash": digest, "name": name, "clients": record["clients"]})
         except ValueError as exc:
             self.send_json({"error": str(exc)}, 400)
 
