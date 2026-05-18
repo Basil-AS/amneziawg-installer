@@ -1457,6 +1457,47 @@ stats_clients() {
 }
 
 # ==============================================================================
+
+voice_check() {
+    echo "== Public IP =="
+    if command -v curl >/dev/null 2>&1; then
+        curl -4fsS --max-time 5 https://ifconfig.me 2>/dev/null || echo "warning: не удалось определить public IPv4"
+        echo
+    else
+        echo "warning: curl не установлен"
+    fi
+    echo "== Default route =="
+    if command -v ip >/dev/null 2>&1; then ip route get 1.1.1.1 2>&1 || true; else echo "warning: ip не установлен"; fi
+    echo "== AWG interfaces =="
+    if command -v ip >/dev/null 2>&1; then ip -br addr 2>/dev/null | grep -E 'awg|wg|tun' || echo "warning: AWG/WG/TUN interfaces not found"; else echo "warning: ip не установлен"; fi
+    echo "== UDP conntrack sysctl =="
+    if command -v sysctl >/dev/null 2>&1; then
+        sysctl net.netfilter.nf_conntrack_udp_timeout 2>&1 || true
+        sysctl net.netfilter.nf_conntrack_udp_timeout_stream 2>&1 || true
+        sysctl net.netfilter.nf_conntrack_max 2>&1 || true
+    else
+        echo "warning: sysctl не установлен"
+    fi
+    if [[ -r /proc/sys/net/netfilter/nf_conntrack_count ]]; then
+        echo "nf_conntrack_count = $(cat /proc/sys/net/netfilter/nf_conntrack_count)"
+    else
+        echo "warning: nf_conntrack_count недоступен"
+    fi
+    echo "== NAT rules =="
+    if command -v nft >/dev/null 2>&1; then nft list ruleset 2>/dev/null | grep -Ei 'masquerade|snat|dnat|awg|10\.9\.9' || echo "warning: matching NAT rules not found"; else echo "warning: nft не установлен"; fi
+    echo "== Recent UDP conntrack for AWG subnet =="
+    if command -v conntrack >/dev/null 2>&1; then conntrack -L -p udp 2>/dev/null | grep -E '10\.9\.9\.' | tail -50 || echo "warning: recent AWG UDP conntrack entries not found"; else echo "warning: conntrack не установлен"; fi
+    cat <<'EOF'
+Run on client:
+  stunclient stun.l.google.com 19302
+  stunclient stun.cloudflare.com 3478
+  stunclient stunserver2025.stunprotocol.org 3478
+
+Expected:
+  Mapped address = VPS public IP
+EOF
+}
+
 # Справка
 # ==============================================================================
 
@@ -1485,6 +1526,7 @@ usage() {
     echo "  toggle <имя>          Включить/выключить клиента без удаления"
     echo "  list [-v]             Показать список клиентов"
     echo "  stats [--json]        Статистика трафика по клиентам"
+    echo "  voice-check           Диагностика UDP/STUN/NAT для звонков"
     echo "  p2p list              Показать P2P порты всех клиентов"
     echo "  p2p show <имя>        Показать P2P информацию клиента"
     echo "  p2p add <имя> [порт]  Добавить P2P порт (авто, если порт не указан)"
@@ -1682,6 +1724,10 @@ case $COMMAND in
 
     stats)
         stats_clients || _cmd_rc=1
+        ;;
+
+    voice-check|udp-check)
+        voice_check || _cmd_rc=1
         ;;
 
     p2p)
