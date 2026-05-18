@@ -106,6 +106,67 @@ PY
     grep -qF '/rotate' "$BATS_TEST_DIRNAME/../web/server.py"
 }
 
+@test "web app exposes safe config download and copy actions" {
+    local app="$BATS_TEST_DIRNAME/../web/app.js"
+    grep -qF 'data-action="download-config"' "$app"
+    grep -qF 'data-action="copy-config"' "$app"
+    grep -qF 'data-action="copy-vpnuri"' "$app"
+    grep -qF 'Download .conf' "$app"
+    grep -qF 'Copy config' "$app"
+    grep -qF 'Show QR' "$app"
+    grep -qF 'Copy vpn://' "$app"
+    grep -qF 'aria-label' "$app"
+    grep -qF 'navigator.clipboard?.writeText' "$app"
+    grep -qF 'document.execCommand("copy")' "$app"
+    ! grep -qE 'console\.log.*(config|token)|localStorage.*config' "$BATS_TEST_DIRNAME/../web/"*
+}
+
+@test "config download endpoint is authenticated, RBAC protected, and no-store" {
+    command -v python3 &>/dev/null || skip "python3 not available"
+    local tmp
+    tmp=$(mktemp -d)
+    mkdir -p "$tmp/web"
+    printf 'private config\n' > "$tmp/phone.conf"
+    AWG_DIR="$tmp" SERVER_CONF_FILE="$tmp/awg0.conf" REPO_ROOT="$BATS_TEST_DIRNAME/.." python3 - <<'PY'
+import importlib.util
+import io
+import os
+from pathlib import Path
+
+spec = importlib.util.spec_from_file_location("panel_server", Path(os.environ["REPO_ROOT"]) / "web" / "server.py")
+server = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(server)
+
+handler = object.__new__(server.Handler)
+handler.wfile = io.BytesIO()
+handler.responses = []
+handler.headers_sent = []
+handler.send_response = lambda code: handler.responses.append(code)
+handler.send_header = lambda key, value: handler.headers_sent.append((key, value))
+handler.end_headers = lambda: None
+handler.send_error = lambda code: handler.responses.append(code)
+
+assert handler.can_access_client({"role": "super", "clients": None}, "phone")
+assert handler.can_access_client({"role": "user", "clients": ["phone"]}, "phone")
+assert not handler.can_access_client({"role": "user", "clients": ["laptop"]}, "phone")
+
+try:
+    server.safe_name("../shadow")
+    raise AssertionError("path traversal accepted")
+except ValueError:
+    pass
+
+handler.send_config_download("phone")
+headers = dict(handler.headers_sent)
+assert handler.responses == [200]
+assert headers["Content-Disposition"] == 'attachment; filename="phone.conf"'
+assert headers["Cache-Control"] == "no-store"
+assert headers["Content-Type"] == "application/octet-stream"
+assert handler.wfile.getvalue() == b"private config\n"
+PY
+    rm -rf "$tmp"
+}
+
 @test "traffic history keeps persistent totals across counter resets" {
     command -v python3 &>/dev/null || skip "python3 not available"
     local tmp
@@ -147,6 +208,19 @@ server.TRAFFIC_FILE.write_text(json.dumps({"last": {"beta": {"rx": 1000, "tx": 1
 server.update_traffic_history([{"name": "beta", "rx": 1200, "tx": 120}])
 history = server.load_traffic_history()
 assert history["totals"]["beta"] == {"rx": 1200, "tx": 120}
+
+server.TRAFFIC_FILE.write_text(json.dumps({
+    "last": {"gone": {"rx": 10, "tx": 20}, "_internal": {"rx": 1, "tx": 1}},
+    "days": {"2026-05-19": {"gone": {"rx": 5, "tx": 7}, "alpha": {"rx": 2, "tx": 3}}},
+    "totals": {"gone": {"rx": 300, "tx": 400}, "alpha": {"rx": 1, "tx": 2}},
+}))
+server.update_traffic_history([{"name": "alpha", "rx": 1, "tx": 2}])
+history = server.load_traffic_history()
+assert history["totals"]["_deleted_clients_total"] == {"rx": 300, "tx": 400}
+assert "gone" not in history["totals"]
+assert "gone" not in history["last"]
+assert "gone" not in history["days"]["2026-05-19"]
+assert history["totals"]["alpha"] == {"rx": 1, "tx": 2}
 PY
     rm -rf "$tmp"
 }
@@ -279,6 +353,28 @@ PY
     rm -rf "$tmp"
 }
 
+@test "CLI reset-super backs up token store, preserves valid users, and writes 0600" {
+    command -v python3 &>/dev/null || skip "python3 not available"
+    local tmp hash out token_file
+    tmp=$(mktemp -d)
+    mkdir -p "$tmp/web"
+    token_file="$tmp/web/tokens.json"
+    hash=$(printf old | sha256sum | awk '{print $1}')
+    printf '{"super_token_hash":"%064d","users":{"%s":{"name":"Alice","clients":["phone"]}}}\n' 0 "$hash" > "$token_file"
+    out=$(AWG_DIR="$tmp" bash -c "source <(sed -n '/^web_token_py() {$/,/^}$/p' '$BATS_TEST_DIRNAME/../manage_amneziawg.sh'); web_token_py reset-super")
+    grep -qF 'Backup:' <<< "$out"
+    grep -qF 'New super token:' <<< "$out"
+    [ "$(find "$tmp/web" -maxdepth 1 -name 'tokens.json.bak.*' | wc -l)" -eq 1 ]
+    [ "$(stat -c '%a' "$token_file")" = "600" ]
+    python3 - "$token_file" <<'PY'
+import json, re, sys
+data = json.load(open(sys.argv[1]))
+assert re.fullmatch(r"[0-9a-f]{64}", data["super_token_hash"])
+assert next(iter(data["users"].values())) == {"name": "Alice", "clients": ["phone"]}
+PY
+    rm -rf "$tmp"
+}
+
 @test "English manage exposes fork-specific commands used by the web panel" {
     local manage="$BATS_TEST_DIRNAME/../manage_amneziawg_en.sh"
     grep -qF 'set-name)' "$manage"
@@ -305,7 +401,7 @@ PY
     hash=$(printf old | sha256sum | awk '{print $1}')
     mkdir -p "$tmp/web"
     printf '{"super_token_hash":"%064d","users":{"%s":{"name":"Alice","clients":["phone"]}}}\n' 0 "$hash" > "$tmp/web/tokens.json"
-    AWG_DIR="$tmp" bash -c "source '$BATS_TEST_DIRNAME/../manage_amneziawg.sh'; web_token_py rotate '$hash' >/dev/null"
+    AWG_DIR="$tmp" bash -c "source <(sed -n '/^web_token_py() {$/,/^}$/p' '$BATS_TEST_DIRNAME/../manage_amneziawg.sh'); web_token_py rotate '$hash' >/dev/null"
     python3 - "$tmp/web/tokens.json" <<'PY'
 import json, sys
 users = json.load(open(sys.argv[1]))['users']
@@ -314,7 +410,7 @@ assert record == {'name': 'Alice', 'clients': ['phone']}
 PY
     hash=$(printf legacy | sha256sum | awk '{print $1}')
     printf '{"super_token_hash":"%064d","users":{"%s":["phone"]}}\n' 0 "$hash" > "$tmp/web/tokens.json"
-    AWG_DIR="$tmp" bash -c "source '$BATS_TEST_DIRNAME/../manage_amneziawg.sh'; web_token_py list >/dev/null"
+    AWG_DIR="$tmp" bash -c "source <(sed -n '/^web_token_py() {$/,/^}$/p' '$BATS_TEST_DIRNAME/../manage_amneziawg.sh'); web_token_py list >/dev/null"
     python3 - "$tmp/web/tokens.json" <<'PY'
 import json, sys
 users = json.load(open(sys.argv[1]))['users']
@@ -322,4 +418,22 @@ record = next(iter(users.values()))
 assert record == {'name': '', 'clients': ['phone']}
 PY
     rm -rf "$tmp"
+}
+
+@test "backup tar excludes atomic temporary files" {
+    for manage in "$BATS_TEST_DIRNAME/../manage_amneziawg.sh" "$BATS_TEST_DIRNAME/../manage_amneziawg_en.sh"; do
+        grep -qF -- '--exclude="*.tmp"' "$manage"
+        grep -qF -- '--exclude="*.tmp.*"' "$manage"
+        grep -qF -- '--exclude=".*.tmp"' "$manage"
+        grep -qF -- '--exclude="*.new"' "$manage"
+    done
+}
+
+@test "web TLS assets keep key private and certificate idempotent" {
+    for installer in "$BATS_TEST_DIRNAME/../install_amneziawg.sh" "$BATS_TEST_DIRNAME/../install_amneziawg_en.sh"; do
+        grep -qF 'if [[ ! -f "$web_dir/cert.pem" || ! -f "$web_dir/key.pem" ]]; then' "$installer"
+        grep -qF 'chmod 600 "$web_dir/key.pem"' "$installer"
+        grep -qF 'chmod 644 "$web_dir/cert.pem"' "$installer"
+        ! grep -qF 'openssl req -x509 -nodes -newkey rsa:2048 -days 3650 -keyout "$web_dir/key.pem"' "$installer"
+    done
 }

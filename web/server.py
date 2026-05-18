@@ -42,6 +42,7 @@ MAX_JSON_BODY = 64 * 1024
 TOKENS_LOCK = threading.RLock()
 TRAFFIC_LOCK = threading.Lock()
 SERVER_NAME_RE = re.compile(r"^[\w .,!?\-()]{1,128}$", re.UNICODE)
+DELETED_TRAFFIC_KEY = "_deleted_clients_total"
 
 
 def run_manage(*args, timeout=60):
@@ -77,16 +78,18 @@ def write_tokens(data):
 
 def load_traffic_history():
     if not TRAFFIC_FILE.exists():
-        return {"last": {}, "days": {}, "totals": {}}
+        return {"last": {}, "days": {}, "totals": {DELETED_TRAFFIC_KEY: {"rx": 0, "tx": 0}}}
     try:
         data = json.loads(TRAFFIC_FILE.read_text(encoding="utf-8"))
     except Exception:
-        return {"last": {}, "days": {}, "totals": {}}
+        return {"last": {}, "days": {}, "totals": {DELETED_TRAFFIC_KEY: {"rx": 0, "tx": 0}}}
     if not isinstance(data, dict):
-        return {"last": {}, "days": {}, "totals": {}}
+        return {"last": {}, "days": {}, "totals": {DELETED_TRAFFIC_KEY: {"rx": 0, "tx": 0}}}
     last = data.get("last") if isinstance(data.get("last"), dict) else {}
     days = data.get("days") if isinstance(data.get("days"), dict) else {}
     totals = data.get("totals") if isinstance(data.get("totals"), dict) else {}
+    if not isinstance(totals.get(DELETED_TRAFFIC_KEY), dict):
+        totals[DELETED_TRAFFIC_KEY] = {"rx": 0, "tx": 0}
     return {"last": last, "days": days, "totals": totals}
 
 
@@ -139,6 +142,7 @@ def update_traffic_history(rows):
         last = data.setdefault("last", {})
         days = data.setdefault("days", {})
         totals = data.setdefault("totals", {})
+        deleted_total = totals.setdefault(DELETED_TRAFFIC_KEY, {"rx": 0, "tx": 0})
         day = days.setdefault(today, {})
         changed = False
         active_names = set()
@@ -174,12 +178,24 @@ def update_traffic_history(rows):
                 del days[date]
                 changed = True
         for name in list(last):
-            if name not in active_names:
+            if name.startswith("_"):
+                del last[name]
+                changed = True
+            elif name not in active_names:
                 del last[name]
                 changed = True
         for name in list(totals):
-            if name not in active_names and all(name not in bucket for bucket in days.values() if isinstance(bucket, dict)):
+            if name.startswith("_"):
+                continue
+            if name not in active_names:
+                pair = _traffic_pair(totals.get(name, {}))
+                if pair["rx"] or pair["tx"]:
+                    deleted_total["rx"] = max(0, int(deleted_total.get("rx") or 0)) + pair["rx"]
+                    deleted_total["tx"] = max(0, int(deleted_total.get("tx") or 0)) + pair["tx"]
                 del totals[name]
+                for bucket in days.values():
+                    if isinstance(bucket, dict) and name in bucket:
+                        del bucket[name]
                 changed = True
         if changed:
             write_traffic_history(data)
@@ -201,6 +217,8 @@ def traffic_summary(auth, stats=None, names=None):
     history = load_traffic_history()
     persistent = {"rx": 0, "tx": 0}
     for name, values in history.get("totals", {}).items():
+        if name.startswith("_") and allowed is not None:
+            continue
         if allowed is not None and name not in allowed:
             continue
         pair = _traffic_pair(values)
@@ -213,6 +231,8 @@ def traffic_summary(auth, stats=None, names=None):
         rx = tx = 0
         if isinstance(day_rows, dict):
             for name, values in day_rows.items():
+                if name.startswith("_"):
+                    continue
                 if allowed is not None and name not in allowed:
                     continue
                 if isinstance(values, dict):
@@ -243,6 +263,8 @@ def client_traffic_30d(name, history=None):
 
 def client_traffic_total(name, history=None):
     history = history or load_traffic_history()
+    if name.startswith("_"):
+        return {"rx": 0, "tx": 0, "total": 0}
     pair = _traffic_pair(history.get("totals", {}).get(name, {}))
     return {"rx": pair["rx"], "tx": pair["tx"], "total": pair["rx"] + pair["tx"]}
 
@@ -272,22 +294,28 @@ def clean_token_name(value):
     return value
 
 
-def clean_user_record(value):
+def clean_user_record(value, strict=False):
     if isinstance(value, list):
         try:
             clients = clean_client_list(value)
         except ValueError:
+            if strict:
+                raise
             clients = []
         return {"name": "", "clients": clients}
     if isinstance(value, dict):
         try:
             clients = clean_client_list(value.get("clients", []))
         except ValueError:
+            if strict:
+                raise
             clients = []
         return {
             "name": clean_token_name(value.get("name", "")),
             "clients": clients,
         }
+    if strict:
+        raise ValueError("invalid user token record")
     return {"name": "", "clients": []}
 
 
@@ -311,6 +339,8 @@ def load_tokens():
 
         users = data.get("users")
         if not isinstance(users, dict):
+            if TOKEN_FILE.exists() and "users" in data:
+                raise RuntimeError("tokens.json is invalid; run manage_amneziawg.sh web token reset-super")
             users = {}
         legacy_normal = data.get("normal")
         if isinstance(legacy_normal, dict):
@@ -321,7 +351,10 @@ def load_tokens():
         clean_users = {}
         for digest, value in users.items():
             if isinstance(digest, str) and TOKEN_HASH_RE.fullmatch(digest):
-                clean_users[digest] = clean_user_record(value)
+                try:
+                    clean_users[digest] = clean_user_record(value, strict=TOKEN_FILE.exists())
+                except ValueError as exc:
+                    raise RuntimeError("tokens.json is invalid; run manage_amneziawg.sh web token reset-super") from exc
 
         clean = {"super_token_hash": super_hash, "users": clean_users}
         if clean != data or not TOKEN_FILE.exists():
@@ -710,6 +743,20 @@ class Handler(SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def send_config_download(self, name):
+        path = AWG_DIR / f"{name}.conf"
+        if not path.exists() or not path.is_file():
+            self.send_error(404)
+            return
+        data = path.read_bytes()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/octet-stream")
+        self.send_header("Content-Disposition", f'attachment; filename="{name}.conf"')
+        self.send_header("Content-Length", str(len(data)))
+        self.send_security_headers()
+        self.end_headers()
+        self.wfile.write(data)
+
     def send_static_file(self, url_path):
         static = STATIC_FILES.get(url_path)
         if static is None:
@@ -796,6 +843,14 @@ class Handler(SimpleHTTPRequestHandler):
                     lines.extend(tail_lines(f, 100))
             self.send_json({"lines": lines[-100:]})
             return
+        m_download = re.match(r"^/api/clients/([^/]+)/config/download$", u.path)
+        if m_download:
+            name = safe_name(m_download.group(1))
+            if not self.require_client_access(auth, name):
+                return
+            self.send_config_download(name)
+            return
+
         m = re.match(r"^/api/clients/([^/]+)/(config|qr|vpnuri|p2p)$", u.path)
         if not m:
             self.send_error(404)

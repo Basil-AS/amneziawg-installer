@@ -62,16 +62,22 @@ This is an `amneziawg-installer` fork with a lightweight Python stdlib web panel
 ### Safe default installation
 
 ```bash
-git clone https://github.com/<OWNER>/<REPO>.git
-cd amneziawg-installer
-sudo bash install_amneziawg_en.sh
+wget -O install_amneziawg.sh https://raw.githubusercontent.com/Basil-AS/amneziawg-installer/main/install_amneziawg.sh
+chmod +x install_amneziawg.sh
+sudo bash ./install_amneziawg.sh --route-all --server-name="my-vpn"
 ```
 
-If you run the installer directly through `curl`, use your own repository and branch:
+`--route-all` — route all client traffic through the VPN.  
+`--server-name="my-vpn"` — human-readable server name used in the panel and configs.
+
+### For developers / custom branch
+
+If you are testing your own fork or branch, clone that repository first:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/<OWNER>/<REPO>/<BRANCH>/install_amneziawg_en.sh -o install_amneziawg_en.sh
-sudo bash install_amneziawg_en.sh
+git clone https://github.com/Basil-AS/amneziawg-installer.git
+cd amneziawg-installer
+sudo bash ./install_amneziawg_en.sh
 ```
 
 ### Accessing the web panel
@@ -340,6 +346,7 @@ Useful flags:
 * Peer blocks are the source of truth: `AllowedIPs = <ipv4>/32, <ipv6>/128` and `#_P2PPorts = p1,p2,p3`.
 * Default P2P ports for IPv4 last octet `N`: `20000+N`, `20256+N`, `20512+N`; extra ports are allocated from `20001-21024`.
 * Web files live in `/root/awg/web/`; the panel listens on VPN gateway `10.9.9.1:8443` by default, uses local assets without external CDNs, self-signed TLS, and stores bearer-token hashes/RBAC records in `/root/awg/web/tokens.json`.
+* The client card exposes explicit actions: download `.conf`, copy full config text, show QR, and copy the `vpn://` URI. Config endpoints stay authenticated and RBAC-scoped.
 * AdGuard Home is installed in `/opt/AdGuardHome`; DNS listens on `127.0.0.1`, `10.9.9.1`, and the server IPv6 address inside the VPN. If it fails, VPN remains usable; fallback: `manage dns set-mode system`.
 
 ### Not finished yet
@@ -358,7 +365,7 @@ Useful flags:
 * **One command — working VPN** — from a clean VPS to a running server with client configs and QR codes
 * **Dual-stack IPv6** — native `/64` when available, or explicit ULA/NAT66 fallback
 * **P2P ports** — automatic TCP+UDP ports per client plus CLI/Web management
-* **Web panel** — HTTPS `:8443`, bearer token, clients, QR/config/vpnuri, stats, and logs
+* **Web panel** — HTTPS `:8443`, bearer token, clients, `.conf` download/copy, QR/vpnuri, stats, and logs
 * **Secure by default** — UFW, Fail2Ban, sysctl hardening, strict file permissions (600/700)
 * **Easy management** — add/remove clients, temporary clients with auto-removal, traffic stats, backups
 * **4 operating systems** — Ubuntu 24.04, Ubuntu 25.10/26.04, Debian 12, Debian 13
