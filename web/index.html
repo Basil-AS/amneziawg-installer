@@ -5,38 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>AmneziaWG Panel</title>
   <link rel="icon" type="image/svg+xml" href="/favicon.svg">
-  <!-- TODO: localize Tailwind when the panel gains a lightweight CSS build step. -->
-  <script src="https://cdn.tailwindcss.com"></script>
-  <script src="https://cdn.jsdelivr.net/npm/apexcharts"></script>
-  <style>
-:root {
-  /* Light Mode (wg-easy) */
-  --bg: #f5f7f8;
-  --panel: #ffffff;
-  --soft: #eef2f4;
-  --line: #d5dde3;
-  --text: #17202a;
-  --muted: #62717e;
-  --accent: #991b1b;
-  --accent-hover: #dc2626;
-  --danger: #b42318;
-}
-:root[data-theme="dark"], .dark {
-  /* Dark Mode (wg-easy) */
-  --bg: #101316;
-  --panel: #181d22;
-  --soft: #20272e;
-  --line: #323b44;
-  --text: #eef3f7;
-  --muted: #9ba8b5;
-  --accent: #991b1b;
-  --accent-hover: #dc2626;
-  --danger: #ef6461;
-}
-html { color-scheme: light; }
-:root[data-theme="dark"] { color-scheme: dark; }
-.apexcharts-tooltip { color: #17202a; }
-  </style>
+  <link rel="stylesheet" href="/style.css">
 </head>
 <body class="bg-[var(--bg)] text-[var(--text)] font-sans antialiased min-h-screen">
   <main id="app" class="max-w-5xl mx-auto p-4"></main>

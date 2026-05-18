@@ -27,6 +27,12 @@ setup() {
     ! grep -qE 'xz -9 "\$MODULE_INSTALL_PATH/amneziawg\.ko"' "$BUILD"
 }
 
+@test "build script uses atomic temporary xz output" {
+    ! grep -qF 'xz --check=crc32 --lzma2=dict=1MiB -f "$KO_FILE"' "$BUILD"
+    grep -qF 'KO_TMP_XZ="${KO_FILE}.tmp.xz"' "$BUILD"
+    grep -qF 'xz -t "$KO_TMP_XZ"' "$BUILD"
+}
+
 @test "v5.12.1: build script uses --check=crc32 (kernel-compatible)" {
     grep -qE 'xz .*--check=crc32' "$BUILD"
 }

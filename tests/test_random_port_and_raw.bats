@@ -12,10 +12,13 @@
     ! grep -q 'local default_port=39743' "$BATS_TEST_DIRNAME/../install_amneziawg_en.sh"
 }
 
-@test "installer downloads fork helper scripts from raw GitHub main by default" {
+@test "installer prefers local helper scripts and does not default to raw main" {
     grep -q 'AWG_REPO="${AWG_REPO:-Basil-AS/amneziawg-installer}"' "$BATS_TEST_DIRNAME/../install_amneziawg.sh"
-    grep -q 'AWG_BRANCH="${AWG_BRANCH:-main}"' "$BATS_TEST_DIRNAME/../install_amneziawg.sh"
+    grep -q 'AWG_BRANCH="${AWG_BRANCH:-v${SCRIPT_VERSION}}"' "$BATS_TEST_DIRNAME/../install_amneziawg.sh"
     grep -q 'raw.githubusercontent.com/${AWG_REPO}/${AWG_BRANCH}/awg_common.sh' "$BATS_TEST_DIRNAME/../install_amneziawg.sh"
+    grep -qF '_deploy_helper_script "awg_common.sh" "${INSTALLER_DIR}/awg_common.sh"' "$BATS_TEST_DIRNAME/../install_amneziawg.sh"
+    grep -qF 'AWG_ALLOW_UNVERIFIED_DOWNLOAD=1' "$BATS_TEST_DIRNAME/../install_amneziawg.sh"
+    ! grep -qF 'AWG_BRANCH="${AWG_BRANCH:-main}"' "$BATS_TEST_DIRNAME/../install_amneziawg.sh"
 }
 
 @test "README quickstart uses fork raw GitHub main, not upstream release tag" {
