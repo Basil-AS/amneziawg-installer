@@ -30,6 +30,11 @@ const icons = {
   help: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M9.5 9a2.6 2.6 0 0 1 5 1c0 2-2.5 2.2-2.5 4"/><path d="M12 17h.01"/></svg>',
   external: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M14 3h7v7"/><path d="M10 14 21 3"/><path d="M21 14v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5"/></svg>',
   github: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 .5a11.5 11.5 0 0 0-3.64 22.41c.58.11.79-.25.79-.56v-2.17c-3.22.7-3.9-1.37-3.9-1.37-.53-1.34-1.29-1.7-1.29-1.7-1.05-.72.08-.71.08-.71 1.16.08 1.77 1.19 1.77 1.19 1.03 1.77 2.7 1.26 3.36.96.1-.75.4-1.26.73-1.55-2.57-.29-5.27-1.29-5.27-5.73 0-1.27.45-2.3 1.19-3.11-.12-.29-.52-1.47.11-3.07 0 0 .97-.31 3.17 1.19a10.93 10.93 0 0 1 5.78 0c2.2-1.5 3.17-1.19 3.17-1.19.63 1.6.23 2.78.11 3.07.74.81 1.19 1.84 1.19 3.11 0 4.45-2.71 5.43-5.29 5.72.42.36.79 1.07.79 2.16v3.2c0 .31.21.68.8.56A11.5 11.5 0 0 0 12 .5Z"/></svg>',
+  windows: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M3 4.5 10.5 3v8H3v-6.5Zm9-1.8L21 1v10h-9V2.7ZM3 13h7.5v8L3 19.5V13Zm9 0h9v10l-9-1.7V13Z"/></svg>',
+  android: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="m8 6-2-3M16 6l2-3"/><path d="M5 10a7 7 0 0 1 14 0"/><rect x="5" y="10" width="14" height="9" rx="2"/><path d="M8 13h.01M16 13h.01M8 19v2M16 19v2M3 11v6M21 11v6"/></svg>',
+  apple: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M15.7 12.8c0-2.3 1.9-3.4 2-3.5-1.1-1.6-2.8-1.8-3.4-1.8-1.4-.1-2.8.8-3.5.8-.7 0-1.8-.8-3-.8-1.5 0-2.9.9-3.7 2.2-1.6 2.8-.4 6.9 1.1 9.1.8 1.1 1.7 2.4 2.9 2.4 1.2 0 1.6-.8 3-.8 1.4 0 1.8.8 3 .8 1.3 0 2.1-1.2 2.8-2.3.9-1.3 1.3-2.6 1.3-2.7-.1 0-2.5-1-2.5-3.4ZM13.4 6c.6-.8 1.1-1.9.9-3-.9.1-2 .6-2.7 1.4-.6.7-1.1 1.8-1 2.9 1 .1 2-.5 2.8-1.3Z"/></svg>',
+  linux: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3c2.2 0 3.7 1.7 3.7 4.5 0 1.4-.3 2.6-.8 3.6 1.8 1.4 3.1 3.8 3.1 6.1 0 2.2-1.8 3.8-6 3.8s-6-1.6-6-3.8c0-2.3 1.3-4.7 3.1-6.1-.5-1-.8-2.2-.8-3.6C8.3 4.7 9.8 3 12 3Z"/><path d="M10 8h.01M14 8h.01M9.5 15h5"/></svg>',
+  router: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="10" width="18" height="8" rx="2"/><path d="M7 14h.01M11 14h.01M15 14h3M8 10V6M16 10V6M5 21h14"/></svg>',
   shield: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M9 12.75 11.25 15 15 9.75"/><path d="M12 3.75c2.1 1.95 4.95 3 7.88 3-.42 6.15-3.25 10.69-7.88 13.5-4.63-2.81-7.46-7.35-7.88-13.5 2.93 0 5.78-1.05 7.88-3Z"/></svg>',
   link: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M10.5 13.5 13.5 10.5"/><path d="M8.5 15.5 7 17a4 4 0 0 1-5.7-5.6l2.1-2.1A4 4 0 0 1 9 9"/><path d="M15.5 8.5 17 7a4 4 0 0 1 5.7 5.6l-2.1 2.1A4 4 0 0 1 15 15"/></svg>',
   pencil: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="m4 20 4.2-1 10.6-10.6a2.1 2.1 0 0 0-3-3L5.2 16 4 20Z"/><path d="m14.5 6.5 3 3"/></svg>',
@@ -589,63 +594,85 @@ function applySearch() {
 const helpClientGroups = [
   {
     name: "Windows",
+    icon: "windows",
+    subtitle: "Главные варианты: WireSock для split tunneling, AmneziaWG для официальной совместимости.",
     clients: [
-      {name: "AmneziaWG for Windows", status: "Recommended", description: "Лучший лёгкий AWG-клиент под Windows.", support: ["supported", "supported", "supported"], links: [{label: "GitHub Releases", url: "https://github.com/amnezia-vpn/amneziawg-windows-client/releases"}], platforms: "Windows x64, ARM64, x86", importMethod: ".conf", bestFor: "Лёгкая нативная работа с AmneziaWG-конфигами."},
-      {name: "AmneziaVPN", status: "Full client", description: "Полный VPN-клиент Amnezia.", support: ["supported", "supported", "supported"], links: [{label: "Официальная", url: "https://amnezia.org/downloads"}, {label: "GitHub", url: "https://github.com/amnezia-vpn/amnezia-client/releases"}], platforms: "Windows", importMethod: "vpn:// URI, app flow", bestFor: "Универсальный клиент с полным стеком Amnezia."},
-      {name: "WireSock Secure Connect", status: "Advanced", description: "Windows-клиент с продвинутым split tunneling.", support: ["supported", "warning", "supported"], links: [{label: "Сайт", url: "https://www.wiresock.net/wiresock-secure-connect/download/"}], platforms: "Windows", importMethod: ".conf", bestFor: "Тонкая маршрутизация трафика.", limitation: "AWG simulation/I-параметры могут отличаться от официальной реализации."},
-      {name: "VeilBox", status: "Experimental", description: "Альтернативный клиент с AmneziaWG/VLESS.", support: ["unknown", "unknown", "warning"], links: [{label: "GitHub", url: "https://github.com/artem4150/VeilBox"}], platforms: "Windows", importMethod: "Зависит от сборки", bestFor: "Эксперименты и гибридные сценарии.", limitation: "Поддержка AWG подтверждена не полностью."},
-      {name: "Clash Verge Rev", status: "Experimental", description: "Не основной AWG-клиент, использовать только как альтернативный прокси-комбайн.", support: ["warning", "warning", "warning"], links: [{label: "GitHub", url: "https://github.com/clash-verge-rev/clash-verge-rev/releases"}], platforms: "Windows", importMethod: "Профили прокси", bestFor: "Альтернативные proxy-сценарии.", limitation: "Не основной AWG-клиент."},
+      {name: "WireSock Secure Connect", status: "Recommended / Advanced", trafficSplit: "App split / NDIS / routes", description: "Продвинутый Windows-клиент с per-app split tunneling, KillSwitch и кастомной DPI-симуляцией.", support: ["supported", {state: "custom", text: "◇ AWG 1.5 custom"}, "supported"], links: [{label: "Download", url: "https://www.wiresock.net/wiresock-secure-connect/download/"}], platforms: "Windows", importMethod: ".conf + WireSock simulation settings", bestFor: "Тонкое разделение трафика по приложениям, маршрутам и сетям на Windows.", limitation: "Standard AWG 1.5 I1-I5 parameters are not imported directly. WireSock uses custom simulation settings instead. Best choice when Windows per-app split tunneling is more important than strict compatibility with official AmneziaWG config syntax."},
+      {name: "AmneziaWG for Windows", status: "Recommended", trafficSplit: "Routes only", description: "Лучший лёгкий официальный AWG-клиент под Windows.", support: ["supported", "supported", "supported"], links: [{label: "GitHub Releases", url: "https://github.com/amnezia-vpn/amneziawg-windows-client/releases"}, {label: "Win7 patch", url: "https://github.com/stunndard/golangwin7patch/releases/latest"}], platforms: "Windows x64, ARM64, x86", importMethod: ".conf", bestFor: "Официальная совместимость с AmneziaWG-конфигами.", limitation: "Split tunneling в основном через AllowedIPs/routes, без удобного per-app split как у WireSock."},
+      {name: "AmneziaVPN", status: "Full client", trafficSplit: "Routes / app features", description: "Полный VPN-клиент Amnezia.", support: ["supported", "supported", "supported"], links: [{label: "Official", url: "https://amnezia.org/downloads"}, {label: "GitHub", url: "https://github.com/amnezia-vpn/amnezia-client/releases"}], platforms: "Windows", importMethod: "vpn:// URI, QR, app flow", bestFor: "Onboarding, управление Amnezia-сервером и полный стек Amnezia.", limitation: "Тяжелее, чем отдельный AmneziaWG-клиент."},
+      {name: "VeilBox", status: "Experimental", trafficSplit: "TUN / proxy rules", description: "Альтернативный клиент с AmneziaWG/VLESS.", support: ["unknown", "unknown", "warning"], links: [{label: "GitHub", url: "https://github.com/artem4150/VeilBox"}], platforms: "Windows", importMethod: "Depends on build", bestFor: "Экспериментальные гибридные сценарии.", limitation: "Не основной AWG-клиент."},
+      {name: "Clash Verge Rev", status: "Experimental", trafficSplit: "Proxy rules", description: "Прокси-комбайн, не основной AWG-клиент.", support: ["warning", "warning", "warning"], links: [{label: "GitHub", url: "https://github.com/clash-verge-rev/clash-verge-rev/releases"}], platforms: "Windows", importMethod: "Proxy profiles", bestFor: "Proxy-rule based routing.", limitation: "Использовать как альтернативный proxy-клиент, не как основной AWG-клиент."},
     ],
   },
   {
     name: "Android",
+    icon: "android",
+    subtitle: "Главные варианты: WG Tunnel для advanced routing, AmneziaWG для лёгкого official flow.",
     clients: [
-      {name: "AmneziaWG Android", status: "Recommended", description: "Лучший лёгкий официальный AWG-клиент под Android.", support: ["supported", "supported", "supported"], links: [{label: "GitHub", url: "https://github.com/amnezia-vpn/amneziawg-android/releases"}, {label: "Google Play", url: "https://play.google.com/store/apps/details?id=org.amnezia.awg"}], platforms: "Android phones, tablets", importMethod: ".conf, QR", bestFor: "Быстрый официальный клиент без лишнего слоя."},
-      {name: "AmneziaVPN", status: "Full client", description: "Полный клиент Amnezia.", support: ["supported", "supported", "supported"], links: [{label: "Официальная", url: "https://amnezia.org/downloads"}, {label: "GitHub", url: "https://github.com/amnezia-vpn/amnezia-client/releases"}], platforms: "Android phones, tablets", importMethod: "vpn:// URI, app flow", bestFor: "Полный клиент Amnezia и простой onboarding."},
-      {name: "WG Tunnel", status: "Advanced", description: "Android-клиент с auto-tunnel, split tunneling, Always-On, lockdown и Android TV.", support: ["supported", "supported", {state: "supported", text: "✅ AWG 2.0 userspace only"}], links: [{label: "GitHub", url: "https://github.com/wgtunnel/android/releases"}, {label: "Сайт", url: "https://wgtunnel.com/"}], platforms: "Android phones, tablets, Android TV", importMethod: ".conf", bestFor: "Продвинутые Android-сценарии и TV.", limitation: "AmneziaWG работает только через Userspace/Go backend; Kernel mode поддерживает только обычный WireGuard."},
+      {name: "WG Tunnel", status: "Recommended / Advanced", trafficSplit: "App split / auto tunnel", description: "Продвинутый Android-клиент для auto-tunnel, split tunneling, Always-On, lockdown и Android TV.", support: ["supported", "supported", {state: "supported", text: "✅ AWG 2.0 userspace"}], links: [{label: "Website", url: "https://wgtunnel.com/"}, {label: "GitHub", url: "https://github.com/wgtunnel/android/releases"}], platforms: "Android phones, tablets, Android TV", importMethod: ".conf, QR, manual import", bestFor: "Разделение по приложениям, авто-подключение, Android TV и advanced Android-сценарии.", limitation: "AmneziaWG works only through Userspace/Go backend. Kernel mode supports only standard WireGuard, not AmneziaWG."},
+      {name: "AmneziaWG Android", status: "Recommended", trafficSplit: "App split", description: "Лёгкий официальный AWG-клиент под Android.", support: ["supported", "supported", "supported"], links: [{label: "Google Play", url: "https://play.google.com/store/apps/details?id=org.amnezia.awg"}, {label: "GitHub", url: "https://github.com/amnezia-vpn/amneziawg-android/releases"}], platforms: "Android phones, tablets", importMethod: ".conf, QR", bestFor: "Официальный лёгкий клиент без лишней сложности.", limitation: "Для самых продвинутых auto-tunnel сценариев лучше WG Tunnel."},
+      {name: "AmneziaVPN", status: "Full client", trafficSplit: "App split", description: "Полный клиент Amnezia для Android.", support: ["supported", "supported", "supported"], links: [{label: "Official", url: "https://amnezia.org/downloads"}, {label: "GitHub", url: "https://github.com/amnezia-vpn/amnezia-client/releases"}], platforms: "Android phones, tablets", importMethod: "vpn:// URI, QR, app flow", bestFor: "Простой onboarding и полный клиент Amnezia.", limitation: "Тяжелее, чем отдельный AmneziaWG-клиент."},
     ],
   },
   {
     name: "iOS / iPadOS",
+    icon: "apple",
+    subtitle: "iOS does not provide normal per-app split tunneling for generic VPN clients.",
     clients: [
-      {name: "AmneziaWG", status: "Recommended", description: "Лучший лёгкий AWG-клиент для iOS/iPadOS.", support: ["supported", "supported", "supported"], links: [{label: "App Store", url: "https://apps.apple.com/app/amneziawg/id6478942365"}], platforms: "iPhone, iPad", importMethod: ".conf, QR", bestFor: "Лёгкий официальный Apple-клиент."},
-      {name: "AmneziaVPN", status: "Full client", description: "Полный клиент Amnezia.", support: ["supported", "supported", "supported"], links: [{label: "App Store", url: "https://apps.apple.com/app/amnezia-vpn/id1600529900"}, {label: "Оф. сайт", url: "https://amnezia.org/downloads"}], platforms: "iPhone, iPad", importMethod: "vpn:// URI, app flow", bestFor: "Полный клиент Amnezia.", limitation: "iOS-версия может быть недоступна в RU регионе."},
-      {name: "DefaultVPN", status: "Fallback", description: "Альтернативный iOS-клиент.", support: ["supported", "supported", "warning"], links: [{label: "App Store", url: "https://apps.apple.com/app/defaultvpn/id6744725017"}], platforms: "iPhone, iPad", importMethod: ".conf", bestFor: "Запасной вариант на iOS.", limitation: "AWG 2.0 не заявлен как полноценный основной режим."},
-      {name: "Clash Mi", status: "Experimental", description: "Не основной AWG-клиент.", support: ["warning", "warning", "warning"], links: [{label: "App Store", url: "https://apps.apple.com/app/clash-mi/id6744321968"}], platforms: "iPhone, iPad", importMethod: "Профили прокси", bestFor: "Экспериментальные proxy-сценарии.", limitation: "Не основной AWG-клиент."},
+      {name: "AmneziaWG", status: "Recommended", trafficSplit: "No app split / OS-limited", description: "Лучший лёгкий AWG-клиент для iOS/iPadOS.", support: ["supported", "supported", "supported"], links: [{label: "App Store", url: "https://apps.apple.com/app/amneziawg/id6478942365"}], platforms: "iPhone, iPad", importMethod: ".conf, QR", bestFor: "Лёгкое подключение AWG на iOS.", limitation: "No normal per-app split tunneling due to iOS VPN limitations."},
+      {name: "AmneziaVPN", status: "Full client", trafficSplit: "No app split / OS-limited", description: "Полный клиент Amnezia для iOS.", support: ["supported", "supported", "supported"], links: [{label: "App Store", url: "https://apps.apple.com/app/amnezia-vpn/id1600529900"}, {label: "Official", url: "https://amnezia.org/downloads"}], platforms: "iPhone, iPad", importMethod: "vpn:// URI, QR, app flow", bestFor: "Полный клиент Amnezia на iOS.", limitation: "iOS version may be unavailable in RU App Store region. No normal per-app split tunneling due to iOS VPN limitations."},
+      {name: "DefaultVPN", status: "Fallback", trafficSplit: "No app split / OS-limited", description: "Альтернативный iOS-клиент.", support: ["supported", "supported", "warning"], links: [{label: "App Store", url: "https://apps.apple.com/app/defaultvpn/id6744725017"}], platforms: "iPhone, iPad", importMethod: ".conf", bestFor: "Запасной вариант для iOS.", limitation: "AWG 2.0 support should be treated cautiously. No normal per-app split tunneling due to iOS VPN limitations."},
+      {name: "Clash Mi", status: "Experimental", trafficSplit: "Proxy rules", description: "Экспериментальный proxy-клиент, не основной AWG-клиент.", support: ["warning", "warning", "warning"], links: [{label: "App Store", url: "https://apps.apple.com/app/clash-mi/id6744321968"}], platforms: "iPhone, iPad", importMethod: "Proxy profiles", bestFor: "Proxy-rule based scenarios.", limitation: "Не основной AWG-клиент."},
     ],
   },
   {
     name: "macOS",
+    icon: "apple",
+    subtitle: "Универсальный full-client flow или лёгкий AWG-only путь.",
     clients: [
-      {name: "AmneziaVPN", status: "Recommended / Full client", description: "Лучший универсальный вариант для macOS.", support: ["supported", "supported", "supported"], links: [{label: "Официальная", url: "https://amnezia.org/downloads"}, {label: "GitHub", url: "https://github.com/amnezia-vpn/amnezia-client/releases"}], platforms: "macOS", importMethod: "vpn:// URI, app flow", bestFor: "Универсальная работа на macOS."},
-      {name: "AmneziaWG", status: "Recommended", description: "Лёгкий AWG-клиент для Apple ecosystem.", support: ["supported", "supported", "supported"], links: [{label: "App Store", url: "https://apps.apple.com/app/amneziawg/id6478942365"}], platforms: "macOS", importMethod: ".conf, QR", bestFor: "Минимальный Apple-клиент."},
-      {name: "VeilBox", status: "Experimental", description: "Альтернативный клиент.", support: ["unknown", "unknown", "warning"], links: [{label: "GitHub", url: "https://github.com/artem4150/VeilBox"}], platforms: "macOS", importMethod: "Зависит от сборки", bestFor: "Эксперименты.", limitation: "Поддержка AWG подтверждена не полностью."},
-      {name: "Clash Verge Rev", status: "Experimental", description: "Не основной AWG-клиент.", support: ["warning", "warning", "warning"], links: [{label: "GitHub", url: "https://github.com/clash-verge-rev/clash-verge-rev/releases"}], platforms: "macOS", importMethod: "Профили прокси", bestFor: "Альтернативные proxy-сценарии.", limitation: "Не основной AWG-клиент."},
+      {name: "AmneziaVPN", status: "Recommended / Full client", trafficSplit: "Routes / app features", description: "Лучший универсальный вариант для macOS.", support: ["supported", "supported", "supported"], links: [{label: "Official", url: "https://amnezia.org/downloads"}, {label: "GitHub", url: "https://github.com/amnezia-vpn/amnezia-client/releases"}], platforms: "macOS", importMethod: "vpn:// URI, QR, app flow", bestFor: "Полный Amnezia-клиент на macOS.", limitation: "Для лёгкого AWG-only сценария можно использовать AmneziaWG."},
+      {name: "AmneziaWG", status: "Recommended", trafficSplit: "Routes only", description: "Лёгкий AWG-клиент для Apple ecosystem.", support: ["supported", "supported", "supported"], links: [{label: "App Store", url: "https://apps.apple.com/app/amneziawg/id6478942365"}], platforms: "macOS", importMethod: ".conf, QR", bestFor: "Лёгкий AWG-only клиент.", limitation: "Split tunneling в основном через маршруты."},
+      {name: "VeilBox", status: "Experimental", trafficSplit: "TUN / proxy rules", description: "Альтернативный клиент.", support: ["unknown", "unknown", "warning"], links: [{label: "GitHub", url: "https://github.com/artem4150/VeilBox"}], platforms: "macOS", importMethod: "Depends on build", bestFor: "Экспериментальные гибридные сценарии.", limitation: "Не основной AWG-клиент."},
+      {name: "Clash Verge Rev", status: "Experimental", trafficSplit: "Proxy rules", description: "Прокси-комбайн, не основной AWG-клиент.", support: ["warning", "warning", "warning"], links: [{label: "GitHub", url: "https://github.com/clash-verge-rev/clash-verge-rev/releases"}], platforms: "macOS", importMethod: "Proxy profiles", bestFor: "Proxy-rule based routing.", limitation: "Не основной AWG-клиент."},
     ],
   },
   {
     name: "Linux Desktop",
+    icon: "linux",
+    subtitle: "GUI-подключение для desktop Linux; proxy-клиенты остаются альтернативой.",
     clients: [
-      {name: "AmneziaVPN", status: "Recommended", description: "Основной GUI-клиент для Linux Desktop.", support: ["supported", "supported", "supported"], links: [{label: "Официальная", url: "https://amnezia.org/downloads"}, {label: "GitHub", url: "https://github.com/amnezia-vpn/amnezia-client/releases"}], platforms: "Linux Desktop", importMethod: "vpn:// URI, app flow", bestFor: "Основной GUI-путь для Linux."},
-      {name: "Clash Verge Rev", status: "Experimental", description: "Не основной AWG-клиент.", support: ["warning", "warning", "warning"], links: [{label: "GitHub", url: "https://github.com/clash-verge-rev/clash-verge-rev/releases"}], platforms: "Linux Desktop", importMethod: "Профили прокси", bestFor: "Альтернативные proxy-сценарии.", limitation: "Не основной AWG-клиент."},
+      {name: "AmneziaVPN", status: "Recommended", trafficSplit: "Routes / system rules", description: "Основной GUI-клиент для Linux Desktop.", support: ["supported", "supported", "supported"], links: [{label: "Official", url: "https://amnezia.org/downloads"}, {label: "GitHub", url: "https://github.com/amnezia-vpn/amnezia-client/releases"}], platforms: "Linux Desktop", importMethod: "vpn:// URI, QR, app flow", bestFor: "GUI-подключение на Linux.", limitation: "Для headless/server сценариев используются отдельные tools, но здесь показываются только OS-клиенты."},
+      {name: "Clash Verge Rev", status: "Experimental", trafficSplit: "Proxy rules", description: "Прокси-комбайн, не основной AWG-клиент.", support: ["warning", "warning", "warning"], links: [{label: "GitHub", url: "https://github.com/clash-verge-rev/clash-verge-rev/releases"}], platforms: "Linux Desktop", importMethod: "Proxy profiles", bestFor: "Proxy-rule based routing.", limitation: "Не основной AWG-клиент."},
+    ],
+  },
+  {
+    name: "Routers / Embedded",
+    icon: "router",
+    subtitle: "Отдельный класс сценариев: не desktop/mobile apps, а маршрутизация устройств на уровне сети.",
+    clients: [
+      {name: "Keenetic", status: "Router", trafficSplit: "Routes / device rules", description: "Keenetic сценарий через Entware или прошивку с поддержкой AWG.", supportSummary: "depends on firmware / setup", links: [{label: "Guide", url: "https://gitlab.com/ShidlaSGC/keenetic-entware-awg-go/-/blob/main/README.md"}], platforms: "Keenetic routers", importMethod: "Firmware / Entware setup", bestFor: "Маршрутизация устройств через AWG на уровне роутера.", limitation: "Support depends on firmware and setup."},
+      {name: "OpenWrt", status: "Router", trafficSplit: "Routes / firewall rules", description: "OpenWrt-сценарий для AWG на роутере.", supportSummary: "depends on package / build", links: [{label: "OpenWrt #1", url: "tg://resolve?domain=itdogchat&post=44512&comment=755535"}, {label: "OpenWrt #2", url: "tg://resolve?domain=itdogchat&post=44512&comment=759893"}], platforms: "OpenWrt routers", importMethod: "Package / build-specific setup", bestFor: "Policy routing, маршрутизация устройств и сетей через AWG.", limitation: "Package compatibility depends on OpenWrt version, target, subtarget and kernel ABI."},
     ],
   },
 ];
 
 const helpSupportMeta = {
-  supported: {icon: "✅", label: "supported", classes: "border-green-700/30 bg-green-500/10 text-green-700"},
-  warning: {icon: "⚠️", label: "warning", classes: "border-amber-700/30 bg-amber-500/10 text-amber-700"},
-  unsupported: {icon: "❌", label: "unsupported", classes: "border-[var(--danger)] bg-red-500/10 text-[var(--danger)]"},
-  unknown: {icon: "?", label: "unknown", classes: "border-[var(--line)] bg-[var(--panel)] text-[var(--muted)]"},
+  supported: {icon: "✅", classes: "border-green-700/30 bg-green-500/10 text-green-700"},
+  warning: {icon: "⚠️", classes: "border-amber-700/30 bg-amber-500/10 text-amber-700"},
+  unsupported: {icon: "❌", classes: "border-[var(--danger)] bg-red-500/10 text-[var(--danger)]"},
+  unknown: {icon: "?", classes: "border-[var(--line)] bg-[var(--panel)] text-[var(--muted)]"},
+  custom: {icon: "◇", classes: "border-violet-700/30 bg-violet-500/10 text-violet-700"},
 };
 
 const helpStatusClasses = {
   Recommended: "border-green-700/30 bg-green-500/10 text-green-700",
+  "Recommended / Advanced": "border-sky-700/30 bg-sky-500/10 text-sky-700",
   "Recommended / Full client": "border-green-700/30 bg-green-500/10 text-green-700",
   "Full client": "border-[var(--accent)] bg-[var(--panel)] text-[var(--accent)]",
   Advanced: "border-sky-700/30 bg-sky-500/10 text-sky-700",
   Fallback: "border-amber-700/30 bg-amber-500/10 text-amber-700",
   Experimental: "border-[var(--line)] bg-[var(--panel)] text-[var(--muted)]",
+  Router: "border-violet-700/30 bg-violet-500/10 text-violet-700",
 };
 
 function renderHelpSupportBadge(label, support) {
@@ -655,11 +682,18 @@ function renderHelpSupportBadge(label, support) {
   return `<span class="inline-flex items-center rounded-full border px-2 py-1 text-[11px] font-medium ${meta.classes}">${esc(text)}</span>`;
 }
 
+function renderHelpTrafficSplitBadge(value) {
+  return `<span class="inline-flex items-center rounded-full border border-[var(--line)] bg-[var(--panel)] px-2 py-1 text-[11px] font-medium text-[var(--text)]">↔ ${esc(value)}</span>`;
+}
+
+function renderHelpLinks(links) {
+  return links.map(link => `<a class="${buttonClasses("h-7 px-2 text-xs")}" href="${esc(link.url)}" target="_blank" rel="noopener">${esc(link.label)}</a>`).join("");
+}
+
 function renderHelpClientCard(client) {
-  const links = client.links.map(link => `<a class="${buttonClasses("h-7 px-2 text-xs")}" href="${esc(link.url)}" target="_blank" rel="noopener">${esc(link.label)}</a>`).join("");
-  const note = client.limitation
-    ? `<p><span class="font-semibold text-[var(--text)]">Limitations:</span> ${esc(client.limitation)}</p>`
-    : `<p><span class="font-semibold text-[var(--text)]">Notes:</span> ${esc(client.description)}</p>`;
+  const support = client.supportSummary
+    ? `<span class="inline-flex items-center rounded-full border border-violet-700/30 bg-violet-500/10 px-2 py-1 text-[11px] font-medium text-violet-700">◇ AWG ${esc(client.supportSummary)}</span>`
+    : `${renderHelpSupportBadge("AWG 1.x", client.support[0])}${renderHelpSupportBadge("AWG 1.5", client.support[1])}${renderHelpSupportBadge("AWG 2.0", client.support[2])}`;
   return `
     <article class="rounded-lg border border-[var(--line)] bg-[var(--soft)] p-3 transition hover:border-[var(--accent)]">
       <div class="flex flex-wrap items-start justify-between gap-2">
@@ -669,19 +703,17 @@ function renderHelpClientCard(client) {
         </div>
         <span class="inline-flex rounded-full border px-2 py-1 text-[11px] font-medium ${helpStatusClasses[client.status] || helpStatusClasses.Experimental}">${esc(client.status)}</span>
       </div>
-      <div class="mt-3 flex flex-wrap gap-1.5">
-        ${renderHelpSupportBadge("AWG 1.x", client.support[0])}
-        ${renderHelpSupportBadge("AWG 1.5", client.support[1])}
-        ${renderHelpSupportBadge("AWG 2.0", client.support[2])}
-      </div>
-      <div class="mt-3 flex flex-wrap gap-2">${links}</div>
+      <div class="mt-3 flex flex-wrap gap-1.5">${support}</div>
+      <div class="mt-2 flex flex-wrap gap-1.5">${renderHelpTrafficSplitBadge(client.trafficSplit)}</div>
+      <div class="mt-3 flex flex-wrap gap-2">${renderHelpLinks(client.links)}</div>
       <details class="mt-3 rounded-md border border-[var(--line)] bg-[var(--panel)] px-3 py-2 text-xs text-[var(--muted)]">
         <summary class="cursor-pointer font-medium text-[var(--text)]">Details</summary>
         <div class="mt-2 grid gap-1.5">
           <p><span class="font-semibold text-[var(--text)]">Platforms:</span> ${esc(client.platforms)}</p>
           <p><span class="font-semibold text-[var(--text)]">Import:</span> ${esc(client.importMethod)}</p>
+          <p><span class="font-semibold text-[var(--text)]">Traffic split:</span> ${esc(client.trafficSplit)}</p>
           <p><span class="font-semibold text-[var(--text)]">Best for:</span> ${esc(client.bestFor)}</p>
-          ${note}
+          <p><span class="font-semibold text-[var(--text)]">Limitations / notes:</span> ${esc(client.limitation)}</p>
         </div>
       </details>
     </article>
@@ -690,9 +722,15 @@ function renderHelpClientCard(client) {
 
 function renderHelpGroup(group) {
   return `
-    <section class="grid gap-3">
-      <h3 class="text-xs font-semibold uppercase tracking-wide text-[var(--muted)]">${esc(group.name)}</h3>
-      <div class="grid gap-3 md:grid-cols-2">
+    <section class="overflow-hidden rounded-xl border border-[var(--line)] bg-[var(--panel)]">
+      <div class="flex items-start gap-3 border-b border-[var(--line)] bg-[var(--soft)] px-3 py-3">
+        <span class="mt-0.5 text-[var(--accent)]">${icon(group.icon)}</span>
+        <div>
+          <h3 class="font-semibold">${esc(group.name)}</h3>
+          <p class="mt-0.5 text-xs text-[var(--muted)]">${esc(group.subtitle)}</p>
+        </div>
+      </div>
+      <div class="grid gap-3 p-3 md:grid-cols-2">
         ${group.clients.map(renderHelpClientCard).join("")}
       </div>
     </section>
@@ -704,9 +742,9 @@ function showHelp() {
     <div class="grid gap-4 text-sm">
       <div class="rounded-lg border border-[var(--danger)] bg-[var(--soft)] px-3 py-3">
         <p class="font-bold text-[var(--danger)]">⚠️ Standard WireGuard clients WILL NOT WORK with AmneziaWG configs.</p>
-        <p class="mt-1 text-xs text-[var(--muted)]">Если клиент ругается на S3, S4, I1 или H1, нужен клиент с полной поддержкой AWG 2.0.</p>
+        <p class="mt-1 text-xs text-[var(--muted)]">Если клиент ругается на неизвестные параметры S3, S4, I1 или H1, нужен клиент с полной поддержкой AWG 2.0.</p>
       </div>
-      <div class="grid gap-5">
+      <div class="grid gap-4">
         ${helpClientGroups.map(renderHelpGroup).join("")}
       </div>
     </div>
