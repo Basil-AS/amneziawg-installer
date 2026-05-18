@@ -11,6 +11,16 @@
     grep -qF 'Authorization' "$BATS_TEST_DIRNAME/../web/server.py"
 }
 
+@test "web panel defaults to VPN gateway instead of public bind" {
+    grep -qF 'AWG_WEB_BIND="10.9.9.1"' "$BATS_TEST_DIRNAME/../install_amneziawg.sh"
+    grep -qF 'AWG_WEB_BIND="10.9.9.1"' "$BATS_TEST_DIRNAME/../install_amneziawg_en.sh"
+    grep -qF '10.9.9.1", int(os.environ.get("AWG_WEB_PORT", "8443"))' "$BATS_TEST_DIRNAME/../web/server.py"
+    ! grep -qF 'AWG_WEB_BIND="0.0.0.0"' "$BATS_TEST_DIRNAME/../install_amneziawg.sh"
+    grep -qF 'After=network-online.target awg-quick@awg0.service' "$BATS_TEST_DIRNAME/../install_amneziawg.sh"
+    grep -qF 'Requires=awg-quick@awg0.service' "$BATS_TEST_DIRNAME/../install_amneziawg.sh"
+    grep -qF 'RestartSec=3' "$BATS_TEST_DIRNAME/../install_amneziawg.sh"
+}
+
 @test "English installer deploys repository web assets instead of legacy inline panel" {
     local installer="$BATS_TEST_DIRNAME/../install_amneziawg_en.sh"
     ! grep -qF 'TOKEN_FILE = WEB_DIR / "auth_token"' "$installer"
@@ -42,6 +52,31 @@
     grep -qF 'TOKENS_LOCK = threading.RLock()' "$BATS_TEST_DIRNAME/../web/server.py"
     grep -qF 'def tail_lines(' "$BATS_TEST_DIRNAME/../web/server.py"
     ! grep -qF 'f.read_text(errors="ignore").splitlines()[-100:]' "$BATS_TEST_DIRNAME/../web/server.py"
+}
+
+@test "web static allowlist excludes private panel files" {
+    grep -qF 'STATIC_FILES = {' "$BATS_TEST_DIRNAME/../web/server.py"
+    ! grep -qF 'super().do_GET()' "$BATS_TEST_DIRNAME/../web/server.py"
+    command -v python3 &>/dev/null || skip "python3 not available"
+    AWG_DIR="$(mktemp -d)" SERVER_CONF_FILE="/tmp/awg0.conf" REPO_ROOT="$BATS_TEST_DIRNAME/.." python3 - <<'PY'
+import importlib.util
+import os
+from pathlib import Path
+
+spec = importlib.util.spec_from_file_location("panel_server", Path(os.environ["REPO_ROOT"]) / "web" / "server.py")
+server = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(server)
+assert set(server.STATIC_FILES) == {"/", "/index.html", "/style.css", "/app.js", "/favicon.svg"}
+for private_path in {
+    "/tokens.json",
+    "/auth_token",
+    "/key.pem",
+    "/cert.pem",
+    "/traffic_history.json",
+    "/server.py",
+}:
+    assert private_path not in server.STATIC_FILES
+PY
 }
 
 @test "app.js contains new UI elements (charts, speed, rbac)" {

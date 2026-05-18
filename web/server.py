@@ -25,6 +25,13 @@ TRAFFIC_FILE = WEB_DIR / "traffic_history.json"
 LEGACY_TOKEN_FILE = WEB_DIR / "auth_token"
 NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 TOKEN_HASH_RE = re.compile(r"^[0-9a-f]{64}$")
+STATIC_FILES = {
+    "/": ("index.html", "text/html; charset=utf-8"),
+    "/index.html": ("index.html", "text/html; charset=utf-8"),
+    "/style.css": ("style.css", "text/css; charset=utf-8"),
+    "/app.js": ("app.js", "application/javascript; charset=utf-8"),
+    "/favicon.svg": ("favicon.svg", "image/svg+xml"),
+}
 RATE = {}
 RATE_LOCK = threading.Lock()
 RATE_WINDOW = 60
@@ -581,8 +588,15 @@ class Handler(SimpleHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(data)))
+        self.send_security_headers()
         self.end_headers()
         self.wfile.write(data)
+
+    def send_security_headers(self):
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("Cache-Control", "no-store")
 
     def json_body(self):
         try:
@@ -604,8 +618,17 @@ class Handler(SimpleHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(data)))
+        self.send_security_headers()
         self.end_headers()
         self.wfile.write(data)
+
+    def send_static_file(self, url_path):
+        static = STATIC_FILES.get(url_path)
+        if static is None:
+            self.send_error(404)
+            return
+        filename, ctype = static
+        self.send_file(WEB_DIR / filename, ctype)
 
     def do_GET(self):
         auth = self.api_auth()
@@ -613,8 +636,8 @@ class Handler(SimpleHTTPRequestHandler):
             return
         u = urlparse(self.path)
         if auth["role"] == "static":
-            self.path = "/index.html" if u.path == "/" else self.path
-            return super().do_GET()
+            self.send_static_file(u.path)
+            return
 
         if u.path == "/api/status":
             active = subprocess.run(
@@ -873,7 +896,7 @@ class Handler(SimpleHTTPRequestHandler):
 def main():
     load_tokens()
     os.chdir(WEB_DIR)
-    httpd = ThreadingHTTPServer((os.environ.get("AWG_WEB_BIND", "0.0.0.0"), int(os.environ.get("AWG_WEB_PORT", "8443"))), Handler)
+    httpd = ThreadingHTTPServer((os.environ.get("AWG_WEB_BIND") or "10.9.9.1", int(os.environ.get("AWG_WEB_PORT", "8443"))), Handler)
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     ctx.load_cert_chain(WEB_DIR / "cert.pem", WEB_DIR / "key.pem")
     httpd.socket = ctx.wrap_socket(httpd.socket, server_side=True)
