@@ -18,6 +18,11 @@ load test_helper
     grep -q 'nf_conntrack_udp_timeout=120' "$BATS_TEST_DIRNAME/../install_amneziawg.sh"
     grep -q 'nf_conntrack_udp_timeout_stream=300' "$BATS_TEST_DIRNAME/../install_amneziawg.sh"
     grep -q 'target_max=262144' "$BATS_TEST_DIRNAME/../install_amneziawg.sh"
+    grep -q '99-awg-udp.conf' "$BATS_TEST_DIRNAME/../awg_common.sh"
+    grep -q '99-awg-conntrack.conf' "$BATS_TEST_DIRNAME/../awg_common.sh"
+    grep -q 'nf_conntrack_udp_timeout=120' "$BATS_TEST_DIRNAME/../awg_common.sh"
+    grep -q 'nf_conntrack_udp_timeout_stream=300' "$BATS_TEST_DIRNAME/../awg_common.sh"
+    grep -q 'target_max=262144' "$BATS_TEST_DIRNAME/../awg_common.sh"
     grep -q '99-awg-udp.conf' "$BATS_TEST_DIRNAME/../awg_common_en.sh"
     grep -q '99-awg-conntrack.conf' "$BATS_TEST_DIRNAME/../awg_common_en.sh"
     grep -q 'nf_conntrack_udp_timeout=120' "$BATS_TEST_DIRNAME/../awg_common_en.sh"
@@ -62,5 +67,31 @@ load test_helper
     run setup_voice_udp_optimization
     [ "$status" -eq 0 ]
     [ "$(grep -c '^net.netfilter.nf_conntrack_udp_timeout=120$' "$sysctl_dir/99-awg-udp.conf")" -eq 1 ]
+    [ "$(grep -c '^net.netfilter.nf_conntrack_udp_timeout_stream=300$' "$sysctl_dir/99-awg-udp.conf")" -eq 1 ]
+    [ "$(grep -c '^net.netfilter.nf_conntrack_max=262144$' "$sysctl_dir/99-awg-conntrack.conf")" -eq 1 ]
+}
+
+@test "English voice optimization helper writes idempotent sysctl drop-ins" {
+    local proc_root="$TEST_DIR/proc-en"
+    local sysctl_dir="$TEST_DIR/sysctl-en.d"
+    mkdir -p "$proc_root/net/netfilter" "$sysctl_dir"
+    printf '30\n' > "$proc_root/net/netfilter/nf_conntrack_udp_timeout"
+    printf '65536\n' > "$proc_root/net/netfilter/nf_conntrack_max"
+    export AWG_PROC_SYS_ROOT="$proc_root"
+    export AWG_SYSCTL_DIR="$sysctl_dir"
+    source "$BATS_TEST_DIRNAME/../awg_common_en.sh"
+    sysctl() { :; }
+    modprobe() { :; }
+
+    run setup_voice_udp_optimization
+    [ "$status" -eq 0 ]
+    grep -q '^net.netfilter.nf_conntrack_udp_timeout=120$' "$sysctl_dir/99-awg-udp.conf"
+    grep -q '^net.netfilter.nf_conntrack_udp_timeout_stream=300$' "$sysctl_dir/99-awg-udp.conf"
+    grep -q '^net.netfilter.nf_conntrack_max=262144$' "$sysctl_dir/99-awg-conntrack.conf"
+
+    run setup_voice_udp_optimization
+    [ "$status" -eq 0 ]
+    [ "$(grep -c '^net.netfilter.nf_conntrack_udp_timeout=120$' "$sysctl_dir/99-awg-udp.conf")" -eq 1 ]
+    [ "$(grep -c '^net.netfilter.nf_conntrack_udp_timeout_stream=300$' "$sysctl_dir/99-awg-udp.conf")" -eq 1 ]
     [ "$(grep -c '^net.netfilter.nf_conntrack_max=262144$' "$sysctl_dir/99-awg-conntrack.conf")" -eq 1 ]
 }
