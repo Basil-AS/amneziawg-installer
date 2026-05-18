@@ -592,10 +592,10 @@ function renderClients() {
           <p class="mt-1 text-xs text-[var(--muted)]">30d: ${esc(trafficText(client30d.rx || 0, client30d.tx || 0))}</p>
         </div>
         <div class="client-actions relative z-10 flex w-full shrink-0 flex-wrap justify-end gap-1 sm:w-auto">
-          ${actionButton("download-config", "Download .conf", "download", "Download .conf")}
-          ${actionButton("copy-config", "Copy config", "copy", "Copy config")}
+          <button data-action="download-config" title="Download .conf" aria-label="Download .conf" class="${buttonClasses("client-action")}">${icon("download")}<span class="client-action-label">Download .conf</span></button>
+          <button data-action="copy-config" title="Copy config" aria-label="Copy config" class="${buttonClasses("client-action")}">${icon("copy")}<span class="client-action-label">Copy config</span></button>
           ${actionButton("qr", "Show QR", "qr", "Show QR")}
-          ${actionButton("copy-vpnuri", "Copy vpn://", "link", "Copy vpn://")}
+          <button data-action="copy-vpnuri" title="Copy vpn://" aria-label="Copy vpn://" class="${buttonClasses("client-action")}">${icon("link")}<span class="client-action-label">Copy vpn://</span></button>
           <button data-action="toggle" title="${client.disabled ? "Enable Client" : "Disable Client"}" aria-label="${client.disabled ? "Enable Client" : "Disable Client"}" class="${buttonClasses("w-9 px-0")}">${icon("power")}</button>
           <button data-action="toggle-p2p" title="Toggle P2P Ports" aria-label="Toggle P2P Ports" class="${buttonClasses(shieldClass)}">${icon("shield")}</button>
           <button data-action="delete" title="Delete" aria-label="Delete" class="${buttonClasses("w-9 px-0 text-[var(--danger)]")}">${icon("trash")}</button>
