@@ -6,6 +6,8 @@
 
 This is a supplement to the main [README.en.md](README.en.md), containing deeper technical details, explanations, and advanced options for the AmneziaWG 2.0 installation and management scripts.
 
+For a step-by-step VPS deployment guide (VPS choice, OS choice, install flow, first client, update, uninstall, troubleshooting), see [INSTALL_VPS.md](INSTALL_VPS.md).
+
 ## Table of Contents
 
 <a id="toc-adv"></a>
@@ -516,7 +518,7 @@ graph TD
 <a id="dkms-adv"></a>
 ### DKMS
 
-Ensures automatic rebuilding of the `amneziawg` kernel module on kernel updates. Check: `dkms status`.
+Automatic rebuilding of the `amneziawg` kernel module on kernel updates. Check: `dkms status`.
 
 <a id="keygen-adv"></a>
 ### Key and Config Generation
@@ -537,7 +539,7 @@ The installer downloads `awg_common.sh` and `manage_amneziawg.sh` from URLs pinn
 https://raw.githubusercontent.com/bivlked/amneziawg-installer/v5.11.1/awg_common.sh
 ```
 
-This provides **supply chain pinning** — ensuring downloaded scripts match the installer version, even if `main` has already been updated.
+This provides **supply chain pinning**: downloaded scripts match the installer version, even if `main` has already been updated.
 
 For development, you can override the branch:
 
@@ -1215,7 +1217,7 @@ The minimal working recipe for Debian 13 in a privileged LXC on Proxmox was shar
 
 * **Single AWG protocol version per server.** All clients share the same obfuscation parameters. You cannot have some clients on AWG 1.x and others on 2.0 simultaneously.
 
-* **Ubuntu 25.10 / Debian 13:** The PPA may not have prebuilt packages. The installer builds the module from source via DKMS, which takes longer on first install.
+* **Ubuntu 25.10 / 26.04 / Debian 13:** The PPA may not have prebuilt packages for the latest non-LTS releases. The installer remaps the PPA codename to `noble` automatically (since v5.13.0) and builds the kernel module from source via DKMS, which takes longer on first install.
 
 ---
 

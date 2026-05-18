@@ -14,7 +14,8 @@
 
 - [ ] `bash -n` passes for all modified scripts
 - [ ] `shellcheck -s bash -S warning` passes
-- [ ] Tested on clean Ubuntu 24.04 VPS (if script changes)
+- [ ] Tested on clean Ubuntu 24.04 LTS VPS (if script changes)
+- [ ] Tested on Ubuntu 25.10/26.04 (noble fallback path, if PPA/install logic changes)
 - [ ] Tested on Debian 12/13 (if OS-specific changes)
 - [ ] CHANGELOG.md **and** CHANGELOG.en.md updated (including `[Unreleased]` comparator link)
 - [ ] SCRIPT_VERSION updated (if releasing new version)

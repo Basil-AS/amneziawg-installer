@@ -11,11 +11,11 @@
 
 <p align="center">
   <strong>Набор Bash-скриптов для быстрой, безопасной и удобной установки,<br>
-  настройки и управления VPN-сервером AmneziaWG 2.0 на Ubuntu (24.04 LTS / 25.10) и Debian (12 / 13)</strong>
+  настройки и управления VPN-сервером AmneziaWG 2.0 на Ubuntu (24.04 LTS / 25.10 / 26.04) и Debian (12 / 13)</strong>
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/Ubuntu-24.04_|_25.10-orange" alt="Ubuntu 24.04 | 25.10">
+  <img src="https://img.shields.io/badge/Ubuntu-24.04_|_25.10_|_26.04-orange" alt="Ubuntu 24.04 | 25.10 | 26.04">
   <img src="https://img.shields.io/badge/Debian-12_|_13-A81D33" alt="Debian 12 | 13">
   <img src="https://img.shields.io/badge/Architecture-x86__64_|_ARM64_|_ARMv7-green" alt="x86_64 | ARM64 | ARMv7">
   <a href="https://github.com/bivlked/amneziawg-installer/blob/main/LICENSE"><img src="https://img.shields.io/github/license/bivlked/amneziawg-installer" alt="License"></a>
@@ -34,6 +34,7 @@
   <a href="#zachem">Зачем это нужно</a> •
   <a href="#sravnenie">AWG vs WG</a> •
   <a href="#cli-vs-panel">CLI vs панели</a> •
+  <a href="#similar-tools">Похожие инструменты</a> •
   <a href="#quickstart">Быстрый старт</a> •
   <a href="#fork-delta">Отличия форка</a> •
   <a href="#vozmozhnosti">Что умеет</a> •
@@ -80,7 +81,7 @@
 
 Этот набор скриптов превращает чистый VPS в готовый VPN-сервер. Не нужны знания Linux — скрипт сам настроит firewall, оптимизирует систему, создаст конфиги и QR-коды для клиентов.
 
-Работает на Ubuntu 24.04/25.10 и Debian 12/13. Хватит любого дешёвого VPS с 1 ГБ RAM.
+Работает на Ubuntu 24.04/25.10/26.04 и Debian 12/13. Хватит любого дешёвого VPS с 1 ГБ RAM.
 
 ---
 
@@ -121,8 +122,26 @@
 
 ---
 
+<a id="similar-tools"></a>
+## 🔧 Сравнение с похожими инструментами
+
+Есть ещё несколько способов поднять AmneziaWG. Каждый выбирает свой компромисс:
+
+| Инструмент | Способ | Кому подходит |
+|---|---|---|
+| **Этот установщик** | SSH + одна bash-команда | Headless VPS, single-purpose сервер, без Docker, ARM-prebuilt'ы |
+| **[wg-easy](https://github.com/wg-easy/wg-easy)** | Docker + веб-интерфейс | Домашние боксы, на которых уже крутится Docker; нужна панель для клиентов |
+| **[spcfox/amnezia-wg-easy](https://github.com/spcfox/amnezia-wg-easy)** | Docker-форк wg-easy | Те, кто уже на wg-easy и хочет именно AmneziaWG вместо обычного WireGuard |
+| **[Amnezia VPN](https://amnezia.org/)** | Десктоп-клиент + SSH deploy | Установка кликами без терминала; нужен графический клиент |
+
+Этот скрипт - путь без панели через SSH: минимальный footprint, kernel-level AmneziaWG, ARM-prebuilt'ы для дешёвых боксов. Если у вас уже стоит Docker и хочется веб-панель управления клиентами - удобнее **wg-easy**. Если нужна установка кликами - десктоп-клиент **Amnezia VPN** имеет свой SSH-deploy.
+
+---
+
 <a id="quickstart"></a>
 ## 🚀 Быстрый старт
+
+> 📘 **Полный гайд по развёртыванию (EN):** [Install AmneziaWG VPN server on Ubuntu/Debian VPS](INSTALL_VPS.md) - выбор VPS, ARM, troubleshooting, удаление.
 
 ```bash
 wget https://raw.githubusercontent.com/Basil-AS/amneziawg-installer/main/install_amneziawg.sh
@@ -258,7 +277,7 @@ GET    /api/server/logs
 * **Веб-панель** — HTTPS `:8443`, bearer token, CRUD клиентов, QR/config/vpnuri, статистика и логи
 * **Безопасность из коробки** — UFW, Fail2Ban, sysctl hardening, строгие права доступа (600/700)
 * **Удобное управление** — добавление/удаление клиентов, временные клиенты с авто-удалением, статистика, бэкапы
-* **4 операционные системы** — Ubuntu 24.04, Ubuntu 25.10, Debian 12, Debian 13
+* **4 операционные системы** — Ubuntu 24.04, Ubuntu 25.10/26.04, Debian 12, Debian 13
 * **x86_64 и ARM** — облачные VPS, Raspberry Pi 3/4/5, ARM64-серверы (AWS Graviton, Oracle Ampere, Hetzner)
 * **Оптимизация для мобильных сетей** — `--preset=mobile` для Tele2, Yota, Мегафон и других операторов с DPI-блокировками. Тонкая настройка через `--jc`, `--jmin`, `--jmax` ([подробнее](ADVANCED.md#presets-adv))
 
@@ -300,7 +319,7 @@ GET    /api/server/logs
 <a id="trebovaniya"></a>
 ## 🖥️ Требования
 
-* **ОС:** **Чистая** установка **Ubuntu Server 24.04 LTS** / **Ubuntu 25.10** (⚠️) / **Debian 12** / **Debian 13** Minimal
+* **ОС:** **Чистая** установка **Ubuntu Server 24.04 LTS** / **Ubuntu 25.10** / **Ubuntu 26.04** / **Debian 12** / **Debian 13** Minimal
 * **Доступ:** Права `root` (через `sudo`)
 * **Интернет:** Стабильное подключение
 * **Ресурсы:** ~1 ГБ ОЗУ (рекомендуется 2+ ГБ), минимум ~2 ГБ диска (рекомендуется 3+ ГБ)
@@ -311,7 +330,8 @@ GET    /api/server/logs
 | ОС | Статус | Примечание |
 |----|--------|------------|
 | Ubuntu 24.04 LTS | ✅ Полная поддержка | Рекомендуется |
-| Ubuntu 25.10 | ⚠️ Экспериментально | Может потребоваться сборка модуля из исходников |
+| Ubuntu 25.10 | ✅ Поддерживается | PPA `noble` fallback применяется автоматически с v5.13.0 |
+| Ubuntu 26.04 | ✅ Поддерживается | PPA `noble` fallback применяется автоматически с v5.13.0 |
 | Debian 12 (bookworm) | ✅ Поддержка | Протестировано. PPA через маппинг codename на focal |
 | Debian 13 (trixie) | ✅ Поддержка | Протестировано. PPA через маппинг codename на noble, DEB822 |
 
@@ -340,7 +360,7 @@ GET    /api/server/logs
 
 Для стабильной работы VPN-сервера с высокой пропускной способностью важен надежный хостинг с хорошим каналом.
 
-Мы протестировали и рекомендуем [**FreakHosting**](https://freakhosting.com/clientarea/aff.php?aff=392). В частности, их линейку **BUDGET VPS** предлагающую отличное соотношение цены и качества.
+Опробовал и рекомендую [**FreakHosting**](https://freakhosting.com/clientarea/aff.php?aff=392). В частности, их линейка **BUDGET VPS** предлагает отличное соотношение цены и качества.
 
 Их IP-адреса не идентифицируются, как адреса датацентров и не попадают под блокировки по признаку «IP принадлежит хостинг-провайдеру» (в отличие, например, от Azure и некоторых крупных облаков).
 
@@ -358,7 +378,7 @@ GET    /api/server/logs
 
 Этот метод установки гарантирует корректную работу интерактивных запросов и цветного вывода в вашем терминале.
 
-1.  **Подключитесь** к **чистому** серверу (Ubuntu 24.04 / Ubuntu 25.10 / Debian 12 / Debian 13) по SSH.
+1.  **Подключитесь** к **чистому** серверу (Ubuntu 24.04 / Ubuntu 25.10 / Ubuntu 26.04 / Debian 12 / Debian 13) по SSH.
     > **Совет:** После создания сервера подождите 5-10 минут, чтобы завершились все фоновые процессы инициализации системы, прежде чем запускать установку.
 
 2.  **Скачайте скрипт:**
@@ -640,7 +660,7 @@ sudo bash /root/awg/manage_amneziawg.sh dns set-mode system
 
 <details>
   <summary><strong>В: Какой хостинг подходит?</strong></summary>
-  <b>О:</b> Любой VPS с Ubuntu 24.04 / Ubuntu 25.10 (⚠️) / Debian 12 / Debian 13, root-доступом и минимум 1 ГБ RAM. Рекомендуем хостинги с незаблокированными IP и неограниченным трафиком. См. <a href="#recomend-hosting">рекомендацию</a>.
+  <b>О:</b> Любой VPS с Ubuntu 24.04 LTS / Ubuntu 25.10 / Ubuntu 26.04 / Debian 12 / Debian 13, root-доступом и минимум 1 ГБ RAM. Беру хостинги с незаблокированными IP и неограниченным трафиком. См. <a href="#recomend-hosting">рекомендацию</a> ниже.
 </details>
 
 <details>

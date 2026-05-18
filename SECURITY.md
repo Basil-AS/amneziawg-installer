@@ -4,10 +4,10 @@
 
 | Version | Supported          |
 |---------|--------------------|
-| 5.10.x  | :white_check_mark: |
-| 5.9.x   | Security fixes only |
-| 5.8.x   | Security fixes only |
-| < 5.8   | :x:                |
+| 5.13.x  | :white_check_mark: |
+| 5.12.x  | Security fixes only |
+| 5.11.x  | Security fixes only |
+| < 5.11  | :x:                |
 
 ## Reporting a Vulnerability
 
@@ -41,7 +41,7 @@ The following are **out of scope**:
 - Upstream userspace tools (`amneziawg-go`, `amneziawg-tools`)
 - Issues in the underlying operating system
 
-Vulnerabilities in upstream AmneziaWG components (kernel module, userspace tools, client apps) should be reported directly to [amnezia-vpn](https://github.com/amnezia-vpn). We update scripts as upstream fixes arrive.
+Vulnerabilities in upstream AmneziaWG components (kernel module, userspace tools, client apps) should be reported directly to [amnezia-vpn](https://github.com/amnezia-vpn). Scripts are updated as upstream fixes arrive.
 
 ## Disclosure Policy
 
