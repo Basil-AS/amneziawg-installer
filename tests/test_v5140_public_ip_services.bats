@@ -1,10 +1,11 @@
 #!/usr/bin/env bats
-# Tests for get_server_public_ip extended service list (v5.14.0 MyAI-avy9).
+# Tests for get_server_public_ip extended service list.
 #
 # v5.14.0 extends the public IP detection from 4 to 6 services, adding
-# checkip.amazonaws.com (AWS-friendly, reachable from VPC private subnets)
-# and ifconfig.io (alternative to ifconfig.me for downtime cases).
-# Order is first-wins: checkip.amazonaws.com first, then by uptime SLA.
+# checkip.amazonaws.com (reachable from AWS / GCP / OCI private subnets
+# behind a NAT Gateway) and ifconfig.io (alternative to ifconfig.me for
+# downtime cases). Order is alphabetical (deterministic for tests/diffs),
+# first-wins behavior preserved.
 
 load test_helper
 
@@ -23,6 +24,13 @@ setup() {
 teardown() {
     rm -rf "$TEST_DIR"
     unset -f curl 2>/dev/null || true
+}
+
+# Helper: extract ordered URL list from get_server_public_ip block
+_extract_urls() {
+    awk '/^get_server_public_ip\(\) \{$/,/^}$/' "$1" \
+        | grep -oE 'https://[^ \\]+' \
+        | sed 's/[[:space:]]*$//'
 }
 
 @test "get_server_public_ip: structural RU - service list contains 6 endpoints" {
@@ -49,21 +57,38 @@ teardown() {
     [[ "$block" == *"ifconfig.io"* ]]
 }
 
-@test "get_server_public_ip: RU and EN service lists match (parity)" {
+@test "get_server_public_ip: RU and EN service lists are byte-identical (parity)" {
     local RU_FILE="${BATS_TEST_DIRNAME}/../awg_common.sh"
     local EN_FILE="${BATS_TEST_DIRNAME}/../awg_common_en.sh"
-    local ru_count en_count
-    ru_count=$(awk '/^get_server_public_ip\(\) \{$/,/^}$/' "$RU_FILE" | grep -cE 'https://')
-    en_count=$(awk '/^get_server_public_ip\(\) \{$/,/^}$/' "$EN_FILE" | grep -cE 'https://')
-    [ "$ru_count" -eq "$en_count" ]
-    [ "$ru_count" -eq 6 ]
+    local ru_urls en_urls
+    ru_urls=$(_extract_urls "$RU_FILE")
+    en_urls=$(_extract_urls "$EN_FILE")
+    [ -n "$ru_urls" ]
+    [ "$ru_urls" = "$en_urls" ]
+    local count
+    count=$(printf '%s\n' "$ru_urls" | wc -l)
+    [ "$count" -eq 6 ]
+}
+
+@test "get_server_public_ip: alphabetical order RU - api.ipify.org first" {
+    local FILE="${BATS_TEST_DIRNAME}/../awg_common.sh"
+    local first
+    first=$(_extract_urls "$FILE" | head -1)
+    [ "$first" = "https://api.ipify.org" ]
+}
+
+@test "get_server_public_ip: alphabetical order RU - ipinfo.io/ip last" {
+    local FILE="${BATS_TEST_DIRNAME}/../awg_common.sh"
+    local last
+    last=$(_extract_urls "$FILE" | tail -1)
+    [ "$last" = "https://ipinfo.io/ip" ]
 }
 
 @test "get_server_public_ip: first service success returns valid IP" {
     # shellcheck disable=SC2317
     curl() {
-        local url="${@: -1}"
-        if [[ "$url" == "https://checkip.amazonaws.com" ]]; then
+        local args=("$@") url="${args[$((${#args[@]} - 1))]}"
+        if [[ "$url" == "https://api.ipify.org" ]]; then
             echo "203.0.113.42"
             return 0
         fi
@@ -79,15 +104,12 @@ teardown() {
 @test "get_server_public_ip: first service fails, falls through to second" {
     # shellcheck disable=SC2317
     curl() {
-        local url="${@: -1}"
-        if [[ "$url" == "https://checkip.amazonaws.com" ]]; then
-            return 1
-        fi
-        if [[ "$url" == "https://ifconfig.me" ]]; then
-            echo "198.51.100.7"
-            return 0
-        fi
-        return 1
+        local args=("$@") url="${args[$((${#args[@]} - 1))]}"
+        case "$url" in
+            "https://api.ipify.org") return 1 ;;
+            "https://checkip.amazonaws.com") echo "198.51.100.7"; return 0 ;;
+            *) return 1 ;;
+        esac
     }
     export -f curl
 
@@ -109,16 +131,10 @@ teardown() {
 @test "get_server_public_ip: invalid IP format from one service skips to next" {
     # shellcheck disable=SC2317
     curl() {
-        local url="${@: -1}"
+        local args=("$@") url="${args[$((${#args[@]} - 1))]}"
         case "$url" in
-            "https://checkip.amazonaws.com")
-                echo "not-an-ip"
-                return 0
-                ;;
-            "https://ifconfig.me")
-                echo "192.0.2.99"
-                return 0
-                ;;
+            "https://api.ipify.org") echo "not-an-ip"; return 0 ;;
+            "https://checkip.amazonaws.com") echo "192.0.2.99"; return 0 ;;
             *) return 1 ;;
         esac
     }
@@ -129,11 +145,11 @@ teardown() {
     [ "$output" = "192.0.2.99" ]
 }
 
-@test "get_server_public_ip: last-in-list ifconfig.io success after 5 fails" {
+@test "get_server_public_ip: last-in-list ipinfo.io success after 5 fails" {
     # shellcheck disable=SC2317
     curl() {
-        local url="${@: -1}"
-        if [[ "$url" == "https://ifconfig.io" ]]; then
+        local args=("$@") url="${args[$((${#args[@]} - 1))]}"
+        if [[ "$url" == "https://ipinfo.io/ip" ]]; then
             echo "172.16.0.1"
             return 0
         fi
