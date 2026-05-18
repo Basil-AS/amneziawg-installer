@@ -110,6 +110,56 @@ _try_local_ipv6() {
     return 0
 }
 
+
+# ------------------------------------------------------------------------------
+# Voice / Calls UDP tuning helpers
+# ------------------------------------------------------------------------------
+
+setup_voice_udp_optimization() {
+    log "Configuring Voice / Calls UDP optimization..."
+    local udp_proc="${AWG_PROC_SYS_ROOT:-/proc/sys}/net/netfilter/nf_conntrack_udp_timeout"
+    local max_proc="${AWG_PROC_SYS_ROOT:-/proc/sys}/net/netfilter/nf_conntrack_max"
+    local sysctl_dir="${AWG_SYSCTL_DIR:-/etc/sysctl.d}"
+    local udp_file="$sysctl_dir/99-awg-udp.conf"
+    local max_file="$sysctl_dir/99-awg-conntrack.conf"
+
+    modprobe nf_conntrack 2>/dev/null || true
+    mkdir -p "$sysctl_dir" 2>/dev/null || true
+    if [[ -e "$udp_proc" ]]; then
+        cat > "$udp_file" <<'EOF'
+# AmneziaWG safe Voice / Calls UDP tuning
+net.netfilter.nf_conntrack_udp_timeout=120
+net.netfilter.nf_conntrack_udp_timeout_stream=300
+EOF
+        sysctl -p "$udp_file" >/dev/null 2>&1 || log_warn "Failed to apply $udp_file; continuing."
+    else
+        log_warn "nf_conntrack UDP sysctl is unavailable; skipping Voice / Calls UDP tuning."
+    fi
+
+    if [[ -r "$max_proc" ]]; then
+        local current_max target_max=262144 desired_max
+        current_max=$(cat "$max_proc" 2>/dev/null || echo 0)
+        if [[ "$current_max" =~ ^[0-9]+$ ]]; then
+            if (( current_max < target_max )); then
+                desired_max=$target_max
+            elif [[ -f "$max_file" ]]; then
+                desired_max=$current_max
+            else
+                desired_max=""
+            fi
+            if [[ -n "$desired_max" ]]; then
+                cat > "$max_file" <<EOF
+# AmneziaWG safe conntrack capacity floor
+net.netfilter.nf_conntrack_max=${desired_max}
+EOF
+                sysctl -p "$max_file" >/dev/null 2>&1 || log_warn "Failed to apply $max_file; continuing."
+            fi
+        fi
+    else
+        log_warn "nf_conntrack_max is unavailable; skipping conntrack capacity floor."
+    fi
+}
+
 # ------------------------------------------------------------------------------
 # IPv6 / P2P helpers
 # ------------------------------------------------------------------------------
