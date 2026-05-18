@@ -591,120 +591,80 @@ function showHelp() {
     <div class="grid gap-4 text-sm">
       <p class="rounded-md border border-[var(--danger)] bg-[var(--soft)] px-3 py-2 font-bold text-[var(--danger)]">⚠️ Standard WireGuard clients WILL NOT WORK.</p>
 
-      <section>
-        <h3 class="mb-2 text-xs font-semibold uppercase tracking-wide text-[var(--muted)]">Compatibility</h3>
-        <div class="overflow-x-auto rounded-lg border border-[var(--line)]">
-        <table class="min-w-[720px] w-full border-collapse text-left text-xs">
-          <thead class="bg-[var(--soft)] text-[var(--muted)]">
-            <tr>
-              <th class="px-3 py-2 font-semibold">Client</th>
-              <th class="px-3 py-2 font-semibold">Platforms</th>
-              <th class="px-3 py-2 font-semibold">AWG 1.x</th>
-              <th class="px-3 py-2 font-semibold">AWG 2.0</th>
-              <th class="px-3 py-2 font-semibold">Notes</th>
-            </tr>
-          </thead>
-          <tbody class="divide-y divide-[var(--line)]">
-            <tr>
-              <td class="px-3 py-2 font-semibold"><a class="text-[var(--accent)] underline" href="https://github.com/amnezia-vpn/amnezia-client/releases" target="_blank" rel="noopener">Amnezia VPN</a></td>
-              <td class="px-3 py-2">Win/Mac/Lin/Android/iOS</td>
-              <td class="px-3 py-2">✅</td>
-              <td class="px-3 py-2">✅ (&gt;= 4.8.12.7)</td>
-              <td class="px-3 py-2">Recommended. Supports vpn:// URI.</td>
-            </tr>
-            <tr>
-              <td class="px-3 py-2 font-semibold">AmneziaWG</td>
-              <td class="px-3 py-2">Android/Windows</td>
-              <td class="px-3 py-2">✅</td>
-              <td class="px-3 py-2">✅ (&gt;= 2.0.0)</td>
-              <td class="px-3 py-2">Lightweight tunnel manager (.conf).</td>
-            </tr>
-            <tr>
-              <td class="px-3 py-2 font-semibold">WG Tunnel</td>
-              <td class="px-3 py-2">Android</td>
-              <td class="px-3 py-2">✅</td>
-              <td class="px-3 py-2">⚠️</td>
-              <td class="px-3 py-2">FOSS, auto-tunneling.</td>
-            </tr>
-            <tr>
-              <td class="px-3 py-2 font-semibold"><a class="text-[var(--accent)] underline" href="https://apps.apple.com/app/amneziawg/id6478942365" target="_blank" rel="noopener">AmneziaWG</a></td>
-              <td class="px-3 py-2">iOS</td>
-              <td class="px-3 py-2">✅</td>
-              <td class="px-3 py-2">✅</td>
-              <td class="px-3 py-2">Native App Store client.</td>
-            </tr>
-            <tr>
-              <td class="px-3 py-2 font-semibold">WireSock VPN Client</td>
-              <td class="px-3 py-2">Windows</td>
-              <td class="px-3 py-2">✅</td>
-              <td class="px-3 py-2">✅</td>
-              <td class="px-3 py-2">Commercial.</td>
-            </tr>
-            <tr>
-              <td class="px-3 py-2 font-semibold">Standard WireGuard</td>
-              <td class="px-3 py-2">All</td>
-              <td class="px-3 py-2">❌</td>
-              <td class="px-3 py-2">❌</td>
-              <td class="px-3 py-2">Does not support AWG parameters.</td>
-            </tr>
-          </tbody>
-        </table>
-        </div>
-      </section>
+      <div class="grid gap-3">
+        <section class="overflow-hidden rounded-lg border border-[var(--line)]">
+          <h3 class="bg-[var(--soft)] px-3 py-2 text-xs font-semibold uppercase tracking-wide text-[var(--muted)]">Windows</h3>
+          <div class="overflow-x-auto">
+            <table class="min-w-[860px] w-full border-collapse text-left text-xs">
+              <thead class="border-y border-[var(--line)] text-[var(--muted)]"><tr><th class="px-3 py-2">Client</th><th class="px-3 py-2">Скачать</th><th class="px-3 py-2">AWG 1.x</th><th class="px-3 py-2">AWG 1.5</th><th class="px-3 py-2">AWG 2.0</th><th class="px-3 py-2">Примечание</th></tr></thead>
+              <tbody class="divide-y divide-[var(--line)]">
+                <tr><td class="px-3 py-2 font-semibold">AmneziaWG for Windows</td><td class="px-3 py-2"><a class="text-[var(--accent)] underline" href="https://github.com/amnezia-vpn/amneziawg-windows-client/releases" target="_blank" rel="noopener">GitHub Releases</a></td><td class="px-3 py-2">✅</td><td class="px-3 py-2">✅</td><td class="px-3 py-2">✅</td><td class="px-3 py-2">Лучший лёгкий AWG-клиент под Windows</td></tr>
+                <tr><td class="px-3 py-2 font-semibold">AmneziaVPN</td><td class="px-3 py-2"><a class="text-[var(--accent)] underline" href="https://amnezia.org/downloads" target="_blank" rel="noopener">Официальная</a> / <a class="text-[var(--accent)] underline" href="https://github.com/amnezia-vpn/amnezia-client/releases" target="_blank" rel="noopener">GitHub</a></td><td class="px-3 py-2">✅</td><td class="px-3 py-2">✅</td><td class="px-3 py-2">✅</td><td class="px-3 py-2">Полный VPN-клиент Amnezia</td></tr>
+                <tr><td class="px-3 py-2 font-semibold">WireSock Secure Connect</td><td class="px-3 py-2"><a class="text-[var(--accent)] underline" href="https://www.wiresock.net/wiresock-secure-connect/download/" target="_blank" rel="noopener">Сайт</a></td><td class="px-3 py-2">✅</td><td class="px-3 py-2">⚠️</td><td class="px-3 py-2">✅</td><td class="px-3 py-2">Продвинутый split tunneling, но AWG-параметры не совсем стандартно</td></tr>
+                <tr><td class="px-3 py-2 font-semibold">VeilBox</td><td class="px-3 py-2"><a class="text-[var(--accent)] underline" href="https://github.com/artem4150/VeilBox" target="_blank" rel="noopener">GitHub</a></td><td class="px-3 py-2">?</td><td class="px-3 py-2">?</td><td class="px-3 py-2">⚠️</td><td class="px-3 py-2">Альтернативный клиент с AmneziaWG/VLESS</td></tr>
+                <tr><td class="px-3 py-2 font-semibold">Clash Verge Rev</td><td class="px-3 py-2"><a class="text-[var(--accent)] underline" href="https://github.com/clash-verge-rev/clash-verge-rev/releases" target="_blank" rel="noopener">GitHub</a></td><td class="px-3 py-2">⚠️</td><td class="px-3 py-2">⚠️</td><td class="px-3 py-2">⚠️</td><td class="px-3 py-2">Не основной AWG-клиент</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
 
-      <section>
-        <h3 class="mb-2 text-xs font-semibold uppercase tracking-wide text-[var(--muted)]">Downloads by platform</h3>
-        <div class="grid gap-3 lg:grid-cols-2">
-          <article class="rounded-lg border border-[var(--line)] bg-[var(--soft)] p-3">
-            <h4 class="font-semibold">Android</h4>
-            <div class="mt-2 grid gap-2">
-              <div class="flex flex-wrap items-center justify-between gap-2"><span>WG Tunnel</span><span class="flex gap-2"><a class="text-[var(--accent)] underline" href="https://github.com/zaneschepke/wgtunnel" target="_blank" rel="noopener">GitHub</a><a class="text-[var(--accent)] underline" href="https://github.com/wgtunnel/wgtunnel/releases/latest" target="_blank" rel="noopener">Скачать</a></span></div>
-              <div class="flex flex-wrap items-center justify-between gap-2"><span>AmneziaWG</span><span class="flex gap-2"><a class="text-[var(--accent)] underline" href="https://github.com/amnezia-vpn/amneziawg-android" target="_blank" rel="noopener">GitHub</a><a class="text-[var(--accent)] underline" href="https://github.com/amnezia-vpn/amneziawg-android/releases/latest" target="_blank" rel="noopener">Скачать</a></span></div>
-              <div class="flex flex-wrap items-center justify-between gap-2"><span>AmneziaVPN</span><span class="flex gap-2"><a class="text-[var(--accent)] underline" href="https://github.com/amnezia-vpn/amnezia-client" target="_blank" rel="noopener">GitHub</a><a class="text-[var(--accent)] underline" href="https://github.com/amnezia-vpn/amnezia-client/releases/latest" target="_blank" rel="noopener">Скачать</a></span></div>
-            </div>
-          </article>
+        <section class="overflow-hidden rounded-lg border border-[var(--line)]">
+          <h3 class="bg-[var(--soft)] px-3 py-2 text-xs font-semibold uppercase tracking-wide text-[var(--muted)]">Android</h3>
+          <div class="overflow-x-auto">
+            <table class="min-w-[860px] w-full border-collapse text-left text-xs">
+              <thead class="border-y border-[var(--line)] text-[var(--muted)]"><tr><th class="px-3 py-2">Client</th><th class="px-3 py-2">Скачать</th><th class="px-3 py-2">AWG 1.x</th><th class="px-3 py-2">AWG 1.5</th><th class="px-3 py-2">AWG 2.0</th><th class="px-3 py-2">Примечание</th></tr></thead>
+              <tbody class="divide-y divide-[var(--line)]">
+                <tr><td class="px-3 py-2 font-semibold">AmneziaWG Android</td><td class="px-3 py-2"><a class="text-[var(--accent)] underline" href="https://github.com/amnezia-vpn/amneziawg-android/releases" target="_blank" rel="noopener">GitHub</a> / <a class="text-[var(--accent)] underline" href="https://play.google.com/store/apps/details?id=org.amnezia.awg" target="_blank" rel="noopener">Google Play</a></td><td class="px-3 py-2">✅</td><td class="px-3 py-2">✅</td><td class="px-3 py-2">✅</td><td class="px-3 py-2">Лучший лёгкий официальный AWG-клиент</td></tr>
+                <tr><td class="px-3 py-2 font-semibold">AmneziaVPN</td><td class="px-3 py-2"><a class="text-[var(--accent)] underline" href="https://amnezia.org/downloads" target="_blank" rel="noopener">Официальная</a> / <a class="text-[var(--accent)] underline" href="https://github.com/amnezia-vpn/amnezia-client/releases" target="_blank" rel="noopener">GitHub</a></td><td class="px-3 py-2">✅</td><td class="px-3 py-2">✅</td><td class="px-3 py-2">✅</td><td class="px-3 py-2">Полный клиент Amnezia</td></tr>
+                <tr><td class="px-3 py-2 font-semibold">WG Tunnel</td><td class="px-3 py-2"><a class="text-[var(--accent)] underline" href="https://github.com/wgtunnel/android/releases" target="_blank" rel="noopener">GitHub</a> / <a class="text-[var(--accent)] underline" href="https://wgtunnel.com/" target="_blank" rel="noopener">Сайт</a></td><td class="px-3 py-2">✅</td><td class="px-3 py-2">✅</td><td class="px-3 py-2">✅ (userspace only)</td><td class="px-3 py-2">AWG 2.0 работает только через Userspace/Go. В режиме Kernel работает только обычный WG</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
 
-          <article class="rounded-lg border border-[var(--line)] bg-[var(--soft)] p-3">
-            <h4 class="font-semibold">Windows</h4>
-            <div class="mt-2 grid gap-2">
-              <div>
-                <div class="flex flex-wrap items-center justify-between gap-2"><span>AmneziaWG <span class="text-[var(--muted)]">(Мод с AWG 1.5)</span></span><span class="flex gap-2"><a class="text-[var(--accent)] underline" href="https://github.com/RomikB/amneziawg-windows-client" target="_blank" rel="noopener">GitHub</a><a class="text-[var(--accent)] underline" href="https://github.com/RomikB/amneziawg-windows-client/releases/latest" target="_blank" rel="noopener">Скачать</a></span></div>
-                <a class="mt-1 inline-block text-xs text-[var(--accent)] underline" href="https://github.com/stunndard/golangwin7patch/releases/latest" target="_blank" rel="noopener">Патч для Win7</a>
-              </div>
-              <div class="flex flex-wrap items-center justify-between gap-2"><span>WireSock</span><span class="flex gap-2"><a class="text-[var(--accent)] underline" href="https://www.wiresock.net/" target="_blank" rel="noopener">Сайт</a><a class="text-[var(--accent)] underline" href="https://www.wiresock.net/wiresock-secure-connect/download" target="_blank" rel="noopener">Скачать</a></span></div>
-              <div class="flex flex-wrap items-center justify-between gap-2"><span>Clash <span class="text-[var(--muted)]">(Прокси-клиент)</span></span><span class="flex gap-2"><a class="text-[var(--accent)] underline" href="https://github.com/clash-verge-rev/clash-verge-rev" target="_blank" rel="noopener">GitHub</a><a class="text-[var(--accent)] underline" href="https://github.com/clash-verge-rev/clash-verge-rev/releases/latest" target="_blank" rel="noopener">Скачать</a></span></div>
-              <div class="flex flex-wrap items-center justify-between gap-2"><span>AmneziaVPN</span><span class="flex gap-2"><a class="text-[var(--accent)] underline" href="https://github.com/amnezia-vpn/amnezia-client" target="_blank" rel="noopener">GitHub</a><a class="text-[var(--accent)] underline" href="https://github.com/amnezia-vpn/amnezia-client/releases/latest" target="_blank" rel="noopener">Скачать</a></span></div>
-            </div>
-          </article>
+        <section class="overflow-hidden rounded-lg border border-[var(--line)]">
+          <h3 class="bg-[var(--soft)] px-3 py-2 text-xs font-semibold uppercase tracking-wide text-[var(--muted)]">iOS / iPadOS</h3>
+          <div class="overflow-x-auto">
+            <table class="min-w-[860px] w-full border-collapse text-left text-xs">
+              <thead class="border-y border-[var(--line)] text-[var(--muted)]"><tr><th class="px-3 py-2">Client</th><th class="px-3 py-2">Скачать</th><th class="px-3 py-2">AWG 1.x</th><th class="px-3 py-2">AWG 1.5</th><th class="px-3 py-2">AWG 2.0</th><th class="px-3 py-2">Примечание</th></tr></thead>
+              <tbody class="divide-y divide-[var(--line)]">
+                <tr><td class="px-3 py-2 font-semibold">AmneziaWG</td><td class="px-3 py-2"><a class="text-[var(--accent)] underline" href="https://apps.apple.com/app/amneziawg/id6478942365" target="_blank" rel="noopener">App Store</a></td><td class="px-3 py-2">✅</td><td class="px-3 py-2">✅</td><td class="px-3 py-2">✅</td><td class="px-3 py-2">Лучший лёгкий AWG-клиент для iOS</td></tr>
+                <tr><td class="px-3 py-2 font-semibold">AmneziaVPN</td><td class="px-3 py-2"><a class="text-[var(--accent)] underline" href="https://apps.apple.com/app/amnezia-vpn/id1600529900" target="_blank" rel="noopener">App Store</a> / <a class="text-[var(--accent)] underline" href="https://amnezia.org/downloads" target="_blank" rel="noopener">Оф. сайт</a></td><td class="px-3 py-2">✅</td><td class="px-3 py-2">✅</td><td class="px-3 py-2">✅</td><td class="px-3 py-2">Полный клиент Amnezia</td></tr>
+                <tr><td class="px-3 py-2 font-semibold">DefaultVPN</td><td class="px-3 py-2"><a class="text-[var(--accent)] underline" href="https://apps.apple.com/app/defaultvpn/id6744725017" target="_blank" rel="noopener">App Store</a></td><td class="px-3 py-2">✅</td><td class="px-3 py-2">✅</td><td class="px-3 py-2">⚠️</td><td class="px-3 py-2">Альтернатива для iOS</td></tr>
+                <tr><td class="px-3 py-2 font-semibold">Clash Mi</td><td class="px-3 py-2"><a class="text-[var(--accent)] underline" href="https://apps.apple.com/app/clash-mi/id6744321968" target="_blank" rel="noopener">App Store</a></td><td class="px-3 py-2">⚠️</td><td class="px-3 py-2">⚠️</td><td class="px-3 py-2">⚠️</td><td class="px-3 py-2">Не основной AWG-клиент</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
 
-          <article class="rounded-lg border border-[var(--line)] bg-[var(--soft)] p-3">
-            <h4 class="font-semibold">iOS</h4>
-            <div class="mt-2 grid gap-2">
-              <div class="flex flex-wrap items-center justify-between gap-2"><span>AmneziaWG</span><a class="text-[var(--accent)] underline" href="https://apps.apple.com/app/amneziawg/id6478942365" target="_blank" rel="noopener">App Store</a></div>
-              <div class="flex flex-wrap items-center justify-between gap-2"><span>DefaultVPN</span><a class="text-[var(--accent)] underline" href="https://apps.apple.com/app/defaultvpn/id6744577928" target="_blank" rel="noopener">App Store</a></div>
-              <div class="flex flex-wrap items-center justify-between gap-2"><span>Clash Mi</span><a class="text-[var(--accent)] underline" href="https://apps.apple.com/app/clash-mi/id6744321968" target="_blank" rel="noopener">App Store</a></div>
-              <div class="flex flex-wrap items-center justify-between gap-2"><span>AmneziaVPN <span class="text-[var(--muted)]">(Недоступен в RU)</span></span><a class="text-[var(--accent)] underline" href="https://apps.apple.com/app/amnezia-vpn/id1600529900" target="_blank" rel="noopener">App Store</a></div>
-            </div>
-          </article>
+        <section class="overflow-hidden rounded-lg border border-[var(--line)]">
+          <h3 class="bg-[var(--soft)] px-3 py-2 text-xs font-semibold uppercase tracking-wide text-[var(--muted)]">macOS</h3>
+          <div class="overflow-x-auto">
+            <table class="min-w-[860px] w-full border-collapse text-left text-xs">
+              <thead class="border-y border-[var(--line)] text-[var(--muted)]"><tr><th class="px-3 py-2">Client</th><th class="px-3 py-2">Скачать</th><th class="px-3 py-2">AWG 1.x</th><th class="px-3 py-2">AWG 1.5</th><th class="px-3 py-2">AWG 2.0</th><th class="px-3 py-2">Примечание</th></tr></thead>
+              <tbody class="divide-y divide-[var(--line)]">
+                <tr><td class="px-3 py-2 font-semibold">AmneziaVPN</td><td class="px-3 py-2"><a class="text-[var(--accent)] underline" href="https://amnezia.org/downloads" target="_blank" rel="noopener">Официальная</a> / <a class="text-[var(--accent)] underline" href="https://github.com/amnezia-vpn/amnezia-client/releases" target="_blank" rel="noopener">GitHub</a></td><td class="px-3 py-2">✅</td><td class="px-3 py-2">✅</td><td class="px-3 py-2">✅</td><td class="px-3 py-2">Лучший универсальный вариант</td></tr>
+                <tr><td class="px-3 py-2 font-semibold">AmneziaWG</td><td class="px-3 py-2"><a class="text-[var(--accent)] underline" href="https://apps.apple.com/app/amneziawg/id6478942365" target="_blank" rel="noopener">App Store</a></td><td class="px-3 py-2">✅</td><td class="px-3 py-2">✅</td><td class="px-3 py-2">✅</td><td class="px-3 py-2">Лёгкий AWG-клиент</td></tr>
+                <tr><td class="px-3 py-2 font-semibold">VeilBox</td><td class="px-3 py-2"><a class="text-[var(--accent)] underline" href="https://github.com/artem4150/VeilBox" target="_blank" rel="noopener">GitHub</a></td><td class="px-3 py-2">?</td><td class="px-3 py-2">?</td><td class="px-3 py-2">⚠️</td><td class="px-3 py-2">Альтернативный клиент</td></tr>
+                <tr><td class="px-3 py-2 font-semibold">Clash Verge Rev</td><td class="px-3 py-2"><a class="text-[var(--accent)] underline" href="https://github.com/clash-verge-rev/clash-verge-rev/releases" target="_blank" rel="noopener">GitHub</a></td><td class="px-3 py-2">⚠️</td><td class="px-3 py-2">⚠️</td><td class="px-3 py-2">⚠️</td><td class="px-3 py-2">Не основной AWG-клиент</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
 
-          <article class="rounded-lg border border-[var(--line)] bg-[var(--soft)] p-3">
-            <h4 class="font-semibold">macOS</h4>
-            <div class="mt-2 grid gap-2">
-              <div class="flex flex-wrap items-center justify-between gap-2"><span>AmneziaWG</span><a class="text-[var(--accent)] underline" href="https://apps.apple.com/app/amneziawg/id6478942365" target="_blank" rel="noopener">App Store</a></div>
-              <div class="flex flex-wrap items-center justify-between gap-2"><span>Clash</span><span class="flex gap-2"><a class="text-[var(--accent)] underline" href="https://github.com/clash-verge-rev/clash-verge-rev" target="_blank" rel="noopener">GitHub</a><a class="text-[var(--accent)] underline" href="https://github.com/clash-verge-rev/clash-verge-rev/releases/latest" target="_blank" rel="noopener">Скачать</a></span></div>
-            </div>
-          </article>
-
-          <article class="rounded-lg border border-[var(--line)] bg-[var(--soft)] p-3 lg:col-span-2">
-            <h4 class="font-semibold">Роутеры</h4>
-            <div class="mt-2 grid gap-2 sm:grid-cols-3">
-              <div class="flex flex-wrap items-center justify-between gap-2"><span>Keenetic</span><a class="text-[var(--accent)] underline" href="https://gitlab.com/ShidlaSGC/keenetic-entware-awg-go/-/blob/main/README.md" target="_blank" rel="noopener">Установка</a></div>
-              <div class="flex flex-wrap items-center justify-between gap-2"><span>OpenWRT #1</span><a class="text-[var(--accent)] underline" href="tg://resolve?domain=itdogchat&amp;post=44512&amp;comment=755535">Инструкция</a></div>
-              <div class="flex flex-wrap items-center justify-between gap-2"><span>OpenWRT #2</span><a class="text-[var(--accent)] underline" href="tg://resolve?domain=itdogchat&amp;post=44512&amp;comment=759893">Инструкция</a></div>
-            </div>
-          </article>
-        </div>
-      </section>
+        <section class="overflow-hidden rounded-lg border border-[var(--line)]">
+          <h3 class="bg-[var(--soft)] px-3 py-2 text-xs font-semibold uppercase tracking-wide text-[var(--muted)]">Linux Desktop</h3>
+          <div class="overflow-x-auto">
+            <table class="min-w-[860px] w-full border-collapse text-left text-xs">
+              <thead class="border-y border-[var(--line)] text-[var(--muted)]"><tr><th class="px-3 py-2">Client</th><th class="px-3 py-2">Скачать</th><th class="px-3 py-2">AWG 1.x</th><th class="px-3 py-2">AWG 1.5</th><th class="px-3 py-2">AWG 2.0</th><th class="px-3 py-2">Примечание</th></tr></thead>
+              <tbody class="divide-y divide-[var(--line)]">
+                <tr><td class="px-3 py-2 font-semibold">AmneziaVPN</td><td class="px-3 py-2"><a class="text-[var(--accent)] underline" href="https://amnezia.org/downloads" target="_blank" rel="noopener">Официальная</a> / <a class="text-[var(--accent)] underline" href="https://github.com/amnezia-vpn/amnezia-client/releases" target="_blank" rel="noopener">GitHub</a></td><td class="px-3 py-2">✅</td><td class="px-3 py-2">✅</td><td class="px-3 py-2">✅</td><td class="px-3 py-2">Основной GUI-клиент для Linux</td></tr>
+                <tr><td class="px-3 py-2 font-semibold">Clash Verge Rev</td><td class="px-3 py-2"><a class="text-[var(--accent)] underline" href="https://github.com/clash-verge-rev/clash-verge-rev/releases" target="_blank" rel="noopener">GitHub</a></td><td class="px-3 py-2">⚠️</td><td class="px-3 py-2">⚠️</td><td class="px-3 py-2">⚠️</td><td class="px-3 py-2">Не основной AWG-клиент</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+      </div>
 
       <blockquote class="rounded-md border-l-4 border-[var(--danger)] bg-[var(--soft)] px-3 py-2 text-[var(--muted)]">
         Если клиент выдает ошибку про неизвестный параметр (S3, S4, I1, H1) — используйте клиент с полной поддержкой AWG 2.0.
