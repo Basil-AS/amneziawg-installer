@@ -120,14 +120,18 @@ trap 'rm -f "$KO_TMP_XZ"' EXIT
 if xz --check=crc32 --lzma2=dict=1MiB -c "$KO_FILE" > "$KO_TMP_XZ" 2>/dev/null; then
     # Sanity: kernel-compatible streams round-trip through `xz -d` and `xz -t`.
     # Catches preset/filter mismatches at build time instead of in users' dmesg.
-    if xz -t "$KO_TMP_XZ" 2>/dev/null && xz -d -c "$KO_TMP_XZ" >/dev/null 2>&1; then
-        mv -f "$KO_TMP_XZ" "$KO_XZ"
-        rm -f "$KO_FILE"
-        echo "Module compressed with xz (crc32, 1 MiB dict, sanity OK)"
-    else
+    if ! xz -t "$KO_TMP_XZ" 2>/dev/null || ! xz -d -c "$KO_TMP_XZ" >/dev/null 2>&1; then
+        echo "ERROR: xz sanity check failed for $KO_TMP_XZ — refusing to ship a broken prebuilt." >&2
+        exit 1
+    fi
+    mv -f "$KO_TMP_XZ" "$KO_XZ"
+    if ! xz -t "$KO_XZ" 2>/dev/null || ! xz -d -c "$KO_XZ" >/dev/null 2>&1; then
+        rm -f "$KO_XZ"
         echo "ERROR: xz sanity check failed for $KO_XZ — refusing to ship a broken prebuilt." >&2
         exit 1
     fi
+    rm -f "$KO_FILE"
+    echo "Module compressed with xz (crc32, 1 MiB dict, sanity OK)"
 else
     echo "xz compression skipped — packaging uncompressed .ko"
 fi
