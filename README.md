@@ -355,7 +355,7 @@ sudo bash ./install_amneziawg.sh --upgrade-ipv6
 * Firewall/NAT генерируется idempotent-скриптами:
   `/root/awg/postup.sh`, `/root/awg/postdown.sh`, `/root/awg/p2p_rules.sh`.
 * Для native IPv6 с NDP proxy создаётся `/etc/ndppd.conf`. Для ULA-режима используется NAT66.
-* Веб-панель разворачивается в `/root/awg/web/`, по умолчанию слушает HTTPS только на VPN gateway `10.9.9.1:8443`, использует self-signed сертификат и bearer tokens/RBAC через `tokens.json`.
+* Веб-панель разворачивается в `/root/awg/web/`, по умолчанию слушает HTTPS только на VPN gateway `10.9.9.1:8443`, использует локальные assets без внешних CDN, self-signed сертификат и bearer tokens/RBAC через `tokens.json`.
 * AdGuard Home ставится в `/opt/AdGuardHome`, слушает DNS на `127.0.0.1`, `10.9.9.1` и серверном IPv6 внутри VPN. Если сервис не стартует, VPN остаётся рабочим; fallback: `manage dns set-mode system`.
 
 ### Веб-панель
@@ -377,6 +377,10 @@ Super token печатается при первой установке, а toke
 ```bash
 /root/awg/web/tokens.json
 ```
+
+Обычные user-token видят только назначенных им клиентов и не могут создавать новых. Если `tokens.json` повреждён, панель не перегенерирует доступ молча: сбросьте super-token через `manage web token reset-super`.
+
+Публичный bind (`--web-bind=0.0.0.0` или `::`) открывает панель наружу и сопровождается warning; безопасный default остаётся VPN-only/local-first.
 
 API веб-панели:
 

@@ -41,6 +41,7 @@ RATE_LAST_CLEANUP = 0
 MAX_JSON_BODY = 64 * 1024
 TOKENS_LOCK = threading.RLock()
 TRAFFIC_LOCK = threading.Lock()
+SERVER_NAME_RE = re.compile(r"^[\w .,!?\-()]{1,128}$", re.UNICODE)
 
 
 def run_manage(*args, timeout=60):
@@ -140,10 +141,12 @@ def update_traffic_history(rows):
         totals = data.setdefault("totals", {})
         day = days.setdefault(today, {})
         changed = False
+        active_names = set()
         for row in rows:
             name = str(row.get("name", ""))
             if not NAME_RE.fullmatch(name):
                 continue
+            active_names.add(name)
             rx = max(0, int(row.get("rx") or 0))
             tx = max(0, int(row.get("tx") or 0))
             prev = last.get(name) if isinstance(last.get(name), dict) else None
@@ -169,6 +172,14 @@ def update_traffic_history(rows):
         for date in list(days):
             if date not in keep_days:
                 del days[date]
+                changed = True
+        for name in list(last):
+            if name not in active_names:
+                del last[name]
+                changed = True
+        for name in list(totals):
+            if name not in active_names and all(name not in bucket for bucket in days.values() if isinstance(bucket, dict)):
+                del totals[name]
                 changed = True
         if changed:
             write_traffic_history(data)
@@ -238,11 +249,15 @@ def client_traffic_total(name, history=None):
 
 def clean_client_list(value):
     if not isinstance(value, list):
-        return []
+        raise ValueError("invalid client list")
     out, seen = [], set()
     for item in value:
-        name = str(item)
-        if NAME_RE.fullmatch(name) and name not in seen:
+        if not isinstance(item, str):
+            raise ValueError("invalid client list")
+        name = item
+        if not NAME_RE.fullmatch(name):
+            raise ValueError("invalid client list")
+        if name not in seen:
             out.append(name)
             seen.add(name)
     return out
@@ -259,11 +274,19 @@ def clean_token_name(value):
 
 def clean_user_record(value):
     if isinstance(value, list):
-        return {"name": "", "clients": clean_client_list(value)}
+        try:
+            clients = clean_client_list(value)
+        except ValueError:
+            clients = []
+        return {"name": "", "clients": clients}
     if isinstance(value, dict):
+        try:
+            clients = clean_client_list(value.get("clients", []))
+        except ValueError:
+            clients = []
         return {
             "name": clean_token_name(value.get("name", "")),
-            "clients": clean_client_list(value.get("clients", [])),
+            "clients": clients,
         }
     return {"name": "", "clients": []}
 
@@ -274,14 +297,16 @@ def load_tokens():
         if TOKEN_FILE.exists():
             try:
                 data = json.loads(TOKEN_FILE.read_text(encoding="utf-8"))
-            except Exception:
-                data = {}
+            except Exception as exc:
+                raise RuntimeError("tokens.json is invalid; run manage_amneziawg.sh web token reset-super") from exc
         if not isinstance(data, dict):
-            data = {}
+            raise RuntimeError("tokens.json is invalid; run manage_amneziawg.sh web token reset-super")
 
         super_hash = data.get("super_token_hash") or data.get("super")
         if not isinstance(super_hash, str) or not TOKEN_HASH_RE.fullmatch(super_hash):
             legacy = LEGACY_TOKEN_FILE.read_text(errors="ignore").strip() if LEGACY_TOKEN_FILE.exists() else ""
+            if TOKEN_FILE.exists() and not legacy:
+                raise RuntimeError("tokens.json is invalid; run manage_amneziawg.sh web token reset-super")
             super_hash = token_hash(legacy) if legacy else token_hash(secrets.token_urlsafe(32))
 
         users = data.get("users")
@@ -316,10 +341,13 @@ def check_rate_limit(ip, now=None):
                 else:
                     del RATE[key]
             RATE_LAST_CLEANUP = now
-        bucket = [stamp for stamp in RATE.get(ip, []) if now - stamp < RATE_WINDOW]
+        bucket = [stamp for stamp in RATE.get(ip, []) if now - stamp < RATE_WINDOW][-RATE_LIMIT:]
+        if len(bucket) >= RATE_LIMIT:
+            RATE[ip] = bucket[: RATE_LIMIT + 1]
+            return False
         bucket.append(now)
-        RATE[ip] = bucket
-        return len(bucket) <= RATE_LIMIT
+        RATE[ip] = bucket[-(RATE_LIMIT + 1):]
+        return True
 
 
 def tail_lines(path, limit=100):
@@ -505,9 +533,36 @@ def safe_token_hash(value):
 
 
 def require_server_name(name):
-    if not isinstance(name, str) or not name.strip() or "\n" in name or "\r" in name or len(name) > 128:
+    if not isinstance(name, str) or not name.strip() or not SERVER_NAME_RE.fullmatch(name):
         raise ValueError("invalid server name")
     return name
+
+
+def require_expires(value):
+    if not isinstance(value, str) or not re.fullmatch(r"[1-9][0-9]{0,5}[hdw]", value):
+        raise ValueError("invalid expires")
+    return value
+
+
+def require_port(value):
+    if isinstance(value, bool) or not isinstance(value, int) or not (1024 <= value <= 65535):
+        raise ValueError("invalid port")
+    return value
+
+
+def require_dns_list(value):
+    if not isinstance(value, str) or len(value) > 512:
+        raise ValueError("invalid dns list")
+    items = value.split(",")
+    if not items or any(not item.strip() for item in items):
+        raise ValueError("invalid dns list")
+    out = []
+    for item in items:
+        try:
+            out.append(str(ipaddress.ip_address(item.strip())))
+        except ValueError as exc:
+            raise ValueError("invalid dns list") from exc
+    return ",".join(out)
 
 
 def client_stats_map():
@@ -538,8 +593,35 @@ def client_stats_map():
     return out
 
 
+class LimitedThreadingHTTPServer(ThreadingHTTPServer):
+    daemon_threads = True
+    request_queue_size = 32
+
+    def __init__(self, *args, max_workers=16, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._sem = threading.BoundedSemaphore(max_workers)
+        self.socket.settimeout(10)
+
+    def process_request(self, request, client_address):
+        if not self._sem.acquire(blocking=False):
+            request.close()
+            return
+        try:
+            super().process_request(request, client_address)
+        except Exception:
+            self._sem.release()
+            raise
+
+    def process_request_thread(self, request, client_address):
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self._sem.release()
+
+
 class Handler(SimpleHTTPRequestHandler):
-    server_version = "Panel/1.0 fork delta/patchset"
+    server_version = "Panel"
+    sys_version = ""
 
     def log_message(self, fmt, *args):
         return
@@ -593,6 +675,12 @@ class Handler(SimpleHTTPRequestHandler):
         self.wfile.write(data)
 
     def send_security_headers(self):
+        self.send_header(
+            "Content-Security-Policy",
+            "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
+            "img-src 'self' data: blob:; connect-src 'self'; object-src 'none'; "
+            "base-uri 'none'; frame-ancestors 'none'",
+        )
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("X-Frame-Options", "DENY")
         self.send_header("Referrer-Policy", "no-referrer")
@@ -733,13 +821,13 @@ class Handler(SimpleHTTPRequestHandler):
         try:
             body = self.json_body()
             if u.path == "/api/clients":
+                if not self.require_super(auth):
+                    return
                 name = safe_name(body.get("name", ""))
                 args = []
                 if body.get("expires"):
-                    args.append(f"--expires={body['expires']}")
+                    args.append(f"--expires={require_expires(body['expires'])}")
                 p = run_manage(*args, "add", name)
-                if p.returncode == 0 and not self.is_super(auth):
-                    mutate_user_clients(auth["hash"], name)
             elif u.path == "/api/server/restart":
                 if not self.require_super(auth):
                     return
@@ -759,7 +847,7 @@ class Handler(SimpleHTTPRequestHandler):
                 custom = body.get("custom", "")
                 args = ["dns", "set-mode", mode]
                 if custom:
-                    args.append(custom)
+                    args.append(require_dns_list(custom))
                 p = run_manage(*args, timeout=120)
             elif u.path == "/api/tokens":
                 if not self.require_super(auth):
@@ -804,8 +892,8 @@ class Handler(SimpleHTTPRequestHandler):
                     p = run_manage("toggle", name, timeout=45)
                 else:
                     args = ["p2p", "add", name]
-                    if body.get("port"):
-                        args.append(str(body["port"]))
+                    if "port" in body and body["port"] is not None:
+                        args.append(str(require_port(body["port"])))
                     p = run_manage(*args)
             self.send_json({"ok": p.returncode == 0, "stdout": p.stdout, "stderr": p.stderr}, 200 if p.returncode == 0 else 400)
         except ValueError as exc:
@@ -868,6 +956,9 @@ class Handler(SimpleHTTPRequestHandler):
                     if not self.require_client_access(auth, name):
                         return
                     port = (parse_qs(u.query).get("port") or [""])[0]
+                    if not port.isdigit():
+                        raise ValueError("invalid port")
+                    port = str(require_port(int(port)))
                     p = run_manage("p2p", "remove", name, port)
                 else:
                     m = re.match(r"^/api/tokens/([^/]+)$", u.path)
@@ -896,7 +987,7 @@ class Handler(SimpleHTTPRequestHandler):
 def main():
     load_tokens()
     os.chdir(WEB_DIR)
-    httpd = ThreadingHTTPServer((os.environ.get("AWG_WEB_BIND") or "10.9.9.1", int(os.environ.get("AWG_WEB_PORT", "8443"))), Handler)
+    httpd = LimitedThreadingHTTPServer((os.environ.get("AWG_WEB_BIND") or "10.9.9.1", int(os.environ.get("AWG_WEB_PORT", "8443"))), Handler)
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     ctx.load_cert_chain(WEB_DIR / "cert.pem", WEB_DIR / "key.pem")
     httpd.socket = ctx.wrap_socket(httpd.socket, server_side=True)

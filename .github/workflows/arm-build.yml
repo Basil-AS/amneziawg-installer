@@ -135,6 +135,10 @@ jobs:
             bash <<'CONTAINER_SCRIPT'
             set -euo pipefail
             export DEBIAN_FRONTEND=noninteractive
+            if [[ ! "${MODULE_VERSION:-}" =~ ^[A-Za-z0-9._/-]+$ || "${MODULE_VERSION}" == -* || "${MODULE_VERSION}" == *..* ]]; then
+              echo "Invalid module_version input" >&2
+              exit 1
+            fi
 
             apt-get update -qq
             apt-get install -y --no-install-recommends \

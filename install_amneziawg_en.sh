@@ -25,7 +25,7 @@ LOG_FILE="$AWG_DIR/install_amneziawg.log"
 KEYS_DIR="$AWG_DIR/keys"
 SERVER_CONF_FILE="/etc/amnezia/amneziawg/awg0.conf"
 AWG_REPO="${AWG_REPO:-Basil-AS/amneziawg-installer}"
-AWG_BRANCH="${AWG_BRANCH:-main}"
+AWG_BRANCH="${AWG_BRANCH:-v${SCRIPT_VERSION}}"
 COMMON_SCRIPT_URL="https://raw.githubusercontent.com/${AWG_REPO}/${AWG_BRANCH}/awg_common_en.sh"
 COMMON_SCRIPT_PATH="$AWG_DIR/awg_common.sh"
 MANAGE_SCRIPT_URL="https://raw.githubusercontent.com/${AWG_REPO}/${AWG_BRANCH}/manage_amneziawg_en.sh"
@@ -623,6 +623,20 @@ validate_port() {
     if ! [[ "$port" =~ ^[0-9]+$ ]] || [[ "$port" -lt 1024 ]] || [[ "$port" -gt 65535 ]]; then
         die "Invalid port: '$port'. Allowed range: 1024-65535."
     fi
+}
+
+validate_bind_addr() {
+    local bind="$1"
+    [[ -n "$bind" ]] || return 1
+    [[ "$bind" != *$'\n'* && "$bind" != *$'\r'* && "$bind" != *[[:space:]]* ]] || return 1
+    [[ "$bind" != *[[:cntrl:]]* ]] || return 1
+    python3 - "$bind" <<'PY2'
+import ipaddress, sys
+try:
+    ipaddress.ip_address(sys.argv[1])
+except ValueError:
+    raise SystemExit(1)
+PY2
 }
 
 generate_random_awg_port() {
@@ -1395,24 +1409,28 @@ setup_improved_firewall() {
     fi
 
     local ufw_errors=0
+    allow_web_panel_ufw() {
+        [[ "${AWG_WEB_ENABLED:-1}" -eq 1 ]] || return 0
+        if [[ "$AWG_WEB_BIND" == "0.0.0.0" || "$AWG_WEB_BIND" == "::" ]]; then
+            log_warn "Web panel is publicly bound (${AWG_WEB_BIND}); port ${AWG_WEB_PORT}/tcp will be opened globally."
+            ufw allow "${AWG_WEB_PORT}/tcp" comment "AmneziaWG Web Panel" || { log_warn "UFW: failed to allow Web port"; ufw_errors=1; }
+        elif [[ "$AWG_WEB_BIND" == "127.0.0.1" || "$AWG_WEB_BIND" == "::1" ]]; then
+            log "Web panel is locally bound (${AWG_WEB_BIND}); no global UFW rule is needed."
+        else
+            ufw allow in on awg0 to "${AWG_WEB_BIND}" port "${AWG_WEB_PORT}" proto tcp comment "AmneziaWG Web Panel VPN-only" || { log_warn "UFW: failed to allow Web port on awg0"; ufw_errors=1; }
+        fi
+    }
     if ufw status 2>/dev/null | grep -q inactive; then
         log "UFW is inactive. Configuring..."
         ufw default deny incoming  || { log_warn "UFW: failed to set default deny incoming"; ufw_errors=1; }
         ufw default allow outgoing || { log_warn "UFW: failed to set default allow outgoing"; ufw_errors=1; }
         ufw limit 22/tcp comment "SSH Rate Limit" || { log_warn "UFW: failed to limit SSH"; ufw_errors=1; }
         ufw allow "${AWG_PORT}/udp" comment "AmneziaWG VPN" || { log_warn "UFW: failed to allow VPN port"; ufw_errors=1; }
-        if [[ "${AWG_WEB_ENABLED:-1}" -eq 1 ]]; then
-            ufw allow "${AWG_WEB_PORT}/tcp" comment "AmneziaWG Web Panel" || { log_warn "UFW: failed to allow Web port"; ufw_errors=1; }
-        fi
+        allow_web_panel_ufw
         if [[ "${AWG_ADGUARD_ENABLED:-0}" -eq 1 ]]; then
             ufw allow in on awg0 to any port 53 proto udp comment "AmneziaWG AdGuard DNS UDP" || log_warn "UFW: failed to allow DNS UDP on awg0"
             ufw allow in on awg0 to any port 53 proto tcp comment "AmneziaWG AdGuard DNS TCP" || log_warn "UFW: failed to allow DNS TCP on awg0"
             ufw allow in on awg0 to any port "${AWG_ADGUARD_PORT}" proto tcp comment "AmneziaWG AdGuard UI" || log_warn "UFW: failed to allow AdGuard UI on awg0"
-        fi
-        if [[ "${AWG_P2P_ENABLED:-1}" -eq 1 ]]; then
-            local p2p_from=$((AWG_P2P_BASE_PORT + 1)) p2p_to=$((AWG_P2P_BASE_PORT + 1024))
-            ufw allow "${p2p_from}:${p2p_to}/tcp" comment "AmneziaWG P2P TCP" || log_warn "UFW: failed to allow P2P TCP"
-            ufw allow "${p2p_from}:${p2p_to}/udp" comment "AmneziaWG P2P UDP" || log_warn "UFW: failed to allow P2P UDP"
         fi
         if [[ -n "$main_nic" ]]; then
             ufw route allow in on awg0 out on "$main_nic" comment "AmneziaWG Routing" \
@@ -1449,18 +1467,11 @@ setup_improved_firewall() {
         log "UFW is active. Updating rules..."
         ufw limit 22/tcp comment "SSH Rate Limit" || { log_warn "UFW: failed to limit SSH"; ufw_errors=1; }
         ufw allow "${AWG_PORT}/udp" comment "AmneziaWG VPN" || { log_warn "UFW: failed to allow VPN port"; ufw_errors=1; }
-        if [[ "${AWG_WEB_ENABLED:-1}" -eq 1 ]]; then
-            ufw allow "${AWG_WEB_PORT}/tcp" comment "AmneziaWG Web Panel" || { log_warn "UFW: failed to allow Web port"; ufw_errors=1; }
-        fi
+        allow_web_panel_ufw
         if [[ "${AWG_ADGUARD_ENABLED:-0}" -eq 1 ]]; then
             ufw allow in on awg0 to any port 53 proto udp comment "AmneziaWG AdGuard DNS UDP" || log_warn "UFW: failed to allow DNS UDP on awg0"
             ufw allow in on awg0 to any port 53 proto tcp comment "AmneziaWG AdGuard DNS TCP" || log_warn "UFW: failed to allow DNS TCP on awg0"
             ufw allow in on awg0 to any port "${AWG_ADGUARD_PORT}" proto tcp comment "AmneziaWG AdGuard UI" || log_warn "UFW: failed to allow AdGuard UI on awg0"
-        fi
-        if [[ "${AWG_P2P_ENABLED:-1}" -eq 1 ]]; then
-            local p2p_from=$((AWG_P2P_BASE_PORT + 1)) p2p_to=$((AWG_P2P_BASE_PORT + 1024))
-            ufw allow "${p2p_from}:${p2p_to}/tcp" comment "AmneziaWG P2P TCP" || log_warn "UFW: failed to allow P2P TCP"
-            ufw allow "${p2p_from}:${p2p_to}/udp" comment "AmneziaWG P2P UDP" || log_warn "UFW: failed to allow P2P UDP"
         fi
         if [[ -n "$main_nic" ]]; then
             ufw route allow in on awg0 out on "$main_nic" comment "AmneziaWG Routing" \
@@ -1984,6 +1995,7 @@ initialize_setup() {
         die "Invalid AWG_P2P_PORTS_PER_CLIENT: '$AWG_P2P_PORTS_PER_CLIENT' (0-12)."
     fi
     validate_port "$AWG_WEB_PORT"
+    validate_bind_addr "$AWG_WEB_BIND" || die "Invalid AWG_WEB_BIND: '$AWG_WEB_BIND'. Expected a valid IPv4/IPv6 address without whitespace or control characters."
     validate_port "$AWG_ADGUARD_PORT"
     case "$AWG_DNS_MODE" in
         adguard|system|custom) ;;
@@ -2912,16 +2924,9 @@ step4_setup_firewall() {
 
 verify_sha256() {
     local file="$1" expected="$2" label="$3"
-    # Skip verification when:
-    # - SHA is not set (RELEASE_PLACEHOLDER — release not yet published)
-    # - AWG_BRANCH is overridden (test branch)
     if [[ "$expected" == "RELEASE_PLACEHOLDER" ]]; then
-        log_debug "SHA256 for $label: skipped (placeholder, pre-release)."
-        return 0
-    fi
-    if [[ "${AWG_BRANCH}" != "v${SCRIPT_VERSION}" ]]; then
-        log_warn "SHA256 for $label: verification skipped (AWG_BRANCH=${AWG_BRANCH} != v${SCRIPT_VERSION}). File not verified."
-        return 0
+        log_error "SHA256 for $label is not set; unsafe download is blocked."
+        return 1
     fi
     local actual
     actual=$(sha256sum "$file" 2>/dev/null | awk '{print $1}')
@@ -2974,13 +2979,31 @@ step5_download_scripts() {
     log "### STEP 5: Downloading management scripts ###"
     cd "$AWG_DIR" || die "Error changing to $AWG_DIR"
 
-    log "Downloading $COMMON_SCRIPT_PATH..."
-    _secure_download "$COMMON_SCRIPT_URL" "$COMMON_SCRIPT_PATH" \
-        "$COMMON_SCRIPT_SHA256" "awg_common.sh"
+    _deploy_helper_script() {
+        local asset="$1" src="$2" url="$3" target="$4" expected="$5"
+        if [[ -f "$src" ]]; then
+            cp -a "$src" "$target" || die "Failed to copy $asset"
+            chmod 700 "$target" || die "chmod failed for $asset"
+            log "$asset copied locally."
+            return 0
+        fi
+        if [[ "$expected" == "RELEASE_PLACEHOLDER" && "${AWG_ALLOW_UNVERIFIED_DOWNLOAD:-0}" != "1" ]]; then
+            die "$asset is not available locally and SHA256 is unset. Installation stopped; use a release bundle or set AWG_ALLOW_UNVERIFIED_DOWNLOAD=1 only for development."
+        fi
+        if [[ "$expected" == "RELEASE_PLACEHOLDER" ]]; then
+            log_warn "$asset is being downloaded without SHA256 only because AWG_ALLOW_UNVERIFIED_DOWNLOAD=1."
+            local tmp target_dir
+            target_dir=$(dirname "$target")
+            tmp=$(mktemp -p "$target_dir" ".${asset}.tmp.XXXXXX") || die "Failed to create temp file for $asset"
+            curl -fLso "$tmp" --max-time 60 --retry 2 "$url" || { rm -f "$tmp"; die "Failed to download $asset"; }
+            chmod 700 "$tmp" && mv -f "$tmp" "$target" || { rm -f "$tmp"; die "Failed to deploy $asset"; }
+            return 0
+        fi
+        _secure_download "$url" "$target" "$expected" "$asset"
+    }
 
-    log "Downloading $MANAGE_SCRIPT_PATH..."
-    _secure_download "$MANAGE_SCRIPT_URL" "$MANAGE_SCRIPT_PATH" \
-        "$MANAGE_SCRIPT_SHA256" "manage_amneziawg.sh"
+    _deploy_helper_script "awg_common.sh" "${INSTALLER_DIR}/awg_common.sh" "$COMMON_SCRIPT_URL" "$COMMON_SCRIPT_PATH" "$COMMON_SCRIPT_SHA256"
+    _deploy_helper_script "manage_amneziawg.sh" "${INSTALLER_DIR}/manage_amneziawg.sh" "$MANAGE_SCRIPT_URL" "$MANAGE_SCRIPT_PATH" "$MANAGE_SCRIPT_SHA256"
 
     log "Step 5 completed."
     update_state 6
@@ -3205,9 +3228,8 @@ PY
     cat > /etc/systemd/system/awg-web.service << EOF
 [Unit]
 Description=VPN Web Panel
-After=network-online.target awg-quick@awg0.service
+After=network-online.target
 Wants=network-online.target
-Requires=awg-quick@awg0.service
 
 [Service]
 Type=simple

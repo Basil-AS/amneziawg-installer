@@ -987,9 +987,20 @@ def load():
     for key, value in users.items():
         if not isinstance(key, str) or not re.fullmatch(r"[0-9a-f]{64}", key):
             continue
-        if not isinstance(value, list):
-            value = []
-        clean_users[key] = [str(item) for item in value if re.fullmatch(r"^[A-Za-z0-9_-]{1,63}$", str(item))]
+        if isinstance(value, list):
+            record = {"name": "", "clients": value}
+        elif isinstance(value, dict):
+            record = {"name": value.get("name", ""), "clients": value.get("clients", [])}
+        else:
+            continue
+        if not isinstance(record["name"], str) or "\n" in record["name"] or "\r" in record["name"] or len(record["name"]) > 128:
+            record["name"] = ""
+        if not isinstance(record["clients"], list):
+            record["clients"] = []
+        clean_users[key] = {
+            "name": record["name"],
+            "clients": [item for item in record["clients"] if isinstance(item, str) and re.fullmatch(r"^[A-Za-z0-9_-]{1,63}$", item)],
+        }
     super_hash = data.get("super_token_hash") or data.get("super")
     if not isinstance(super_hash, str) or not re.fullmatch(r"[0-9a-f]{64}", super_hash):
         token = secrets.token_urlsafe(32)
@@ -1008,14 +1019,14 @@ data = load()
 if action == "list":
     save(data)
     print("super: present")
-    for key, clients in sorted(data["users"].items()):
-        suffix = ",".join(clients) if clients else "-"
-        print(f"user: {key[:12]}... clients={suffix}")
+    for key, record in sorted(data["users"].items()):
+        suffix = ",".join(record["clients"]) if record["clients"] else "-"
+        print(f"user: {key[:12]}... name={record['name'] or '-'} clients={suffix}")
 elif action == "add":
     if not name_re.fullmatch(name):
         raise SystemExit("invalid token name")
     token = secrets.token_urlsafe(32)
-    data["users"][digest(token)] = []
+    data["users"][digest(token)] = {"name": name, "clients": []}
     save(data)
     print("Token created. By default, it has access to 0 clients. Log in to the Web Panel with the Super Token to assign clients to this user.")
     print(token)
@@ -1030,9 +1041,9 @@ elif action == "rotate":
     matches = [key for key in data["users"] if key == name or key.startswith(name)]
     if len(matches) != 1:
         raise SystemExit("token not found")
-    clients = data["users"].pop(matches[0])
+    record = data["users"].pop(matches[0])
     token = secrets.token_urlsafe(32)
-    data["users"][digest(token)] = clients
+    data["users"][digest(token)] = record
     save(data)
     print("Token rotated. Client access list preserved.")
     print(token)
@@ -1762,6 +1773,10 @@ case $COMMAND in
                     ensure_amneziawg_kernel_module || die "AmneziaWG kernel module is unavailable."
                 fi
                 if _new_port=$(add_p2p_port_to_peer "$_name" "$_port"); then
+                    if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q active; then
+                        ufw allow "${_new_port}/tcp" comment "AmneziaWG P2P TCP" >/dev/null 2>&1 || log_warn "Failed to open P2P TCP port $_new_port in UFW."
+                        ufw allow "${_new_port}/udp" comment "AmneziaWG P2P UDP" >/dev/null 2>&1 || log_warn "Failed to open P2P UDP port $_new_port in UFW."
+                    fi
                     bash "$AWG_DIR/postup.sh" 2>/dev/null || log_warn "Failed to apply firewall hooks live; restart awg-quick@awg0 if needed."
                     log "P2P port $_new_port added to client '$_name'."
                 else
@@ -1774,6 +1789,10 @@ case $COMMAND in
                 validate_client_name "$_name" || exit 1
                 [[ -x "$AWG_DIR/p2p_rules.sh" ]] && bash "$AWG_DIR/p2p_rules.sh" down 2>/dev/null || true
                 if remove_p2p_port_from_peer "$_name" "$_port"; then
+                    if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q active; then
+                        ufw delete allow "${_port}/tcp" >/dev/null 2>&1 || true
+                        ufw delete allow "${_port}/udp" >/dev/null 2>&1 || true
+                    fi
                     bash "$AWG_DIR/postup.sh" 2>/dev/null || log_warn "Failed to apply firewall hooks live; restart awg-quick@awg0 if needed."
                     log "P2P port $_port removed from client '$_name'."
                 else

@@ -94,6 +94,8 @@ Then open:
 https://127.0.0.1:8443
 ```
 
+The panel ships local assets only, so bearer tokens are not exposed to third-party CDN JavaScript. User tokens can manage only assigned clients and cannot create new ones. If `tokens.json` becomes invalid, reset the super token with `manage web token reset-super` instead of expecting an automatic replacement.
+
 ### Public web panel, only when you really need it
 
 ```bash
@@ -337,7 +339,7 @@ Useful flags:
 * Server config uses dual `Address` and external hooks: `/root/awg/postup.sh` and `/root/awg/postdown.sh`.
 * Peer blocks are the source of truth: `AllowedIPs = <ipv4>/32, <ipv6>/128` and `#_P2PPorts = p1,p2,p3`.
 * Default P2P ports for IPv4 last octet `N`: `20000+N`, `20256+N`, `20512+N`; extra ports are allocated from `20001-21024`.
-* Web files live in `/root/awg/web/`; the panel listens on VPN gateway `10.9.9.1:8443` by default, uses self-signed TLS, and stores bearer-token hashes/RBAC records in `/root/awg/web/tokens.json`.
+* Web files live in `/root/awg/web/`; the panel listens on VPN gateway `10.9.9.1:8443` by default, uses local assets without external CDNs, self-signed TLS, and stores bearer-token hashes/RBAC records in `/root/awg/web/tokens.json`.
 * AdGuard Home is installed in `/opt/AdGuardHome`; DNS listens on `127.0.0.1`, `10.9.9.1`, and the server IPv6 address inside the VPN. If it fails, VPN remains usable; fallback: `manage dns set-mode system`.
 
 ### Not finished yet
