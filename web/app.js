@@ -13,6 +13,7 @@ const previousTx = new Map();
 const previousSampleAt = new Map();
 const speedHistory = new Map();
 const charts = new Map();
+const configTextCache = new Map();
 let trafficChart = null;
 
 const icons = {
@@ -22,6 +23,7 @@ const icons = {
   logout: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M15 7V5a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h7a2 2 0 0 0 2-2v-2"/><path d="M10 12h11M18 9l3 3-3 3"/></svg>',
   power: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 2v10"/><path d="M18.4 6.6a9 9 0 1 1-12.8 0"/></svg>',
   file: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/><path d="M14 2v6h6"/></svg>',
+  download: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/></svg>',
   qr: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 4h6v6H4zM14 4h6v6h-6zM4 14h6v6H4z"/><path d="M14 14h2v2h-2zM18 14h2v6h-4v-2M14 18v2"/></svg>',
   trash: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 6h18M8 6V4h8v2M6 6l1 15h10l1-15"/><path d="M10 11v6M14 11v6"/></svg>',
   search: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>',
@@ -81,6 +83,45 @@ async function api(path, opt = {}) {
   }
   const ctype = response.headers.get("content-type") || "";
   return ctype.includes("application/json") ? response.json() : response.blob();
+}
+
+async function copyText(value) {
+  const text = String(value ?? "");
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+  const area = document.createElement("textarea");
+  area.value = text;
+  area.setAttribute("readonly", "");
+  area.style.position = "fixed";
+  area.style.left = "-9999px";
+  document.body.appendChild(area);
+  area.select();
+  try {
+    if (!document.execCommand("copy")) throw new Error("copy failed");
+  } finally {
+    area.remove();
+  }
+}
+
+function saveBlob(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+async function configText(name) {
+  if (configTextCache.has(name)) return configTextCache.get(name);
+  const blob = await api(`/api/clients/${encodeURIComponent(name)}/config`);
+  const text = await blob.text();
+  configTextCache.set(name, text);
+  return text;
 }
 
 function bytes(n) {
@@ -188,6 +229,10 @@ function primaryButtonClasses(extra = "") {
 
 function iconButton(title, name, extra = "") {
   return `<button title="${esc(title)}" aria-label="${esc(title)}" class="${buttonClasses(`w-9 px-0 ${extra}`)}">${icon(name)}</button>`;
+}
+
+function actionButton(action, title, iconName, label, extra = "") {
+  return `<button data-action="${esc(action)}" title="${esc(title)}" aria-label="${esc(title)}" class="${buttonClasses(`client-action ${extra}`)}">${icon(iconName)}<span class="client-action-label">${esc(label)}</span></button>`;
 }
 
 function renderLogin() {
@@ -546,13 +591,14 @@ function renderClients() {
           <p class="mt-1 text-xs text-[var(--muted)]">Total: ${esc(trafficText(clientTotal.rx || 0, clientTotal.tx || 0))}</p>
           <p class="mt-1 text-xs text-[var(--muted)]">30d: ${esc(trafficText(client30d.rx || 0, client30d.tx || 0))}</p>
         </div>
-        <div class="relative z-10 flex w-full shrink-0 flex-wrap justify-end gap-1 sm:w-auto">
-          <button data-action="toggle" title="${client.disabled ? "Enable Client" : "Disable Client"}" class="${buttonClasses("w-9 px-0")}">${icon("power")}</button>
-          <button data-action="toggle-p2p" title="Toggle P2P Ports" class="${buttonClasses(shieldClass)}">${icon("shield")}</button>
-          <button data-action="config" title="Config" class="${buttonClasses("w-9 px-0")}">${icon("file")}</button>
-          <button data-action="vpnuri" title="vpn:// URI" class="${buttonClasses("w-9 px-0")}">${icon("link")}</button>
-          <button data-action="qr" title="QR code" class="${buttonClasses("w-9 px-0")}">${icon("qr")}</button>
-          <button data-action="delete" title="Delete" class="${buttonClasses("w-9 px-0 text-[var(--danger)]")}">${icon("trash")}</button>
+        <div class="client-actions relative z-10 flex w-full shrink-0 flex-wrap justify-end gap-1 sm:w-auto">
+          ${actionButton("download-config", "Download .conf", "download", "Download .conf")}
+          ${actionButton("copy-config", "Copy config", "copy", "Copy config")}
+          ${actionButton("qr", "Show QR", "qr", "Show QR")}
+          ${actionButton("copy-vpnuri", "Copy vpn://", "link", "Copy vpn://")}
+          <button data-action="toggle" title="${client.disabled ? "Enable Client" : "Disable Client"}" aria-label="${client.disabled ? "Enable Client" : "Disable Client"}" class="${buttonClasses("w-9 px-0")}">${icon("power")}</button>
+          <button data-action="toggle-p2p" title="Toggle P2P Ports" aria-label="Toggle P2P Ports" class="${buttonClasses(shieldClass)}">${icon("shield")}</button>
+          <button data-action="delete" title="Delete" aria-label="Delete" class="${buttonClasses("w-9 px-0 text-[var(--danger)]")}">${icon("trash")}</button>
         </div>
       </article>
     `;
@@ -773,6 +819,9 @@ async function clientAction(name, action) {
     if (action === "config") return showConfig(name);
     if (action === "qr") return showQr(name);
     if (action === "vpnuri") return showVpnUri(name);
+    if (action === "download-config") return downloadConfig(name);
+    if (action === "copy-config") return copyConfig(name);
+    if (action === "copy-vpnuri") return copyVpnUri(name);
     if (action === "toggle") {
       await api(`/api/clients/${encodeURIComponent(name)}/toggle`, {method: "POST", body: "{}"});
       showToast("Client toggled");
@@ -791,14 +840,36 @@ async function clientAction(name, action) {
       await loadClients();
       if (statusState.role === "super") await loadTokens();
     }
-  } catch {
-    showToast("Action failed", "error");
+  } catch (error) {
+    showToast("Failed", "error");
   }
 }
 
 async function showConfig(name) {
-  const blob = await api(`/api/clients/${encodeURIComponent(name)}/config`);
-  showModal(name, `<pre class="max-h-[70vh] overflow-auto whitespace-pre-wrap break-words rounded-md bg-[var(--soft)] p-3 text-xs">${esc(await blob.text())}</pre>`);
+  const text = await configText(name);
+  showModal(name, `
+    <div class="grid gap-3">
+      <div class="flex flex-wrap justify-end gap-2">
+        <button id="downloadConfigFromModal" class="${buttonClasses()}">${icon("download")}<span>Download .conf</span></button>
+        <button id="copyConfigFromModal" class="${buttonClasses()}">${icon("copy")}<span>Copy config</span></button>
+      </div>
+      <pre class="max-h-[70vh] overflow-auto whitespace-pre-wrap break-words rounded-md bg-[var(--soft)] p-3 text-xs">${esc(text)}</pre>
+    </div>
+  `);
+  document.querySelector("#downloadConfigFromModal").onclick = async () => downloadConfig(name);
+  document.querySelector("#copyConfigFromModal").onclick = async () => copyConfig(name);
+}
+
+async function downloadConfig(name) {
+  const blob = await api(`/api/clients/${encodeURIComponent(name)}/config/download`);
+  saveBlob(blob, `${name}.conf`);
+  showToast("Downloaded");
+}
+
+async function copyConfig(name) {
+  const text = await configText(name);
+  await copyText(text);
+  showToast("Copied");
 }
 
 async function showQr(name) {
@@ -820,9 +891,15 @@ async function showVpnUri(name) {
     </div>
   `);
   document.querySelector("#copyVpnUri").onclick = async () => {
-    await navigator.clipboard.writeText(uri);
-    showToast("vpn:// URI copied");
+    await copyText(uri);
+    showToast("Copied");
   };
+}
+
+async function copyVpnUri(name) {
+  const blob = await api(`/api/clients/${encodeURIComponent(name)}/vpnuri`);
+  await copyText((await blob.text()).trim());
+  showToast("Copied");
 }
 
 async function loadTokens() {
@@ -898,7 +975,7 @@ function renderTokenList() {
         </div>
       `);
       document.querySelector("#copyRotatedToken").onclick = async () => {
-        await navigator.clipboard.writeText(result.token);
+        await copyText(result.token);
         showToast("Token copied");
       };
       await loadTokens();
@@ -946,7 +1023,7 @@ async function createTokenFromModal(dialog) {
     </div>
   `);
   document.querySelector("#copyToken").onclick = async () => {
-    await navigator.clipboard.writeText(result.token);
+    await copyText(result.token);
     showToast("Token copied");
   };
   await loadTokens();

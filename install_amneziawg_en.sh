@@ -3199,8 +3199,9 @@ PY
         openssl req -x509 -nodes -newkey rsa:2048 -days 3650 \
             -keyout "$web_dir/key.pem" -out "$web_dir/cert.pem" \
             -subj "/CN=VPN Panel" >/dev/null 2>&1 || die "Failed to generate TLS certificate"
-        chmod 600 "$web_dir/key.pem" "$web_dir/cert.pem"
     fi
+    chmod 600 "$web_dir/key.pem"
+    chmod 644 "$web_dir/cert.pem"
 
     local asset web_base src tmp_asset
     web_base="https://raw.githubusercontent.com/${AWG_REPO}/${AWG_BRANCH}/web"
@@ -3224,6 +3225,8 @@ PY
     done
     chmod 600 "$web_dir"/* 2>/dev/null || true
     chmod 700 "$web_dir/server.py"
+    chmod 600 "$web_dir/key.pem" "$web_dir/tokens.json" 2>/dev/null || true
+    chmod 644 "$web_dir/cert.pem" 2>/dev/null || true
 
     cat > /etc/systemd/system/awg-web.service << EOF
 [Unit]

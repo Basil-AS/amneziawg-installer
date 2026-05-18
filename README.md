@@ -62,16 +62,22 @@
 ### Безопасная установка по умолчанию
 
 ```bash
-git clone https://github.com/<OWNER>/<REPO>.git
-cd amneziawg-installer
-sudo bash install_amneziawg.sh
+wget -O install_amneziawg.sh https://raw.githubusercontent.com/Basil-AS/amneziawg-installer/main/install_amneziawg.sh
+chmod +x install_amneziawg.sh
+sudo bash ./install_amneziawg.sh --route-all --server-name="my-vpn"
 ```
 
-Если вы запускаете установщик напрямую через `curl`, используйте свой репозиторий и ветку:
+`--route-all` — направить весь трафик клиента через VPN.  
+`--server-name="my-vpn"` — человекочитаемое имя сервера в панели и конфигурациях.
+
+### Для разработчиков / кастомной ветки
+
+Если вы тестируете свой fork или ветку, сначала клонируйте нужный репозиторий:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/<OWNER>/<REPO>/<BRANCH>/install_amneziawg.sh -o install_amneziawg.sh
-sudo bash install_amneziawg.sh
+git clone https://github.com/Basil-AS/amneziawg-installer.git
+cd amneziawg-installer
+sudo bash ./install_amneziawg.sh
 ```
 
 ### Доступ к web-panel
@@ -203,7 +209,7 @@ sudo /root/awg/manage_amneziawg.sh dns restart
 * **Полноценный IPv6 для клиентов:** native `/64`, если провайдер/VPS даёт публичную подсеть, или явный `ULA fd.../64 + NAT66` fallback.
 * **P2P-порты:** каждому клиенту автоматически выдаются TCP+UDP порты для торрентов, игр и self-hosted сервисов; дополнительные порты управляются через CLI и веб-панель.
 * **Full Cone NAT попытка:** если доступен `FULLCONENAT`, используется он; если нет — скрипт возвращается к `MASQUERADE`.
-* **Веб-панель:** HTTPS `:8443`, self-signed TLS, bearer token, список клиентов, добавление/удаление, QR/config/vpnuri, статистика, логи, рестарт сервиса, карточка DNS/AdGuard.
+* **Веб-панель:** HTTPS `:8443`, self-signed TLS, bearer token, список клиентов, добавление/удаление, скачивание и копирование `.conf`, QR/vpnuri, статистика, логи, рестарт сервиса, карточка DNS/AdGuard.
 * **AdGuard Home DNS:** опциональная установка без Docker, DNS только на localhost/VPN, клиенты получают `10.9.9.1` и IPv6-адрес сервера при dual-stack.
 * **Новые команды управления:** `p2p list/show/add/remove`, `ipv6 status/upgrade`, `dns status/restart/logs/set-mode`.
 * **Автогенерация firewall hooks:** `/root/awg/postup.sh`, `/root/awg/postdown.sh`, `/root/awg/p2p_rules.sh`.
@@ -356,6 +362,7 @@ sudo bash ./install_amneziawg.sh --upgrade-ipv6
   `/root/awg/postup.sh`, `/root/awg/postdown.sh`, `/root/awg/p2p_rules.sh`.
 * Для native IPv6 с NDP proxy создаётся `/etc/ndppd.conf`. Для ULA-режима используется NAT66.
 * Веб-панель разворачивается в `/root/awg/web/`, по умолчанию слушает HTTPS только на VPN gateway `10.9.9.1:8443`, использует локальные assets без внешних CDN, self-signed сертификат и bearer tokens/RBAC через `tokens.json`.
+* В карточке клиента есть явные действия: скачать `.conf`, скопировать полный текст конфига, показать QR и скопировать `vpn://`. Config endpoints остаются под auth и RBAC.
 * AdGuard Home ставится в `/opt/AdGuardHome`, слушает DNS на `127.0.0.1`, `10.9.9.1` и серверном IPv6 внутри VPN. Если сервис не стартует, VPN остаётся рабочим; fallback: `manage dns set-mode system`.
 
 ### Веб-панель
@@ -390,6 +397,7 @@ GET    /api/clients
 POST   /api/clients
 DELETE /api/clients/<name>
 GET    /api/clients/<name>/config
+GET    /api/clients/<name>/config/download
 GET    /api/clients/<name>/qr
 GET    /api/clients/<name>/vpnuri
 GET    /api/clients/<name>/p2p

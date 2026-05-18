@@ -323,7 +323,13 @@ _backup_configs_nolock() {
         fi
     fi
 
-    tar -czf "$bf" -C "$td" . || { rm -rf "$td"; die "Ошибка tar $bf"; }
+    tar \
+        --exclude="*.tmp" \
+        --exclude="*.tmp.*" \
+        --exclude=".*.tmp" \
+        --exclude="*.new" \
+        --exclude="*.bak.tmp" \
+        -czf "$bf" -C "$td" . || { rm -rf "$td"; die "Ошибка tar $bf"; }
     log_debug "tar: архив создан $bf"
     rm -rf "$td"
     chmod 600 "$bf" || log_warn "Ошибка chmod бэкапа"
@@ -951,7 +957,9 @@ import json
 import os
 import re
 import secrets
+import shutil
 import sys
+import time
 from pathlib import Path
 
 path = Path(sys.argv[1])
@@ -962,18 +970,13 @@ name_re = re.compile(r"^[A-Za-z0-9_-]{1,63}$")
 def digest(token):
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
-def load():
-    if path.exists():
-        try:
-            data = json.loads(path.read_text())
-        except Exception:
-            data = {}
-    else:
-        data = {}
+def normalize(data, allow_new_super=False):
     if not isinstance(data, dict):
-        data = {}
+        raise SystemExit("tokens.json is invalid; run manage_amneziawg.sh web token reset-super")
     users = data.get("users")
     if not isinstance(users, dict):
+        if path.exists() and "users" in data:
+            raise SystemExit("tokens.json is invalid; run manage_amneziawg.sh web token reset-super")
         users = {}
     legacy_normal = data.get("normal")
     if isinstance(legacy_normal, dict):
@@ -989,21 +992,33 @@ def load():
         elif isinstance(value, dict):
             record = {"name": value.get("name", ""), "clients": value.get("clients", [])}
         else:
-            continue
+            raise SystemExit("tokens.json is invalid; run manage_amneziawg.sh web token reset-super")
         if not isinstance(record["name"], str) or "\n" in record["name"] or "\r" in record["name"] or len(record["name"]) > 128:
-            record["name"] = ""
+            raise SystemExit("tokens.json is invalid; run manage_amneziawg.sh web token reset-super")
         if not isinstance(record["clients"], list):
-            record["clients"] = []
+            raise SystemExit("tokens.json is invalid; run manage_amneziawg.sh web token reset-super")
         clean_users[key] = {
             "name": record["name"],
             "clients": [item for item in record["clients"] if isinstance(item, str) and re.fullmatch(r"^[A-Za-z0-9_-]{1,63}$", item)],
         }
     super_hash = data.get("super_token_hash") or data.get("super")
     if not isinstance(super_hash, str) or not re.fullmatch(r"[0-9a-f]{64}", super_hash):
+        if path.exists() and not allow_new_super:
+            raise SystemExit("tokens.json is invalid; run manage_amneziawg.sh web token reset-super")
         token = secrets.token_urlsafe(32)
         super_hash = digest(token)
         data["_new_super_token"] = token
     return {"super_token_hash": super_hash, "users": clean_users}
+
+def load():
+    if path.exists():
+        try:
+            data = json.loads(path.read_text())
+        except Exception:
+            raise SystemExit("tokens.json is invalid; run manage_amneziawg.sh web token reset-super")
+    else:
+        data = {}
+    return normalize(data, allow_new_super=not path.exists())
 
 def save(data):
     tmp = path.with_name(path.name + f".tmp.{os.getpid()}")
@@ -1012,7 +1027,24 @@ def save(data):
     os.replace(tmp, path)
     os.chmod(path, 0o600)
 
-data = load()
+def backup_existing():
+    if not path.exists():
+        return None
+    backup = path.with_name(path.name + ".bak." + time.strftime("%Y%m%d-%H%M%S"))
+    shutil.copy2(path, backup)
+    os.chmod(backup, 0o600)
+    return backup
+
+if action == "reset-super":
+    backup = backup_existing()
+    try:
+        existing = json.loads(path.read_text()) if path.exists() else {}
+        data = normalize(existing, allow_new_super=True)
+    except Exception:
+        data = {"super_token_hash": "0" * 64, "users": {}}
+else:
+    data = load()
+
 if action == "list":
     save(data)
     print("super: present")
@@ -1047,8 +1079,10 @@ elif action == "rotate":
 elif action == "reset-super":
     token = secrets.token_urlsafe(32)
     data["super_token_hash"] = digest(token)
-    data["users"] = {}
     save(data)
+    if backup is not None:
+        print(f"Backup: {backup}")
+    print("New super token:")
     print(token)
 else:
     raise SystemExit("unknown action")
