@@ -718,6 +718,11 @@ Safety goals:
 </details>
 
 <details>
+  <summary><strong>Q: Handshake completes but no traffic flows - what's wrong?</strong></summary>
+  <b>A:</b> A common cause is the split-tunneling AllowedIPs gotcha during manual customization. If you want to ping or SSH to the server by its inner tunnel IP (<code>10.9.9.1</code> in the default subnet), add the <b>tunnel subnet</b> (default <code>10.9.9.0/24</code>, or your custom one if you changed <code>--subnet</code>) to the client's <code>AllowedIPs</code>. Otherwise the client does not route traffic to the server even from inside the tunnel. The <code>--route-all</code> mode (full tunnel <code>0.0.0.0/0</code>) covers the subnet automatically; the default <code>--route-amnezia</code> (Amnezia List) and <code>--route-custom=</code> do not, add it explicitly. See <a href="ADVANCED.en.md#allowedips-adv">ADVANCED.en.md → AllowedIPs</a>.
+</details>
+
+<details>
   <summary><strong>Q: Can I use this with AWG 1.x clients?</strong></summary>
   <b>A:</b> No. AWG 2.0 is not compatible with AWG 1.x. All clients must support the 2.0 protocol. For AWG 1.x, use the <a href="https://github.com/bivlked/amneziawg-installer/tree/legacy/v4">legacy/v4</a> branch.
 </details>
@@ -842,12 +847,24 @@ Safety goals:
 <details>
 <summary><strong>📰 Featured in</strong></summary>
 
-- [VPN Status (RU) — AmneziaWG services and server-side options catalog](https://vpnstatus.site/protocols/amneziawg)
-- [XDA Developers — «I found a self-hosted VPN that works where WireGuard gets blocked»](https://www.xda-developers.com/self-hosted-vpn-works-where-wireguard-gets-blocked/)
+**📖 Tutorials & Guides**
+- [Hetzner Community - Making a website accessible from restricted regions](https://community.hetzner.com/tutorials/making-website-accessible-from-restricted-regions) (cross-link in Resources)
+- [Debian Forums — HowTo: Install AmneziaWG 2.0 on Debian 12/13](https://forums.debian.net/viewtopic.php?t=166105)
+- [LowEndTalk - [Tutorial] One-command AmneziaWG VPN server install on Ubuntu / Debian / ARM](https://lowendtalk.com/discussion/217191)
+
+**📰 Articles & Reviews**
+- [XDA Developers — "I found a self-hosted VPN that works where WireGuard gets blocked"](https://www.xda-developers.com/self-hosted-vpn-works-where-wireguard-gets-blocked/)
 - [Pinggy — Top 5 Best Self-Hosted VPNs in 2026](https://pinggy.io/blog/top_5_best_self_hosted_vpns/)
 - [gHacks Tech News — AmneziaWG 2.0](https://www.ghacks.net/2026/03/25/amnezia-releases-amneziawg-2-0-to-bypass-advanced-internet-censorship-systems/)
-- [Debian Forums — HowTo: Install AmneziaWG 2.0 on Debian 12/13](https://forums.debian.net/viewtopic.php?t=166105)
+
+**📋 Listings & Directories**
+- [VPN Status (RU) — AmneziaWG services and server-side options catalog](https://vpnstatus.site/protocols/amneziawg)
+- [AlternativeTo - amneziawg-installer (42 alternatives)](https://alternativeto.net/software/amneziawg-installer/about/)
+- [LibHunt - #1 in Shell VPN category](https://www.libhunt.com/r/amneziawg-installer)
+
+**💬 Forums & Communities**
 - [Qubes OS Forum — AmneziaWG for censored regions](https://forum.qubes-os.org/t/installation-of-amnezia-vpn-and-amnezia-wg-effective-tools-against-internet-blocks-via-dpi-for-china-russia-belarus-turkmenistan-iran-vpn-with-vless-xray-reality-best-obfuscation-for-wireguard-easy-self-hosted-vpn-bypass/39005)
+- [Lemmy.world /c/selfhosted - amneziawg-installer announce (143 upvotes / 39 comments)](https://lemmy.world/post/45242153)
 
 </details>
 
