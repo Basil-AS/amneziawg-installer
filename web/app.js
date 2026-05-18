@@ -586,89 +586,129 @@ function applySearch() {
   });
 }
 
+const helpClientGroups = [
+  {
+    name: "Windows",
+    clients: [
+      {name: "AmneziaWG for Windows", status: "Recommended", description: "Лучший лёгкий AWG-клиент под Windows.", support: ["supported", "supported", "supported"], links: [{label: "GitHub Releases", url: "https://github.com/amnezia-vpn/amneziawg-windows-client/releases"}], platforms: "Windows x64, ARM64, x86", importMethod: ".conf", bestFor: "Лёгкая нативная работа с AmneziaWG-конфигами."},
+      {name: "AmneziaVPN", status: "Full client", description: "Полный VPN-клиент Amnezia.", support: ["supported", "supported", "supported"], links: [{label: "Официальная", url: "https://amnezia.org/downloads"}, {label: "GitHub", url: "https://github.com/amnezia-vpn/amnezia-client/releases"}], platforms: "Windows", importMethod: "vpn:// URI, app flow", bestFor: "Универсальный клиент с полным стеком Amnezia."},
+      {name: "WireSock Secure Connect", status: "Advanced", description: "Windows-клиент с продвинутым split tunneling.", support: ["supported", "warning", "supported"], links: [{label: "Сайт", url: "https://www.wiresock.net/wiresock-secure-connect/download/"}], platforms: "Windows", importMethod: ".conf", bestFor: "Тонкая маршрутизация трафика.", limitation: "AWG simulation/I-параметры могут отличаться от официальной реализации."},
+      {name: "VeilBox", status: "Experimental", description: "Альтернативный клиент с AmneziaWG/VLESS.", support: ["unknown", "unknown", "warning"], links: [{label: "GitHub", url: "https://github.com/artem4150/VeilBox"}], platforms: "Windows", importMethod: "Зависит от сборки", bestFor: "Эксперименты и гибридные сценарии.", limitation: "Поддержка AWG подтверждена не полностью."},
+      {name: "Clash Verge Rev", status: "Experimental", description: "Не основной AWG-клиент, использовать только как альтернативный прокси-комбайн.", support: ["warning", "warning", "warning"], links: [{label: "GitHub", url: "https://github.com/clash-verge-rev/clash-verge-rev/releases"}], platforms: "Windows", importMethod: "Профили прокси", bestFor: "Альтернативные proxy-сценарии.", limitation: "Не основной AWG-клиент."},
+    ],
+  },
+  {
+    name: "Android",
+    clients: [
+      {name: "AmneziaWG Android", status: "Recommended", description: "Лучший лёгкий официальный AWG-клиент под Android.", support: ["supported", "supported", "supported"], links: [{label: "GitHub", url: "https://github.com/amnezia-vpn/amneziawg-android/releases"}, {label: "Google Play", url: "https://play.google.com/store/apps/details?id=org.amnezia.awg"}], platforms: "Android phones, tablets", importMethod: ".conf, QR", bestFor: "Быстрый официальный клиент без лишнего слоя."},
+      {name: "AmneziaVPN", status: "Full client", description: "Полный клиент Amnezia.", support: ["supported", "supported", "supported"], links: [{label: "Официальная", url: "https://amnezia.org/downloads"}, {label: "GitHub", url: "https://github.com/amnezia-vpn/amnezia-client/releases"}], platforms: "Android phones, tablets", importMethod: "vpn:// URI, app flow", bestFor: "Полный клиент Amnezia и простой onboarding."},
+      {name: "WG Tunnel", status: "Advanced", description: "Android-клиент с auto-tunnel, split tunneling, Always-On, lockdown и Android TV.", support: ["supported", "supported", {state: "supported", text: "✅ AWG 2.0 userspace only"}], links: [{label: "GitHub", url: "https://github.com/wgtunnel/android/releases"}, {label: "Сайт", url: "https://wgtunnel.com/"}], platforms: "Android phones, tablets, Android TV", importMethod: ".conf", bestFor: "Продвинутые Android-сценарии и TV.", limitation: "AmneziaWG работает только через Userspace/Go backend; Kernel mode поддерживает только обычный WireGuard."},
+    ],
+  },
+  {
+    name: "iOS / iPadOS",
+    clients: [
+      {name: "AmneziaWG", status: "Recommended", description: "Лучший лёгкий AWG-клиент для iOS/iPadOS.", support: ["supported", "supported", "supported"], links: [{label: "App Store", url: "https://apps.apple.com/app/amneziawg/id6478942365"}], platforms: "iPhone, iPad", importMethod: ".conf, QR", bestFor: "Лёгкий официальный Apple-клиент."},
+      {name: "AmneziaVPN", status: "Full client", description: "Полный клиент Amnezia.", support: ["supported", "supported", "supported"], links: [{label: "App Store", url: "https://apps.apple.com/app/amnezia-vpn/id1600529900"}, {label: "Оф. сайт", url: "https://amnezia.org/downloads"}], platforms: "iPhone, iPad", importMethod: "vpn:// URI, app flow", bestFor: "Полный клиент Amnezia.", limitation: "iOS-версия может быть недоступна в RU регионе."},
+      {name: "DefaultVPN", status: "Fallback", description: "Альтернативный iOS-клиент.", support: ["supported", "supported", "warning"], links: [{label: "App Store", url: "https://apps.apple.com/app/defaultvpn/id6744725017"}], platforms: "iPhone, iPad", importMethod: ".conf", bestFor: "Запасной вариант на iOS.", limitation: "AWG 2.0 не заявлен как полноценный основной режим."},
+      {name: "Clash Mi", status: "Experimental", description: "Не основной AWG-клиент.", support: ["warning", "warning", "warning"], links: [{label: "App Store", url: "https://apps.apple.com/app/clash-mi/id6744321968"}], platforms: "iPhone, iPad", importMethod: "Профили прокси", bestFor: "Экспериментальные proxy-сценарии.", limitation: "Не основной AWG-клиент."},
+    ],
+  },
+  {
+    name: "macOS",
+    clients: [
+      {name: "AmneziaVPN", status: "Recommended / Full client", description: "Лучший универсальный вариант для macOS.", support: ["supported", "supported", "supported"], links: [{label: "Официальная", url: "https://amnezia.org/downloads"}, {label: "GitHub", url: "https://github.com/amnezia-vpn/amnezia-client/releases"}], platforms: "macOS", importMethod: "vpn:// URI, app flow", bestFor: "Универсальная работа на macOS."},
+      {name: "AmneziaWG", status: "Recommended", description: "Лёгкий AWG-клиент для Apple ecosystem.", support: ["supported", "supported", "supported"], links: [{label: "App Store", url: "https://apps.apple.com/app/amneziawg/id6478942365"}], platforms: "macOS", importMethod: ".conf, QR", bestFor: "Минимальный Apple-клиент."},
+      {name: "VeilBox", status: "Experimental", description: "Альтернативный клиент.", support: ["unknown", "unknown", "warning"], links: [{label: "GitHub", url: "https://github.com/artem4150/VeilBox"}], platforms: "macOS", importMethod: "Зависит от сборки", bestFor: "Эксперименты.", limitation: "Поддержка AWG подтверждена не полностью."},
+      {name: "Clash Verge Rev", status: "Experimental", description: "Не основной AWG-клиент.", support: ["warning", "warning", "warning"], links: [{label: "GitHub", url: "https://github.com/clash-verge-rev/clash-verge-rev/releases"}], platforms: "macOS", importMethod: "Профили прокси", bestFor: "Альтернативные proxy-сценарии.", limitation: "Не основной AWG-клиент."},
+    ],
+  },
+  {
+    name: "Linux Desktop",
+    clients: [
+      {name: "AmneziaVPN", status: "Recommended", description: "Основной GUI-клиент для Linux Desktop.", support: ["supported", "supported", "supported"], links: [{label: "Официальная", url: "https://amnezia.org/downloads"}, {label: "GitHub", url: "https://github.com/amnezia-vpn/amnezia-client/releases"}], platforms: "Linux Desktop", importMethod: "vpn:// URI, app flow", bestFor: "Основной GUI-путь для Linux."},
+      {name: "Clash Verge Rev", status: "Experimental", description: "Не основной AWG-клиент.", support: ["warning", "warning", "warning"], links: [{label: "GitHub", url: "https://github.com/clash-verge-rev/clash-verge-rev/releases"}], platforms: "Linux Desktop", importMethod: "Профили прокси", bestFor: "Альтернативные proxy-сценарии.", limitation: "Не основной AWG-клиент."},
+    ],
+  },
+];
+
+const helpSupportMeta = {
+  supported: {icon: "✅", label: "supported", classes: "border-green-700/30 bg-green-500/10 text-green-700"},
+  warning: {icon: "⚠️", label: "warning", classes: "border-amber-700/30 bg-amber-500/10 text-amber-700"},
+  unsupported: {icon: "❌", label: "unsupported", classes: "border-[var(--danger)] bg-red-500/10 text-[var(--danger)]"},
+  unknown: {icon: "?", label: "unknown", classes: "border-[var(--line)] bg-[var(--panel)] text-[var(--muted)]"},
+};
+
+const helpStatusClasses = {
+  Recommended: "border-green-700/30 bg-green-500/10 text-green-700",
+  "Recommended / Full client": "border-green-700/30 bg-green-500/10 text-green-700",
+  "Full client": "border-[var(--accent)] bg-[var(--panel)] text-[var(--accent)]",
+  Advanced: "border-sky-700/30 bg-sky-500/10 text-sky-700",
+  Fallback: "border-amber-700/30 bg-amber-500/10 text-amber-700",
+  Experimental: "border-[var(--line)] bg-[var(--panel)] text-[var(--muted)]",
+};
+
+function renderHelpSupportBadge(label, support) {
+  const detail = typeof support === "string" ? {state: support} : support;
+  const meta = helpSupportMeta[detail.state] || helpSupportMeta.unknown;
+  const text = detail.text || `${meta.icon} ${label}`;
+  return `<span class="inline-flex items-center rounded-full border px-2 py-1 text-[11px] font-medium ${meta.classes}">${esc(text)}</span>`;
+}
+
+function renderHelpClientCard(client) {
+  const links = client.links.map(link => `<a class="${buttonClasses("h-7 px-2 text-xs")}" href="${esc(link.url)}" target="_blank" rel="noopener">${esc(link.label)}</a>`).join("");
+  const note = client.limitation
+    ? `<p><span class="font-semibold text-[var(--text)]">Limitations:</span> ${esc(client.limitation)}</p>`
+    : `<p><span class="font-semibold text-[var(--text)]">Notes:</span> ${esc(client.description)}</p>`;
+  return `
+    <article class="rounded-lg border border-[var(--line)] bg-[var(--soft)] p-3 transition hover:border-[var(--accent)]">
+      <div class="flex flex-wrap items-start justify-between gap-2">
+        <div class="min-w-0">
+          <h4 class="font-semibold">${esc(client.name)}</h4>
+          <p class="mt-1 text-xs text-[var(--muted)]">${esc(client.description)}</p>
+        </div>
+        <span class="inline-flex rounded-full border px-2 py-1 text-[11px] font-medium ${helpStatusClasses[client.status] || helpStatusClasses.Experimental}">${esc(client.status)}</span>
+      </div>
+      <div class="mt-3 flex flex-wrap gap-1.5">
+        ${renderHelpSupportBadge("AWG 1.x", client.support[0])}
+        ${renderHelpSupportBadge("AWG 1.5", client.support[1])}
+        ${renderHelpSupportBadge("AWG 2.0", client.support[2])}
+      </div>
+      <div class="mt-3 flex flex-wrap gap-2">${links}</div>
+      <details class="mt-3 rounded-md border border-[var(--line)] bg-[var(--panel)] px-3 py-2 text-xs text-[var(--muted)]">
+        <summary class="cursor-pointer font-medium text-[var(--text)]">Details</summary>
+        <div class="mt-2 grid gap-1.5">
+          <p><span class="font-semibold text-[var(--text)]">Platforms:</span> ${esc(client.platforms)}</p>
+          <p><span class="font-semibold text-[var(--text)]">Import:</span> ${esc(client.importMethod)}</p>
+          <p><span class="font-semibold text-[var(--text)]">Best for:</span> ${esc(client.bestFor)}</p>
+          ${note}
+        </div>
+      </details>
+    </article>
+  `;
+}
+
+function renderHelpGroup(group) {
+  return `
+    <section class="grid gap-3">
+      <h3 class="text-xs font-semibold uppercase tracking-wide text-[var(--muted)]">${esc(group.name)}</h3>
+      <div class="grid gap-3 md:grid-cols-2">
+        ${group.clients.map(renderHelpClientCard).join("")}
+      </div>
+    </section>
+  `;
+}
+
 function showHelp() {
   showModal("Help & Clients", `
     <div class="grid gap-4 text-sm">
-      <p class="rounded-md border border-[var(--danger)] bg-[var(--soft)] px-3 py-2 font-bold text-[var(--danger)]">⚠️ Standard WireGuard clients WILL NOT WORK.</p>
-
-      <div class="grid gap-3">
-        <section class="overflow-hidden rounded-lg border border-[var(--line)]">
-          <h3 class="bg-[var(--soft)] px-3 py-2 text-xs font-semibold uppercase tracking-wide text-[var(--muted)]">Windows</h3>
-          <div class="overflow-x-auto">
-            <table class="min-w-[860px] w-full border-collapse text-left text-xs">
-              <thead class="border-y border-[var(--line)] text-[var(--muted)]"><tr><th class="px-3 py-2">Client</th><th class="px-3 py-2">Скачать</th><th class="px-3 py-2">AWG 1.x</th><th class="px-3 py-2">AWG 1.5</th><th class="px-3 py-2">AWG 2.0</th><th class="px-3 py-2">Примечание</th></tr></thead>
-              <tbody class="divide-y divide-[var(--line)]">
-                <tr><td class="px-3 py-2 font-semibold">AmneziaWG for Windows</td><td class="px-3 py-2"><a class="text-[var(--accent)] underline" href="https://github.com/amnezia-vpn/amneziawg-windows-client/releases" target="_blank" rel="noopener">GitHub Releases</a></td><td class="px-3 py-2">✅</td><td class="px-3 py-2">✅</td><td class="px-3 py-2">✅</td><td class="px-3 py-2">Лучший лёгкий AWG-клиент под Windows</td></tr>
-                <tr><td class="px-3 py-2 font-semibold">AmneziaVPN</td><td class="px-3 py-2"><a class="text-[var(--accent)] underline" href="https://amnezia.org/downloads" target="_blank" rel="noopener">Официальная</a> / <a class="text-[var(--accent)] underline" href="https://github.com/amnezia-vpn/amnezia-client/releases" target="_blank" rel="noopener">GitHub</a></td><td class="px-3 py-2">✅</td><td class="px-3 py-2">✅</td><td class="px-3 py-2">✅</td><td class="px-3 py-2">Полный VPN-клиент Amnezia</td></tr>
-                <tr><td class="px-3 py-2 font-semibold">WireSock Secure Connect</td><td class="px-3 py-2"><a class="text-[var(--accent)] underline" href="https://www.wiresock.net/wiresock-secure-connect/download/" target="_blank" rel="noopener">Сайт</a></td><td class="px-3 py-2">✅</td><td class="px-3 py-2">⚠️</td><td class="px-3 py-2">✅</td><td class="px-3 py-2">Продвинутый split tunneling, но AWG-параметры не совсем стандартно</td></tr>
-                <tr><td class="px-3 py-2 font-semibold">VeilBox</td><td class="px-3 py-2"><a class="text-[var(--accent)] underline" href="https://github.com/artem4150/VeilBox" target="_blank" rel="noopener">GitHub</a></td><td class="px-3 py-2">?</td><td class="px-3 py-2">?</td><td class="px-3 py-2">⚠️</td><td class="px-3 py-2">Альтернативный клиент с AmneziaWG/VLESS</td></tr>
-                <tr><td class="px-3 py-2 font-semibold">Clash Verge Rev</td><td class="px-3 py-2"><a class="text-[var(--accent)] underline" href="https://github.com/clash-verge-rev/clash-verge-rev/releases" target="_blank" rel="noopener">GitHub</a></td><td class="px-3 py-2">⚠️</td><td class="px-3 py-2">⚠️</td><td class="px-3 py-2">⚠️</td><td class="px-3 py-2">Не основной AWG-клиент</td></tr>
-              </tbody>
-            </table>
-          </div>
-        </section>
-
-        <section class="overflow-hidden rounded-lg border border-[var(--line)]">
-          <h3 class="bg-[var(--soft)] px-3 py-2 text-xs font-semibold uppercase tracking-wide text-[var(--muted)]">Android</h3>
-          <div class="overflow-x-auto">
-            <table class="min-w-[860px] w-full border-collapse text-left text-xs">
-              <thead class="border-y border-[var(--line)] text-[var(--muted)]"><tr><th class="px-3 py-2">Client</th><th class="px-3 py-2">Скачать</th><th class="px-3 py-2">AWG 1.x</th><th class="px-3 py-2">AWG 1.5</th><th class="px-3 py-2">AWG 2.0</th><th class="px-3 py-2">Примечание</th></tr></thead>
-              <tbody class="divide-y divide-[var(--line)]">
-                <tr><td class="px-3 py-2 font-semibold">AmneziaWG Android</td><td class="px-3 py-2"><a class="text-[var(--accent)] underline" href="https://github.com/amnezia-vpn/amneziawg-android/releases" target="_blank" rel="noopener">GitHub</a> / <a class="text-[var(--accent)] underline" href="https://play.google.com/store/apps/details?id=org.amnezia.awg" target="_blank" rel="noopener">Google Play</a></td><td class="px-3 py-2">✅</td><td class="px-3 py-2">✅</td><td class="px-3 py-2">✅</td><td class="px-3 py-2">Лучший лёгкий официальный AWG-клиент</td></tr>
-                <tr><td class="px-3 py-2 font-semibold">AmneziaVPN</td><td class="px-3 py-2"><a class="text-[var(--accent)] underline" href="https://amnezia.org/downloads" target="_blank" rel="noopener">Официальная</a> / <a class="text-[var(--accent)] underline" href="https://github.com/amnezia-vpn/amnezia-client/releases" target="_blank" rel="noopener">GitHub</a></td><td class="px-3 py-2">✅</td><td class="px-3 py-2">✅</td><td class="px-3 py-2">✅</td><td class="px-3 py-2">Полный клиент Amnezia</td></tr>
-                <tr><td class="px-3 py-2 font-semibold">WG Tunnel</td><td class="px-3 py-2"><a class="text-[var(--accent)] underline" href="https://github.com/wgtunnel/android/releases" target="_blank" rel="noopener">GitHub</a> / <a class="text-[var(--accent)] underline" href="https://wgtunnel.com/" target="_blank" rel="noopener">Сайт</a></td><td class="px-3 py-2">✅</td><td class="px-3 py-2">✅</td><td class="px-3 py-2">✅ (userspace only)</td><td class="px-3 py-2">AWG 2.0 работает только через Userspace/Go. В режиме Kernel работает только обычный WG</td></tr>
-              </tbody>
-            </table>
-          </div>
-        </section>
-
-        <section class="overflow-hidden rounded-lg border border-[var(--line)]">
-          <h3 class="bg-[var(--soft)] px-3 py-2 text-xs font-semibold uppercase tracking-wide text-[var(--muted)]">iOS / iPadOS</h3>
-          <div class="overflow-x-auto">
-            <table class="min-w-[860px] w-full border-collapse text-left text-xs">
-              <thead class="border-y border-[var(--line)] text-[var(--muted)]"><tr><th class="px-3 py-2">Client</th><th class="px-3 py-2">Скачать</th><th class="px-3 py-2">AWG 1.x</th><th class="px-3 py-2">AWG 1.5</th><th class="px-3 py-2">AWG 2.0</th><th class="px-3 py-2">Примечание</th></tr></thead>
-              <tbody class="divide-y divide-[var(--line)]">
-                <tr><td class="px-3 py-2 font-semibold">AmneziaWG</td><td class="px-3 py-2"><a class="text-[var(--accent)] underline" href="https://apps.apple.com/app/amneziawg/id6478942365" target="_blank" rel="noopener">App Store</a></td><td class="px-3 py-2">✅</td><td class="px-3 py-2">✅</td><td class="px-3 py-2">✅</td><td class="px-3 py-2">Лучший лёгкий AWG-клиент для iOS</td></tr>
-                <tr><td class="px-3 py-2 font-semibold">AmneziaVPN</td><td class="px-3 py-2"><a class="text-[var(--accent)] underline" href="https://apps.apple.com/app/amnezia-vpn/id1600529900" target="_blank" rel="noopener">App Store</a> / <a class="text-[var(--accent)] underline" href="https://amnezia.org/downloads" target="_blank" rel="noopener">Оф. сайт</a></td><td class="px-3 py-2">✅</td><td class="px-3 py-2">✅</td><td class="px-3 py-2">✅</td><td class="px-3 py-2">Полный клиент Amnezia</td></tr>
-                <tr><td class="px-3 py-2 font-semibold">DefaultVPN</td><td class="px-3 py-2"><a class="text-[var(--accent)] underline" href="https://apps.apple.com/app/defaultvpn/id6744725017" target="_blank" rel="noopener">App Store</a></td><td class="px-3 py-2">✅</td><td class="px-3 py-2">✅</td><td class="px-3 py-2">⚠️</td><td class="px-3 py-2">Альтернатива для iOS</td></tr>
-                <tr><td class="px-3 py-2 font-semibold">Clash Mi</td><td class="px-3 py-2"><a class="text-[var(--accent)] underline" href="https://apps.apple.com/app/clash-mi/id6744321968" target="_blank" rel="noopener">App Store</a></td><td class="px-3 py-2">⚠️</td><td class="px-3 py-2">⚠️</td><td class="px-3 py-2">⚠️</td><td class="px-3 py-2">Не основной AWG-клиент</td></tr>
-              </tbody>
-            </table>
-          </div>
-        </section>
-
-        <section class="overflow-hidden rounded-lg border border-[var(--line)]">
-          <h3 class="bg-[var(--soft)] px-3 py-2 text-xs font-semibold uppercase tracking-wide text-[var(--muted)]">macOS</h3>
-          <div class="overflow-x-auto">
-            <table class="min-w-[860px] w-full border-collapse text-left text-xs">
-              <thead class="border-y border-[var(--line)] text-[var(--muted)]"><tr><th class="px-3 py-2">Client</th><th class="px-3 py-2">Скачать</th><th class="px-3 py-2">AWG 1.x</th><th class="px-3 py-2">AWG 1.5</th><th class="px-3 py-2">AWG 2.0</th><th class="px-3 py-2">Примечание</th></tr></thead>
-              <tbody class="divide-y divide-[var(--line)]">
-                <tr><td class="px-3 py-2 font-semibold">AmneziaVPN</td><td class="px-3 py-2"><a class="text-[var(--accent)] underline" href="https://amnezia.org/downloads" target="_blank" rel="noopener">Официальная</a> / <a class="text-[var(--accent)] underline" href="https://github.com/amnezia-vpn/amnezia-client/releases" target="_blank" rel="noopener">GitHub</a></td><td class="px-3 py-2">✅</td><td class="px-3 py-2">✅</td><td class="px-3 py-2">✅</td><td class="px-3 py-2">Лучший универсальный вариант</td></tr>
-                <tr><td class="px-3 py-2 font-semibold">AmneziaWG</td><td class="px-3 py-2"><a class="text-[var(--accent)] underline" href="https://apps.apple.com/app/amneziawg/id6478942365" target="_blank" rel="noopener">App Store</a></td><td class="px-3 py-2">✅</td><td class="px-3 py-2">✅</td><td class="px-3 py-2">✅</td><td class="px-3 py-2">Лёгкий AWG-клиент</td></tr>
-                <tr><td class="px-3 py-2 font-semibold">VeilBox</td><td class="px-3 py-2"><a class="text-[var(--accent)] underline" href="https://github.com/artem4150/VeilBox" target="_blank" rel="noopener">GitHub</a></td><td class="px-3 py-2">?</td><td class="px-3 py-2">?</td><td class="px-3 py-2">⚠️</td><td class="px-3 py-2">Альтернативный клиент</td></tr>
-                <tr><td class="px-3 py-2 font-semibold">Clash Verge Rev</td><td class="px-3 py-2"><a class="text-[var(--accent)] underline" href="https://github.com/clash-verge-rev/clash-verge-rev/releases" target="_blank" rel="noopener">GitHub</a></td><td class="px-3 py-2">⚠️</td><td class="px-3 py-2">⚠️</td><td class="px-3 py-2">⚠️</td><td class="px-3 py-2">Не основной AWG-клиент</td></tr>
-              </tbody>
-            </table>
-          </div>
-        </section>
-
-        <section class="overflow-hidden rounded-lg border border-[var(--line)]">
-          <h3 class="bg-[var(--soft)] px-3 py-2 text-xs font-semibold uppercase tracking-wide text-[var(--muted)]">Linux Desktop</h3>
-          <div class="overflow-x-auto">
-            <table class="min-w-[860px] w-full border-collapse text-left text-xs">
-              <thead class="border-y border-[var(--line)] text-[var(--muted)]"><tr><th class="px-3 py-2">Client</th><th class="px-3 py-2">Скачать</th><th class="px-3 py-2">AWG 1.x</th><th class="px-3 py-2">AWG 1.5</th><th class="px-3 py-2">AWG 2.0</th><th class="px-3 py-2">Примечание</th></tr></thead>
-              <tbody class="divide-y divide-[var(--line)]">
-                <tr><td class="px-3 py-2 font-semibold">AmneziaVPN</td><td class="px-3 py-2"><a class="text-[var(--accent)] underline" href="https://amnezia.org/downloads" target="_blank" rel="noopener">Официальная</a> / <a class="text-[var(--accent)] underline" href="https://github.com/amnezia-vpn/amnezia-client/releases" target="_blank" rel="noopener">GitHub</a></td><td class="px-3 py-2">✅</td><td class="px-3 py-2">✅</td><td class="px-3 py-2">✅</td><td class="px-3 py-2">Основной GUI-клиент для Linux</td></tr>
-                <tr><td class="px-3 py-2 font-semibold">Clash Verge Rev</td><td class="px-3 py-2"><a class="text-[var(--accent)] underline" href="https://github.com/clash-verge-rev/clash-verge-rev/releases" target="_blank" rel="noopener">GitHub</a></td><td class="px-3 py-2">⚠️</td><td class="px-3 py-2">⚠️</td><td class="px-3 py-2">⚠️</td><td class="px-3 py-2">Не основной AWG-клиент</td></tr>
-              </tbody>
-            </table>
-          </div>
-        </section>
+      <div class="rounded-lg border border-[var(--danger)] bg-[var(--soft)] px-3 py-3">
+        <p class="font-bold text-[var(--danger)]">⚠️ Standard WireGuard clients WILL NOT WORK with AmneziaWG configs.</p>
+        <p class="mt-1 text-xs text-[var(--muted)]">Если клиент ругается на S3, S4, I1 или H1, нужен клиент с полной поддержкой AWG 2.0.</p>
       </div>
-
-      <blockquote class="rounded-md border-l-4 border-[var(--danger)] bg-[var(--soft)] px-3 py-2 text-[var(--muted)]">
-        Если клиент выдает ошибку про неизвестный параметр (S3, S4, I1, H1) — используйте клиент с полной поддержкой AWG 2.0.
-      </blockquote>
+      <div class="grid gap-5">
+        ${helpClientGroups.map(renderHelpGroup).join("")}
+      </div>
     </div>
   `);
 }
