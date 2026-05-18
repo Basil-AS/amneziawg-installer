@@ -171,6 +171,28 @@ _awg_bool() {
     esac
 }
 
+normalize_awg_ipv6_mode() {
+    case "${1:-legacy}" in
+        routed|ndp|nat66|legacy) echo "${1:-legacy}" ;;
+        native) echo "ndp" ;;
+        ula) echo "nat66" ;;
+        disabled|off|0) echo "legacy" ;;
+        *) return 1 ;;
+    esac
+}
+
+awg_ipv6_mode() {
+    normalize_awg_ipv6_mode "${AWG_IPV6_MODE:-legacy}" 2>/dev/null || echo "legacy"
+}
+
+awg_server_name() {
+    local name="${AWG_SERVER_NAME:-MyVPN}"
+    name="${name//$'\r'/ }"
+    name="${name//$'\n'/ }"
+    [[ -n "${name//[[:space:]]/}" ]] || name="MyVPN"
+    printf '%s' "$name"
+}
+
 awg_ipv6_enabled() {
     _awg_bool "${AWG_IPV6_ENABLED:-0}" && [[ -n "${AWG_IPV6_SUBNET:-}" ]]
 }
@@ -438,7 +460,7 @@ NIC="\${AWG_MAIN_NIC:-${nic}}"
 AWG_IFACE="\${AWG_IFACE:-awg0}"
 FULLCONE="${AWG_FULLCONE_NAT:-0}"
 IPV6_ENABLED="${AWG_IPV6_ENABLED:-0}"
-IPV6_MODE="${AWG_IPV6_MODE:-legacy}"
+IPV6_MODE="$(normalize_awg_ipv6_mode "${AWG_IPV6_MODE:-legacy}" 2>/dev/null || echo legacy)"
 IPV6_SUBNET="${AWG_IPV6_SUBNET:-}"
 P2P_RULES="${p2p}"
 
@@ -485,7 +507,7 @@ set +e
 NIC="\${AWG_MAIN_NIC:-${nic}}"
 AWG_IFACE="\${AWG_IFACE:-awg0}"
 IPV6_ENABLED="${AWG_IPV6_ENABLED:-0}"
-IPV6_MODE="${AWG_IPV6_MODE:-legacy}"
+IPV6_MODE="$(normalize_awg_ipv6_mode "${AWG_IPV6_MODE:-legacy}" 2>/dev/null || echo legacy)"
 IPV6_SUBNET="${AWG_IPV6_SUBNET:-}"
 P2P_RULES="${p2p}"
 
@@ -524,7 +546,7 @@ set +e
 ACTION="\${1:-up}"
 NIC="\${AWG_MAIN_NIC:-${nic}}"
 AWG_IFACE="\${AWG_IFACE:-awg0}"
-IPV6_MODE="${AWG_IPV6_MODE:-legacy}"
+IPV6_MODE="$(normalize_awg_ipv6_mode "${AWG_IPV6_MODE:-legacy}" 2>/dev/null || echo legacy)"
 
 ipt_nat_add() { local chain="\$1"; shift; iptables -t nat -C "\$chain" "\$@" 2>/dev/null || iptables -t nat -A "\$chain" "\$@"; }
 ipt_nat_del() { local chain="\$1"; shift; while iptables -t nat -C "\$chain" "\$@" 2>/dev/null; do iptables -t nat -D "\$chain" "\$@"; done; }
@@ -562,7 +584,7 @@ EOF
                 echo "    ipt_fwd_add -i \"\$NIC\" -o \"\$AWG_IFACE\" -d ${ipv4} -p tcp --dport ${p} -j ACCEPT"
                 echo "    ipt_fwd_add -i \"\$NIC\" -o \"\$AWG_IFACE\" -d ${ipv4} -p udp --dport ${p} -j ACCEPT"
                 if [[ -n "$ipv6" ]]; then
-                    if [[ "${AWG_IPV6_MODE:-}" == "ula" ]]; then
+                    if [[ "$(awg_ipv6_mode)" == "nat66" ]]; then
                         echo "    ip6t_nat_add PREROUTING -i \"\$NIC\" -p tcp --dport ${p} -j DNAT --to-destination ${ipv6}"
                         echo "    ip6t_nat_add PREROUTING -i \"\$NIC\" -p udp --dport ${p} -j DNAT --to-destination ${ipv6}"
                     fi
@@ -578,7 +600,7 @@ EOF
                 echo "    ipt_fwd_del -i \"\$NIC\" -o \"\$AWG_IFACE\" -d ${ipv4} -p tcp --dport ${p} -j ACCEPT"
                 echo "    ipt_fwd_del -i \"\$NIC\" -o \"\$AWG_IFACE\" -d ${ipv4} -p udp --dport ${p} -j ACCEPT"
                 if [[ -n "$ipv6" ]]; then
-                    if [[ "${AWG_IPV6_MODE:-}" == "ula" ]]; then
+                    if [[ "$(awg_ipv6_mode)" == "nat66" ]]; then
                         echo "    ip6t_nat_del PREROUTING -i \"\$NIC\" -p tcp --dport ${p} -j DNAT --to-destination ${ipv6}"
                         echo "    ip6t_nat_del PREROUTING -i \"\$NIC\" -p udp --dport ${p} -j DNAT --to-destination ${ipv6}"
                     fi

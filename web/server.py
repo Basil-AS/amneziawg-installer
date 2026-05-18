@@ -26,7 +26,13 @@ LEGACY_TOKEN_FILE = WEB_DIR / "auth_token"
 NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 TOKEN_HASH_RE = re.compile(r"^[0-9a-f]{64}$")
 RATE = {}
-TOKENS_LOCK = threading.Lock()
+RATE_LOCK = threading.Lock()
+RATE_WINDOW = 60
+RATE_LIMIT = 100
+RATE_CLEANUP_INTERVAL = 60
+RATE_LAST_CLEANUP = 0
+MAX_JSON_BODY = 64 * 1024
+TOKENS_LOCK = threading.RLock()
 TRAFFIC_LOCK = threading.Lock()
 
 
@@ -48,16 +54,17 @@ def token_hash(token):
 
 
 def write_tokens(data):
-    WEB_DIR.mkdir(parents=True, exist_ok=True)
-    clean = {
-        "super_token_hash": data["super_token_hash"],
-        "users": data.get("users", {}),
-    }
-    tmp = TOKEN_FILE.with_name(f"{TOKEN_FILE.name}.tmp.{os.getpid()}")
-    tmp.write_text(json.dumps(clean, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    os.chmod(tmp, 0o600)
-    os.replace(tmp, TOKEN_FILE)
-    os.chmod(TOKEN_FILE, 0o600)
+    with TOKENS_LOCK:
+        WEB_DIR.mkdir(parents=True, exist_ok=True)
+        clean = {
+            "super_token_hash": data["super_token_hash"],
+            "users": data.get("users", {}),
+        }
+        tmp = TOKEN_FILE.with_name(f"{TOKEN_FILE.name}.tmp.{os.getpid()}")
+        tmp.write_text(json.dumps(clean, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, TOKEN_FILE)
+        os.chmod(TOKEN_FILE, 0o600)
 
 
 def load_traffic_history():
@@ -255,38 +262,71 @@ def clean_user_record(value):
 
 
 def load_tokens():
-    data = {}
-    if TOKEN_FILE.exists():
-        try:
-            data = json.loads(TOKEN_FILE.read_text(encoding="utf-8"))
-        except Exception:
-            data = {}
-    if not isinstance(data, dict):
+    with TOKENS_LOCK:
         data = {}
+        if TOKEN_FILE.exists():
+            try:
+                data = json.loads(TOKEN_FILE.read_text(encoding="utf-8"))
+            except Exception:
+                data = {}
+        if not isinstance(data, dict):
+            data = {}
 
-    super_hash = data.get("super_token_hash") or data.get("super")
-    if not isinstance(super_hash, str) or not TOKEN_HASH_RE.fullmatch(super_hash):
-        legacy = LEGACY_TOKEN_FILE.read_text(errors="ignore").strip() if LEGACY_TOKEN_FILE.exists() else ""
-        super_hash = token_hash(legacy) if legacy else token_hash(secrets.token_urlsafe(32))
+        super_hash = data.get("super_token_hash") or data.get("super")
+        if not isinstance(super_hash, str) or not TOKEN_HASH_RE.fullmatch(super_hash):
+            legacy = LEGACY_TOKEN_FILE.read_text(errors="ignore").strip() if LEGACY_TOKEN_FILE.exists() else ""
+            super_hash = token_hash(legacy) if legacy else token_hash(secrets.token_urlsafe(32))
 
-    users = data.get("users")
-    if not isinstance(users, dict):
-        users = {}
-    legacy_normal = data.get("normal")
-    if isinstance(legacy_normal, dict):
-        for value in legacy_normal.values():
-            if isinstance(value, str) and TOKEN_HASH_RE.fullmatch(value):
-                users.setdefault(value, [])
+        users = data.get("users")
+        if not isinstance(users, dict):
+            users = {}
+        legacy_normal = data.get("normal")
+        if isinstance(legacy_normal, dict):
+            for value in legacy_normal.values():
+                if isinstance(value, str) and TOKEN_HASH_RE.fullmatch(value):
+                    users.setdefault(value, [])
 
-    clean_users = {}
-    for digest, value in users.items():
-        if isinstance(digest, str) and TOKEN_HASH_RE.fullmatch(digest):
-            clean_users[digest] = clean_user_record(value)
+        clean_users = {}
+        for digest, value in users.items():
+            if isinstance(digest, str) and TOKEN_HASH_RE.fullmatch(digest):
+                clean_users[digest] = clean_user_record(value)
 
-    clean = {"super_token_hash": super_hash, "users": clean_users}
-    if clean != data or not TOKEN_FILE.exists():
-        write_tokens(clean)
-    return clean
+        clean = {"super_token_hash": super_hash, "users": clean_users}
+        if clean != data or not TOKEN_FILE.exists():
+            write_tokens(clean)
+        return clean
+
+
+def check_rate_limit(ip, now=None):
+    global RATE_LAST_CLEANUP
+    now = time.time() if now is None else now
+    with RATE_LOCK:
+        if now - RATE_LAST_CLEANUP >= RATE_CLEANUP_INTERVAL:
+            for key, values in list(RATE.items()):
+                bucket = [stamp for stamp in values if now - stamp < RATE_WINDOW]
+                if bucket:
+                    RATE[key] = bucket
+                else:
+                    del RATE[key]
+            RATE_LAST_CLEANUP = now
+        bucket = [stamp for stamp in RATE.get(ip, []) if now - stamp < RATE_WINDOW]
+        bucket.append(now)
+        RATE[ip] = bucket
+        return len(bucket) <= RATE_LIMIT
+
+
+def tail_lines(path, limit=100):
+    try:
+        result = subprocess.run(
+            ["tail", "-n", str(limit), str(path)],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return []
+    return result.stdout.splitlines() if result.returncode == 0 else []
 
 
 def authenticate(header):
@@ -501,11 +541,7 @@ class Handler(SimpleHTTPRequestHandler):
         if not self.path.startswith("/api/"):
             return {"role": "static"}
         ip = self.client_address[0]
-        now = time.time()
-        bucket = [t for t in RATE.get(ip, []) if now - t < 60]
-        bucket.append(now)
-        RATE[ip] = bucket
-        if len(bucket) > 100:
+        if not check_rate_limit(ip):
             self.send_error(HTTPStatus.TOO_MANY_REQUESTS)
             return None
         auth = authenticate(self.headers.get("Authorization", ""))
@@ -549,7 +585,15 @@ class Handler(SimpleHTTPRequestHandler):
         self.wfile.write(data)
 
     def json_body(self):
-        size = int(self.headers.get("Content-Length", "0") or 0)
+        try:
+            size = int(self.headers.get("Content-Length", "0") or 0)
+        except (TypeError, ValueError):
+            raise ValueError("invalid content length")
+        if size < 0:
+            raise ValueError("invalid content length")
+        if size > MAX_JSON_BODY:
+            self.send_error(HTTPStatus.REQUEST_ENTITY_TOO_LARGE)
+            raise ValueError("payload too large")
         return json.loads(self.rfile.read(size).decode("utf-8")) if size else {}
 
     def send_file(self, path, ctype):
@@ -638,7 +682,7 @@ class Handler(SimpleHTTPRequestHandler):
             lines = []
             for f in (AWG_DIR / "manage_amneziawg.log", AWG_DIR / "install_amneziawg.log"):
                 if f.exists():
-                    lines.extend(f.read_text(errors="ignore").splitlines()[-100:])
+                    lines.extend(tail_lines(f, 100))
             self.send_json({"lines": lines[-100:]})
             return
         m = re.match(r"^/api/clients/([^/]+)/(config|qr|vpnuri|p2p)$", u.path)
@@ -742,6 +786,8 @@ class Handler(SimpleHTTPRequestHandler):
                     p = run_manage(*args)
             self.send_json({"ok": p.returncode == 0, "stdout": p.stdout, "stderr": p.stderr}, 200 if p.returncode == 0 else 400)
         except ValueError as exc:
+            if str(exc) == "payload too large":
+                return
             self.send_json({"error": str(exc)}, 400)
 
 
@@ -771,6 +817,8 @@ class Handler(SimpleHTTPRequestHandler):
                 write_tokens(data)
             self.send_json({"ok": True, "hash": digest, "name": name, "clients": record["clients"]})
         except ValueError as exc:
+            if str(exc) == "payload too large":
+                return
             self.send_json({"error": str(exc)}, 400)
 
     def do_DELETE(self):
@@ -817,6 +865,8 @@ class Handler(SimpleHTTPRequestHandler):
                     return
             self.send_json({"ok": p.returncode == 0, "stdout": p.stdout, "stderr": p.stderr}, 200 if p.returncode == 0 else 400)
         except ValueError as exc:
+            if str(exc) == "payload too large":
+                return
             self.send_json({"error": str(exc)}, 400)
 
 

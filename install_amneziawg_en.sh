@@ -279,7 +279,8 @@ Options:
   --subnet=SUBNET       Set tunnel subnet (x.x.x.x/yy) non-interactively
   --allow-ipv6          Keep IPv6 enabled non-interactively
   --disallow-ipv6       Force-disable IPv6 non-interactively
-  --enable-native-ipv6  Enable client IPv6: native /64 or ULA/NAT66 fallback
+  --enable-native-ipv6  Compatibility alias: enable client IPv6
+  --ipv6-mode=MODE      Client IPv6 mode: routed, ndp, or nat66
   --ipv6-subnet=CIDR    Set client IPv6 /64 (for example 2001:db8:1::/64)
   --upgrade-ipv6        Migrate existing clients to IPv6/P2P metadata
   --p2p-base-port=PORT  Base P2P port (default 20000; range base+1..base+1024)
@@ -758,11 +759,29 @@ generate_ula_subnet() {
     echo "fd${r:0:2}:${r:2:4}:${r:6:4}:1::/64"
 }
 
+normalize_ipv6_mode_installer() {
+    case "${1:-legacy}" in
+        routed|ndp|nat66|legacy) echo "${1:-legacy}" ;;
+        native) echo "ndp" ;;
+        ula) echo "nat66" ;;
+        disabled|off|0) echo "legacy" ;;
+        *) return 1 ;;
+    esac
+}
+
+validate_server_name() {
+    local name="$1"
+    [[ -n "${name//[[:space:]]/}" ]] || return 1
+    [[ "$name" != *$'\n'* && "$name" != *$'\r'* ]] || return 1
+    [[ ${#name} -le 128 ]] || return 1
+}
+
 configure_ipv6_client_mode() {
     AWG_IPV6_ENABLED=${AWG_IPV6_ENABLED:-0}
     AWG_IPV6_MODE=${AWG_IPV6_MODE:-legacy}
     AWG_IPV6_SUBNET=${AWG_IPV6_SUBNET:-}
     AWG_IPV6_NDP_PROXY=${AWG_IPV6_NDP_PROXY:-0}
+    local requested_mode=""
 
     if [[ "${DISABLE_IPV6:-1}" -eq 1 ]]; then
         AWG_IPV6_ENABLED=0
@@ -772,30 +791,55 @@ configure_ipv6_client_mode() {
         return 0
     fi
 
+    if [[ -n "$CLI_IPV6_MODE" ]]; then
+        requested_mode=$(normalize_ipv6_mode_installer "$CLI_IPV6_MODE") || \
+            die "Invalid --ipv6-mode: '$CLI_IPV6_MODE' (expected routed, ndp or nat66)."
+    fi
+    AWG_IPV6_MODE=$(normalize_ipv6_mode_installer "$AWG_IPV6_MODE" 2>/dev/null || echo "legacy")
+
     AWG_IPV6_ENABLED=1
     if [[ -n "$CLI_IPV6_SUBNET" ]]; then
-        validate_ipv6_subnet "$CLI_IPV6_SUBNET" || die "Invalid --ipv6-subnet: '$CLI_IPV6_SUBNET'. IPv6 /64 is required."
+        validate_ipv6_subnet "$CLI_IPV6_SUBNET" || die "Invalid --ipv6-subnet: '$CLI_IPV6_SUBNET'. IPv6 /48../64 is required."
         AWG_IPV6_SUBNET=$(normalize_ipv6_subnet_installer "$CLI_IPV6_SUBNET")
-        if [[ "$AWG_IPV6_SUBNET" == fd* || "$AWG_IPV6_SUBNET" == FD* ]]; then
-            AWG_IPV6_MODE=ula
-            AWG_IPV6_NDP_PROXY=0
-            log_warn "Using ULA IPv6 ($AWG_IPV6_SUBNET): this is NAT66 fallback, not public native IPv6."
-        else
-            AWG_IPV6_MODE=native
-            AWG_IPV6_NDP_PROXY=1
+    fi
+
+    if [[ -n "$requested_mode" && "$requested_mode" != "legacy" ]]; then
+        AWG_IPV6_MODE="$requested_mode"
+        if [[ "$AWG_IPV6_MODE" == "nat66" ]]; then
+            if [[ -z "$AWG_IPV6_SUBNET" ]]; then
+                AWG_IPV6_SUBNET=$(generate_ula_subnet)
+            elif [[ "$AWG_IPV6_SUBNET" != fd* && "$AWG_IPV6_SUBNET" != FD* ]]; then
+                log_warn "NAT66 usually uses ULA fd../64; keeping the provided subnet as-is: $AWG_IPV6_SUBNET"
+            fi
+        elif [[ -z "$AWG_IPV6_SUBNET" ]]; then
+            AWG_IPV6_SUBNET=$(detect_ipv6_64_subnet) || \
+                die "Mode --ipv6-mode=${AWG_IPV6_MODE} requires public IPv6 /48../64. Provide --ipv6-subnet=... or use --ipv6-mode=nat66."
         fi
-    elif [[ -z "$AWG_IPV6_SUBNET" || "$CLI_ENABLE_NATIVE_IPV6" -eq 1 || "$CLI_UPGRADE_IPV6" -eq 1 ]]; then
+    elif [[ -n "$AWG_IPV6_SUBNET" ]]; then
+        if [[ "$AWG_IPV6_MODE" == "legacy" ]]; then
+            if [[ "$AWG_IPV6_SUBNET" == fd* || "$AWG_IPV6_SUBNET" == FD* ]]; then
+                AWG_IPV6_MODE=nat66
+            else
+                AWG_IPV6_MODE=ndp
+            fi
+        fi
+    elif [[ "$CLI_ENABLE_NATIVE_IPV6" -eq 1 || "$CLI_UPGRADE_IPV6" -eq 1 || "$DISABLE_IPV6" -eq 0 ]]; then
         if AWG_IPV6_SUBNET=$(detect_ipv6_64_subnet); then
-            AWG_IPV6_MODE=native
-            AWG_IPV6_NDP_PROXY=1
-            log "Auto-detected client IPv6 /64: $AWG_IPV6_SUBNET"
+            AWG_IPV6_MODE=ndp
+            log "Auto-detected public client IPv6 /64: $AWG_IPV6_SUBNET (ndp mode)."
         else
             AWG_IPV6_SUBNET=$(generate_ula_subnet)
-            AWG_IPV6_MODE=ula
-            AWG_IPV6_NDP_PROXY=0
-            log_warn "Public IPv6 /64 not found. Enabled ULA/NAT66 fallback: $AWG_IPV6_SUBNET (not public native IPv6)."
+            AWG_IPV6_MODE=nat66
+            log_warn "Public IPv6 /64 not found. Enabled NAT66/ULA fallback: $AWG_IPV6_SUBNET."
         fi
     fi
+
+    case "$AWG_IPV6_MODE" in
+        routed) AWG_IPV6_NDP_PROXY=0 ;;
+        ndp) AWG_IPV6_NDP_PROXY=1 ;;
+        nat66) AWG_IPV6_NDP_PROXY=0 ;;
+        *) AWG_IPV6_ENABLED=0; AWG_IPV6_MODE=legacy; AWG_IPV6_SUBNET=""; AWG_IPV6_NDP_PROXY=0 ;;
+    esac
     export AWG_IPV6_ENABLED AWG_IPV6_MODE AWG_IPV6_SUBNET AWG_IPV6_NDP_PROXY
 }
 
@@ -1879,7 +1923,7 @@ initialize_setup() {
         ALLOWED_IPS=${ALLOWED_IPS:-""}
         AWG_ENDPOINT=${AWG_ENDPOINT:-""}
         AWG_IPV6_ENABLED=${AWG_IPV6_ENABLED:-0}
-        AWG_IPV6_MODE=${AWG_IPV6_MODE:-legacy}
+        AWG_IPV6_MODE=$(normalize_ipv6_mode_installer "${AWG_IPV6_MODE:-legacy}" 2>/dev/null || echo "legacy")
         AWG_IPV6_SUBNET=${AWG_IPV6_SUBNET:-}
         AWG_IPV6_NDP_PROXY=${AWG_IPV6_NDP_PROXY:-0}
         AWG_P2P_ENABLED=${AWG_P2P_ENABLED:-1}
@@ -2412,7 +2456,7 @@ PPASRC
         if _try_install_prebuilt_arm; then
             log "Prebuilt kernel module installed. Installing userspace tools from PPA..."
             install_packages "amneziawg-tools" "wireguard-tools" "qrencode" "python3" "openssl"
-            [[ "${AWG_IPV6_MODE:-}" == "native" && "${AWG_IPV6_NDP_PROXY:-0}" -eq 1 ]] && install_packages "ndppd"
+            [[ "${AWG_IPV6_MODE:-}" == "ndp" && "${AWG_IPV6_NDP_PROXY:-0}" -eq 1 ]] && install_packages "ndppd"
             log "Step 2 completed (prebuilt ARM)."
             request_reboot 3
             return
@@ -2422,7 +2466,7 @@ PPASRC
 
     local packages=("amneziawg-dkms" "amneziawg-tools" "wireguard-tools" "dkms"
                     "build-essential" "dpkg-dev" "qrencode" "python3" "openssl")
-    if [[ "${AWG_IPV6_MODE:-}" == "native" && "${AWG_IPV6_NDP_PROXY:-0}" -eq 1 ]]; then
+    if [[ "${AWG_IPV6_MODE:-}" == "ndp" && "${AWG_IPV6_NDP_PROXY:-0}" -eq 1 ]]; then
         packages+=("ndppd")
     fi
 
@@ -3087,420 +3131,77 @@ EOF
 
 deploy_web_panel() {
     [[ "${AWG_WEB_ENABLED:-1}" -eq 1 ]] || { log "Web panel disabled (--disable-web)."; return 0; }
-    log "Deploying AmneziaWG web panel..."
+    log "Deploying web panel (fork delta)..."
     local web_dir="$AWG_DIR/web"
     mkdir -p "$web_dir" || die "Failed to create $web_dir"
     chmod 700 "$web_dir"
 
-    if [[ ! -f "$web_dir/auth_token" ]]; then
-        od -An -N32 -tx1 /dev/urandom | tr -d ' \n' > "$web_dir/auth_token" || die "Failed to generate web token"
-        chmod 600 "$web_dir/auth_token"
+    if [[ ! -f "$web_dir/tokens.json" ]]; then
+        local legacy_token="" super_token=""
+        # auth_token is a legacy v5.13.0 fork-delta file; migrate it into tokens.json.
+        if [[ -f "$web_dir/auth_token" ]]; then
+            legacy_token=$(tr -d '[:space:]' < "$web_dir/auth_token" 2>/dev/null || true)
+        fi
+        if [[ -n "$legacy_token" ]]; then
+            python3 - "$web_dir/tokens.json" "$legacy_token" <<'PY' || die "Failed to migrate web tokens"
+import hashlib, json, os, sys
+path, token = sys.argv[1], sys.argv[2]
+tmp = f"{path}.tmp.{os.getpid()}"
+with open(tmp, "w", encoding="utf-8") as fh:
+    json.dump({"super_token_hash": hashlib.sha256(token.encode()).hexdigest(), "users": {}}, fh, indent=2, sort_keys=True)
+    fh.write("\n")
+os.chmod(tmp, 0o600)
+os.replace(tmp, path)
+os.chmod(path, 0o600)
+PY
+        else
+            super_token=$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')
+            python3 - "$web_dir/tokens.json" "$super_token" <<'PY' || die "Failed to generate web tokens"
+import hashlib, json, os, sys
+path, token = sys.argv[1], sys.argv[2]
+tmp = f"{path}.tmp.{os.getpid()}"
+with open(tmp, "w", encoding="utf-8") as fh:
+    json.dump({"super_token_hash": hashlib.sha256(token.encode()).hexdigest(), "users": {}}, fh, indent=2, sort_keys=True)
+    fh.write("\n")
+os.chmod(tmp, 0o600)
+os.replace(tmp, path)
+os.chmod(path, 0o600)
+PY
+            AWG_WEB_SUPER_TOKEN_ONCE="$super_token"
+        fi
     fi
+
     if [[ ! -f "$web_dir/cert.pem" || ! -f "$web_dir/key.pem" ]]; then
         openssl req -x509 -nodes -newkey rsa:2048 -days 3650 \
             -keyout "$web_dir/key.pem" -out "$web_dir/cert.pem" \
-            -subj "/CN=AmneziaWG Web Panel" >/dev/null 2>&1 || die "Failed to generate TLS certificate"
+            -subj "/CN=VPN Panel" >/dev/null 2>&1 || die "Failed to generate TLS certificate"
         chmod 600 "$web_dir/key.pem" "$web_dir/cert.pem"
     fi
 
-    cat > "$web_dir/server.py" <<'PY'
-#!/usr/bin/env python3
-import json
-import ipaddress
-import os
-import re
-import ssl
-import subprocess
-import time
-from http import HTTPStatus
-from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
-from pathlib import Path
-from urllib.parse import parse_qs, urlparse
-
-AWG_DIR = Path(os.environ.get("AWG_DIR", "/root/awg"))
-WEB_DIR = AWG_DIR / "web"
-MANAGE = AWG_DIR / "manage_amneziawg.sh"
-SERVER_CONF = Path(os.environ.get("SERVER_CONF_FILE", "/etc/amnezia/amneziawg/awg0.conf"))
-TOKEN_FILE = WEB_DIR / "auth_token"
-NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
-RATE = {}
-
-
-def run_manage(*args, timeout=60):
-    env = os.environ.copy()
-    env["AWG_YES"] = "1"
-    return subprocess.run(
-        ["/bin/bash", str(MANAGE), "--yes", *args],
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        timeout=timeout,
-        env=env,
-    )
-
-
-def parse_peers():
-    peers, cur = [], None
-    if not SERVER_CONF.exists():
-        return peers
-    for line in SERVER_CONF.read_text(errors="ignore").splitlines():
-        if line == "[Peer]":
-            if cur:
-                peers.append(cur)
-            cur = {"name": "", "public_key": "", "ipv4": "", "ipv6": "", "p2p_ports": []}
-        elif cur is not None and line.startswith("#_Name = "):
-            cur["name"] = line.split("=", 1)[1].strip()
-        elif cur is not None and line.startswith("#_P2PPorts"):
-            cur["p2p_ports"] = [int(x) for x in re.findall(r"\d+", line)]
-        elif cur is not None and line.startswith("PublicKey"):
-            cur["public_key"] = line.split("=", 1)[1].strip()
-        elif cur is not None and line.startswith("AllowedIPs"):
-            value = line.split("=", 1)[1]
-            m4 = re.search(r"(\d+\.\d+\.\d+\.\d+)/32", value)
-            m6 = re.search(r"([0-9A-Fa-f:]+)/128", value)
-            if m4:
-                cur["ipv4"] = m4.group(1)
-            if m6:
-                cur["ipv6"] = m6.group(1)
-    if cur:
-        peers.append(cur)
-    return [p for p in peers if p.get("name")]
-
-
-def dns_status():
-    mode = "system"
-    client_dns = "1.1.1.1"
-    adguard_enabled = "0"
-    adguard_port = "3000"
-    cfg = AWG_DIR / "awgsetup_cfg.init"
-    ipv6_enabled = "0"
-    ipv6_subnet = ""
-    if cfg.exists():
-        for line in cfg.read_text(errors="ignore").splitlines():
-            line = line.removeprefix("export ").strip()
-            if "=" not in line:
-                continue
-            key, value = line.split("=", 1)
-            value = value.strip().strip("'\"")
-            if key == "AWG_DNS_MODE":
-                mode = value or mode
-            elif key == "AWG_CUSTOM_DNS":
-                client_dns = value or client_dns
-            elif key == "AWG_ADGUARD_ENABLED":
-                adguard_enabled = value or adguard_enabled
-            elif key == "AWG_ADGUARD_PORT":
-                adguard_port = value or adguard_port
-            elif key == "AWG_IPV6_ENABLED":
-                ipv6_enabled = value or ipv6_enabled
-            elif key == "AWG_IPV6_SUBNET":
-                ipv6_subnet = value or ipv6_subnet
-    if mode == "adguard":
-        client_dns = "10.9.9.1"
-        if ipv6_enabled == "1" and ipv6_subnet:
-            try:
-                client_dns += f", {ipaddress.ip_network(ipv6_subnet, strict=False).network_address + 1}"
-            except ValueError:
-                pass
-    active = subprocess.run(
-        ["systemctl", "is-active", "AdGuardHome.service"],
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
-    ).stdout.strip()
-    return {
-        "mode": mode,
-        "client_dns": client_dns,
-        "adguard_enabled": adguard_enabled == "1",
-        "adguard_service": active or "unknown",
-        "adguard_port": adguard_port,
-    }
-
-
-def safe_name(name):
-    if not NAME_RE.match(name or ""):
-        raise ValueError("invalid client name")
-    return name
-
-
-class Handler(SimpleHTTPRequestHandler):
-    server_version = "AmneziaWGWeb/1.0"
-
-    def log_message(self, fmt, *args):
-        return
-
-    def authed(self):
-        if not self.path.startswith("/api/"):
-            return True
-        ip = self.client_address[0]
-        now = time.time()
-        bucket = [t for t in RATE.get(ip, []) if now - t < 60]
-        bucket.append(now)
-        RATE[ip] = bucket
-        if len(bucket) > 100:
-            self.send_error(HTTPStatus.TOO_MANY_REQUESTS)
-            return False
-        token = TOKEN_FILE.read_text().strip()
-        if self.headers.get("Authorization", "") != f"Bearer {token}":
-            self.send_error(HTTPStatus.UNAUTHORIZED)
-            return False
-        return True
-
-    def send_json(self, obj, status=200):
-        data = json.dumps(obj, ensure_ascii=False).encode()
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Content-Length", str(len(data)))
-        self.end_headers()
-        self.wfile.write(data)
-
-    def json_body(self):
-        size = int(self.headers.get("Content-Length", "0") or 0)
-        return json.loads(self.rfile.read(size).decode("utf-8")) if size else {}
-
-    def send_file(self, path, ctype):
-        if not path.exists() or not path.is_file():
-            self.send_error(404)
-            return
-        data = path.read_bytes()
-        self.send_response(200)
-        self.send_header("Content-Type", ctype)
-        self.send_header("Content-Length", str(len(data)))
-        self.end_headers()
-        self.wfile.write(data)
-
-    def do_GET(self):
-        if not self.authed():
-            return
-        u = urlparse(self.path)
-        if not u.path.startswith("/api/"):
-            self.path = "/index.html" if u.path == "/" else self.path
-            return super().do_GET()
-        if u.path == "/api/status":
-            active = subprocess.run(["systemctl", "is-active", "awg-quick@awg0"], text=True, stdout=subprocess.PIPE).stdout.strip()
-            self.send_json({"service": active, "clients": len(parse_peers()), "version": "5.13.0", "fork": "ipv6-p2p-web-adguard"})
-            return
-        if u.path == "/api/dns":
-            self.send_json(dns_status())
-            return
-        if u.path == "/api/clients":
-            self.send_json(parse_peers())
-            return
-        if u.path == "/api/stats":
-            p = run_manage("--json", "stats", timeout=20)
-            self.send_json(json.loads(p.stdout or "[]") if p.returncode == 0 else {"error": p.stderr or p.stdout}, 200 if p.returncode == 0 else 500)
-            return
-        if u.path == "/api/server/logs":
-            lines = []
-            for f in (AWG_DIR / "manage_amneziawg.log", AWG_DIR / "install_amneziawg.log"):
-                if f.exists():
-                    lines.extend(f.read_text(errors="ignore").splitlines()[-100:])
-            self.send_json({"lines": lines[-100:]})
-            return
-        m = re.match(r"^/api/clients/([^/]+)/(config|qr|vpnuri|p2p)$", u.path)
-        if not m:
-            self.send_error(404)
-            return
-        name, kind = safe_name(m.group(1)), m.group(2)
-        if kind == "config":
-            self.send_file(AWG_DIR / f"{name}.conf", "text/plain; charset=utf-8")
-        elif kind == "qr":
-            self.send_file(AWG_DIR / f"{name}.png", "image/png")
-        elif kind == "vpnuri":
-            self.send_file(AWG_DIR / f"{name}.vpnuri", "text/plain; charset=utf-8")
-        else:
-            peer = next((p for p in parse_peers() if p["name"] == name), None)
-            self.send_json({"name": name, "ports": (peer or {}).get("p2p_ports", [])})
-
-    def do_POST(self):
-        if not self.authed():
-            return
-        u = urlparse(self.path)
-        try:
-            body = self.json_body()
-            if u.path == "/api/clients":
-                args = []
-                if body.get("expires"):
-                    args.append(f"--expires={body['expires']}")
-                p = run_manage(*args, "add", safe_name(body.get("name", "")))
-            elif u.path == "/api/server/restart":
-                p = run_manage("restart", timeout=90)
-            elif u.path == "/api/dns/restart":
-                p = run_manage("dns", "restart", timeout=30)
-            elif u.path == "/api/dns/mode":
-                mode = body.get("mode", "")
-                custom = body.get("custom", "")
-                args = ["dns", "set-mode", mode]
-                if custom:
-                    args.append(custom)
-                p = run_manage(*args, timeout=120)
-            else:
-                m = re.match(r"^/api/clients/([^/]+)/p2p$", u.path)
-                if not m:
-                    self.send_error(404)
-                    return
-                args = ["p2p", "add", safe_name(m.group(1))]
-                if body.get("port"):
-                    args.append(str(body["port"]))
-                p = run_manage(*args)
-            self.send_json({"ok": p.returncode == 0, "stdout": p.stdout, "stderr": p.stderr}, 200 if p.returncode == 0 else 400)
-        except ValueError as exc:
-            self.send_json({"error": str(exc)}, 400)
-
-    def do_DELETE(self):
-        if not self.authed():
-            return
-        u = urlparse(self.path)
-        try:
-            m = re.match(r"^/api/clients/([^/]+)$", u.path)
-            if m:
-                p = run_manage("remove", safe_name(m.group(1)))
-            else:
-                m = re.match(r"^/api/clients/([^/]+)/p2p$", u.path)
-                if not m:
-                    self.send_error(404)
-                    return
-                port = (parse_qs(u.query).get("port") or [""])[0]
-                p = run_manage("p2p", "remove", safe_name(m.group(1)), port)
-            self.send_json({"ok": p.returncode == 0, "stdout": p.stdout, "stderr": p.stderr}, 200 if p.returncode == 0 else 400)
-        except ValueError as exc:
-            self.send_json({"error": str(exc)}, 400)
-
-
-def main():
-    os.chdir(WEB_DIR)
-    httpd = ThreadingHTTPServer((os.environ.get("AWG_WEB_BIND", "0.0.0.0"), int(os.environ.get("AWG_WEB_PORT", "8443"))), Handler)
-    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-    ctx.load_cert_chain(WEB_DIR / "cert.pem", WEB_DIR / "key.pem")
-    httpd.socket = ctx.wrap_socket(httpd.socket, server_side=True)
-    httpd.serve_forever()
-
-
-if __name__ == "__main__":
-    main()
-
-PY
-    chmod 700 "$web_dir/server.py"
-
-    cat > "$web_dir/index.html" <<'HTML'
-<!doctype html>
-<html lang="ru">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>AmneziaWG</title>
-  <link rel="stylesheet" href="style.css">
-</head>
-<body>
-  <main class="shell">
-    <header class="topbar">
-      <h1>AmneziaWG</h1>
-      <div class="actions">
-        <input id="token" type="password" placeholder="Bearer token">
-        <button id="saveToken">Token</button>
-        <button id="addClient">Добавить</button>
-        <button id="refresh">Обновить</button>
-      </div>
-    </header>
-    <section class="metrics">
-      <div><span>Сервис</span><strong id="service">?</strong></div>
-      <div><span>Клиенты</span><strong id="count">0</strong></div>
-      <div><span>DNS</span><strong id="dnsMode">?</strong></div>
-      <div><span>AdGuard</span><strong id="adguardState">?</strong></div>
-    </section>
-    <section class="dns-panel">
-      <div>
-        <span id="dnsServers">?</span>
-        <small id="dnsUi">?</small>
-      </div>
-      <div class="dns-actions">
-        <button data-dns-mode="adguard">AdGuard</button>
-        <button data-dns-mode="system">System</button>
-        <button id="restartDns">Restart DNS</button>
-      </div>
-    </section>
-    <section class="table-wrap">
-      <table>
-        <thead><tr><th>Имя</th><th>IPv4</th><th>IPv6</th><th>P2P</th><th>RX/TX</th><th>Статус</th><th></th></tr></thead>
-        <tbody id="clients"></tbody>
-      </table>
-    </section>
-  </main>
-  <dialog id="modal"><form method="dialog"><h2 id="modalTitle"></h2><div id="modalBody"></div><menu><button>Закрыть</button></menu></form></dialog>
-  <script src="app.js"></script>
-</body>
-</html>
-
-HTML
-
-    cat > "$web_dir/style.css" <<'CSS'
-:root{color-scheme:dark;--bg:#111418;--panel:#1a2027;--line:#303842;--text:#edf2f7;--muted:#9aa7b4;--accent:#4cc9a6;--danger:#ff6b6b}
-*{box-sizing:border-box}body{margin:0;font-family:Inter,system-ui,Segoe UI,sans-serif;background:var(--bg);color:var(--text)}
-.shell{max-width:1180px;margin:0 auto;padding:28px}.topbar{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:18px}
-h1{font-size:28px;margin:0}.actions{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end}
-button,input{height:36px;border:1px solid var(--line);border-radius:6px;background:#202731;color:var(--text);padding:0 12px}
-button{cursor:pointer;background:#26313b}button:hover{border-color:var(--accent)}input{min-width:210px}
-.metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:18px 0}.metrics div,.dns-panel,.table-wrap{background:var(--panel);border:1px solid var(--line);border-radius:8px}
-.metrics div{padding:16px}.metrics span{display:block;color:var(--muted);font-size:12px}.metrics strong{font-size:24px}
-.dns-panel{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 16px;margin-bottom:12px}.dns-panel span{display:block;font-weight:700}.dns-panel small{color:var(--muted)}.dns-actions{display:flex;gap:8px;flex-wrap:wrap}
-.table-wrap{overflow:auto}table{width:100%;border-collapse:collapse}th,td{padding:12px;border-bottom:1px solid var(--line);text-align:left;white-space:nowrap}
-th{color:var(--muted);font-weight:600;font-size:12px}td:last-child{text-align:right}.pill{display:inline-block;padding:3px 7px;border:1px solid var(--line);border-radius:999px;margin:2px;color:var(--accent)}
-.danger{color:var(--danger)}dialog{border:1px solid var(--line);border-radius:8px;background:var(--panel);color:var(--text);max-width:720px;width:calc(100% - 32px)}pre{white-space:pre-wrap;word-break:break-word}
-@media (max-width:760px){.shell{padding:14px}.topbar,.dns-panel{align-items:flex-start;flex-direction:column}.actions{justify-content:flex-start}.metrics{grid-template-columns:1fr}input{width:100%}}
-
-CSS
-
-    cat > "$web_dir/app.js" <<'JS'
-const $ = s => document.querySelector(s);
-let token = localStorage.getItem("awgToken") || "";
-$("#token").value = token;
-$("#saveToken").onclick = () => { token = $("#token").value.trim(); localStorage.setItem("awgToken", token); load(); };
-$("#refresh").onclick = () => load();
-$("#restartDns").onclick = async () => { await api("/api/dns/restart", {method:"POST", body:"{}"}); load(); };
-document.querySelectorAll("[data-dns-mode]").forEach(btn => btn.onclick = async () => {
-  await api("/api/dns/mode", {method:"POST", body:JSON.stringify({mode:btn.dataset.dnsMode})});
-  load();
-});
-$("#addClient").onclick = async () => {
-  const name = prompt("Имя клиента");
-  if (!name) return;
-  await api("/api/clients", {method:"POST", body:JSON.stringify({name})});
-  load();
-};
-async function api(path, opt={}) {
-  opt.headers = Object.assign({"Authorization":"Bearer "+token}, opt.headers||{});
-  if (opt.body) opt.headers["Content-Type"] = "application/json";
-  const r = await fetch(path, opt);
-  if (!r.ok) throw new Error(await r.text());
-  const ct = r.headers.get("content-type") || "";
-  return ct.includes("application/json") ? r.json() : r.blob();
-}
-function bytes(n){n=Number(n||0);for(const u of ["B","KiB","MiB","GiB"]){if(n<1024)return n.toFixed(u==="B"?0:1)+" "+u;n/=1024}}
-function show(title, body){$("#modalTitle").textContent=title;$("#modalBody").innerHTML=body;$("#modal").showModal()}
-async function load(){
-  try{
-    const st = await api("/api/status"); $("#service").textContent=st.service||"?"; $("#count").textContent=st.clients;
-    const dns = await api("/api/dns"); $("#dnsMode").textContent=dns.mode||"?"; $("#adguardState").textContent=dns.adguard_service||"?";
-    $("#dnsServers").textContent=`Clients use DNS: ${dns.client_dns||"?"}`;
-    $("#dnsUi").textContent=`AdGuard UI: http://10.9.9.1:${dns.adguard_port||3000}/`;
-    const rows = await api("/api/clients"); $("#clients").innerHTML = rows.map(c => `
-      <tr><td>${c.name}</td><td>${c.ipv4||"-"}</td><td>${c.ipv6||"-"}</td>
-      <td>${(c.p2p_ports||[]).map(p=>`<span class="pill">${p}</span>`).join("")||"-"}</td>
-      <td>${bytes(c.rx)} / ${bytes(c.tx)}</td><td>${c.status||"-"}</td>
-      <td><button onclick="cfg('${c.name}')">Conf</button> <button onclick="qr('${c.name}')">QR</button> <button class="danger" onclick="delc('${c.name}')">Удалить</button></td></tr>`).join("");
-  }catch(e){show("Ошибка", `<pre>${e.message}</pre>`)}
-}
-async function cfg(n){const b=await api(`/api/clients/${n}/config`); show(n, `<pre>${await b.text()}</pre>`)}
-async function qr(n){const b=await api(`/api/clients/${n}/qr`); const u=URL.createObjectURL(b); show(n, `<img alt="QR" style="max-width:100%" src="${u}">`)}
-async function delc(n){if(confirm(`Удалить ${n}?`)){await api(`/api/clients/${n}`,{method:"DELETE"});load()}}
-load();
-
-JS
+    local asset web_base src tmp_asset
+    web_base="https://raw.githubusercontent.com/${AWG_REPO}/${AWG_BRANCH}/web"
+    for asset in server.py index.html style.css app.js favicon.svg; do
+        tmp_asset="$web_dir/${asset}.tmp.$$"
+        if curl -fsSL --connect-timeout 10 --max-time 60 -o "$tmp_asset" "${web_base}/${asset}"; then
+            mv -f "$tmp_asset" "$web_dir/$asset"
+        else
+            rm -f "$tmp_asset"
+            src="${INSTALLER_DIR}/web/${asset}"
+            if [[ -f "$src" ]]; then
+                cp -a "$src" "$web_dir/$asset" || die "Failed to copy web asset $asset"
+            elif [[ "$asset" == "favicon.svg" ]]; then
+                log_warn "favicon.svg not found; the web panel will continue without a favicon."
+            else
+                die "Failed to download web asset $asset from ${web_base}"
+            fi
+        fi
+    done
     chmod 600 "$web_dir"/* 2>/dev/null || true
     chmod 700 "$web_dir/server.py"
 
     cat > /etc/systemd/system/awg-web.service << EOF
 [Unit]
-Description=AmneziaWG Web Panel
+Description=VPN Web Panel
 After=network.target awg-quick@awg0.service
 
 [Service]
@@ -3519,7 +3220,12 @@ EOF
     chmod 644 /etc/systemd/system/awg-web.service
     systemctl daemon-reload
     systemctl enable awg-web.service 2>/dev/null || log_warn "Failed to enable awg-web.service"
-    log "Web panel deployed. Token: $(cat "$web_dir/auth_token")"
+    log "Web panel deployed."
+    if [[ -n "${AWG_WEB_SUPER_TOKEN_ONCE:-}" ]]; then
+        log "Web super token: ${AWG_WEB_SUPER_TOKEN_ONCE}"
+    else
+        log "Web tokens: $web_dir/tokens.json (to reset: manage web token reset-super)"
+    fi
 }
 
 
