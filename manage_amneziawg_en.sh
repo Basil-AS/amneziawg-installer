@@ -1541,7 +1541,7 @@ usage() {
     echo "  dns sync-clients      Sync VPN clients into AdGuard Home"
     echo "  dns logs              Show recent AdGuard Home logs"
     echo "  dns set-mode <mode>   Change DNS: adguard, system, or custom [DNS]"
-    echo "  set-name "NAME"       Change server name and regenerate clients"
+    echo '  set-name "NAME"       Change server name and regenerate clients'
     echo "  web token list        Show web panel tokens"
     echo "  web token add <name>  Create a user token and print its value"
     echo "  web token revoke <hash> Revoke a user token"
