@@ -1338,6 +1338,56 @@ EOF
     fi
 }
 
+
+# ==============================================================================
+# Voice / Calls optimization: безопасный UDP conntrack tuning
+# ==============================================================================
+
+setup_voice_udp_optimization() {
+    log "Настройка Voice / Calls UDP optimization..."
+    local udp_proc="/proc/sys/net/netfilter/nf_conntrack_udp_timeout"
+    local max_proc="/proc/sys/net/netfilter/nf_conntrack_max"
+    local udp_file="/etc/sysctl.d/99-awg-udp.conf"
+    local max_file="/etc/sysctl.d/99-awg-conntrack.conf"
+
+    if [[ ! -e "$udp_proc" ]]; then
+        modprobe nf_conntrack >/dev/null 2>&1 || log_warn "Не удалось загрузить nf_conntrack; продолжаю без UDP conntrack tuning."
+    fi
+    if [[ -e "$udp_proc" ]]; then
+        cat > "$udp_file" <<'EOF'
+# AmneziaWG safe Voice / Calls UDP tuning
+net.netfilter.nf_conntrack_udp_timeout=120
+net.netfilter.nf_conntrack_udp_timeout_stream=300
+EOF
+        sysctl -p "$udp_file" >/dev/null 2>&1 || log_warn "Не удалось применить $udp_file; продолжаю."
+    else
+        log_warn "nf_conntrack UDP sysctl недоступен; Voice / Calls UDP tuning пропущен."
+    fi
+
+    if [[ -r "$max_proc" ]]; then
+        local current_max target_max=262144 desired_max
+        current_max=$(cat "$max_proc" 2>/dev/null || echo 0)
+        if [[ "$current_max" =~ ^[0-9]+$ ]]; then
+            if (( current_max < target_max )); then
+                desired_max=$target_max
+            elif [[ -f "$max_file" ]]; then
+                desired_max=$current_max
+            else
+                desired_max=""
+            fi
+            if [[ -n "$desired_max" ]]; then
+                cat > "$max_file" <<EOF
+# AmneziaWG safe conntrack capacity floor
+net.netfilter.nf_conntrack_max=${desired_max}
+EOF
+                sysctl -p "$max_file" >/dev/null 2>&1 || log_warn "Не удалось применить $max_file; продолжаю."
+            fi
+        fi
+    else
+        log_warn "nf_conntrack_max недоступен; увеличение таблицы conntrack пропущено."
+    fi
+}
+
 # ==============================================================================
 # Фаервол и безопасность
 # ==============================================================================
@@ -1778,6 +1828,8 @@ step_uninstall() {
         /etc/modules-load.d/amneziawg.conf \
         /etc/sysctl.d/99-amneziawg-security.conf \
         /etc/sysctl.d/99-amneziawg-forwarding.conf \
+        /etc/sysctl.d/99-awg-udp.conf \
+        /etc/sysctl.d/99-awg-conntrack.conf \
         /etc/logrotate.d/amneziawg* || log_warn "Ошибка удаления файлов."
     if [[ "$saved_no_tweaks" -eq 0 ]]; then
         # Удаляем только наш собственный jail-файл.
@@ -2139,9 +2191,11 @@ step1_update_and_optimize() {
         optimize_system
         # Настройка sysctl
         setup_advanced_sysctl
+        setup_voice_udp_optimization
     else
         log "Пропуск оптимизации и hardening (--no-tweaks)."
         setup_minimal_sysctl
+        setup_voice_udp_optimization
     fi
 
     log "Шаг 1 успешно завершен."

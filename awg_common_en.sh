@@ -1350,7 +1350,7 @@ EOF
     cat >> "$tmpfile" << EOF
 Endpoint = ${endpoint}:${port}
 AllowedIPs = ${allowed_ips}
-PersistentKeepalive = 33
+PersistentKeepalive = 25
 EOF
 
     if ! mv "$tmpfile" "$conf_file"; then
@@ -2268,7 +2268,7 @@ regenerate_client() {
     fi
 
     # Сохраняем пользовательские настройки из текущего .conf (modify)
-    local current_dns="1.1.1.1" current_keepalive="33" current_allowed_ips="${ALLOWED_IPS:-0.0.0.0/0}"
+    local current_dns="1.1.1.1" current_keepalive="25" current_allowed_ips="${ALLOWED_IPS:-0.0.0.0/0}"
     if [[ -f "$AWG_DIR/${name}.conf" ]]; then
         local _v
         _v=$(sed -n 's/^DNS[ \t]*=[ \t]*//p' "$AWG_DIR/${name}.conf" | tr -d '[:space:]')

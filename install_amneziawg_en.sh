@@ -1284,6 +1284,56 @@ EOF
     fi
 }
 
+
+# ==============================================================================
+# Voice / Calls optimization: безопасный UDP conntrack tuning
+# ==============================================================================
+
+setup_voice_udp_optimization() {
+    log "Configuring Voice / Calls UDP optimization..."
+    local udp_proc="/proc/sys/net/netfilter/nf_conntrack_udp_timeout"
+    local max_proc="/proc/sys/net/netfilter/nf_conntrack_max"
+    local udp_file="/etc/sysctl.d/99-awg-udp.conf"
+    local max_file="/etc/sysctl.d/99-awg-conntrack.conf"
+
+    if [[ ! -e "$udp_proc" ]]; then
+        modprobe nf_conntrack >/dev/null 2>&1 || log_warn "Failed to load nf_conntrack; continuing without UDP conntrack tuning."
+    fi
+    if [[ -e "$udp_proc" ]]; then
+        cat > "$udp_file" <<'EOF'
+# AmneziaWG safe Voice / Calls UDP tuning
+net.netfilter.nf_conntrack_udp_timeout=120
+net.netfilter.nf_conntrack_udp_timeout_stream=300
+EOF
+        sysctl -p "$udp_file" >/dev/null 2>&1 || log_warn "Failed to apply $udp_file; continuing."
+    else
+        log_warn "nf_conntrack UDP sysctl is unavailable; skipping Voice / Calls UDP tuning."
+    fi
+
+    if [[ -r "$max_proc" ]]; then
+        local current_max target_max=262144 desired_max
+        current_max=$(cat "$max_proc" 2>/dev/null || echo 0)
+        if [[ "$current_max" =~ ^[0-9]+$ ]]; then
+            if (( current_max < target_max )); then
+                desired_max=$target_max
+            elif [[ -f "$max_file" ]]; then
+                desired_max=$current_max
+            else
+                desired_max=""
+            fi
+            if [[ -n "$desired_max" ]]; then
+                cat > "$max_file" <<EOF
+# AmneziaWG safe conntrack capacity floor
+net.netfilter.nf_conntrack_max=${desired_max}
+EOF
+                sysctl -p "$max_file" >/dev/null 2>&1 || log_warn "Failed to apply $max_file; continuing."
+            fi
+        fi
+    else
+        log_warn "nf_conntrack_max is unavailable; skipping conntrack capacity floor."
+    fi
+}
+
 # ==============================================================================
 # Firewall and security
 # ==============================================================================
@@ -1724,6 +1774,8 @@ step_uninstall() {
         /etc/modules-load.d/amneziawg.conf \
         /etc/sysctl.d/99-amneziawg-security.conf \
         /etc/sysctl.d/99-amneziawg-forwarding.conf \
+        /etc/sysctl.d/99-awg-udp.conf \
+        /etc/sysctl.d/99-awg-conntrack.conf \
         /etc/logrotate.d/amneziawg* || log_warn "File removal error."
     if [[ "$saved_no_tweaks" -eq 0 ]]; then
         # Remove only our own jail file.
@@ -2072,9 +2124,11 @@ step1_update_and_optimize() {
         optimize_system
         # Sysctl configuration
         setup_advanced_sysctl
+        setup_voice_udp_optimization
     else
         log "Skipping optimization and hardening (--no-tweaks)."
         setup_minimal_sysctl
+        setup_voice_udp_optimization
     fi
 
     log "Step 1 completed successfully."

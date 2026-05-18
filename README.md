@@ -176,6 +176,24 @@ sudo bash ./install_amneziawg.sh --yes --route-all
 * **Больше шансов на прямые UDP-сессии.** `FULLCONENAT` используется при наличии target-а, иначе скрипт откатывается на обычный `MASQUERADE`. Для Telegram/WhatsApp это не принудительный проброс звонка, а более благоприятные NAT-условия: сами мессенджеры всё равно решают, идти напрямую или через relay.
 * **Веб-панель для повседневного управления.** Можно смотреть клиентов, добавлять/удалять, скачивать конфиги, открывать QR, смотреть логи и статистику без SSH-команд.
 
+### Voice / Calls optimization
+
+AmneziaWG — это L3 VPN. Для обычных звонков ему не нужен XUDP: XUDP относится к стеку Xray/VLESS/VMess и не является частью AWG. Для WebRTC и звонков установщик применяет безопасные UDP-настройки: `MTU 1280`, `PersistentKeepalive 25`, UDP conntrack timeout `120`, UDP conntrack stream timeout `300`, обычный `MASQUERADE`/`SNAT` и опциональные P2P-пробросы для приложений со статическими портами. Full Cone NAT по умолчанию не включается.
+
+Звонки мессенджеров обычно используют ICE/STUN/TURN и динамические UDP-порты. P2P/DNAT-порты полезны для торрентов, игр и приложений со статическими портами, но звонки Telegram/WhatsApp/Discord обычно не требуют ручного port forwarding.
+
+#### Voice / STUN test on Windows
+
+Скачайте Windows binary STUNTMAN, распакуйте архив целиком (не только `stunclient.exe`), откройте PowerShell в папке и выполните:
+
+```powershell
+.\stunclient.exe stun.l.google.com 19302
+.\stunclient.exe stun.cloudflare.com 3478
+.\stunclient.exe stunserver2025.stunprotocol.org 3478
+```
+
+Ожидаемый результат: `Mapped address: <VPS_PUBLIC_IP>:<port>`. Если `Mapped address` показывает IP VPS, UDP/STUN через AWG работает. Сохранение порта, например `49340 -> 49340`, — хороший признак port-preserving NAT, но не гарантия Full Cone NAT.
+
 ### Как включить
 
 Новая установка с попыткой native IPv6:

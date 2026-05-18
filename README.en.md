@@ -176,6 +176,24 @@ This fork delta is built on top of upstream `v5.13.0`. Legacy installs keep work
 * **Better UDP NAT behavior.** `FULLCONENAT` is used when available; otherwise the scripts fall back to `MASQUERADE`. Messengers such as Telegram/WhatsApp still decide themselves whether to use direct P2P or relay.
 * **Web panel.** Browser-based client CRUD, configs, QR codes, stats, logs, and restart actions without typing SSH commands every time.
 
+### Voice / Calls optimization
+
+AmneziaWG is an L3 VPN. It does not need XUDP for normal calls: XUDP belongs to the Xray/VLESS/VMess proxy stack and is not part of AWG. For WebRTC and calls, this installer applies safe UDP optimizations: `MTU 1280`, `PersistentKeepalive 25`, UDP conntrack timeout `120`, UDP conntrack stream timeout `300`, normal `MASQUERADE`/`SNAT`, and optional P2P forwarding for static-port apps. Full Cone NAT is not enabled by default.
+
+Messenger calls usually use ICE/STUN/TURN and dynamic UDP ports. P2P/DNAT ports are useful for torrents, games, and static-port apps; Telegram/WhatsApp/Discord calls usually do not need manual port forwarding.
+
+#### Voice / STUN test on Windows
+
+Download the Windows STUNTMAN binary, extract the whole archive (not only `stunclient.exe`), open PowerShell in that folder, and run:
+
+```powershell
+.\stunclient.exe stun.l.google.com 19302
+.\stunclient.exe stun.cloudflare.com 3478
+.\stunclient.exe stunserver2025.stunprotocol.org 3478
+```
+
+Expected result: `Mapped address: <VPS_PUBLIC_IP>:<port>`. If `Mapped address` shows the VPS IP, UDP/STUN through AWG works. Preserving the source port, for example `49340 -> 49340`, is a good sign of port-preserving NAT, but it is not a guarantee of Full Cone NAT.
+
 ### How to enable
 
 ```bash

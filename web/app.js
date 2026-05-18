@@ -744,6 +744,10 @@ function showHelp() {
         <p class="font-bold text-[var(--danger)]">⚠️ Standard WireGuard clients WILL NOT WORK with AmneziaWG configs.</p>
         <p class="mt-1 text-xs text-[var(--muted)]">Если клиент ругается на неизвестные параметры S3, S4, I1 или H1, нужен клиент с полной поддержкой AWG 2.0.</p>
       </div>
+      <div class="rounded-lg border border-[var(--line)] bg-[var(--soft)] px-3 py-3 text-xs text-[var(--muted)]">
+        <p class="font-semibold text-[var(--text)]">Voice / Calls optimization</p>
+        <p class="mt-1">MTU 1280 · PersistentKeepalive 25 · UDP conntrack timeout tuning · Full Cone NAT: not enabled by default · XUDP: not applicable to AWG.</p>
+      </div>
       <div class="grid gap-4">
         ${helpClientGroups.map(renderHelpGroup).join("")}
       </div>
