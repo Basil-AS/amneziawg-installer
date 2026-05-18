@@ -14,12 +14,31 @@ load test_helper
 @test "voice optimization and diagnostics are exposed without changing NAT model" {
     grep -q 'setup_voice_udp_optimization' "$BATS_TEST_DIRNAME/../install_amneziawg.sh"
     grep -q 'setup_voice_udp_optimization' "$BATS_TEST_DIRNAME/../awg_common.sh"
+    grep -q 'setup_voice_udp_optimization' "$BATS_TEST_DIRNAME/../awg_common_en.sh"
     grep -q 'nf_conntrack_udp_timeout=120' "$BATS_TEST_DIRNAME/../install_amneziawg.sh"
     grep -q 'nf_conntrack_udp_timeout_stream=300' "$BATS_TEST_DIRNAME/../install_amneziawg.sh"
     grep -q 'target_max=262144' "$BATS_TEST_DIRNAME/../install_amneziawg.sh"
+    grep -q '99-awg-udp.conf' "$BATS_TEST_DIRNAME/../awg_common_en.sh"
+    grep -q '99-awg-conntrack.conf' "$BATS_TEST_DIRNAME/../awg_common_en.sh"
+    grep -q 'nf_conntrack_udp_timeout=120' "$BATS_TEST_DIRNAME/../awg_common_en.sh"
+    grep -q 'nf_conntrack_udp_timeout_stream=300' "$BATS_TEST_DIRNAME/../awg_common_en.sh"
+    grep -q 'target_max=262144' "$BATS_TEST_DIRNAME/../awg_common_en.sh"
     grep -q 'voice-check' "$BATS_TEST_DIRNAME/../manage_amneziawg.sh"
     grep -q 'Mapped address = VPS public IP' "$BATS_TEST_DIRNAME/../manage_amneziawg.sh"
     grep -q 'MASQUERADE' "$BATS_TEST_DIRNAME/../awg_common.sh"
+}
+
+@test "snapshot includes top-level runtime shell scripts for external review" {
+    for script in \
+        install_amneziawg.sh \
+        install_amneziawg_en.sh \
+        manage_amneziawg.sh \
+        manage_amneziawg_en.sh \
+        awg_common.sh \
+        awg_common_en.sh
+    do
+        [ -f "$BATS_TEST_DIRNAME/../$script" ]
+    done
 }
 
 
