@@ -24,11 +24,15 @@ setup() {
 @test "v5.12.1: build script no longer uses bare 'xz -9' on the kernel module" {
     # The v5.12.0 invocation `xz -9 "$MODULE_INSTALL_PATH/amneziawg.ko"` is the
     # exact line Issue #76 traced to. Make sure it is gone.
-    ! grep -qE 'xz -9 "\$MODULE_INSTALL_PATH/amneziawg\.ko"' "$BUILD"
+    if grep -qE 'xz -9 "\$MODULE_INSTALL_PATH/amneziawg\.ko"' "$BUILD"; then
+        fail "build script must not use destructive xz -9 on the module path"
+    fi
 }
 
 @test "build script uses atomic temporary xz output" {
-    ! grep -qF 'xz --check=crc32 --lzma2=dict=1MiB -f "$KO_FILE"' "$BUILD"
+    if grep -qF 'xz --check=crc32 --lzma2=dict=1MiB -f "$KO_FILE"' "$BUILD"; then
+        fail "build script must not use destructive xz -f on KO_FILE"
+    fi
     grep -qF 'KO_TMP_XZ="${KO_FILE}.tmp.xz"' "$BUILD"
     grep -qF 'xz -t "$KO_TMP_XZ"' "$BUILD"
 }

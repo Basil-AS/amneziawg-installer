@@ -176,6 +176,7 @@ PY
 import importlib.util
 import json
 import os
+from datetime import date
 from pathlib import Path
 
 spec = importlib.util.spec_from_file_location("panel_server", Path(os.environ["REPO_ROOT"]) / "web" / "server.py")
@@ -209,9 +210,10 @@ server.update_traffic_history([{"name": "beta", "rx": 1200, "tx": 120}])
 history = server.load_traffic_history()
 assert history["totals"]["beta"] == {"rx": 1200, "tx": 120}
 
+today = date.today().isoformat()
 server.TRAFFIC_FILE.write_text(json.dumps({
     "last": {"gone": {"rx": 10, "tx": 20}, "_internal": {"rx": 1, "tx": 1}},
-    "days": {"2026-05-19": {"gone": {"rx": 5, "tx": 7}, "alpha": {"rx": 2, "tx": 3}}},
+    "days": {today: {"gone": {"rx": 5, "tx": 7}, "alpha": {"rx": 2, "tx": 3}}},
     "totals": {"gone": {"rx": 300, "tx": 400}, "alpha": {"rx": 1, "tx": 2}},
 }))
 server.update_traffic_history([{"name": "alpha", "rx": 1, "tx": 2}])
@@ -219,7 +221,9 @@ history = server.load_traffic_history()
 assert history["totals"]["_deleted_clients_total"] == {"rx": 300, "tx": 400}
 assert "gone" not in history["totals"]
 assert "gone" not in history["last"]
-assert "gone" not in history["days"]["2026-05-19"]
+assert today in history["days"]
+assert "gone" not in history["days"][today]
+assert history["days"][today]["alpha"] == {"rx": 2, "tx": 3}
 assert history["totals"]["alpha"] == {"rx": 1, "tx": 2}
 PY
     rm -rf "$tmp"
