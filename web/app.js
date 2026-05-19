@@ -15,6 +15,10 @@ const speedHistory = new Map();
 const charts = new Map();
 const configTextCache = new Map();
 let trafficChart = null;
+let openClientMenu = null;
+const CLIENT_NAME_RE = /^[A-Za-z0-9_-]+$/;
+const CLIENT_NAME_HINT_RU = "Используйте только латиницу, цифры, дефис и подчёркивание: A-Z, a-z, 0-9, _ и -";
+const CLIENT_NAME_HINT_EN = "Use only Latin letters, digits, underscore and hyphen: A-Z, a-z, 0-9, _ and -";
 
 const icons = {
   sun: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3v2.2M12 18.8V21M4.2 4.2l1.6 1.6M18.2 18.2l1.6 1.6M3 12h2.2M18.8 12H21M4.2 19.8l1.6-1.6M18.2 5.8l1.6-1.6"/><circle cx="12" cy="12" r="4"/></svg>',
@@ -41,10 +45,20 @@ const icons = {
   link: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M10.5 13.5 13.5 10.5"/><path d="M8.5 15.5 7 17a4 4 0 0 1-5.7-5.6l2.1-2.1A4 4 0 0 1 9 9"/><path d="M15.5 8.5 17 7a4 4 0 0 1 5.7 5.6l-2.1 2.1A4 4 0 0 1 15 15"/></svg>',
   pencil: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="m4 20 4.2-1 10.6-10.6a2.1 2.1 0 0 0-3-3L5.2 16 4 20Z"/><path d="m14.5 6.5 3 3"/></svg>',
   refresh: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 6v5h-5"/><path d="M4 18v-5h5"/><path d="M18.5 9A7 7 0 0 0 6.7 6.7L4 9"/><path d="M5.5 15a7 7 0 0 0 11.8 2.3L20 15"/></svg>',
+  more: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="5" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="12" cy="19" r="1.5"/></svg>',
 };
 
 const theme = localStorage.getItem("panelTheme") || "light";
 document.documentElement.dataset.theme = theme;
+
+document.addEventListener("click", event => {
+  if (!event.target.closest(".client-menu") && !event.target.closest("[data-menu-toggle]")) {
+    closeClientMenus();
+  }
+});
+document.addEventListener("keydown", event => {
+  if (event.key === "Escape") closeClientMenus();
+});
 
 function esc(value) {
   return String(value ?? "").replace(/[&<>"']/g, ch => ({
@@ -144,6 +158,12 @@ function trafficText(rx, tx, mode = "traffic") {
     : `Down ${bytes(rx)} · Up ${bytes(tx)}`;
 }
 
+function compactTrafficText(rx, tx, mode = "traffic") {
+  return mode === "now"
+    ? `↓ ${speed(rx)} · ↑ ${speed(tx)}`
+    : `↓ ${bytes(rx)} · ↑ ${bytes(tx)}`;
+}
+
 function normalizeP2pPorts(value) {
   const source = Array.isArray(value) ? value : String(value || "").split(/[,\s]+/);
   const seen = new Set();
@@ -165,6 +185,11 @@ function timeAgo(value) {
 function isOnline(client) {
   return !client.disabled && Number(client.latestHandshakeAt || client.last_handshake || 0) > 0 &&
     Date.now() / 1000 - Number(client.latestHandshakeAt || client.last_handshake) < 180;
+}
+
+function recentlyActive(client) {
+  const last = Number(client.latestHandshakeAt || client.last_handshake || 0);
+  return !client.disabled && last > 0 && Date.now() / 1000 - last < 86400;
 }
 
 function fallbackHashBytes(value) {
@@ -225,7 +250,7 @@ function buttonClasses(extra = "") {
 }
 
 function primaryButtonClasses(extra = "") {
-  return `h-9 inline-flex items-center justify-center gap-2 rounded-md border border-transparent bg-red-700 px-3 text-sm font-bold text-white transition hover:bg-red-800 ${extra}`;
+  return `h-9 inline-flex items-center justify-center gap-2 rounded-md border border-transparent bg-[var(--accent)] px-3 text-sm font-bold text-white transition hover:bg-[var(--accent-hover)] ${extra}`;
 }
 
 function iconButton(title, name, extra = "") {
@@ -234,6 +259,27 @@ function iconButton(title, name, extra = "") {
 
 function actionButton(action, title, iconName, label, extra = "") {
   return `<button data-action="${esc(action)}" title="${esc(title)}" aria-label="${esc(title)}" class="${buttonClasses(`client-action ${extra}`)}">${icon(iconName)}<span class="client-action-label">${esc(label)}</span></button>`;
+}
+
+function closeClientMenus(except = null) {
+  document.querySelectorAll(".client-menu").forEach(menu => {
+    if (except && menu.id === except) return;
+    menu.classList.add("hidden");
+    const btn = document.querySelector(`[aria-controls="${menu.id}"]`);
+    if (btn) btn.setAttribute("aria-expanded", "false");
+  });
+  if (!except) openClientMenu = null;
+}
+
+function p2pSummary(ports, disabled) {
+  if (!ports.length) return "";
+  const preview = ports.slice(0, 2).join(", ");
+  const more = ports.length > 2 ? ` +${ports.length - 2}` : "";
+  return `P2P: ${ports.length} port${ports.length === 1 ? "" : "s"} (${preview}${more})${disabled ? " off" : ""}`;
+}
+
+function renderMenuItem(action, iconName, label, extra = "") {
+  return `<button type="button" data-action="${esc(action)}" class="client-menu-item ${extra}">${icon(iconName)}<span>${esc(label)}</span></button>`;
 }
 
 function renderLogin() {
@@ -353,6 +399,16 @@ async function renderPanel() {
       <div id="tokenList" class="mt-4 grid gap-2"></div>
     </section>
 
+    <section id="advancedPanel" class="mt-3 rounded-lg border border-[var(--line)] bg-[var(--panel)] p-4 ${statusState.role === "super" ? "" : "hidden"}">
+      <div class="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h2 class="text-base font-semibold">Advanced</h2>
+          <p class="text-sm text-[var(--muted)]">Disruptive server-side operations.</p>
+        </div>
+        <button id="rotateProfile" class="${buttonClasses("border-amber-600 text-amber-700")}">${icon("refresh")}<span>Rotate AWG profile</span></button>
+      </div>
+    </section>
+
     <section id="clientsList" class="mt-4 overflow-hidden rounded-lg border border-[var(--line)] bg-[var(--panel)]"></section>
   `;
   document.querySelector("#themeToggle").onclick = () => setTheme(document.documentElement.dataset.theme === "dark" ? "light" : "dark");
@@ -361,6 +417,7 @@ async function renderPanel() {
   document.querySelector("#addClient").onclick = addClient;
   document.querySelector("#searchInput").oninput = applySearch;
   if (statusState.role === "super") document.querySelector("#newToken").onclick = newToken;
+  if (statusState.role === "super") document.querySelector("#rotateProfile").onclick = rotateServerProfile;
   await loadAll();
   pollTimer = setInterval(loadClients, 2000);
 }
@@ -553,6 +610,7 @@ function jumpToClient(name) {
 function renderClients() {
   charts.forEach(chart => chart.destroy());
   charts.clear();
+  closeClientMenus();
   const host = document.querySelector("#clientsList");
   if (!latestClients.length) {
     host.innerHTML = `<div class="p-8 text-center text-sm text-[var(--muted)]">No clients yet</div>`;
@@ -560,17 +618,21 @@ function renderClients() {
   }
   host.innerHTML = latestClients.map(client => {
     const online = isOnline(client);
+    const active = recentlyActive(client);
+    const ipv4 = client.ipv4 || client.ip || "-";
+    const ipv6 = client.ipv6 || "";
     const ip = [client.ipv4 || client.ip, client.ipv6].filter(Boolean).join(" / ") || "-";
     const endpoint = client.endpoint || "-";
     const client30d = client.traffic_30d || {};
     const clientTotal = client.traffic_total || {};
     const p2pDisabled = (client.p2p_ports || []).length > 0 && client.p2p_enabled === false;
-    const p2pBadgeClass = `inline-block px-2 py-0.5 text-[10px] font-medium bg-[var(--soft)] border border-[var(--line)] rounded-full${p2pDisabled ? " opacity-50" : ""}`;
-    const shieldClass = p2pDisabled ? "w-9 px-0 opacity-50" : "w-9 px-0";
+    const p2pTitle = (client.p2p_ports || []).join(", ");
+    const p2pText = p2pSummary(client.p2p_ports || [], p2pDisabled);
+    const menuId = `client-menu-${String(client.name).replace(/[^A-Za-z0-9_-]/g, "_")}`;
+    const shieldClass = p2pDisabled ? "opacity-60" : "";
     const search = `${client.name} ${ip} ${endpoint} ${(client.p2p_ports || []).join(" ")}`.toLowerCase();
     return `
-      <article class="client-card bg-[var(--panel)] border-b border-[var(--line)] p-4 flex flex-col gap-4 relative overflow-hidden last:border-b-0 sm:flex-row sm:items-center" data-name="${esc(client.name)}" data-search="${esc(search)}">
-        <div id="chart-${esc(client.name)}" class="pointer-events-none absolute inset-x-0 bottom-0 z-0 h-full opacity-20"></div>
+      <article class="client-card bg-[var(--panel)] border-b border-[var(--line)] p-4 relative last:border-b-0" data-name="${esc(client.name)}" data-search="${esc(search)}">
         <div class="relative z-10 shrink-0 self-start sm:self-auto">
           ${client.avatar}
           <span class="absolute -right-0.5 -bottom-0.5 grid h-3.5 w-3.5 place-items-center">
@@ -578,37 +640,61 @@ function renderClients() {
           </span>
         </div>
         <div class="relative z-10 min-w-0 flex-1">
-          <div class="flex flex-wrap items-center gap-2">
-            <h3 class="truncate text-sm font-semibold">${esc(client.name)}</h3>
+          <div class="flex min-w-0 flex-wrap items-center gap-2">
+            <h3 class="min-w-0 truncate text-base font-semibold" title="${esc(client.name)}">${esc(client.name)}</h3>
             ${client.disabled ? '<span class="rounded-full border border-[var(--danger)] px-2 py-0.5 text-xs font-semibold text-[var(--danger)]">disabled</span>' : ""}
           </div>
-          <p class="mt-1 truncate text-sm text-[var(--muted)]">${esc(ip)}</p>
-          <p class="mt-1 text-xs text-[var(--muted)]">Last seen ${esc(timeAgo(client.latestHandshakeAt || client.last_handshake))}</p>
+          <div class="mt-1 flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 text-sm text-[var(--muted)]">
+            <span class="shrink-0 font-mono text-xs text-[var(--text)]" title="${esc(ipv4)}">${esc(ipv4)}</span>
+            ${ipv6 ? `<span class="min-w-0 max-w-full truncate font-mono text-xs" title="${esc(ipv6)}">${esc(ipv6)}</span>` : ""}
+          </div>
+          <p class="mt-1 text-xs text-[var(--muted)]">${active ? "Active recently" : "No recent traffic"} · Last seen ${esc(timeAgo(client.latestHandshakeAt || client.last_handshake))}</p>
           <p class="mt-1 truncate text-xs text-[var(--muted)]">Endpoint: ${esc(endpoint)}</p>
-          <div class="mt-2 flex flex-wrap gap-1">${(client.p2p_ports || []).map(p => `<span class="${p2pBadgeClass}">P2P: ${esc(p)}${p2pDisabled ? " (off)" : ""}</span>`).join('')}</div>
+          ${p2pText ? `<p class="mt-2 inline-flex max-w-full rounded-full border border-[var(--line)] bg-[var(--soft)] px-2 py-0.5 text-[11px] font-medium text-[var(--muted)] ${p2pDisabled ? "opacity-60" : ""}" title="${esc(p2pTitle)}">${esc(p2pText)}</p>` : ""}
         </div>
         <div class="relative z-10 min-w-0 text-left sm:min-w-36 sm:text-right">
           <p class="flex flex-wrap gap-x-3 gap-y-1 text-sm font-semibold sm:justify-end"><span>↓ ${esc(speed(client.rxSpeedBps))}</span><span>↑ ${esc(speed(client.txSpeedBps))}</span></p>
-          <p class="mt-1 text-xs text-[var(--muted)]">Total: ${esc(trafficText(clientTotal.rx || 0, clientTotal.tx || 0))}</p>
-          <p class="mt-1 text-xs text-[var(--muted)]">30d: ${esc(trafficText(client30d.rx || 0, client30d.tx || 0))}</p>
+          <p class="mt-1 text-xs text-[var(--muted)]" title="${esc(trafficText(clientTotal.rx || 0, clientTotal.tx || 0))}">Total ${esc(compactTrafficText(clientTotal.rx || 0, clientTotal.tx || 0))}</p>
+          <p class="mt-1 text-xs text-[var(--muted)]" title="${esc(trafficText(client30d.rx || 0, client30d.tx || 0))}">30d ${esc(compactTrafficText(client30d.rx || 0, client30d.tx || 0))}</p>
+          <div id="chart-${esc(client.name)}" class="client-sparkline mt-2"></div>
         </div>
-        <div class="client-actions relative z-10 flex w-full shrink-0 flex-wrap justify-end gap-1 sm:w-auto">
-          <button data-action="download-config" title="Download .conf" aria-label="Download .conf" class="${buttonClasses("client-action")}">${icon("download")}<span class="client-action-label">Download .conf</span></button>
-          <button data-action="copy-config" title="Copy config" aria-label="Copy config" class="${buttonClasses("client-action")}">${icon("copy")}<span class="client-action-label">Copy config</span></button>
-          ${actionButton("qr", "Show QR", "qr", "Show QR")}
-          <button data-action="copy-vpnuri" title="Copy vpn://" aria-label="Copy vpn://" class="${buttonClasses("client-action")}">${icon("link")}<span class="client-action-label">Copy vpn://</span></button>
-          <button data-action="copy-import-url" title="Copy import URL" aria-label="Copy import URL" class="${buttonClasses("client-action")}">${icon("link")}<span class="client-action-label">Import URL</span></button>
-          <button data-action="regenerate-config" title="Regenerate config" aria-label="Regenerate config for ${esc(client.name)}" class="${buttonClasses("client-action text-amber-700")}">${icon("refresh")}<span class="client-action-label">Regenerate</span></button>
-          <button data-action="toggle" title="${client.disabled ? "Enable Client" : "Disable Client"}" aria-label="${client.disabled ? "Enable Client" : "Disable Client"}" class="${buttonClasses("w-9 px-0")}">${icon("power")}</button>
-          <button data-action="toggle-p2p" title="Toggle P2P Ports" aria-label="Toggle P2P Ports" class="${buttonClasses(shieldClass)}">${icon("shield")}</button>
-          <button data-action="delete" title="Delete" aria-label="Delete" class="${buttonClasses("w-9 px-0 text-[var(--danger)]")}">${icon("trash")}</button>
+        <div class="client-actions relative z-20 flex w-full shrink-0 flex-wrap justify-end gap-1 sm:w-auto">
+          <button data-action="download-config" title="Download .conf" aria-label="Download .conf" class="${buttonClasses("client-action client-action-primary")}">${icon("download")}<span class="client-action-label">Download</span></button>
+          ${actionButton("qr", "Show QR", "qr", "QR", "client-action-primary")}
+          <button data-action="copy-config" title="Copy config" aria-label="Copy config" class="${buttonClasses("client-action client-action-primary")}">${icon("copy")}<span class="client-action-label">Copy</span></button>
+          <button type="button" data-menu-toggle="${esc(menuId)}" aria-expanded="false" aria-controls="${esc(menuId)}" title="More actions" aria-label="More actions for ${esc(client.name)}" class="${buttonClasses("w-9 px-0")}">${icon("more")}</button>
+          <div id="${esc(menuId)}" class="client-menu hidden" role="menu">
+            ${renderMenuItem("copy-config", "copy", "Copy config")}
+            ${renderMenuItem("copy-vpnuri", "link", "Copy vpn://")}
+            ${renderMenuItem("copy-import-url", "link", "Copy import URL")}
+            ${renderMenuItem("regenerate-config", "refresh", "Regenerate", "text-amber-700")}
+            ${renderMenuItem("toggle", "power", client.disabled ? "Enable client" : "Disable client")}
+            ${renderMenuItem("toggle-p2p", "shield", "P2P details / toggle", shieldClass)}
+            ${renderMenuItem("delete", "trash", "Delete", "text-[var(--danger)]")}
+          </div>
         </div>
       </article>
     `;
   }).join("");
   host.querySelectorAll("[data-action]").forEach(btn => {
     const card = btn.closest(".client-card");
-    btn.onclick = () => clientAction(card.dataset.name, btn.dataset.action);
+    btn.onclick = () => {
+      closeClientMenus();
+      clientAction(card.dataset.name, btn.dataset.action);
+    };
+  });
+  host.querySelectorAll("[data-menu-toggle]").forEach(btn => {
+    btn.onclick = event => {
+      event.stopPropagation();
+      const id = btn.dataset.menuToggle;
+      const expanded = btn.getAttribute("aria-expanded") === "true";
+      closeClientMenus(expanded ? null : id);
+      const menu = document.getElementById(id);
+      if (!menu) return;
+      menu.classList.toggle("hidden", expanded);
+      btn.setAttribute("aria-expanded", expanded ? "false" : "true");
+      openClientMenu = expanded ? null : id;
+    };
   });
   drawCharts();
 }
@@ -809,7 +895,7 @@ function showHelp() {
 }
 
 async function addClient() {
-  const name = await promptModal("Add Client", "Client name");
+  const name = await clientNameModal();
   if (!name) return;
   try {
     await api("/api/clients", {method: "POST", body: JSON.stringify({name})});
@@ -842,7 +928,7 @@ async function clientAction(name, action) {
       return loadClients();
     }
     if (action === "delete") {
-      const ok = await confirmModal("Delete Client", `Delete ${name}?`);
+      const ok = await confirmModal("Delete Client", `Delete ${name}?`, "Delete", true);
       if (!ok) return;
       await api(`/api/clients/${encodeURIComponent(name)}`, {method: "DELETE"});
       showToast("Client deleted");
@@ -857,7 +943,9 @@ async function clientAction(name, action) {
 async function regenerateConfig(name) {
   const ok = await confirmModal(
     "Regenerate config",
-    `Regenerate config for "${name}"?\nThe old client config will stop working. Traffic history and client name will be preserved.`
+    `Regenerate config for "${name}"?\nThe old client config will stop working. Traffic history and client name will be preserved.`,
+    "Regenerate",
+    false
   );
   if (!ok) return;
   const body = {};
@@ -870,13 +958,53 @@ async function regenerateConfig(name) {
   } catch (error) {
     const fallback = await confirmModal(
       "Regenerate without browser I1?",
-      "Browser-side AWG I1 generation failed. Continue with server fallback?"
+      "Browser-side AWG I1 generation failed. Continue with server fallback?",
+      "Continue",
+      false
     );
     if (!fallback) return;
   }
   await api(`/api/clients/${encodeURIComponent(name)}/regenerate`, {method: "POST", body: JSON.stringify(body)});
   configTextCache.delete(name);
   showToast("Config regenerated. Download or copy the new config.");
+  await loadClients();
+}
+
+async function rotateServerProfile() {
+  const ok = await confirmModal(
+    "Rotate AWG profile",
+    "This will rotate server AWG obfuscation parameters and regenerate all client configs. Existing client configs will stop working. Continue?",
+    "Continue",
+    false
+  );
+  if (!ok) return;
+  const confirm = await promptModal("Type ROTATE", "ROTATE");
+  if (confirm !== "ROTATE") {
+    showToast("Rotation cancelled", "error");
+    return;
+  }
+  const preset = await promptModal("Preset", "mobile or default", "mobile");
+  if (!["mobile", "default"].includes(preset)) {
+    showToast("Invalid preset", "error");
+    return;
+  }
+  const client_i1 = {};
+  try {
+    if (typeof window.generateAwgI1 === "function" && typeof window.pickAwgI1Sni === "function" && window.crypto?.subtle) {
+      for (const client of latestClients) {
+        const sni = window.pickAwgI1Sni();
+        client_i1[client.name] = await window.generateAwgI1(sni, 0);
+      }
+    }
+  } catch {
+    showToast("Browser I1 generation failed; using server fallback", "error");
+  }
+  await api("/api/server/rotate-profile", {
+    method: "POST",
+    body: JSON.stringify({preset, confirm: "ROTATE", client_i1}),
+  });
+  configTextCache.clear();
+  showToast("Server profile rotated. Download or import new client configs.");
   await loadClients();
 }
 
@@ -1152,7 +1280,53 @@ function promptModal(title, placeholder, value = "") {
   });
 }
 
-function confirmModal(title, message) {
+function clientNameModal() {
+  return new Promise(resolve => {
+    const dialog = document.createElement("dialog");
+    dialog.className = "w-[min(420px,calc(100vw-32px))] rounded-lg border border-[var(--line)] bg-[var(--panel)] p-0 text-[var(--text)] shadow-xl backdrop:bg-black/55";
+    dialog.innerHTML = `
+      <form method="dialog" class="p-4">
+        <h2 class="mb-4 text-base font-semibold">Add Client</h2>
+        <label class="sr-only" for="clientNameValue">Client name</label>
+        <input id="clientNameValue" class="h-11 w-full rounded-md border border-[var(--line)] bg-[var(--soft)] px-3 outline-none focus:border-[var(--accent)]" placeholder="my_phone" autocomplete="off">
+        <p class="mt-2 text-xs text-[var(--muted)]">Examples: my_phone, iphone_15, laptop-home</p>
+        <p id="clientNameHint" class="mt-2 hidden text-xs text-[var(--danger)]">${esc(CLIENT_NAME_HINT_RU)} / ${esc(CLIENT_NAME_HINT_EN)}</p>
+        <div class="mt-4 flex justify-end gap-2">
+          <button value="cancel" class="${buttonClasses()}">Cancel</button>
+          <button id="createClientButton" value="ok" class="${primaryButtonClasses()}" disabled>Create</button>
+        </div>
+      </form>
+    `;
+    document.body.appendChild(dialog);
+    const input = dialog.querySelector("#clientNameValue");
+    const hint = dialog.querySelector("#clientNameHint");
+    const create = dialog.querySelector("#createClientButton");
+    const validate = () => {
+      const value = input.value.trim();
+      const ok = CLIENT_NAME_RE.test(value);
+      create.disabled = !ok;
+      input.classList.toggle("border-[var(--danger)]", value.length > 0 && !ok);
+      hint.classList.toggle("hidden", value.length === 0 || ok);
+    };
+    input.addEventListener("input", validate);
+    input.addEventListener("keydown", event => {
+      if (event.key !== "Enter") return;
+      event.preventDefault();
+      validate();
+      if (!create.disabled) dialog.close("ok");
+    });
+    dialog.addEventListener("close", () => {
+      const value = dialog.returnValue === "ok" ? input.value.trim() : null;
+      dialog.remove();
+      resolve(value);
+    }, {once: true});
+    dialog.showModal();
+    input.focus();
+    validate();
+  });
+}
+
+function confirmModal(title, message, confirmLabel = "Continue", danger = true) {
   return new Promise(resolve => {
     const dialog = document.createElement("dialog");
     dialog.className = "w-[min(420px,calc(100vw-32px))] rounded-lg border border-[var(--line)] bg-[var(--panel)] p-0 text-[var(--text)] shadow-xl backdrop:bg-black/55";
@@ -1162,7 +1336,7 @@ function confirmModal(title, message) {
         <p class="text-sm text-[var(--muted)]">${esc(message)}</p>
         <div class="mt-4 flex justify-end gap-2">
           <button value="cancel" class="${buttonClasses()}">Cancel</button>
-          <button value="ok" class="${buttonClasses("border-[var(--danger)] bg-[var(--danger)] text-white")}">Delete</button>
+          <button value="ok" class="${buttonClasses(danger ? "border-[var(--danger)] bg-[var(--danger)] text-white" : "border-amber-600 bg-amber-500 text-white")}">${esc(confirmLabel)}</button>
         </div>
       </form>
     `;

@@ -13,6 +13,8 @@ rtk git status
 rtk cargo test
 rtk npm run build
 rtk pytest -q
+rtk node --check web/app.js
+rtk bash scripts/update-installer-sha-manifest.sh
 ```
 
 ## Meta Commands

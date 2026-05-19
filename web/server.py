@@ -135,6 +135,11 @@ def remove_import_tokens_for_client(client_name):
             write_import_tokens(data)
 
 
+def clear_import_tokens():
+    with IMPORT_TOKENS_LOCK:
+        write_import_tokens({"tokens": {}})
+
+
 def require_import_ttl(value):
     if value is None:
         return 3600
@@ -671,6 +676,37 @@ def validate_i1(value: str) -> str:
     return value
 
 
+def require_rotate_preset(value):
+    if value not in {"default", "mobile"}:
+        raise ValueError("invalid preset")
+    return value
+
+
+def validate_i1_overrides(value):
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise ValueError("invalid client_i1")
+    peers = {peer["name"] for peer in parse_peers()}
+    clean = {}
+    for name, i1 in value.items():
+        clean_name = safe_name(name)
+        if clean_name not in peers:
+            raise ValueError("unknown client in client_i1")
+        clean[clean_name] = validate_i1(i1)
+    return clean
+
+
+def write_i1_overrides_file(overrides):
+    if not overrides:
+        return None
+    WEB_DIR.mkdir(parents=True, exist_ok=True)
+    path = WEB_DIR / f".tmp.i1-overrides.{os.getpid()}.{secrets.token_hex(6)}.json"
+    path.write_text(json.dumps(overrides, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    os.chmod(path, 0o600)
+    return path
+
+
 def require_server_name(name):
     if not isinstance(name, str) or not name.strip() or not SERVER_NAME_RE.fullmatch(name):
         raise ValueError("invalid server name")
@@ -1072,6 +1108,32 @@ class Handler(SimpleHTTPRequestHandler):
                 if not self.require_super(auth):
                     return
                 p = run_manage("set-name", require_server_name(body.get("name", "")), timeout=180)
+            elif u.path == "/api/server/rotate-profile":
+                if not self.require_super(auth):
+                    return
+                if body.get("confirm") != "ROTATE":
+                    raise ValueError("confirmation required")
+                preset = require_rotate_preset(body.get("preset", "default"))
+                overrides_path = None
+                extra_env = {}
+                try:
+                    overrides = validate_i1_overrides(body.get("client_i1"))
+                    overrides_path = write_i1_overrides_file(overrides)
+                    if overrides_path is not None:
+                        extra_env["AWG_I1_OVERRIDES_FILE"] = str(overrides_path)
+                    p = run_manage("server", "rotate-profile", "--preset", preset, timeout=240, extra_env=extra_env)
+                finally:
+                    if overrides_path is not None:
+                        try:
+                            overrides_path.unlink()
+                        except FileNotFoundError:
+                            pass
+                if p.returncode == 0:
+                    clear_import_tokens()
+                    self.send_json({"ok": True, "preset": preset, "message": "Server AWG profile rotated"})
+                    return
+                self.send_json({"error": "rotate-profile failed"}, 500)
+                return
             elif u.path == "/api/dns/restart":
                 if not self.require_super(auth):
                     return

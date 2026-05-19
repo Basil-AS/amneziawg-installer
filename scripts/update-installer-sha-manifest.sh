@@ -36,6 +36,7 @@ for asset in \
     web/server.py \
     web/index.html \
     web/app.js \
+    web/awg_i1.js \
     web/style.css \
     web/favicon.svg \
     web/vendor/tailwindcss.js \

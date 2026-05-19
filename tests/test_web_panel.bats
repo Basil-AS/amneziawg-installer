@@ -171,8 +171,8 @@
         fail "EN installer must deploy repository web assets, not inline server.py"
     fi
     grep -qF 'tokens.json' "$installer"
-    for asset in server.py index.html style.css app.js favicon.svg; do
-        grep -qF "for asset in server.py index.html style.css app.js favicon.svg" "$installer"
+    for asset in server.py index.html style.css app.js awg_i1.js favicon.svg; do
+        grep -qF "for asset in server.py index.html style.css app.js awg_i1.js favicon.svg" "$installer"
         [ -f "$BATS_TEST_DIRNAME/../web/$asset" ]
     done
 }
@@ -401,7 +401,7 @@ PY
     local app="$BATS_TEST_DIRNAME/../web/app.js"
     grep -qF 'data-action="download-config"' "$app"
     grep -qF 'data-action="copy-config"' "$app"
-    grep -qF 'data-action="copy-vpnuri"' "$app"
+    grep -qF 'copy-vpnuri' "$app"
     grep -qF 'Download .conf' "$app"
     grep -qF 'Copy config' "$app"
     grep -qF 'Show QR' "$app"
@@ -738,7 +738,14 @@ PY
     local root="$BATS_TEST_DIRNAME/.."
     grep -qF '<script src="/awg_i1.js"></script>' "$root/web/index.html"
     grep -qF '"/awg_i1.js": ("awg_i1.js", "application/javascript; charset=utf-8")' "$root/web/server.py"
-    grep -qF 'data-action="regenerate-config"' "$root/web/app.js"
+    grep -qF 'regenerate-config' "$root/web/app.js"
+    grep -qF 'CLIENT_NAME_RE = /^[A-Za-z0-9_-]+$/' "$root/web/app.js"
+    grep -qF 'Use only Latin letters, digits, underscore and hyphen' "$root/web/app.js"
+    grep -qF 'create.disabled = !ok' "$root/web/app.js"
+    grep -qF 'data-menu-toggle' "$root/web/app.js"
+    grep -qF 'aria-expanded' "$root/web/app.js"
+    grep -qF 'closeClientMenus' "$root/web/app.js"
+    grep -qF '/api/server/rotate-profile' "$root/web/app.js"
     grep -qF 'Regenerate config for' "$root/web/app.js"
     grep -qF 'Config regenerated. Download or copy the new config.' "$root/web/app.js"
     grep -qF "default-src 'self'; script-src 'self'" "$root/web/server.py"
@@ -751,6 +758,104 @@ PY
     if grep -F 'localStorage.setItem("i1' "$root/web/app.js" >/dev/null; then
         fail "app.js must not store I1 in localStorage"
     fi
+}
+
+@test "server rotate-profile API is super-only and passes I1 overrides via temp file" {
+    command -v python3 &>/dev/null || skip "python3 not available"
+    local tmp
+    tmp=$(mktemp -d)
+    mkdir -p "$tmp/web"
+    cat > "$tmp/awg0.conf" <<'CONF'
+[Interface]
+PrivateKey = SERVER
+Jc = 3
+Jmin = 30
+Jmax = 90
+S1 = 1
+S2 = 2
+S3 = 3
+S4 = 4
+H1 = 1-2
+H2 = 3-4
+H3 = 5-6
+H4 = 7-8
+
+[Peer]
+#_Name = phone
+PublicKey = OLD
+AllowedIPs = 10.9.9.2/32
+CONF
+    AWG_DIR="$tmp" SERVER_CONF_FILE="$tmp/awg0.conf" REPO_ROOT="$BATS_TEST_DIRNAME/.." python3 - <<'PY'
+import importlib.util
+import io
+import json
+import os
+from pathlib import Path
+
+spec = importlib.util.spec_from_file_location("panel_server", Path(os.environ["REPO_ROOT"]) / "web" / "server.py")
+server = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(server)
+
+super_token = "super-token"
+user_token = "user-token"
+server.write_tokens({
+    "super_token_hash": server.token_hash(super_token),
+    "users": {server.token_hash(user_token): {"name": "Alice", "clients": ["phone"]}},
+})
+server.write_import_tokens({"tokens": {server.token_hash("old-import-token-abcdefghijklmnopqrstuvwxyz"): {
+    "client": "phone", "expires_at": 4102444800, "one_time": False, "created_at": 1,
+}}})
+
+calls = []
+def fake_run_manage(*args, timeout=60, extra_env=None):
+    calls.append({"args": args, "timeout": timeout, "extra_env": extra_env or {}})
+    override_path = (extra_env or {}).get("AWG_I1_OVERRIDES_FILE")
+    assert override_path and Path(override_path).stat().st_mode & 0o777 == 0o600
+    assert json.loads(Path(override_path).read_text())["phone"] == "<b 0xabcdef><r 0 1>"
+    class Result:
+        returncode = 0
+        stdout = "ok"
+        stderr = ""
+    return Result()
+server.run_manage = fake_run_manage
+
+class Headers(dict):
+    def get(self, key, default=None):
+        return super().get(key, default)
+
+def make_handler(token, body):
+    payload = json.dumps(body).encode()
+    h = object.__new__(server.Handler)
+    h.path = "/api/server/rotate-profile"
+    h.client_address = ("127.0.0.1", 12345)
+    h.rfile = io.BytesIO(payload)
+    h.wfile = io.BytesIO()
+    h.responses = []
+    h.headers_sent = []
+    h.headers = Headers({"Host": "panel.example:8443", "Content-Length": str(len(payload)), "Authorization": f"Bearer {token}"})
+    h.send_response = lambda code: h.responses.append(code)
+    h.send_error = lambda code, *args, **kwargs: h.responses.append(code)
+    h.send_header = lambda key, value: h.headers_sent.append((key, value))
+    h.end_headers = lambda: None
+    return h
+
+server.RATE.clear()
+handler = make_handler(user_token, {"preset": "mobile", "confirm": "ROTATE", "client_i1": {"phone": "<b 0xabcdef><r 0 1>"}})
+handler.do_POST()
+assert handler.responses == [403]
+
+handler = make_handler(super_token, {"preset": "mobile", "confirm": "nope", "client_i1": {}})
+handler.do_POST()
+assert handler.responses == [400]
+
+handler = make_handler(super_token, {"preset": "mobile", "confirm": "ROTATE", "client_i1": {"phone": "<b 0xabcdef><r 0 1>"}})
+handler.do_POST()
+assert handler.responses == [200]
+assert calls[-1]["args"] == ("server", "rotate-profile", "--preset", "mobile")
+assert server.load_import_tokens()["tokens"] == {}
+assert not list((Path(os.environ["AWG_DIR"]) / "web").glob(".tmp.i1-overrides.*.json"))
+PY
+    rm -rf "$tmp"
 }
 
 @test "browser I1 generator uses realistic ClientHello and public generateAwgI1 path" {

@@ -154,7 +154,11 @@ CLI equivalent:
 
 ```bash
 sudo bash /root/awg/manage_amneziawg.sh client regenerate <name>
+sudo bash /root/awg/manage_amneziawg.sh server rotate-profile --preset mobile
+sudo bash /root/awg/manage_amneziawg.sh server rotate-profile --preset default
 ```
+
+`client regenerate` rebuilds one client and rotates that client key material. `server rotate-profile` changes server AWG H/S/J/I1 parameters and regenerates every client config without rotating server/client keys, IPs, P2P ports, expiry, RBAC, or traffic history. It is disruptive: old client configs stop working and users must download/import fresh configs.
 
 ### Public web panel, only when you really need it
 
@@ -223,6 +227,8 @@ sudo /root/awg/manage_amneziawg.sh p2p toggle CLIENT_NAME
 | `--endpoint=IP` | External server IP when the VPS is behind NAT | `--endpoint=203.0.113.10` |
 | `--preset=TYPE` | Obfuscation preset: `default` or `mobile` | `--preset=mobile` |
 | `--no-tweaks` | Skip hardening/optimization | `--no-tweaks` |
+| `--disable-ufw` | Do not enable UFW when firewall/NAT are managed externally | `AWG_DISABLE_UFW=1` |
+| `--web-cert-mode=selfsigned\|custom\|letsencrypt\|ip-domain` | Web panel TLS mode. Default `selfsigned`; `custom` requires `--web-cert-file`/`--web-key-file`; Let's Encrypt requires reachable `80/tcp` | `AWG_WEB_CERT_MODE` |
 
 See `sudo bash install_amneziawg_en.sh --help` for the full list.
 
@@ -403,6 +409,7 @@ Useful flags:
 * Web files live in `/root/awg/web/`; the panel listens on VPN gateway `10.9.9.1:8443` by default, uses local assets without external CDNs, self-signed TLS, and stores bearer-token hashes/RBAC records in `/root/awg/web/tokens.json`.
 * The client card exposes explicit actions: download `.conf`, copy full config text, show QR, copy the `vpn://` URI, and create a WG Tunnel import URL. Config/import-link endpoints stay authenticated and RBAC-scoped.
 * WG Tunnel import URLs are created with `POST /api/clients/<name>/import-link`, expire after 1 hour by default, and are served as raw `text/plain` from `GET /import/<client>/<token>` without `Content-Disposition`.
+* Client names are intentionally ASCII-only: use `A-Z`, `a-z`, `0-9`, `_`, and `-` (`my_phone`, `iphone_15`, `laptop-home`).
 * AdGuard Home is installed in `/opt/AdGuardHome`; DNS listens on `127.0.0.1`, `10.9.9.1`, and the server IPv6 address inside the VPN. If it fails, VPN remains usable; fallback: `manage dns set-mode system`.
 
 ### Not finished yet

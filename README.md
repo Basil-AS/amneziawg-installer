@@ -209,6 +209,8 @@ sudo /root/awg/manage_amneziawg.sh p2p toggle CLIENT_NAME
 | `--endpoint=IP` | Внешний IP сервера за NAT | `--endpoint=203.0.113.10` |
 | `--preset=TYPE` | Preset обфускации: `default` или `mobile` | `--preset=mobile` |
 | `--no-tweaks` | Пропустить hardening/оптимизацию | `--no-tweaks` |
+| `--disable-ufw` | Не включать UFW, если firewall/NAT управляются снаружи | `AWG_DISABLE_UFW=1` |
+| `--web-cert-mode=selfsigned\|custom\|letsencrypt\|ip-domain` | TLS mode web-panel. Default `selfsigned`; `custom` требует `--web-cert-file`/`--web-key-file`; Let's Encrypt требует доступный `80/tcp` | `AWG_WEB_CERT_MODE` |
 
 Полный список — в `sudo bash install_amneziawg.sh --help`.
 
@@ -407,6 +409,7 @@ sudo bash ./install_amneziawg.sh --upgrade-ipv6
 * Веб-панель разворачивается в `/root/awg/web/`, по умолчанию слушает HTTPS только на VPN gateway `10.9.9.1:8443`, использует локальные assets без внешних CDN, self-signed сертификат и bearer tokens/RBAC через `tokens.json`.
 * В карточке клиента есть явные действия: скачать `.conf`, скопировать полный текст конфига, показать QR, скопировать `vpn://` и создать WG Tunnel import URL. Config/import-link endpoints остаются под auth и RBAC.
 * WG Tunnel import URL создаётся через `POST /api/clients/<name>/import-link`, живёт 1 час по умолчанию и отдаётся как raw `text/plain` через `GET /import/<client>/<token>` без `Content-Disposition`.
+* Имена клиентов намеренно ASCII-only: используйте только `A-Z`, `a-z`, `0-9`, `_` и `-` (`my_phone`, `iphone_15`, `laptop-home`).
 * AdGuard Home ставится в `/opt/AdGuardHome`, слушает DNS на `127.0.0.1`, `10.9.9.1` и серверном IPv6 внутри VPN. Если сервис не стартует, VPN остаётся рабочим; fallback: `manage dns set-mode system`.
 
 ### Веб-панель
@@ -443,7 +446,11 @@ CLI-эквивалент:
 
 ```bash
 sudo bash /root/awg/manage_amneziawg.sh client regenerate <name>
+sudo bash /root/awg/manage_amneziawg.sh server rotate-profile --preset mobile
+sudo bash /root/awg/manage_amneziawg.sh server rotate-profile --preset default
 ```
+
+`client regenerate` пересоздаёт ключи и конфиг одного клиента. `server rotate-profile` меняет серверные AWG H/S/J/I1 параметры и перегенерирует все клиентские конфиги без ротации server/client keys, IP, P2P, expiry, RBAC и traffic history. Операция disruptive: старые клиентские конфиги перестают работать, после неё нужно скачать/импортировать новые.
 
 API веб-панели:
 
