@@ -38,6 +38,7 @@
         '["web/server.py"]' \
         '["web/index.html"]' \
         '["web/app.js"]' \
+        '["web/awg_i1.js"]' \
         '["web/style.css"]' \
         '["web/vendor/tailwindcss.js"]' \
         '["web/vendor/apexcharts.min.js"]'
@@ -48,6 +49,27 @@
         echo "main installer must pin SHA256 values for bootstrap assets" >&2
         return 1
     fi
+}
+
+@test "installer SHA manifest is fresh in current tree" {
+    command -v git &>/dev/null || skip "git not available"
+    command -v python3 &>/dev/null || skip "python3 not available"
+    command -v sha256sum &>/dev/null || skip "sha256sum not available"
+    local tmp
+    tmp=$(mktemp -d)
+    cp -a "$BATS_TEST_DIRNAME/.." "$tmp/repo"
+    (
+        cd "$tmp/repo"
+        rm -rf .git
+        git init -q
+        git config user.name test
+        git config user.email test@example.invalid
+        git add install_amneziawg.sh install_amneziawg_en.sh
+        git commit -qm baseline
+        bash scripts/update-installer-sha-manifest.sh
+        git diff --exit-code -- install_amneziawg.sh install_amneziawg_en.sh
+    )
+    rm -rf "$tmp"
 }
 
 @test "installer secure download enforces hashes and explicit unverified opt-in" {

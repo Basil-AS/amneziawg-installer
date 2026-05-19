@@ -2308,6 +2308,14 @@ refresh_client_config() {
     fi
 
     load_awg_params || { exec {lock_fd}>&-; return 1; }
+    if [[ -n "${AWG_I1_OVERRIDE:-}" ]]; then
+        validate_i1_override "$AWG_I1_OVERRIDE" || {
+            log_error "Invalid AWG_I1_OVERRIDE"
+            exec {lock_fd}>&-
+            return 1
+        }
+        AWG_I1="$AWG_I1_OVERRIDE"
+    fi
 
     # Проверяем, что клиент существует в серверном конфиге
     if ! grep -qxF "#_Name = ${name}" "$SERVER_CONF_FILE" 2>/dev/null; then
@@ -2462,6 +2470,223 @@ validate_i1_override() {
 
     [[ "$i1" =~ ^[[:space:]0-9a-fA-Fx\<\>br]+$ ]] || return 1
     [[ "$i1" == *"<b 0x"* || "$i1" == *"<r "* ]] || return 1
+}
+
+awg_rand_range() {
+    local min="$1" max="$2" range random_val
+    range=$((max - min + 1))
+    random_val=$(od -An -tu4 -N4 /dev/urandom 2>/dev/null | tr -d ' ')
+    [[ "$random_val" =~ ^[0-9]+$ ]] || random_val=$(( (RANDOM << 15) | RANDOM ))
+    echo $(( (random_val % range) + min ))
+}
+
+generate_awg_h_ranges_runtime() {
+    local attempt=0 max_attempts=20
+    while (( attempt < max_attempts )); do
+        local raw arr=() _v
+        raw=$(od -An -N32 -tu4 /dev/urandom 2>/dev/null | tr -s ' \n' '\n' | sed '/^$/d')
+        if [[ -n "$raw" ]]; then
+            local count=0
+            while IFS= read -r _v; do
+                [[ "$_v" =~ ^[0-9]+$ ]] || continue
+                arr+=("$(( _v & 2147483647 ))")
+                count=$((count + 1))
+                (( count == 8 )) && break
+            done <<< "$raw"
+        fi
+        if (( ${#arr[@]} != 8 )); then
+            arr=()
+            for _v in 1 2 3 4 5 6 7 8; do arr+=("$(awg_rand_range 0 2147483647)"); done
+        fi
+        mapfile -t arr < <(printf '%s\n' "${arr[@]}" | sort -n)
+        if (( ${arr[1]} - ${arr[0]} >= 1000 )) && (( ${arr[3]} - ${arr[2]} >= 1000 )) && \
+           (( ${arr[5]} - ${arr[4]} >= 1000 )) && (( ${arr[7]} - ${arr[6]} >= 1000 )); then
+            printf '%s-%s\n%s-%s\n%s-%s\n%s-%s\n' \
+                "${arr[0]}" "${arr[1]}" "${arr[2]}" "${arr[3]}" \
+                "${arr[4]}" "${arr[5]}" "${arr[6]}" "${arr[7]}"
+            return 0
+        fi
+        attempt=$((attempt + 1))
+    done
+    return 1
+}
+
+generate_cps_i1_runtime() {
+    echo "<r $(awg_rand_range 32 256)>"
+}
+
+generate_runtime_awg_profile() {
+    local preset="${1:-default}" h_lines
+    case "$preset" in
+        mobile)
+            AWG_PRESET="mobile"
+            AWG_Jc=3
+            AWG_Jmin=$(awg_rand_range 30 50)
+            AWG_Jmax=$(( AWG_Jmin + $(awg_rand_range 20 80) ))
+            AWG_S1=$(awg_rand_range 15 150)
+            AWG_S2=$(awg_rand_range 15 150)
+            while [[ $((AWG_S1 + 56)) -eq $AWG_S2 ]]; do AWG_S2=$(awg_rand_range 15 150); done
+            AWG_S3=$(awg_rand_range 0 10)
+            AWG_S4=$(awg_rand_range 0 10)
+            ;;
+        default)
+            AWG_PRESET="default"
+            AWG_Jc=$(awg_rand_range 3 6)
+            AWG_Jmin=$(awg_rand_range 40 89)
+            AWG_Jmax=$(( AWG_Jmin + $(awg_rand_range 50 150) ))
+            AWG_S1=$(awg_rand_range 15 150)
+            AWG_S2=$(awg_rand_range 15 150)
+            while [[ $((AWG_S1 + 56)) -eq $AWG_S2 ]]; do AWG_S2=$(awg_rand_range 15 150); done
+            AWG_S3=$(awg_rand_range 8 55)
+            AWG_S4=$(awg_rand_range 4 32)
+            ;;
+        *)
+            log_error "Неизвестный preset: $preset"
+            return 1
+            ;;
+    esac
+    mapfile -t h_lines < <(generate_awg_h_ranges_runtime) || true
+    [[ ${#h_lines[@]} -eq 4 ]] || { log_error "Не удалось сгенерировать H ranges"; return 1; }
+    AWG_H1="${h_lines[0]}"; AWG_H2="${h_lines[1]}"; AWG_H3="${h_lines[2]}"; AWG_H4="${h_lines[3]}"
+    AWG_I1="$(generate_cps_i1_runtime)"
+    export AWG_PRESET AWG_Jc AWG_Jmin AWG_Jmax AWG_S1 AWG_S2 AWG_S3 AWG_S4 AWG_H1 AWG_H2 AWG_H3 AWG_H4 AWG_I1
+}
+
+update_awg_profile_in_files() {
+    python3 - "$CONFIG_FILE" "$SERVER_CONF_FILE" <<'PY'
+import os
+import re
+import sys
+from pathlib import Path
+
+config = Path(sys.argv[1])
+server = Path(sys.argv[2])
+keys = ["AWG_PRESET", "AWG_Jc", "AWG_Jmin", "AWG_Jmax", "AWG_S1", "AWG_S2", "AWG_S3", "AWG_S4", "AWG_H1", "AWG_H2", "AWG_H3", "AWG_H4", "AWG_I1"]
+values = {key: os.environ[key] for key in keys if key in os.environ}
+
+if config.exists():
+    lines = config.read_text(encoding="utf-8", errors="ignore").splitlines()
+    seen = set()
+    out = []
+    for line in lines:
+        m = re.match(r"^(?:export\s+)?(AWG_(?:PRESET|Jc|Jmin|Jmax|S[1-4]|H[1-4]|I1))=", line)
+        if m and m.group(1) in values:
+            key = m.group(1)
+            val = values[key]
+            if re.fullmatch(r"[0-9]+", val):
+                out.append(f"export {key}={val}")
+            else:
+                out.append(f"export {key}='{val}'")
+            seen.add(key)
+        else:
+            out.append(line)
+    for key in keys:
+        if key not in seen and key in values:
+            val = values[key]
+            out.append(f"export {key}={val}" if re.fullmatch(r"[0-9]+", val) else f"export {key}='{val}'")
+    tmp = config.with_name(config.name + f".tmp.{os.getpid()}")
+    tmp.write_text("\n".join(out).rstrip() + "\n", encoding="utf-8")
+    tmp.chmod(0o600)
+    tmp.replace(config)
+    config.chmod(0o600)
+
+text = server.read_text(encoding="utf-8", errors="ignore").splitlines()
+field_map = {"Jc": "AWG_Jc", "Jmin": "AWG_Jmin", "Jmax": "AWG_Jmax", "S1": "AWG_S1", "S2": "AWG_S2", "S3": "AWG_S3", "S4": "AWG_S4", "H1": "AWG_H1", "H2": "AWG_H2", "H3": "AWG_H3", "H4": "AWG_H4", "I1": "AWG_I1"}
+seen = set()
+out = []
+in_iface = False
+inserted = False
+for line in text:
+    if line.strip() == "[Interface]":
+        in_iface = True
+        out.append(line)
+        continue
+    if in_iface and line.startswith("["):
+        for field, env_key in field_map.items():
+            if field not in seen and env_key in values:
+                out.append(f"{field} = {values[env_key]}")
+        inserted = True
+        in_iface = False
+        out.append(line)
+        continue
+    if in_iface:
+        m = re.match(r"^([A-Za-z0-9]+)\s*=", line.strip())
+        if m and m.group(1) in field_map:
+            field = m.group(1)
+            out.append(f"{field} = {values[field_map[field]]}")
+            seen.add(field)
+            continue
+    out.append(line)
+if in_iface and not inserted:
+    for field, env_key in field_map.items():
+        if field not in seen and env_key in values:
+            out.append(f"{field} = {values[env_key]}")
+tmp = server.with_name(server.name + f".tmp.{os.getpid()}")
+tmp.write_text("\n".join(out).rstrip() + "\n", encoding="utf-8")
+tmp.chmod(0o600)
+tmp.replace(server)
+server.chmod(0o600)
+PY
+}
+
+read_i1_override_for_client() {
+    local name="$1"
+    [[ -n "${AWG_I1_OVERRIDES_FILE:-}" && -f "$AWG_I1_OVERRIDES_FILE" ]] || return 1
+    python3 - "$AWG_I1_OVERRIDES_FILE" "$name" <<'PY'
+import json, sys
+data = json.load(open(sys.argv[1], encoding="utf-8"))
+value = data.get(sys.argv[2], "")
+if value:
+    print(value)
+PY
+}
+
+server_rotate_profile() {
+    local preset="${1:-default}" timestamp backup_dir name override_i1 old_apply
+    load_awg_params || return 1
+    generate_runtime_awg_profile "$preset" || return 1
+    timestamp="$(date '+%Y%m%d-%H%M%S.%3N')"
+    backup_dir="${AWG_DIR}/rotate-backups/${timestamp}"
+    mkdir -p "$backup_dir" || return 1
+    chmod 700 "$AWG_DIR/rotate-backups" "$backup_dir" 2>/dev/null || true
+    cp -p "$SERVER_CONF_FILE" "$backup_dir/awg0.conf" || return 1
+    cp -p "$CONFIG_FILE" "$backup_dir/awgsetup_cfg.init" 2>/dev/null || true
+    cp -p "$AWG_DIR"/*.conf "$backup_dir/" 2>/dev/null || true
+    cp -p "$AWG_DIR"/*.png "$AWG_DIR"/*.vpnuri "$AWG_DIR"/*.vpnuri.png "$backup_dir/" 2>/dev/null || true
+
+    update_awg_profile_in_files || return 1
+    old_apply="${AWG_SKIP_APPLY:-}"
+    export AWG_SKIP_APPLY=1
+    while IFS= read -r name; do
+        [[ -n "$name" ]] || continue
+        override_i1="$(read_i1_override_for_client "$name" 2>/dev/null || true)"
+        [[ -n "$override_i1" ]] || override_i1="$(generate_cps_i1_runtime)"
+        export AWG_I1_OVERRIDE="$override_i1"
+        if ! refresh_client_config "$name"; then
+            unset AWG_I1_OVERRIDE
+            [[ -n "$old_apply" ]] && export AWG_SKIP_APPLY="$old_apply" || unset AWG_SKIP_APPLY
+            cp -p "$backup_dir/awg0.conf" "$SERVER_CONF_FILE" 2>/dev/null || true
+            cp -p "$backup_dir"/*.conf "$AWG_DIR/" 2>/dev/null || true
+            apply_config >/dev/null 2>&1 || true
+            return 1
+        fi
+    done < <(grep '^#_Name = ' "$SERVER_CONF_FILE" 2>/dev/null | sed 's/^#_Name = //')
+    unset AWG_I1_OVERRIDE
+    [[ -n "$old_apply" ]] && export AWG_SKIP_APPLY="$old_apply" || unset AWG_SKIP_APPLY
+    generate_firewall_scripts >/dev/null 2>&1 || log_warn "Не удалось обновить firewall hook-скрипты."
+    if ! apply_config; then
+        log_error "apply_config упал после rotate-profile; выполняется rollback."
+        cp -p "$backup_dir/awg0.conf" "$SERVER_CONF_FILE" 2>/dev/null || true
+        cp -p "$backup_dir"/*.conf "$AWG_DIR/" 2>/dev/null || true
+        apply_config >/dev/null 2>&1 || true
+        return 1
+    fi
+    {
+        printf '%s preset=%s Jc=%s Jmin=%s Jmax=%s S1=%s S2=%s S3=%s S4=%s\n' \
+            "$(date '+%F %T')" "$preset" "$AWG_Jc" "$AWG_Jmin" "$AWG_Jmax" "$AWG_S1" "$AWG_S2" "$AWG_S3" "$AWG_S4"
+    } >> "$AWG_DIR/ROTATION_HISTORY.log"
+    chmod 600 "$AWG_DIR/ROTATION_HISTORY.log" 2>/dev/null || true
+    log "Server AWG profile rotated (preset: $preset). Client configs regenerated."
 }
 
 replace_peer_credentials() {

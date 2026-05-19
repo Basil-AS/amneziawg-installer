@@ -28,6 +28,7 @@ NO_COLOR=0
 VERBOSE_LIST=0
 JSON_OUTPUT=0
 EXPIRES_DURATION=""
+ROTATE_PRESET="default"
 
 # --- Auto-cleanup of temporary files and directories ---
 # _manage_temp_dirs holds mktemp -d paths for backup/restore.
@@ -68,6 +69,8 @@ while [[ $# -gt 0 ]]; do
         --apply-mode=*)    _CLI_APPLY_MODE="${1#*=}"; export AWG_APPLY_MODE="$_CLI_APPLY_MODE"; shift ;;
         --psk)             CLI_ADD_PSK=1; shift ;;
         --yes)             CLI_YES=1; shift ;;
+        --preset=*)        ROTATE_PRESET="${1#*=}"; shift ;;
+        --preset)          ROTATE_PRESET="${2:-}"; shift 2 ;;
         --*)               echo "Unknown option: $1" >&2; COMMAND="help"; break ;;
         *)
             if [[ -z "$COMMAND" ]]; then
@@ -98,6 +101,21 @@ if [[ "$COMMAND" == "client" ]]; then
     esac
 fi
 [[ "$COMMAND" == "regenerate" ]] && COMMAND="regen"
+if [[ "$COMMAND" == "server" ]]; then
+    case "${ARGS[0]:-}" in
+        rotate-profile|rotate-awg|refresh-server-config)
+            COMMAND="rotate-profile"
+            ARGS=("${ARGS[@]:1}")
+            ;;
+        *)
+            echo "Unknown server command: ${ARGS[0]:-}" >&2
+            COMMAND="help"
+            ;;
+    esac
+fi
+case "$COMMAND" in
+    rotate-profile|rotate-awg|refresh-server-config) COMMAND="rotate-profile" ;;
+esac
 
 # Update paths after possible --conf-dir override
 CONFIG_FILE="$AWG_DIR/awgsetup_cfg.init"
@@ -1604,6 +1622,10 @@ usage() {
     echo "  dns logs              Show recent AdGuard Home logs"
     echo "  dns set-mode <mode>   Change DNS: adguard, system, or custom [DNS]"
     echo '  set-name "NAME"       Change server name and regenerate clients'
+    echo "  server rotate-profile --preset mobile|default"
+    echo "                        Rotate H/S/J/I1 AWG profile and regenerate clients"
+    echo "  rotate-awg            Alias for server rotate-profile"
+    echo "  refresh-server-config Alias for server rotate-profile"
     echo "  web token list        Show web panel tokens"
     echo "  web token add <name>  Create a user token and print its value"
     echo "  web token revoke <hash> Revoke a user token"
@@ -1904,6 +1926,19 @@ case $COMMAND in
                 die "Unknown p2p command: $_sub"
                 ;;
         esac
+        ;;
+
+    rotate-profile)
+        case "${ROTATE_PRESET:-default}" in
+            mobile|default) ;;
+            *) die "Invalid --preset. Allowed: mobile or default" ;;
+        esac
+        if ! confirm_action "rotate AWG profile" "and regenerate all client configs"; then exit 1; fi
+        if [[ "${AWG_SKIP_APPLY:-0}" != "1" ]]; then
+            ensure_amneziawg_kernel_module \
+                || die "amneziawg kernel module unavailable. Run 'manage repair-module' and try again."
+        fi
+        server_rotate_profile "$ROTATE_PRESET" || _cmd_rc=1
         ;;
 
     ipv6)

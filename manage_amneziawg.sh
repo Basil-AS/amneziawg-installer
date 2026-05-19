@@ -28,6 +28,7 @@ NO_COLOR=0
 VERBOSE_LIST=0
 JSON_OUTPUT=0
 EXPIRES_DURATION=""
+ROTATE_PRESET="default"
 
 # --- Автоочистка временных файлов и директорий ---
 # _manage_temp_dirs хранит mktemp -d пути для backup/restore.
@@ -68,6 +69,8 @@ while [[ $# -gt 0 ]]; do
         --apply-mode=*)    _CLI_APPLY_MODE="${1#*=}"; export AWG_APPLY_MODE="$_CLI_APPLY_MODE"; shift ;;
         --psk)             CLI_ADD_PSK=1; shift ;;
         --yes)             CLI_YES=1; shift ;;
+        --preset=*)        ROTATE_PRESET="${1#*=}"; shift ;;
+        --preset)          ROTATE_PRESET="${2:-}"; shift 2 ;;
         --*)               echo "Неизвестная опция: $1" >&2; COMMAND="help"; break ;;
         *)
             if [[ -z "$COMMAND" ]]; then
@@ -98,6 +101,21 @@ if [[ "$COMMAND" == "client" ]]; then
     esac
 fi
 [[ "$COMMAND" == "regenerate" ]] && COMMAND="regen"
+if [[ "$COMMAND" == "server" ]]; then
+    case "${ARGS[0]:-}" in
+        rotate-profile|rotate-awg|refresh-server-config)
+            COMMAND="rotate-profile"
+            ARGS=("${ARGS[@]:1}")
+            ;;
+        *)
+            echo "Неизвестная server команда: ${ARGS[0]:-}" >&2
+            COMMAND="help"
+            ;;
+    esac
+fi
+case "$COMMAND" in
+    rotate-profile|rotate-awg|refresh-server-config) COMMAND="rotate-profile" ;;
+esac
 
 # Обновляем пути после возможного переопределения --conf-dir
 CONFIG_FILE="$AWG_DIR/awgsetup_cfg.init"
@@ -1601,6 +1619,10 @@ usage() {
     echo "  dns logs              Показать последние логи AdGuard Home"
     echo "  dns set-mode <режим>  Сменить DNS: adguard, system или custom [DNS]"
     echo "  set-name \"ИМЯ\"       Сменить имя сервера и перегенерировать клиентов"
+    echo "  server rotate-profile --preset mobile|default"
+    echo "                        Ротировать H/S/J/I1 AWG profile и перегенерировать клиентов"
+    echo "  rotate-awg            Алиас для server rotate-profile"
+    echo "  refresh-server-config Алиас для server rotate-profile"
     echo "  web token list        Показать токены веб-панели"
     echo "  web token add <name>  Создать обычный токен и вывести его значение"
     echo "  web token revoke <hash> Удалить обычный токен"
@@ -1904,6 +1926,19 @@ case $COMMAND in
                 die "Неизвестная p2p команда: $_sub"
                 ;;
         esac
+        ;;
+
+    rotate-profile)
+        case "${ROTATE_PRESET:-default}" in
+            mobile|default) ;;
+            *) die "Неверный --preset. Допустимо: mobile или default" ;;
+        esac
+        if ! confirm_action "ротировать AWG profile" "и перегенерировать все клиентские конфиги"; then exit 1; fi
+        if [[ "${AWG_SKIP_APPLY:-0}" != "1" ]]; then
+            ensure_amneziawg_kernel_module \
+                || die "Модуль ядра amneziawg недоступен. Запустите 'manage repair-module' и повторите."
+        fi
+        server_rotate_profile "$ROTATE_PRESET" || _cmd_rc=1
         ;;
 
     ipv6)
