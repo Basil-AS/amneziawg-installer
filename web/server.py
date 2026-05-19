@@ -14,17 +14,19 @@ import time
 from http import HTTPStatus
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, unquote, urlparse
+from urllib.parse import parse_qs, quote, unquote, urlparse
 
 AWG_DIR = Path(os.environ.get("AWG_DIR", "/root/awg"))
 WEB_DIR = AWG_DIR / "web"
 MANAGE = AWG_DIR / "manage_amneziawg.sh"
 SERVER_CONF = Path(os.environ.get("SERVER_CONF_FILE", "/etc/amnezia/amneziawg/awg0.conf"))
 TOKEN_FILE = WEB_DIR / "tokens.json"
+IMPORT_TOKEN_FILE = WEB_DIR / "import_tokens.json"
 TRAFFIC_FILE = WEB_DIR / "traffic_history.json"
 LEGACY_TOKEN_FILE = WEB_DIR / "auth_token"
 NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 TOKEN_HASH_RE = re.compile(r"^[0-9a-f]{64}$")
+RAW_IMPORT_TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{32,256}$")
 STATIC_FILES = {
     "/": ("index.html", "text/html; charset=utf-8"),
     "/index.html": ("index.html", "text/html; charset=utf-8"),
@@ -40,6 +42,7 @@ RATE_CLEANUP_INTERVAL = 60
 RATE_LAST_CLEANUP = 0
 MAX_JSON_BODY = 64 * 1024
 TOKENS_LOCK = threading.RLock()
+IMPORT_TOKENS_LOCK = threading.RLock()
 TRAFFIC_LOCK = threading.Lock()
 SERVER_NAME_RE = re.compile(r"^[\w .,!?\-()]{1,128}$", re.UNICODE)
 DELETED_TRAFFIC_KEY = "_deleted_clients_total"
@@ -60,6 +63,72 @@ def run_manage(*args, timeout=60):
 
 def token_hash(token):
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def clean_expired_import_tokens(data, now=None):
+    now = int(time.time() if now is None else now)
+    tokens = data.get("tokens") if isinstance(data, dict) else {}
+    clean = {}
+    if isinstance(tokens, dict):
+        for digest, record in tokens.items():
+            if not isinstance(digest, str) or not TOKEN_HASH_RE.fullmatch(digest):
+                continue
+            if not isinstance(record, dict):
+                continue
+            client = record.get("client")
+            expires_at = record.get("expires_at")
+            if not isinstance(client, str) or not NAME_RE.fullmatch(client):
+                continue
+            if isinstance(expires_at, bool) or not isinstance(expires_at, int) or expires_at <= now:
+                continue
+            clean[digest] = {
+                "client": client,
+                "expires_at": expires_at,
+                "one_time": bool(record.get("one_time", False)),
+                "created_at": int(record.get("created_at") or now),
+            }
+    return {"tokens": clean}
+
+
+def load_import_tokens(now=None):
+    with IMPORT_TOKENS_LOCK:
+        data = {}
+        if IMPORT_TOKEN_FILE.exists():
+            try:
+                data = json.loads(IMPORT_TOKEN_FILE.read_text(encoding="utf-8"))
+            except Exception:
+                data = {}
+        clean = clean_expired_import_tokens(data, now=now)
+        if clean != data or not IMPORT_TOKEN_FILE.exists():
+            write_import_tokens(clean)
+        return clean
+
+
+def write_import_tokens(data):
+    with IMPORT_TOKENS_LOCK:
+        WEB_DIR.mkdir(parents=True, exist_ok=True)
+        clean = clean_expired_import_tokens(data)
+        tmp = IMPORT_TOKEN_FILE.with_name(f"{IMPORT_TOKEN_FILE.name}.tmp.{os.getpid()}")
+        tmp.write_text(json.dumps(clean, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, IMPORT_TOKEN_FILE)
+        os.chmod(IMPORT_TOKEN_FILE, 0o600)
+
+
+def require_import_ttl(value):
+    if value is None:
+        return 3600
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError("invalid ttl")
+    if value < 60 or value > 604800:
+        raise ValueError("invalid ttl")
+    return value
+
+
+def require_import_token(value):
+    if not isinstance(value, str) or not RAW_IMPORT_TOKEN_RE.fullmatch(value):
+        raise ValueError("invalid import token")
+    return value
 
 
 def write_tokens(data):
@@ -757,6 +826,44 @@ class Handler(SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def send_raw_import_config(self, name, token):
+        try:
+            name = safe_name(name)
+            token = require_import_token(token)
+        except ValueError:
+            self.send_error(HTTPStatus.NOT_FOUND)
+            return
+        if not check_rate_limit(self.client_address[0]):
+            self.send_error(HTTPStatus.TOO_MANY_REQUESTS)
+            return
+        digest = token_hash(token)
+        now = int(time.time())
+        with IMPORT_TOKENS_LOCK:
+            data = load_import_tokens(now=now)
+            record = data.get("tokens", {}).get(digest)
+            if not record or record.get("client") != name or int(record.get("expires_at") or 0) <= now:
+                self.send_error(HTTPStatus.NOT_FOUND)
+                return
+            path = AWG_DIR / f"{name}.conf"
+            if not path.exists() or not path.is_file():
+                self.send_error(HTTPStatus.NOT_FOUND)
+                return
+            text = path.read_text(encoding="utf-8", errors="replace")
+            if not text.startswith("[Interface]"):
+                self.send_error(HTTPStatus.NOT_FOUND)
+                return
+            if record.get("one_time"):
+                data["tokens"].pop(digest, None)
+                write_import_tokens(data)
+        body = text.encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.end_headers()
+        self.wfile.write(body)
+
     def send_static_file(self, url_path):
         static = STATIC_FILES.get(url_path)
         if static is None:
@@ -765,12 +872,49 @@ class Handler(SimpleHTTPRequestHandler):
         filename, ctype = static
         self.send_file(WEB_DIR / filename, ctype)
 
+    def request_base_url(self):
+        host = (self.headers.get("Host") or "").strip()
+        if not host or any(ch in host for ch in "/\\\r\n\t "):
+            host = f"10.9.9.1:{os.environ.get('AWG_WEB_PORT', '8443')}"
+        return f"https://{host}"
+
+    def create_import_link(self, auth, name, body):
+        name = safe_name(name)
+        if not self.require_client_access(auth, name):
+            return
+        path = AWG_DIR / f"{name}.conf"
+        if not path.exists() or not path.is_file():
+            self.send_json({"error": "client config not found"}, 404)
+            return
+        ttl = require_import_ttl(body.get("ttl"))
+        one_time = body.get("one_time", False)
+        if not isinstance(one_time, bool):
+            raise ValueError("invalid one_time")
+        token = secrets.token_urlsafe(48)
+        digest = token_hash(token)
+        now = int(time.time())
+        with IMPORT_TOKENS_LOCK:
+            data = load_import_tokens(now=now)
+            data.setdefault("tokens", {})[digest] = {
+                "client": name,
+                "expires_at": now + ttl,
+                "one_time": one_time,
+                "created_at": now,
+            }
+            write_import_tokens(data)
+        url = f"{self.request_base_url()}/import/{quote(name)}/{quote(token)}"
+        self.send_json({"url": url, "expires_at": now + ttl, "ttl": ttl, "one_time": one_time})
+
     def do_GET(self):
         auth = self.api_auth()
         if auth is None:
             return
         u = urlparse(self.path)
         if auth["role"] == "static":
+            m_import = re.match(r"^/import/([^/]+)/([^/]+)$", u.path)
+            if m_import:
+                self.send_raw_import_config(unquote(m_import.group(1)), unquote(m_import.group(2)))
+                return
             self.send_static_file(u.path)
             return
 
@@ -933,6 +1077,10 @@ class Handler(SimpleHTTPRequestHandler):
                 self.send_json({"super_token": token})
                 return
             else:
+                import_link = re.match(r"^/api/clients/([^/]+)/import-link$", u.path)
+                if import_link:
+                    self.create_import_link(auth, unquote(import_link.group(1)), body)
+                    return
                 m = re.match(r"^/api/clients/([^/]+)/(p2p|toggle)$", u.path)
                 p2p_toggle = re.match(r"^/api/clients/([^/]+)/p2p/toggle$", u.path)
                 if not m and not p2p_toggle:

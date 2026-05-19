@@ -18,6 +18,95 @@
     fi
 }
 
+@test "installer writes root-only INSTALL_SUMMARY with URLs credentials options and backups" {
+    local installer="$BATS_TEST_DIRNAME/../install_amneziawg.sh"
+    local tmp server_conf summary backup_count
+    tmp=$(mktemp -d)
+    server_conf="$tmp/awg0.conf"
+    mkdir -p "$tmp/awg/web"
+    printf '#_Name = my_phone\n[Peer]\n#_Name = my_laptop\n[Peer]\n' > "$server_conf"
+    AWG_DIR="$tmp/awg" SERVER_CONF_FILE="$server_conf" bash -c '
+        source <(sed -n "/^route_mode_label() {$/,/^step99_finish() {$/p" "$0" | head -n -1)
+        SCRIPT_VERSION="5.13.0"
+        AWG_REPO="Basil-AS/amneziawg-installer"
+        AWG_SERVER_NAME="sunny-sweden"
+        AWG_ENDPOINT="64.112.125.125"
+        AWG_PORT="50729"
+        AWG_TUNNEL_SUBNET="10.9.9.1/24"
+        ALLOWED_IPS_MODE="1"
+        ALLOWED_IPS="0.0.0.0/0"
+        AWG_IPV6_ENABLED="1"
+        AWG_IPV6_MODE="routed"
+        AWG_IPV6_SUBNET="2a13:7c82:101f:30::/64"
+        AWG_WEB_ENABLED="1"
+        AWG_WEB_BIND="0.0.0.0"
+        AWG_WEB_PORT="8443"
+        AWG_WEB_SUPER_TOKEN_ONCE="raw-super-token"
+        AWG_ADGUARD_ENABLED="1"
+        AWG_ADGUARD_PORT="3000"
+        AWG_ADGUARD_DIR="/root/awg/adguard"
+        AG_USERNAME="admin"
+        AG_PASSWORD="adguard-pass"
+        AWG_PRESET="mobile"
+        AWG_Jc="3"; AWG_Jmin="30"; AWG_Jmax="90"; AWG_S1="1"; AWG_S2="2"; AWG_S3="3"; AWG_S4="4"
+        AWG_H1="1-2"; AWG_H2="3-4"; AWG_H3="5-6"; AWG_H4="7-8"; AWG_I1="1:2"
+        AWG_P2P_BASE_PORT="20000"; AWG_P2P_PORTS_PER_CLIENT="3"; AWG_FULLCONE_NAT="0"
+        MANAGE_SCRIPT_PATH="/root/awg/manage_amneziawg.sh"
+        COMMON_SCRIPT_PATH="/root/awg/awg_common.sh"
+        LOG_FILE="/root/awg/install_amneziawg.log"
+        STATE_FILE="/root/awg/.install_state"
+        write_install_summary
+        write_install_summary
+    ' "$installer"
+    summary="$tmp/awg/INSTALL_SUMMARY.txt"
+    [ -f "$summary" ]
+    [ "$(stat -c '%a' "$summary")" = "600" ]
+    backup_count=$(find "$tmp/awg" -maxdepth 1 -name 'INSTALL_SUMMARY.txt.bak.*' | wc -l)
+    [ "$backup_count" -eq 1 ]
+    grep -qF 'Public URL: https://64.112.125.125:8443' "$summary"
+    grep -qF 'WARNING: Web Panel is publicly exposed' "$summary"
+    grep -qF 'Super token: raw-super-token' "$summary"
+    grep -qF 'Token file:' "$summary"
+    grep -qF '[AdGuard Home]' "$summary"
+    grep -qF 'Admin password: adguard-pass' "$summary"
+    grep -qF 'Endpoint: 64.112.125.125' "$summary"
+    grep -qF 'Route mode: route-all' "$summary"
+    grep -qF 'IPv6 mode: routed' "$summary"
+    grep -qF 'IPv6 client subnet: 2a13:7c82:101f:30::/64' "$summary"
+    grep -qF 'Config directory:' "$summary"
+    grep -qF '[Useful commands]' "$summary"
+    grep -qF '[WG Tunnel URL Import]' "$summary"
+    grep -qF '/import/my_phone/<token>' "$summary"
+    rm -rf "$tmp"
+}
+
+@test "installer summary handles local-only web bind without public URL" {
+    local installer="$BATS_TEST_DIRNAME/../install_amneziawg.sh"
+    local tmp summary
+    tmp=$(mktemp -d)
+    mkdir -p "$tmp/awg"
+    AWG_DIR="$tmp/awg" SERVER_CONF_FILE="$tmp/missing.conf" bash -c '
+        source <(sed -n "/^route_mode_label() {$/,/^step99_finish() {$/p" "$0" | head -n -1)
+        SCRIPT_VERSION="5.13.0"; AWG_REPO="Basil-AS/amneziawg-installer"; AWG_ENDPOINT="203.0.113.10"
+        AWG_PORT="51820"; AWG_TUNNEL_SUBNET="10.9.9.1/24"; ALLOWED_IPS_MODE="2"; ALLOWED_IPS="0.0.0.0/5"
+        AWG_IPV6_ENABLED="0"; AWG_IPV6_MODE="legacy"; AWG_WEB_ENABLED="1"; AWG_WEB_BIND="127.0.0.1"; AWG_WEB_PORT="8443"
+        AWG_ADGUARD_ENABLED="0"; AWG_ADGUARD_PORT="3000"; AWG_Jc="3"; AWG_Jmin="30"; AWG_Jmax="90"
+        AWG_S1="1"; AWG_S2="2"; AWG_S3="3"; AWG_S4="4"; AWG_H1="1-2"; AWG_H2="3-4"; AWG_H3="5-6"; AWG_H4="7-8"
+        AWG_P2P_BASE_PORT="20000"; AWG_P2P_PORTS_PER_CLIENT="3"; AWG_FULLCONE_NAT="0"
+        MANAGE_SCRIPT_PATH="/root/awg/manage_amneziawg.sh"; COMMON_SCRIPT_PATH="/root/awg/awg_common.sh"; LOG_FILE="/root/awg/install_amneziawg.log"; STATE_FILE="/root/awg/.install_state"
+        write_install_summary
+    ' "$installer"
+    summary="$tmp/awg/INSTALL_SUMMARY.txt"
+    grep -qF 'Public URL: not exposed' "$summary"
+    grep -qF 'Local URL: https://127.0.0.1:8443' "$summary"
+    grep -qF 'SSH tunnel: ssh -L 8443:127.0.0.1:8443 root@203.0.113.10' "$summary"
+    grep -qF 'Enabled: no' "$summary"
+    if grep -qF 'Public URL: https://' "$summary"; then
+        fail "local-only bind must not advertise a public URL"
+    fi
+    rm -rf "$tmp"
+}
+
 @test "web panel defaults to VPN gateway instead of public bind" {
     grep -qF 'AWG_WEB_BIND="10.9.9.1"' "$BATS_TEST_DIRNAME/../install_amneziawg.sh"
     grep -qF 'AWG_WEB_BIND="10.9.9.1"' "$BATS_TEST_DIRNAME/../install_amneziawg_en.sh"
@@ -102,6 +191,7 @@ spec.loader.exec_module(server)
 assert set(server.STATIC_FILES) == {"/", "/index.html", "/style.css", "/app.js", "/favicon.svg"}
 for private_path in {
     "/tokens.json",
+    "/import_tokens.json",
     "/auth_token",
     "/key.pem",
     "/cert.pem",
@@ -110,6 +200,134 @@ for private_path in {
 }:
     assert private_path not in server.STATIC_FILES
 PY
+}
+
+@test "WG Tunnel import links are authenticated, RBAC scoped, hashed, and raw no-store" {
+    command -v python3 &>/dev/null || skip "python3 not available"
+    local tmp
+    tmp=$(mktemp -d)
+    mkdir -p "$tmp/web"
+    printf '[Interface]\nPrivateKey = phone\n[Peer]\nEndpoint = vpn.example:51820\n' > "$tmp/phone.conf"
+    printf '[Interface]\nPrivateKey = laptop\n[Peer]\nEndpoint = vpn.example:51820\n' > "$tmp/laptop.conf"
+    AWG_DIR="$tmp" SERVER_CONF_FILE="$tmp/awg0.conf" REPO_ROOT="$BATS_TEST_DIRNAME/.." python3 - <<'PY'
+import importlib.util
+import io
+import json
+import os
+import time
+from pathlib import Path
+from urllib.parse import urlparse
+
+spec = importlib.util.spec_from_file_location("panel_server", Path(os.environ["REPO_ROOT"]) / "web" / "server.py")
+server = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(server)
+
+super_token = "super-token"
+user_token = "user-token"
+server.write_tokens({
+    "super_token_hash": server.token_hash(super_token),
+    "users": {server.token_hash(user_token): {"name": "Alice", "clients": ["phone"]}},
+})
+
+class Headers(dict):
+    def get(self, key, default=None):
+        return super().get(key, default)
+
+def make_handler(method, path, token=None, body=None):
+    payload = b"" if body is None else json.dumps(body).encode()
+    h = object.__new__(server.Handler)
+    h.path = path
+    h.client_address = ("127.0.0.1", 12345)
+    h.rfile = io.BytesIO(payload)
+    h.wfile = io.BytesIO()
+    h.responses = []
+    h.headers_sent = []
+    headers = Headers({"Host": "panel.example:8443", "Content-Length": str(len(payload))})
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    h.headers = headers
+    h.send_response = lambda code: h.responses.append(code)
+    h.send_error = lambda code, *args, **kwargs: h.responses.append(code)
+    h.send_header = lambda key, value: h.headers_sent.append((key, value))
+    h.end_headers = lambda: None
+    return h
+
+def response_json(handler):
+    return json.loads(handler.wfile.getvalue().decode())
+
+server.RATE.clear()
+handler = make_handler("POST", "/api/clients/phone/import-link", body={})
+handler.do_POST()
+assert handler.responses == [401]
+
+handler = make_handler("POST", "/api/clients/laptop/import-link", token=user_token, body={})
+handler.do_POST()
+assert handler.responses == [403]
+
+handler = make_handler("POST", "/api/clients/bad%20name/import-link", token=super_token, body={})
+handler.do_POST()
+assert handler.responses == [400]
+
+handler = make_handler("POST", "/api/clients/phone/import-link", token=user_token, body={"ttl": 3600})
+handler.do_POST()
+assert handler.responses == [200]
+payload = response_json(handler)
+assert "/import/phone/" in payload["url"]
+raw_token = urlparse(payload["url"]).path.rsplit("/", 1)[1]
+state = (Path(os.environ["AWG_DIR"]) / "web" / "import_tokens.json").read_text()
+assert raw_token not in state
+assert server.token_hash(raw_token) in state
+assert oct((Path(os.environ["AWG_DIR"]) / "web" / "import_tokens.json").stat().st_mode & 0o777) == "0o600"
+
+handler = make_handler("GET", f"/import/phone/{raw_token}")
+handler.do_GET()
+headers = dict(handler.headers_sent)
+assert handler.responses == [200]
+assert headers["Content-Type"] == "text/plain; charset=utf-8"
+assert headers["Cache-Control"] == "no-store"
+assert headers["X-Content-Type-Options"] == "nosniff"
+assert handler.wfile.getvalue().decode().startswith("[Interface]")
+
+handler = make_handler("GET", f"/import/laptop/{raw_token}")
+handler.do_GET()
+assert handler.responses == [404]
+
+one_time = "one-time-import-token-abcdefghijklmnopqrstuvwxyz"
+digest = server.token_hash(one_time)
+server.write_import_tokens({"tokens": {digest: {
+    "client": "phone",
+    "expires_at": int(time.time()) + 3600,
+    "one_time": True,
+    "created_at": int(time.time()),
+}}})
+handler = make_handler("GET", f"/import/phone/{one_time}")
+handler.do_GET()
+assert handler.responses == [200]
+handler = make_handler("GET", f"/import/phone/{one_time}")
+handler.do_GET()
+assert handler.responses == [404]
+
+expired = "expired-import-token-abcdefghijklmnopqrstuvwxyz"
+server.write_import_tokens({"tokens": {server.token_hash(expired): {
+    "client": "phone",
+    "expires_at": int(time.time()) - 1,
+    "one_time": False,
+    "created_at": int(time.time()) - 3600,
+}}})
+handler = make_handler("GET", f"/import/phone/{expired}")
+handler.do_GET()
+assert handler.responses == [404]
+
+handler = make_handler("GET", f"/import/../{raw_token}")
+handler.do_GET()
+assert handler.responses == [404]
+
+handler = make_handler("POST", "/api/clients/laptop/import-link", token=super_token, body={"one_time": True})
+handler.do_POST()
+assert handler.responses == [200]
+assert response_json(handler)["one_time"] is True
+PY
+    rm -rf "$tmp"
 }
 
 @test "app.js contains new UI elements (charts, speed, rbac)" {
