@@ -267,15 +267,16 @@ function closeClientMenus(except = null) {
     menu.classList.add("hidden");
     const btn = document.querySelector(`[aria-controls="${menu.id}"]`);
     if (btn) btn.setAttribute("aria-expanded", "false");
+    menu.closest(".client-card")?.classList.remove("client-card-menu-open");
   });
   if (!except) openClientMenu = null;
 }
 
-function p2pSummary(ports, disabled) {
+function renderP2pSummary(ports, disabled) {
   if (!ports.length) return "";
-  const preview = ports.slice(0, 2).join(", ");
-  const more = ports.length > 2 ? ` +${ports.length - 2}` : "";
-  return `P2P: ${ports.length} port${ports.length === 1 ? "" : "s"} (${preview}${more})${disabled ? " off" : ""}`;
+  const chips = ports.slice(0, 2).map(port => `<span class="p2p-chip">${esc(port)}</span>`);
+  if (ports.length > 2) chips.push(`<span class="p2p-chip">+${ports.length - 2}</span>`);
+  return `<div class="p2p-summary ${disabled ? "is-off" : ""}" title="${esc(ports.join(", "))}"><span class="p2p-label">P2P</span>${chips.join("")}${disabled ? '<span class="p2p-state">off</span>' : ""}</div>`;
 }
 
 function renderMenuItem(action, iconName, label, extra = "") {
@@ -610,9 +611,10 @@ function jumpToClient(name) {
 function renderClients() {
   charts.forEach(chart => chart.destroy());
   charts.clear();
-  closeClientMenus();
+  const preservedMenu = openClientMenu;
   const host = document.querySelector("#clientsList");
   if (!latestClients.length) {
+    openClientMenu = null;
     host.innerHTML = `<div class="p-8 text-center text-sm text-[var(--muted)]">No clients yet</div>`;
     return;
   }
@@ -626,8 +628,7 @@ function renderClients() {
     const client30d = client.traffic_30d || {};
     const clientTotal = client.traffic_total || {};
     const p2pDisabled = (client.p2p_ports || []).length > 0 && client.p2p_enabled === false;
-    const p2pTitle = (client.p2p_ports || []).join(", ");
-    const p2pText = p2pSummary(client.p2p_ports || [], p2pDisabled);
+    const p2pMarkup = renderP2pSummary(client.p2p_ports || [], p2pDisabled);
     const menuId = `client-menu-${String(client.name).replace(/[^A-Za-z0-9_-]/g, "_")}`;
     const shieldClass = p2pDisabled ? "opacity-60" : "";
     const search = `${client.name} ${ip} ${endpoint} ${(client.p2p_ports || []).join(" ")}`.toLowerCase();
@@ -650,7 +651,7 @@ function renderClients() {
           </div>
           <p class="mt-1 text-xs text-[var(--muted)]">${active ? "Active recently" : "No recent traffic"} · Last seen ${esc(timeAgo(client.latestHandshakeAt || client.last_handshake))}</p>
           <p class="mt-1 truncate text-xs text-[var(--muted)]">Endpoint: ${esc(endpoint)}</p>
-          ${p2pText ? `<p class="mt-2 inline-flex max-w-full rounded-full border border-[var(--line)] bg-[var(--soft)] px-2 py-0.5 text-[11px] font-medium text-[var(--muted)] ${p2pDisabled ? "opacity-60" : ""}" title="${esc(p2pTitle)}">${esc(p2pText)}</p>` : ""}
+          ${p2pMarkup ? `<div class="mt-2">${p2pMarkup}</div>` : ""}
         </div>
         <div class="relative z-10 min-w-0 text-left sm:min-w-36 sm:text-right">
           <p class="flex flex-wrap gap-x-3 gap-y-1 text-sm font-semibold sm:justify-end"><span>↓ ${esc(speed(client.rxSpeedBps))}</span><span>↑ ${esc(speed(client.txSpeedBps))}</span></p>
@@ -693,9 +694,22 @@ function renderClients() {
       if (!menu) return;
       menu.classList.toggle("hidden", expanded);
       btn.setAttribute("aria-expanded", expanded ? "false" : "true");
+      menu.closest(".client-card")?.classList.toggle("client-card-menu-open", !expanded);
       openClientMenu = expanded ? null : id;
     };
   });
+  if (preservedMenu) {
+    const menu = document.getElementById(preservedMenu);
+    const btn = document.querySelector(`[aria-controls="${preservedMenu}"]`);
+    if (menu && btn) {
+      menu.classList.remove("hidden");
+      btn.setAttribute("aria-expanded", "true");
+      menu.closest(".client-card")?.classList.add("client-card-menu-open");
+      openClientMenu = preservedMenu;
+    } else {
+      openClientMenu = null;
+    }
+  }
   drawCharts();
 }
 
@@ -971,23 +985,8 @@ async function regenerateConfig(name) {
 }
 
 async function rotateServerProfile() {
-  const ok = await confirmModal(
-    "Rotate AWG profile",
-    "This will rotate server AWG obfuscation parameters and regenerate all client configs. Existing client configs will stop working. Continue?",
-    "Continue",
-    false
-  );
-  if (!ok) return;
-  const confirm = await promptModal("Type ROTATE", "ROTATE");
-  if (confirm !== "ROTATE") {
-    showToast("Rotation cancelled", "error");
-    return;
-  }
-  const preset = await promptModal("Preset", "mobile or default", "mobile");
-  if (!["mobile", "default"].includes(preset)) {
-    showToast("Invalid preset", "error");
-    return;
-  }
+  const preset = await rotateProfileModal();
+  if (!preset) return;
   const client_i1 = {};
   try {
     if (typeof window.generateAwgI1 === "function" && typeof window.pickAwgI1Sni === "function" && window.crypto?.subtle) {
@@ -1277,6 +1276,48 @@ function promptModal(title, placeholder, value = "") {
       dialog.close("ok");
     });
     input.focus();
+  });
+}
+
+function rotateProfileModal() {
+  return new Promise(resolve => {
+    const dialog = document.createElement("dialog");
+    dialog.className = "w-[min(520px,calc(100vw-32px))] rounded-lg border border-[var(--line)] bg-[var(--panel)] p-0 text-[var(--text)] shadow-xl backdrop:bg-black/55";
+    dialog.innerHTML = `
+      <form method="dialog" class="p-4">
+        <h2 class="mb-2 text-base font-semibold">Rotate AWG profile</h2>
+        <p class="text-sm text-[var(--muted)]">Refresh server obfuscation parameters and regenerate all client configs. Existing imports stop working until clients download or import fresh configs.</p>
+        <fieldset class="mt-4 grid gap-2" aria-label="AWG profile preset">
+          <label class="flex cursor-pointer gap-3 rounded-md border border-[var(--line)] bg-[var(--soft)] p-3">
+            <input type="radio" name="rotatePreset" value="mobile" checked class="mt-1 accent-[var(--accent)]">
+            <span>
+              <span class="block text-sm font-semibold">Mobile</span>
+              <span class="block text-xs text-[var(--muted)]">Conservative jitter and small S3/S4 values for mobile networks and calls.</span>
+            </span>
+          </label>
+          <label class="flex cursor-pointer gap-3 rounded-md border border-[var(--line)] bg-[var(--soft)] p-3">
+            <input type="radio" name="rotatePreset" value="default" class="mt-1 accent-[var(--accent)]">
+            <span>
+              <span class="block text-sm font-semibold">Default</span>
+              <span class="block text-xs text-[var(--muted)]">Balanced general-purpose profile for stable networks.</span>
+            </span>
+          </label>
+        </fieldset>
+        <p class="mt-3 rounded-md border border-amber-500/50 bg-amber-500/10 p-3 text-xs text-[var(--text)]">This does not rotate server or client keys, IPs, P2P ports, RBAC, expiry, or traffic history.</p>
+        <div class="mt-4 flex flex-wrap justify-end gap-2">
+          <button value="cancel" class="${buttonClasses()}">Cancel</button>
+          <button value="ok" class="${buttonClasses("border-amber-600 bg-amber-500 text-white")}">Rotate profile</button>
+        </div>
+      </form>
+    `;
+    document.body.appendChild(dialog);
+    dialog.addEventListener("close", () => {
+      const preset = dialog.returnValue === "ok" ? dialog.querySelector("input[name='rotatePreset']:checked")?.value : null;
+      dialog.remove();
+      resolve(["mobile", "default"].includes(preset) ? preset : null);
+    }, {once: true});
+    confirmDialogOnEnter(dialog, () => dialog.close("ok"));
+    dialog.showModal();
   });
 }
 
