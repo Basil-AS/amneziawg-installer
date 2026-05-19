@@ -3304,6 +3304,225 @@ EOF
     log "ndppd настроен для ${AWG_IPV6_SUBNET} через ${nic}."
 }
 
+render_curated_adguard_yaml() {
+    local existing_yaml="$1" output_yaml="$2" server_conf="$3" ag_port="$4" ag_user="$5" ag_hash="$6"
+    AWG_TUNNEL_SUBNET="${AWG_TUNNEL_SUBNET:-10.9.9.1/24}" \
+    AWG_IPV6_ENABLED="${AWG_IPV6_ENABLED:-0}" \
+    AWG_IPV6_SUBNET="${AWG_IPV6_SUBNET:-}" \
+    python3 - "$existing_yaml" "$output_yaml" "$server_conf" "$ag_port" "$ag_user" "$ag_hash" <<'PY'
+import ipaddress
+import json
+import os
+import re
+import sys
+from pathlib import Path
+
+existing_yaml = Path(sys.argv[1])
+output_yaml = Path(sys.argv[2])
+server_conf = Path(sys.argv[3])
+ag_port = int(sys.argv[4])
+ag_user = sys.argv[5]
+ag_hash = sys.argv[6]
+
+enabled_filters = [
+    (4, "https://adguardteam.github.io/HostlistsRegistry/assets/filter_60.txt", "HaGeZi's Xiaomi Tracker Blocklist"),
+    (7, "https://raw.githubusercontent.com/AdguardTeam/cname-trackers/master/data/combined_disguised_trackers.txt", "AdguardTeam - CNAME Trackers"),
+    (9, "https://raw.githubusercontent.com/AdguardTeam/cname-trackers/master/data/combined_disguised_ads.txt", "AdguardTeam - CNAME Ads"),
+    (11, "https://adguardteam.github.io/HostlistsRegistry/assets/filter_1.txt", "AdGuard DNS Filter"),
+    (12, "https://adguardteam.github.io/HostlistsRegistry/assets/filter_3.txt", "AdGuard Tracking Protection"),
+    (13, "https://adguardteam.github.io/HostlistsRegistry/assets/filter_11.txt", "AdGuard Mobile Ads"),
+    (14, "https://adguardteam.github.io/HostlistsRegistry/assets/filter_59.txt", "AdGuard DNS Popup Hosts filter"),
+    (16, "https://big.oisd.nl/", "OISD - Big"),
+    (19, "https://badmojr.github.io/1Hosts/Lite/domains.txt", "1Hosts - Lite"),
+    (21, "https://hole.cert.pl/domains/v2/domains.txt", "CERT Polska - Dangerous Websites"),
+    (28, "https://cdn.jsdelivr.net/gh/hoshsadiq/adblock-nocoin-list/hosts.txt", "Hoshsadiq - NoCoin Adblock List"),
+    (29, "https://raw.githubusercontent.com/azet12/KADhosts/master/KADhosts.txt", "KADhosts"),
+    (30, "https://raw.githubusercontent.com/crazy-max/WindowsSpyBlocker/master/data/hosts/spy.txt", "WindowsSpyBlocker - Telemetry"),
+    (31, "https://adguardteam.github.io/HostlistsRegistry/assets/filter_23.txt", "WindowsSpyBlocker - Hosts spy rules"),
+    (32, "https://raw.githubusercontent.com/Perflyst/PiHoleBlocklist/master/SmartTV.txt", "Perflyst SmartTV"),
+    (33, "https://adguardteam.github.io/HostlistsRegistry/assets/filter_53.txt", "AWAvenue Ads Rule"),
+]
+disabled_filters = [
+    (1, "https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/wildcard/pro-onlydomains.txt", "Hagezi - Pro"),
+    (2, "https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/adblock/pro.txt", "hagezi Multi PRO"),
+    (3, "https://adguardteam.github.io/HostlistsRegistry/assets/filter_49.txt", "HaGeZi's Ultimate Blocklist"),
+    (5, "https://adguardteam.github.io/HostlistsRegistry/assets/filter_46.txt", "HaGeZi's Anti-Piracy Blocklist"),
+    (6, "https://adguardteam.github.io/HostlistsRegistry/assets/filter_45.txt", "HaGeZi's Allowlist Referral"),
+    (8, "https://raw.githubusercontent.com/AdguardTeam/cname-trackers/master/data/combined_original_trackers.txt", "AdguardTeam - CNAME Clickthroughs"),
+    (10, "https://raw.githubusercontent.com/AdguardTeam/cname-trackers/master/data/combined_original_microsites.txt", "AdguardTeam - CNAME Microsites"),
+    (15, "https://raw.githubusercontent.com/AdguardTeam/FiltersRegistry/master/filters/filter_1_Russian/filter.txt", "AdGuard Russian Filter (ru)"),
+    (17, "https://cdn.jsdelivr.net/gh/StevenBlack/hosts/hosts", "StevenBlack - Unified hosts"),
+    (18, "https://adguardteam.github.io/HostlistsRegistry/assets/filter_33.txt", "Steven Black's List"),
+    (20, "https://cdn.jsdelivr.net/gh/bongochong/CombinedPrivacyBlockLists/NoFormatting/cpbl-abp-list.txt", "Bongochong - Combined Privacy Block Lists"),
+    (22, "https://cdn.jsdelivr.net/gh/kboghdady/youTube_ads_4_pi-hole/black.list", "Kboghdady - YouTube Ads DNS"),
+    (23, "https://someonewhocares.org/hosts/hosts", "SomeoneWhoCares - Hosts"),
+    (24, "https://winhelp2002.mvps.org/hosts.txt", "WinHelp2002 MVPS - Hosts"),
+    (25, "https://adaway.org/hosts.txt", "AdAway - Hosts"),
+    (26, "https://adguardteam.github.io/HostlistsRegistry/assets/filter_2.txt", "AdAway Default Blocklist"),
+    (27, "https://pgl.yoyo.org/as/serverlist.php?hostformat=hosts&showintro=1&mimetype=plaintext", "Yoyo.org - Hosts"),
+    (34, "https://adguardteam.github.io/HostlistsRegistry/assets/filter_57.txt", "ShadowWhisperer's Dating List"),
+    (35, "https://adguardteam.github.io/HostlistsRegistry/assets/filter_17.txt", "SWE Frellwit's Swedish Hosts File"),
+    (36, "https://easylist-downloads.adblockplus.org/ruadlist.txt", "RU AdList classic"),
+    (37, "https://easylist-downloads.adblockplus.org/bitblock.txt", "RU AdList BitBlock"),
+    (38, "https://raw.githubusercontent.com/Zalexanninev15/NoADS_RU/main/ads_list_extended.txt", "NoADS_RU"),
+]
+upstream_dns = [
+    "https://dns.adguard-dns.com/dns-query",
+    "https://dns.alidns.com/dns-query",
+    "https://dns.cloudflare.com/dns-query",
+    "https://security.cloudflare-dns.com/dns-query",
+    "https://doh.dns.sb/dns-query",
+    "https://dns.pub/dns-query",
+    "https://dns.google/dns-query",
+    "https://dns.quad9.net/dns-query",
+    "https://wikimedia-dns.org/dns-query",
+]
+bootstrap_dns = [
+    "1.1.1.1", "1.0.0.1", "2606:4700:4700::1111", "2606:4700:4700::1001",
+    "9.9.9.10", "149.112.112.10", "2620:fe::10", "2620:fe::fe:10",
+    "94.140.14.14", "94.140.15.15", "2a10:50c0::ad1:ff", "2a10:50c0::ad2:ff",
+    "223.5.5.5", "223.6.6.6", "2400:3200::1", "2400:3200:baba::1",
+    "8.8.8.8", "8.8.4.4", "2001:4860:4860::8888", "2001:4860:4860::8844",
+    "185.222.222.222", "45.11.45.11", "2a09::", "2a11::",
+    "119.29.29.29", "2402:4e00::",
+]
+
+def q(value):
+    return json.dumps(str(value), ensure_ascii=False)
+
+def top_level(line):
+    return line and not line.startswith((" ", "\t")) and ":" in line
+
+def extract_top_block(lines, key):
+    out = []
+    i = 0
+    needle = f"{key}:"
+    while i < len(lines):
+        if lines[i].strip() == needle and not lines[i].startswith((" ", "\t")):
+            out.append(lines[i])
+            i += 1
+            while i < len(lines) and not top_level(lines[i]):
+                out.append(lines[i])
+                i += 1
+            return out
+        i += 1
+    return []
+
+def extract_clients_persistent(lines):
+    clients = extract_top_block(lines, "clients")
+    out = []
+    for i, line in enumerate(clients):
+        if re.match(r"^  persistent\s*:", line):
+            out.append(line)
+            j = i + 1
+            while j < len(clients) and not re.match(r"^  [A-Za-z0-9_-]+\s*:", clients[j]):
+                out.append(clients[j])
+                j += 1
+            return out
+    return []
+
+def parse_peers(path):
+    peers = []
+    if not path.is_file():
+        return peers
+    cur = None
+    for raw in path.read_text(encoding="utf-8", errors="ignore").splitlines():
+        line = raw.strip()
+        if line == "[Peer]":
+            if cur and cur.get("name") and cur.get("ids"):
+                peers.append(cur)
+            cur = {"name": "", "ids": []}
+            continue
+        if cur is None:
+            continue
+        if line.startswith("#_Name = "):
+            cur["name"] = line.split("=", 1)[1].strip()
+        elif re.match(r"^AllowedIPs\s*=", line):
+            value = line.split("=", 1)[1]
+            for token in re.split(r"[,\s]+", value):
+                token = token.strip()
+                if token.endswith("/32") or token.endswith("/128"):
+                    cur["ids"].append(token.rsplit("/", 1)[0])
+    if cur and cur.get("name") and cur.get("ids"):
+        peers.append(cur)
+    return peers
+
+def client_label(name):
+    label = re.sub(r"[^a-z0-9-]+", "-", name.lower())
+    return (re.sub(r"-+", "-", label).strip("-") or "client")[:63].rstrip("-") or "client"
+
+def render_users(lines):
+    users = extract_top_block(lines, "users")
+    out = ["users:", f"  - name: {q(ag_user)}", f"    password: {q(ag_hash)}"]
+    i = 1
+    while i < len(users):
+        if re.match(r"^  -\s+", users[i]):
+            item = [users[i]]
+            i += 1
+            while i < len(users) and not re.match(r"^  -\s+", users[i]):
+                item.append(users[i])
+                i += 1
+            name_line = next((line for line in item if re.match(r"^\s+name\s*:", line)), "")
+            if not re.search(rf"name\s*:\s*['\"]?{re.escape(ag_user)}['\"]?\s*$", name_line):
+                out.extend(item)
+            continue
+        i += 1
+    return out
+
+def render_clients(lines, peers):
+    out = ["clients:"]
+    if peers:
+        out.append("  persistent:")
+        for peer in peers:
+            out.append(f"    - name: {q(peer['name'])}")
+            out.append("      ids:")
+            for client_id in peer["ids"]:
+                out.append(f"        - {q(client_id)}")
+    else:
+        out.extend(extract_clients_persistent(lines) or ["  persistent: []"])
+    out.extend(["  runtime_sources:", "    whois: true", "    arp: true", "    rdns: true", "    dhcp: true", "    hosts: true"])
+    return out
+
+lines = existing_yaml.read_text(encoding="utf-8", errors="ignore").splitlines() if existing_yaml.is_file() else []
+peers = parse_peers(server_conf)
+tunnel = ipaddress.ip_interface(os.environ.get("AWG_TUNNEL_SUBNET", "10.9.9.1/24"))
+vpn_ip = str(tunnel.ip)
+allowed_clients = [str(tunnel.network)]
+bind_hosts = [vpn_ip]
+if os.environ.get("AWG_IPV6_ENABLED") == "1" and os.environ.get("AWG_IPV6_SUBNET"):
+    v6_net = ipaddress.ip_network(os.environ["AWG_IPV6_SUBNET"], strict=False)
+    bind_hosts.append(str(v6_net.network_address + 1))
+    allowed_clients.append(str(v6_net))
+rewrites = [(f"{client_label(peer['name'])}.awg", client_id) for peer in peers for client_id in peer["ids"]]
+
+out = ["http:", f"  address: {vpn_ip}:{ag_port}", "  session_ttl: 720h", "  pprof:", "    enabled: false", "    port: 6060", "  doh:", "    routes:", "      - GET /dns-query", "      - POST /dns-query", "    insecure_enabled: false"]
+out.extend(render_users(lines))
+out.extend(["auth_attempts: 5", "block_auth_min: 15", "http_proxy: \"\"", "language: \"\"", "theme: auto", "dns:", "  bind_hosts:"])
+out.extend(f"    - {host}" for host in bind_hosts)
+out.extend(["  port: 53", "  anonymize_client_ip: false", "  ratelimit: 0", "  ratelimit_subnet_len_ipv4: 24", "  ratelimit_subnet_len_ipv6: 56", "  ratelimit_whitelist: []", "  refuse_any: true", "  upstream_mode: parallel", "  upstream_dns:"])
+out.extend(f"    - {item}" for item in upstream_dns)
+out.append("  bootstrap_dns:")
+out.extend(f"    - {item}" for item in bootstrap_dns)
+out.extend(["  bootstrap_prefer_ipv6: false", "  fallback_dns: []", "  fastest_timeout: 1s", "  allowed_clients:"])
+out.extend(f"    - {item}" for item in allowed_clients)
+out.extend(["  disallowed_clients: []", "  blocked_hosts:", "    - version.bind", "    - id.server", "    - hostname.bind", "  trusted_proxies:", "    - 127.0.0.0/8", "    - ::1/128", "  cache_enabled: true", "  cache_size: 83886080", "  cache_ttl_min: 0", "  cache_ttl_max: 0", "  cache_optimistic: true", "  cache_optimistic_answer_ttl: 30s", "  cache_optimistic_max_age: 12h", "  bogus_nxdomain: []", "  aaaa_disabled: false", "  enable_dnssec: true", "  edns_client_subnet:", "    enabled: false", "    use_custom: false", "    custom_ip: \"\"", "  max_goroutines: 300", "  handle_ddr: true", "  ipset: []", "  ipset_file: \"\"", "  upstream_timeout: 10s", "  private_networks: []", "  use_private_ptr_resolvers: true", "  local_ptr_upstreams: []", "  use_dns64: false", "  dns64_prefixes: []", "  serve_http3: false", "  use_http3_upstreams: false", "  serve_plain_dns: true", "  hostsfile_enabled: true", "  pending_requests:", "    enabled: true", "filtering:", "  protection_enabled: true", "  filtering_enabled: true", "  blocking_mode: default", "  blocking_ipv4: \"\"", "  blocking_ipv6: \"\"", "  blocked_response_ttl: 10", "  parental_block_host: family-block.dns.adguard.com", "  safebrowsing_block_host: standard-block.dns.adguard.com", "  parental_enabled: false", "  safebrowsing_enabled: false", "  safe_search:", "    enabled: false", "    bing: false", "    duckduckgo: false", "    ecosia: false", "    google: false", "    pixabay: false", "    yandex: false", "    youtube: false"])
+if rewrites:
+    out.append("  rewrites:")
+    for domain, answer in rewrites:
+        out.extend([f"    - domain: {q(domain)}", f"      answer: {q(answer)}"])
+else:
+    out.append("  rewrites: []")
+out.extend(["  safe_fs_patterns: []", "  cache_time: 30", "  filters_update_interval: 24", "filters:"])
+for enabled, data in [(True, enabled_filters), (False, disabled_filters)]:
+    for filter_id, url, name in data:
+        out.extend([f"  - enabled: {str(enabled).lower()}", f"    url: {url}", f"    name: {q(name)}", f"    id: {filter_id}"])
+out.extend(["whitelist_filters: []", "user_rules:", "  - '@@||cdn.jsdelivr.net^'", "  - '@@||sso.yandex.ru^'", "  - '@@||passport.yandex.ru^'", "  - '@@||yastatic.net^'", "  - '@@||admitad.com^'", "  - '@@||awin1.com^'", "  - '||mc.yandex.ru^'", "  - '||an.yandex.ru^'", "  - '||bs.yandex.ru^'", "  - '||top-fwz1.mail.ru^'", "  - '||vk-portal.net^'", "  - '||appmetrica.yandex.ru^'", "  - '||appmetrica.yandex.com^'", "  - '||startup.mobile.yandex.net^'", "  - '||ad.mail.ru^'", "  - '||r3.mail.ru^'", "  - '||trg.mail.ru^'", "  - '||app-measurement.com^'", "  - '@@||4pda.to^$important'", "  - '@@||eth0.me^$important'", "querylog:", "  dir_path: \"\"", "  ignored:", "    - '*.arpa'", "    - '*.lan'", "  interval: 2160h", "  size_memory: 1000", "  enabled: true", "  ignored_enabled: true", "  file_enabled: true", "statistics:", "  dir_path: \"\"", "  ignored:", "    - '*.arpa'", "    - '*.lan'", "  interval: 2160h", "  enabled: true", "  ignored_enabled: true"])
+out.extend(render_clients(lines, peers))
+out.extend(["dhcp:", "  enabled: false", "tls:", "  enabled: false", "  server_name: \"\"", "  force_https: false", "  port_https: 0", "  port_dns_over_tls: 0", "  port_dns_over_quic: 0", "  port_dnscrypt: 0", "log:", "  enabled: true", "  file: \"\"", "  max_backups: 0", "  max_size: 100", "  max_age: 3", "  compress: false", "  local_time: false", "  verbose: false", "schema_version: 29"])
+output_yaml.write_text("\n".join(out) + "\n", encoding="utf-8")
+PY
+}
+
 deploy_adguard_home() {
     [[ "${AWG_ADGUARD_ENABLED:-0}" -eq 1 ]] || return 0
     log "Развёртывание AdGuard Home (fork delta)..."
@@ -3311,7 +3530,9 @@ deploy_adguard_home() {
     local ag_dir="${AWG_ADGUARD_DIR:-/opt/AdGuardHome}"
     local ag_port="${AWG_ADGUARD_PORT:-3000}"
     local ag_bin="$ag_dir/AdGuardHome"
-    local ag_arch url tmp tgz server_v6="" AG_HASH=""
+    local ag_yaml="$ag_dir/AdGuardHome.yaml"
+    local ag_arch url tmp tgz AG_HASH=""
+    local tmp_conf backup_conf timestamp had_config=0
 
     case "$(uname -m)" in
         x86_64|amd64) ag_arch="amd64" ;;
@@ -3360,64 +3581,19 @@ PY
 ) || die "AdGuard Home: не удалось сгенерировать bcrypt-хеш"
     [[ -n "$AG_HASH" ]] || die "AdGuard Home: пустой bcrypt-хеш пароля"
 
-    if [[ "${AWG_IPV6_ENABLED:-0}" == "1" && -n "${AWG_IPV6_SUBNET:-}" ]]; then
-        server_v6=$(python3 - "$AWG_IPV6_SUBNET" <<'PY'
-import ipaddress, sys
-try:
-    net = ipaddress.ip_network(sys.argv[1], strict=False)
-    print(net.network_address + 1)
-except Exception:
-    pass
-PY
-)
+    timestamp="$(date '+%Y%m%d-%H%M%S')"
+    tmp_conf="$(mktemp "$ag_dir/.AdGuardHome.yaml.tmp.XXXXXX")" || die "AdGuard Home: mktemp config failed"
+    _install_temp_files+=("$tmp_conf")
+    if [[ -f "$ag_yaml" ]]; then
+        had_config=1
+        backup_conf="${ag_yaml}.bak.${timestamp}"
+        cp -p "$ag_yaml" "$backup_conf" || die "AdGuard Home: не удалось создать backup $backup_conf"
+        chmod 600 "$backup_conf" 2>/dev/null || true
     fi
 
-    cat > "$ag_dir/AdGuardHome.yaml" << EOF
-bind_host: 10.9.9.1
-bind_port: ${ag_port}
-web_session_ttl: 720
-users:
-  - name: ${AG_USERNAME}
-    password: ${AG_HASH}
-auth_attempts: 5
-block_auth_min: 15
-http_proxy: ""
-language: ""
-theme: auto
-dns:
-  bind_hosts:
-    - 127.0.0.1
-    - 10.9.9.1
-EOF
-    if [[ -n "$server_v6" ]]; then
-        echo "    - ::1" >> "$ag_dir/AdGuardHome.yaml"
-        echo "    - ${server_v6}" >> "$ag_dir/AdGuardHome.yaml"
-    fi
-    cat >> "$ag_dir/AdGuardHome.yaml" <<'EOF'
-  port: 53
-  anonymize_client_ip: false
-  protection_enabled: true
-  blocking_mode: default
-  upstream_dns:
-    - https://dns.quad9.net/dns-query
-    - https://cloudflare-dns.com/dns-query
-  bootstrap_dns:
-    - 9.9.9.10
-    - 1.1.1.1
-  cache_size: 4194304
-  enable_dnssec: true
-filters:
-  - enabled: true
-    url: https://adguardteam.github.io/HostlistsRegistry/assets/filter_1.txt
-    name: AdGuard DNS filter
-    id: 1
-whitelist_filters: []
-user_rules: []
-dhcp:
-  enabled: false
-schema_version: 20
-EOF
-    chmod 600 "$ag_dir/AdGuardHome.yaml"
+    render_curated_adguard_yaml "$ag_yaml" "$tmp_conf" "$SERVER_CONF_FILE" "$ag_port" "$AG_USERNAME" "$AG_HASH" || \
+        die "AdGuard Home: не удалось сгенерировать curated YAML"
+    chmod 600 "$tmp_conf"
 
     cat > /etc/systemd/system/AdGuardHome.service << EOF
 [Unit]
@@ -3438,10 +3614,30 @@ EOF
     chmod 644 /etc/systemd/system/AdGuardHome.service
     systemctl daemon-reload
     systemctl enable AdGuardHome.service 2>/dev/null || log_warn "Не удалось enable AdGuardHome.service"
+
+    if systemctl is-active --quiet AdGuardHome.service 2>/dev/null; then
+        systemctl stop AdGuardHome.service || true
+    fi
+
+    if ! "$ag_bin" --check-config -c "$tmp_conf" -w "$ag_dir"; then
+        if [[ "$had_config" -eq 1 && -n "${backup_conf:-}" && -f "$backup_conf" ]]; then
+            cp -p "$backup_conf" "$ag_yaml" || true
+        fi
+        die "AdGuard Home: --check-config не прошёл, backup восстановлен."
+    fi
+
+    if ! mv -f "$tmp_conf" "$ag_yaml"; then
+        if [[ "$had_config" -eq 1 && -n "${backup_conf:-}" && -f "$backup_conf" ]]; then
+            cp -p "$backup_conf" "$ag_yaml" || true
+        fi
+        die "AdGuard Home: не удалось атомарно заменить $ag_yaml"
+    fi
+    chmod 600 "$ag_yaml"
+
     if ! systemctl restart AdGuardHome.service; then
         log_warn "AdGuard Home не стартовал. VPN не сломан; переключитесь на system DNS: manage dns set-mode system."
     else
-        log "AdGuard Home запущен: DNS 10.9.9.1:53, UI http://10.9.9.1:${ag_port}/"
+        log "AdGuard Home запущен с curated YAML: DNS ${AWG_TUNNEL_SUBNET%/*}:53, UI http://${AWG_TUNNEL_SUBNET%/*}:${ag_port}/"
     fi
 }
 
@@ -3696,12 +3892,26 @@ print(net.network_address + 1)
 PY
 }
 
+adguard_allowed_clients_for_summary() {
+    if ! python3 - "${AWG_TUNNEL_SUBNET:-10.9.9.1/24}" "${AWG_IPV6_ENABLED:-0}" "${AWG_IPV6_SUBNET:-}" <<'PY' 2>/dev/null; then
+import ipaddress
+import sys
+v4 = ipaddress.ip_interface(sys.argv[1]).network
+print(f"- {v4}")
+if sys.argv[2] == "1" and sys.argv[3]:
+    print(f"- {ipaddress.ip_network(sys.argv[3], strict=False)}")
+PY
+        echo "- 10.9.9.0/24"
+        return 0
+    fi
+}
+
 write_install_summary() {
     local summary_path="$AWG_DIR/INSTALL_SUMMARY.txt"
     local tmp_path="$AWG_DIR/.INSTALL_SUMMARY.txt.tmp.$$"
     local timestamp generated route_label server_v6 web_host
     local web_public_url web_vpn_url web_local_url web_warning web_extra_url import_example
-    local ag_password_display state_display
+    local ag_password_display state_display ag_dns_listen ag_allowed_clients
 
     mkdir -p "$AWG_DIR" || return 0
     chmod 700 "$AWG_DIR" 2>/dev/null || true
@@ -3717,6 +3927,8 @@ write_install_summary() {
     web_extra_url="none"
     import_example="https://<host>:${AWG_WEB_PORT:-8443}/import/<client>/<token>"
     ag_password_display="${AG_PASSWORD:-not available after initial generation; reset in AdGuard if needed}"
+    ag_dns_listen="${AWG_TUNNEL_SUBNET%/*}:53"
+    ag_allowed_clients="$(adguard_allowed_clients_for_summary)"
     state_display="$STATE_FILE"
     [[ -f "$STATE_FILE" ]] || state_display="$STATE_FILE (not present after successful cleanup)"
 
@@ -3790,8 +4002,26 @@ Notes:
 
 [AdGuard Home]
 Enabled: $(if [[ "${AWG_ADGUARD_ENABLED:-0}" -eq 1 ]]; then echo "yes"; else echo "no"; fi)
-DNS listen: 10.9.9.1:53
-UI URL: http://10.9.9.1:${AWG_ADGUARD_PORT:-3000}
+Profile: curated
+Service: AdGuardHome.service
+Binary: ${AWG_ADGUARD_DIR:-/opt/AdGuardHome}/AdGuardHome
+DNS listen: ${ag_dns_listen}
+UI URL: http://${AWG_TUNNEL_SUBNET%/*}:${AWG_ADGUARD_PORT:-3000}
+Upstream mode: parallel
+Yandex DNS: disabled/not used
+AliDNS: enabled
+IPv6 bootstrap DNS: enabled
+AAAA disabled: false
+DNSSEC: true
+Cache: 80 MiB, optimistic enabled
+Filters enabled: 16
+Filters disabled but present: 22
+NoADS_RU: present, disabled
+Russian regional lists: present, disabled
+Windows telemetry blocking: enabled
+Affiliate allowlist: enabled
+Allowed clients:
+${ag_allowed_clients}
 Admin login: ${AG_USERNAME:-admin}
 Admin password: ${ag_password_display}
 Config file: ${AWG_ADGUARD_DIR:-/opt/AdGuardHome}/AdGuardHome.yaml

@@ -53,6 +53,108 @@ CONF
     grep -q 'AdGuardHome.service' "$BATS_TEST_DIRNAME/../manage_amneziawg.sh"
 }
 
+@test "installer renders curated AdGuard Home config and validates it with binary" {
+    local installer="$BATS_TEST_DIRNAME/../install_amneziawg.sh"
+
+    grep -qF '/opt/AdGuardHome' "$installer"
+    grep -qF 'AdGuardHome.yaml' "$installer"
+    grep -qF 'AdGuardHome.service' "$installer"
+    grep -qF "\"\$ag_bin\" --check-config -c \"\$tmp_conf\" -w \"\$ag_dir\"" "$installer"
+    grep -qF 'upstream_mode: parallel' "$installer"
+    grep -qF 'https://dns.adguard-dns.com/dns-query' "$installer"
+    grep -qF 'https://dns.alidns.com/dns-query' "$installer"
+    grep -qF 'https://dns.cloudflare.com/dns-query' "$installer"
+    grep -qF 'https://security.cloudflare-dns.com/dns-query' "$installer"
+    grep -qF 'https://doh.dns.sb/dns-query' "$installer"
+    grep -qF 'https://dns.pub/dns-query' "$installer"
+    grep -qF 'https://dns.google/dns-query' "$installer"
+    grep -qF 'https://dns.quad9.net/dns-query' "$installer"
+    grep -qF 'https://wikimedia-dns.org/dns-query' "$installer"
+    grep -qF '1.1.1.1' "$installer"
+    grep -qF '2606:4700:4700::1111' "$installer"
+    grep -qF '9.9.9.10' "$installer"
+    grep -qF '2620:fe::10' "$installer"
+    grep -qF '94.140.14.14' "$installer"
+    grep -qF '2a10:50c0::ad1:ff' "$installer"
+    grep -qF '223.5.5.5' "$installer"
+    grep -qF '2400:3200::1' "$installer"
+    grep -qF '2001:4860:4860::8888' "$installer"
+    grep -qF '2a09::' "$installer"
+    grep -qF '2402:4e00::' "$installer"
+    grep -qF 'aaaa_disabled: false' "$installer"
+    grep -qF 'enable_dnssec: true' "$installer"
+    grep -qF 'cache_size: 83886080' "$installer"
+    grep -qF 'cache_optimistic: true' "$installer"
+    grep -qF 'refuse_any: true' "$installer"
+    grep -qF 'version.bind' "$installer"
+    grep -qF 'id.server' "$installer"
+    grep -qF 'hostname.bind' "$installer"
+    grep -qF 'ipaddress.ip_interface(os.environ.get("AWG_TUNNEL_SUBNET", "10.9.9.1/24"))' "$installer"
+    grep -qF 'allowed_clients = [str(tunnel.network)]' "$installer"
+    grep -qF 'bind_hosts.append(str(v6_net.network_address + 1))' "$installer"
+    grep -qF 'allowed_clients.append(str(v6_net))' "$installer"
+}
+
+@test "curated AdGuard config excludes Yandex DNS and unfiltered AdGuard upstreams" {
+    local installer="$BATS_TEST_DIRNAME/../install_amneziawg.sh"
+
+    if grep -qF 'https://unfiltered.adguard-dns.com/dns-query' "$installer"; then
+        fail "unfiltered AdGuard upstream must not be enabled"
+    fi
+    if grep -qF 'common.dot.dns.yandex.net' "$installer"; then
+        fail "Yandex DNS must not be used"
+    fi
+    if grep -qF '77.88.' "$installer"; then
+        fail "Yandex IPv4 bootstrap/upstream must not be used"
+    fi
+    if grep -qF '2a02:6b8::feed' "$installer"; then
+        fail "Yandex IPv6 bootstrap/upstream must not be used"
+    fi
+    if grep -qF '#https://' "$installer"; then
+        fail "commented upstreams must not be rendered as string values"
+    fi
+}
+
+@test "curated AdGuard filters enable baseline blocking and keep aggressive regional lists disabled" {
+    local installer="$BATS_TEST_DIRNAME/../install_amneziawg.sh"
+
+    grep -qF 'AdGuard DNS Filter' "$installer"
+    grep -qF 'AdGuard Tracking Protection' "$installer"
+    grep -qF 'OISD - Big' "$installer"
+    grep -qF '1Hosts - Lite' "$installer"
+    grep -qF 'CERT Polska - Dangerous Websites' "$installer"
+    grep -qF 'Hoshsadiq - NoCoin Adblock List' "$installer"
+    grep -qF 'WindowsSpyBlocker - Telemetry' "$installer"
+    grep -qF 'Perflyst SmartTV' "$installer"
+    grep -qF 'NoADS_RU' "$installer"
+    grep -qF 'AdGuard Russian Filter (ru)' "$installer"
+    grep -qF 'RU AdList classic' "$installer"
+    grep -qF 'RU AdList BitBlock' "$installer"
+    grep -qF 'Hagezi - Pro' "$installer"
+    grep -qF 'HaGeZi'\''s Ultimate Blocklist' "$installer"
+    grep -qF 'hagezi Multi PRO' "$installer"
+    grep -qF 'HaGeZi'\''s Anti-Piracy Blocklist' "$installer"
+    grep -qF 'AdguardTeam - CNAME Clickthroughs' "$installer"
+    grep -qF 'AdguardTeam - CNAME Microsites' "$installer"
+    grep -qF 'Kboghdady - YouTube Ads DNS' "$installer"
+    grep -qF 'querylog:' "$installer"
+    grep -qF 'statistics:' "$installer"
+    grep -qF 'interval: 2160h' "$installer"
+}
+
+@test "curated AdGuard renderer preserves generated users and persistent clients" {
+    local installer="$BATS_TEST_DIRNAME/../install_amneziawg.sh"
+
+    grep -qF "AG_HASH=\$(AG_PASSWORD=\"\$AG_PASSWORD\" python3 - <<" "$installer"
+    grep -qF 'bcrypt.hashpw(password, bcrypt.gensalt' "$installer"
+    grep -qF 'render_users(lines)' "$installer"
+    grep -qF 'extract_clients_persistent(lines)' "$installer"
+    grep -qF 'runtime_sources:' "$installer"
+    if grep -Eq "password: *\\\\\$2[aby]\\\\\$" "$installer"; then
+        fail "installer must not carry a static copied bcrypt hash"
+    fi
+}
+
 @test "web panel exposes DNS API and card" {
     grep -q 'api/dns' "$BATS_TEST_DIRNAME/../web/server.py"
     grep -q 'metricDns' "$BATS_TEST_DIRNAME/../web/app.js"

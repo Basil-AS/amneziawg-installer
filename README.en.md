@@ -730,9 +730,15 @@ sudo bash /root/awg/manage_amneziawg.sh dns set-mode system
 Implemented:
 
 * installer flags `--enable-adguard`, `--adguard-port=3000`, `--dns-mode=adguard|system|custom`;
-* no-Docker AdGuard Home install under `/opt/AdGuardHome`;
-* DNS bind only on localhost/VPN addresses, not as an open public resolver;
-* client DNS: `10.9.9.1` and, with IPv6, the server IPv6 from `AWG_IPV6_SUBNET`;
+* no-Docker AdGuard Home install: binary `/opt/AdGuardHome/AdGuardHome`, config `/opt/AdGuardHome/AdGuardHome.yaml`, service `AdGuardHome.service`;
+* curated `AdGuardHome.yaml` is generated/patched during install and checked with `/opt/AdGuardHome/AdGuardHome --check-config`; bootstrap does not use the HTTP API;
+* UI remains VPN-only at `http://10.9.9.1:3000` (`AWG_ADGUARD_PORT`, default `3000`), even when the separate `awg-web` panel is public via `--web-bind=0.0.0.0`;
+* DNS bind only on VPN addresses, not as an open public resolver; clients use `10.9.9.1` and, with IPv6, the server IPv6 from `AWG_IPV6_SUBNET`;
+* upstream mode `parallel`; enabled upstreams: AdGuard DNS, AliDNS, Cloudflare, Cloudflare Security, dns.sb, DNSPod Public DNS, Google, Quad9, Wikimedia;
+* AliDNS is enabled; Yandex DNS is not used; unfiltered AdGuard upstream is not used;
+* bootstrap resolvers include IPv4+IPv6 Cloudflare, Quad9, AdGuard, AliDNS, Google, dns.sb, and DNSPod, without Yandex;
+* DNSSEC is enabled, optimistic cache is enabled, and `AAAA` is not disabled;
+* baseline tracker/malware/SmartTV/Windows telemetry filters are enabled; NoADS_RU, Russian regional lists, and aggressive HaGeZi/anti-piracy lists are present but disabled;
 * UFW opens DNS/UI only on `awg0`;
 * `manage_amneziawg.sh dns status|restart|logs|set-mode`;
 * AdGuard/DNS card in the web panel;
