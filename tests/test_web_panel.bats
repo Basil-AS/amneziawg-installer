@@ -68,6 +68,22 @@
     grep -qF 'Super token: raw-super-token' "$summary"
     grep -qF 'Token file:' "$summary"
     grep -qF '[AdGuard Home]' "$summary"
+    grep -qF 'Profile: curated' "$summary"
+    grep -qF 'Service: AdGuardHome.service' "$summary"
+    grep -qF 'Binary: /root/awg/adguard/AdGuardHome' "$summary"
+    grep -qF 'Upstream mode: parallel' "$summary"
+    grep -qF 'Yandex DNS: disabled/not used' "$summary"
+    grep -qF 'AliDNS: enabled' "$summary"
+    grep -qF 'IPv6 bootstrap DNS: enabled' "$summary"
+    grep -qF 'AAAA disabled: false' "$summary"
+    grep -qF 'DNSSEC: true' "$summary"
+    grep -qF 'Cache: 80 MiB, optimistic enabled' "$summary"
+    grep -qF 'NoADS_RU: present, disabled' "$summary"
+    grep -qF 'Russian regional lists: present, disabled' "$summary"
+    grep -qF 'Windows telemetry blocking: enabled' "$summary"
+    grep -qF 'Allowed clients:' "$summary"
+    grep -qF -- '- 10.9.9.0/24' "$summary"
+    grep -qF -- '- 2a13:7c82:101f:30::/64' "$summary"
     grep -qF 'Admin password: adguard-pass' "$summary"
     grep -qF 'Endpoint: 64.112.125.125' "$summary"
     grep -qF 'Route mode: route-all' "$summary"
@@ -128,7 +144,7 @@
     tmp=$(mktemp -d)
     run bash -c "
         set -e
-        source <(sed -n '/^route_mode_label()/,/^}/p; /^server_ipv6_addr_for_summary()/,/^}/p; /^write_install_summary()/,/^}/p' '$installer')
+        source <(sed -n '/^route_mode_label()/,/^}/p; /^server_ipv6_addr_for_summary()/,/^}/p; /^adguard_allowed_clients_for_summary()/,/^}/p; /^write_install_summary()/,/^}/p' '$installer')
         AWG_DIR='$tmp/awg'; mkdir -p \"\$AWG_DIR\"
         AWG_ENDPOINT='198.51.100.10'; AWG_PORT='51820'; AWG_TUNNEL_SUBNET='10.9.9.1/24'
         ALLOWED_IPS_MODE='2'; ALLOWED_IPS='0.0.0.0/0'; AWG_SERVER_NAME='vpn-only'
