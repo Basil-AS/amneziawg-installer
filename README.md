@@ -437,6 +437,14 @@ Super token печатается при первой установке, а toke
 
 Для WG Tunnel и WireGuard-like клиентов в карточке клиента есть кнопка `Import URL`: панель создаёт короткоживущую HTTPS-ссылку вида `/import/<client>/<token>`, защищённую random token. Ссылка возвращает только raw `text/plain` конфиг, начинающийся с `[Interface]`, без HTML/JSON/download-страницы; raw token хранится только у пользователя, на сервере лежит hash в `/root/awg/web/import_tokens.json`. По умолчанию TTL 1 час, self-signed TLS может быть отклонён мобильным приложением, поэтому для URL Import лучше использовать доверенный домен/сертификат.
 
+Кнопка `Regenerate` в карточке клиента безопасно пересоздаёт конфиг существующего клиента: старый `.conf` перестаёт работать, но имя клиента, путь файла, статистика, expiry/P2P metadata и RBAC-доступы сохраняются. После регенерации скачайте, скопируйте, откройте QR или создайте новый WG Tunnel import URL; старые import links для этого клиента инвалидируются. Web Panel при регенерации может сгенерировать browser-side AWG I1 obfuscation parameter через локальный `web/awg_i1.js`; CLI работает без браузера и использует fallback-поведение.
+
+CLI-эквивалент:
+
+```bash
+sudo bash /root/awg/manage_amneziawg.sh client regenerate <name>
+```
+
 API веб-панели:
 
 ```text
@@ -446,6 +454,7 @@ POST   /api/clients
 DELETE /api/clients/<name>
 GET    /api/clients/<name>/config
 GET    /api/clients/<name>/config/download
+POST   /api/clients/<name>/regenerate
 POST   /api/clients/<name>/import-link
 GET    /import/<client>/<token>
 GET    /api/clients/<name>/qr

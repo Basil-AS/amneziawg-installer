@@ -122,13 +122,10 @@ setup_params() {
     grep -qE '\-\-psk' "$MANAGE_EN"
 }
 
-@test "regenerate_client preserves PresharedKey through regen" {
-    # If a client was added with --psk, the PSK lives in BOTH server [Peer]
-    # and client .conf. Regen rewrites the client .conf from scratch via
-    # render_client_config; without explicit PSK preservation the client
-    # would lose its PSK while the server peer still holds it, breaking
-    # the handshake. Fix in v5.11.1: regenerate_client reads the existing
-    # PresharedKey from the client conf and passes it through CLIENT_PSK.
+@test "regenerate_client rotates PresharedKey when client uses PSK" {
+    # Full client regeneration rotates credentials. If a client was added
+    # with --psk, the new PSK must be written to BOTH server [Peer] and
+    # client .conf so the handshake keeps working.
     require_flock
     mock_awg
     create_server_config
@@ -165,6 +162,7 @@ EOF
 
     # Ensure CLIENT_PSK is not pre-exported
     unset CLIENT_PSK
+    export AWG_SKIP_APPLY=1
 
     # Mock get_server_public_ip so regen does not hit the network
     # shellcheck disable=SC2317
@@ -173,8 +171,10 @@ EOF
 
     run regenerate_client "pskuser"
     [ "$status" -eq 0 ]
-    # PSK must still be in the regenerated client .conf
-    run grep -c '^PresharedKey = EXISTING_PSK_VALUE_32B==$' "$AWG_DIR/pskuser.conf"
+    # PSK must be rotated in the regenerated client .conf and server peer.
+    run grep -c '^PresharedKey = GENERATED_PSK_VALUE_32B==$' "$AWG_DIR/pskuser.conf"
+    [ "$output" = "1" ]
+    run grep -c '^PresharedKey = GENERATED_PSK_VALUE_32B==$' "$SERVER_CONF_FILE"
     [ "$output" = "1" ]
     # After successful regen, CLIENT_PSK must be unset (hygiene)
     [ -z "${CLIENT_PSK+x}" ]
@@ -211,6 +211,7 @@ AllowedIPs = 0.0.0.0/0
 PersistentKeepalive = 33
 EOF
     unset CLIENT_PSK
+    export AWG_SKIP_APPLY=1
     # shellcheck disable=SC2317
     get_server_public_ip() { echo "203.0.113.1"; return 0; }
     export -f get_server_public_ip

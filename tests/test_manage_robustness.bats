@@ -180,18 +180,20 @@ extract_func() {
     local body
     body=$(extract_func "$COMMON_RU" "regenerate_client")
     # Each of the three sed -i statements (DNS, PersistentKeepalive, AllowedIPs)
-    # must be wrapped in `if ! sed -i ...; then ... fi`.
+    # must be part of the checked failure branch.
     local count
-    count=$(grep -cE 'if ! sed -i ' <<< "$body")
+    count=$(grep -cE '! sed -i ' <<< "$body")
     [ "$count" -eq 3 ]
+    grep -qF 'Ошибка обновления пользовательских параметров' <<< "$body"
 }
 
 @test "A5.3: EN regenerate_client checks each sed -i return" {
     local body
     body=$(extract_func "$COMMON_EN" "regenerate_client")
     local count
-    count=$(grep -cE 'if ! sed -i ' <<< "$body")
+    count=$(grep -cE '! sed -i ' <<< "$body")
     [ "$count" -eq 3 ]
+    grep -qF 'Ошибка обновления пользовательских параметров' <<< "$body"
 }
 
 @test "A5.3: RU regenerate_client has NO unchecked bare sed -i" {
@@ -214,9 +216,9 @@ extract_func() {
     body=$(extract_func "$COMMON_RU" "regenerate_client")
     # Lock must be closed before generate_qr; otherwise non-critical
     # QR/URI ops hold the config lock and block add/modify.
-    # Extract the section between the last sed -i and generate_qr.
+    # Extract the section between successful apply and generate_qr.
     local tail
-    tail=$(awk '/if ! sed -i "s\|/,/generate_qr/' <<< "$body" | tail -n 20)
+    tail=$(awk '/if ! apply_config/,/generate_qr/' <<< "$body" | tail -n 30)
     grep -qE 'exec \{lock_fd\}>&-' <<< "$tail"
 }
 
@@ -224,7 +226,7 @@ extract_func() {
     local body
     body=$(extract_func "$COMMON_EN" "regenerate_client")
     local tail
-    tail=$(awk '/if ! sed -i "s\|/,/generate_qr/' <<< "$body" | tail -n 20)
+    tail=$(awk '/if ! apply_config/,/generate_qr/' <<< "$body" | tail -n 30)
     grep -qE 'exec \{lock_fd\}>&-' <<< "$tail"
 }
 

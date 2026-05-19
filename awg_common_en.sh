@@ -2260,12 +2260,12 @@ generate_client() {
 # конфига — трафик через него не идёт. Включать QR/URI в lock дороже
 # (lock на несколько секунд — блокирует другие клиенты) без выигрыша
 # по целостности server-state.
-regenerate_client() {
+refresh_client_config() {
     local name="$1"
     local endpoint="${2:-}"
 
     if [[ -z "$name" ]]; then
-        log_error "regenerate_client: не указано имя"
+        log_error "refresh_client_config: не указано имя"
         return 1
     fi
 
@@ -2414,7 +2414,329 @@ regenerate_client() {
     # Hygiene: PSK не должен протекать в следующие операции в том же shell
     unset CLIENT_PSK
 
-    log "Конфиг клиента '$name' перегенерирован."
+    log "Конфиг клиента '$name' обновлён."
+    return 0
+}
+
+validate_i1_override() {
+    local i1="$1"
+
+    [[ -n "$i1" ]] || return 1
+    [[ ${#i1} -le 2000 ]] || return 1
+
+    case "$i1" in
+        *[\'\"\;\`\$\|\&\\/]*)
+            return 1
+            ;;
+        *$'\n'*|*$'\r'*|*$'\t'*)
+            return 1
+            ;;
+    esac
+
+    [[ "$i1" =~ ^[[:space:]0-9a-fA-Fx\<\>br]+$ ]] || return 1
+    [[ "$i1" == *"<b 0x"* || "$i1" == *"<r "* ]] || return 1
+}
+
+replace_peer_credentials() {
+    local name="$1" new_pubkey="$2" new_psk="${3:-}"
+    local tmpfile
+    [[ -n "$name" && -n "$new_pubkey" ]] || return 1
+    tmpfile=$(awg_mktemp) || return 1
+    awk -v target="$name" -v pub="$new_pubkey" -v psk="$new_psk" '
+        function flush_block(    i,line,prefix,has_pub,has_psk) {
+            if (!in_block) return
+            if (target_block) {
+                has_pub=0; has_psk=0
+                for (i=1; i<=n; i++) {
+                    line=block[i]
+                    if (line ~ /^#?[[:space:]]*PublicKey[[:space:]]*=/) {
+                        prefix=(line ~ /^#/) ? "# " : ""
+                        print prefix "PublicKey = " pub
+                        has_pub=1
+                        continue
+                    }
+                    if (line ~ /^#?[[:space:]]*PresharedKey[[:space:]]*=/) {
+                        if (psk != "") {
+                            prefix=(line ~ /^#/) ? "# " : ""
+                            print prefix "PresharedKey = " psk
+                            has_psk=1
+                        }
+                        continue
+                    }
+                    print line
+                    if (psk != "" && has_pub && !has_psk && line !~ /^#?[[:space:]]*PresharedKey[[:space:]]*=/) {
+                        print "PresharedKey = " psk
+                        has_psk=1
+                    }
+                }
+            } else {
+                for (i=1; i<=n; i++) print block[i]
+            }
+            in_block=0; target_block=0; n=0
+        }
+        /^#? ?\[Peer\]$/ { flush_block(); in_block=1; target_block=0; n=0; block[++n]=$0; next }
+        /^\[/ && in_block { flush_block(); print; next }
+        in_block {
+            block[++n]=$0
+            if ($0 == "#_Name = " target) target_block=1
+            next
+        }
+        { print }
+        END { flush_block() }
+    ' "$SERVER_CONF_FILE" > "$tmpfile" || {
+        rm -f "$tmpfile"
+        return 1
+    }
+    mv "$tmpfile" "$SERVER_CONF_FILE" || {
+        rm -f "$tmpfile"
+        return 1
+    }
+    chmod 600 "$SERVER_CONF_FILE"
+}
+
+restore_regenerate_backup() {
+    local server_bak="$1" client_bak="$2" priv_bak="$3" pub_bak="$4" name="$5"
+    [[ -f "$server_bak" ]] && cp -p "$server_bak" "$SERVER_CONF_FILE" || true
+    if [[ -f "$client_bak" ]]; then
+        cp -p "$client_bak" "$AWG_DIR/${name}.conf" || true
+    fi
+    if [[ -f "$priv_bak" ]]; then
+        cp -p "$priv_bak" "$KEYS_DIR/${name}.private" || true
+    fi
+    if [[ -f "$pub_bak" ]]; then
+        cp -p "$pub_bak" "$KEYS_DIR/${name}.public" || true
+    fi
+    chmod 600 "$SERVER_CONF_FILE" "$AWG_DIR/${name}.conf" "$KEYS_DIR/${name}.private" "$KEYS_DIR/${name}.public" 2>/dev/null || true
+}
+
+regenerate_client() {
+    local name="$1"
+    local endpoint="${2:-}"
+
+    if [[ -z "$name" ]]; then
+        log_error "regenerate_client: не указано имя"
+        return 1
+    fi
+    if type validate_client_name >/dev/null 2>&1; then
+        validate_client_name "$name" || return 1
+    elif ! [[ "$name" =~ ^[a-zA-Z0-9_-]+$ ]]; then
+        log_error "Имя содержит недоп. символы."
+        return 1
+    fi
+
+    local lockfile="${AWG_DIR}/.awg_config.lock"
+    local lock_fd
+    exec {lock_fd}>"$lockfile"
+    if ! flock -x -w 30 "$lock_fd"; then
+        log_error "Не удалось получить блокировку конфига (другая операция выполняется)"
+        exec {lock_fd}>&-
+        return 1
+    fi
+
+    load_awg_params || { exec {lock_fd}>&-; return 1; }
+
+    if ! grep -qxF "#_Name = ${name}" "$SERVER_CONF_FILE" 2>/dev/null; then
+        log_error "Клиент '$name' не найден в серверном конфиге"
+        exec {lock_fd}>&-
+        return 1
+    fi
+    if [[ ! -f "$AWG_DIR/${name}.conf" ]]; then
+        log_error "Конфиг клиента '$name' не найден"
+        exec {lock_fd}>&-
+        return 1
+    fi
+
+    local client_ip client_ipv6 server_pubkey
+    client_ip=$(get_client_ipv4_from_server "$name" 2>/dev/null || true)
+    client_ipv6=$(get_client_ipv6_from_server "$name" 2>/dev/null || true)
+    if [[ -z "$client_ip" ]]; then
+        log_error "IP клиента '$name' не найден в серверном конфиге"
+        exec {lock_fd}>&-
+        return 1
+    fi
+
+    _ensure_server_public_key || { exec {lock_fd}>&-; return 1; }
+    server_pubkey=$(cat "$AWG_DIR/server_public.key" 2>/dev/null) || {
+        log_error "Публичный ключ сервера не найден"
+        exec {lock_fd}>&-
+        return 1
+    }
+
+    if [[ -z "$endpoint" ]]; then endpoint="${AWG_ENDPOINT:-}"; fi
+    if [[ -z "$endpoint" ]]; then endpoint=$(get_server_public_ip); fi
+    if [[ -z "$endpoint" ]]; then
+        endpoint=$(_try_local_ip) && log_warn "Используется локальный IP сервера как Endpoint ('$endpoint') — curl до внешних сервисов не прошёл."
+    fi
+    if [[ -z "$endpoint" ]]; then
+        log_error "Не удалось определить внешний IP сервера."
+        exec {lock_fd}>&-
+        return 1
+    fi
+
+    local current_dns="1.1.1.1" current_keepalive="25" current_allowed_ips="${ALLOWED_IPS:-0.0.0.0/0}"
+    local old_psk="" new_psk="" new_i1="${AWG_I1:-}"
+    local _v
+    _v=$(sed -n 's/^DNS[ \t]*=[ \t]*//p' "$AWG_DIR/${name}.conf" | tr -d '[:space:]')
+    [[ -n "$_v" ]] && current_dns="$_v"
+    _v=$(sed -n 's/^PersistentKeepalive[ \t]*=[ \t]*//p' "$AWG_DIR/${name}.conf" | tr -d '[:space:]')
+    [[ -n "$_v" ]] && current_keepalive="$_v"
+    _v=$(sed -n '/^\[Peer\]/,$ s/^AllowedIPs[ \t]*=[ \t]*//p' "$AWG_DIR/${name}.conf" | tr -d '[:space:]')
+    [[ -n "$_v" ]] && current_allowed_ips="$_v"
+    old_psk=$(sed -n '/^\[Peer\]/,$ s/^PresharedKey[ \t]*=[ \t]*//p' "$AWG_DIR/${name}.conf" | tr -d '[:space:]')
+    if [[ -z "$old_psk" ]]; then
+        old_psk=$(awk -v target="$name" '
+            /^#? ?\[Peer\]$/ { in_peer=1; found=0; next }
+            in_peer && $0 == "#_Name = " target { found=1; next }
+            in_peer && found && /^#?[[:space:]]*PresharedKey[[:space:]]*=/ {
+                sub(/^#?[[:space:]]*PresharedKey[[:space:]]*=[[:space:]]*/, ""); print; exit
+            }
+            in_peer && /^\[/ { in_peer=0; found=0 }
+        ' "$SERVER_CONF_FILE" | tr -d '[:space:]')
+    fi
+    if [[ -n "$old_psk" ]]; then
+        new_psk=$(awg genpsk) || {
+            log_error "Не удалось сгенерировать новый PresharedKey для '$name'"
+            exec {lock_fd}>&-
+            return 1
+        }
+        export CLIENT_PSK="$new_psk"
+    else
+        unset CLIENT_PSK
+    fi
+    if awg_ipv6_enabled && [[ -n "$client_ipv6" && "$current_allowed_ips" != *"::/0"* ]]; then
+        current_allowed_ips="${current_allowed_ips},::/0"
+    fi
+    if [[ -n "${AWG_I1_OVERRIDE:-}" ]]; then
+        validate_i1_override "$AWG_I1_OVERRIDE" || {
+            log_error "Invalid AWG_I1_OVERRIDE"
+            exec {lock_fd}>&-
+            unset CLIENT_PSK
+            return 1
+        }
+        new_i1="$AWG_I1_OVERRIDE"
+    fi
+
+    local timestamp backup_dir server_bak client_bak priv_bak pub_bak
+    timestamp="$(date '+%Y%m%d-%H%M%S.%3N')"
+    backup_dir="${AWG_DIR}/regen-backups"
+    mkdir -p "$backup_dir" || {
+        exec {lock_fd}>&-
+        unset CLIENT_PSK
+        return 1
+    }
+    chmod 700 "$backup_dir" 2>/dev/null || true
+    server_bak="${backup_dir}/awg0.conf.${name}.${timestamp}.bak"
+    client_bak="${backup_dir}/${name}.conf.${timestamp}.bak"
+    priv_bak="${backup_dir}/${name}.private.${timestamp}.bak"
+    pub_bak="${backup_dir}/${name}.public.${timestamp}.bak"
+    cp -p "$SERVER_CONF_FILE" "$server_bak" || { exec {lock_fd}>&-; unset CLIENT_PSK; return 1; }
+    cp -p "$AWG_DIR/${name}.conf" "$client_bak" || { exec {lock_fd}>&-; unset CLIENT_PSK; return 1; }
+    [[ -f "$KEYS_DIR/${name}.private" ]] && cp -p "$KEYS_DIR/${name}.private" "$priv_bak" || true
+    [[ -f "$KEYS_DIR/${name}.public" ]] && cp -p "$KEYS_DIR/${name}.public" "$pub_bak" || true
+
+    if ! generate_keypair "$name"; then
+        restore_regenerate_backup "$server_bak" "$client_bak" "$priv_bak" "$pub_bak" "$name"
+        exec {lock_fd}>&-
+        unset CLIENT_PSK
+        return 1
+    fi
+    local client_privkey client_pubkey
+    client_privkey=$(cat "$KEYS_DIR/${name}.private") || {
+        restore_regenerate_backup "$server_bak" "$client_bak" "$priv_bak" "$pub_bak" "$name"
+        exec {lock_fd}>&-
+        unset CLIENT_PSK
+        return 1
+    }
+    client_pubkey=$(cat "$KEYS_DIR/${name}.public") || {
+        restore_regenerate_backup "$server_bak" "$client_bak" "$priv_bak" "$pub_bak" "$name"
+        exec {lock_fd}>&-
+        unset CLIENT_PSK
+        return 1
+    }
+
+    local _old_i1="${AWG_I1:-}"
+    AWG_I1="$new_i1"
+    if ! render_client_config "$name" "$client_ip" "$client_privkey" "$server_pubkey" "$endpoint" "${AWG_PORT}" "$client_ipv6"; then
+        AWG_I1="$_old_i1"
+        restore_regenerate_backup "$server_bak" "$client_bak" "$priv_bak" "$pub_bak" "$name"
+        exec {lock_fd}>&-
+        unset CLIENT_PSK
+        return 1
+    fi
+
+    local _dns _ka _aip _client_conf
+    _dns=$(printf '%s' "$current_dns" | sed 's/[&\\/]/\\&/g')
+    _ka=$(printf '%s' "$current_keepalive" | sed 's/[&\\/]/\\&/g')
+    _aip=$(printf '%s' "$current_allowed_ips" | sed 's/[&\\/]/\\&/g')
+    _client_conf="$AWG_DIR/${name}.conf"
+    if ! sed -i "s/^DNS = .*/DNS = ${_dns}/" "$_client_conf" ||
+       ! sed -i "s/^PersistentKeepalive = .*/PersistentKeepalive = ${_ka}/" "$_client_conf" ||
+       ! sed -i "s|^AllowedIPs = .*|AllowedIPs = ${_aip}|" "$_client_conf"; then
+        log_error "Ошибка обновления пользовательских параметров в $_client_conf"
+        AWG_I1="$_old_i1"
+        restore_regenerate_backup "$server_bak" "$client_bak" "$priv_bak" "$pub_bak" "$name"
+        exec {lock_fd}>&-
+        unset CLIENT_PSK
+        return 1
+    fi
+    if [[ -n "${AWG_I1_OVERRIDE:-}" ]]; then
+        local _i1_tmp
+        _i1_tmp=$(awg_mktemp) || {
+            AWG_I1="$_old_i1"
+            restore_regenerate_backup "$server_bak" "$client_bak" "$priv_bak" "$pub_bak" "$name"
+            exec {lock_fd}>&-
+            unset CLIENT_PSK
+            return 1
+        }
+        if ! awk -v i1="$new_i1" '
+            /^\[Peer\]/ && !done { print "I1 = " i1; done=1 }
+            /^I1[[:space:]]*=/ { if (!done) { print "I1 = " i1; done=1 }; next }
+            { print }
+            END { if (!done) print "I1 = " i1 }
+        ' "$_client_conf" > "$_i1_tmp" || ! mv "$_i1_tmp" "$_client_conf"; then
+            rm -f "$_i1_tmp"
+            AWG_I1="$_old_i1"
+            restore_regenerate_backup "$server_bak" "$client_bak" "$priv_bak" "$pub_bak" "$name"
+            exec {lock_fd}>&-
+            unset CLIENT_PSK
+            return 1
+        fi
+        chmod 600 "$_client_conf"
+    fi
+
+    if ! replace_peer_credentials "$name" "$client_pubkey" "$new_psk"; then
+        log_error "Ошибка обновления peer credentials для '$name'"
+        AWG_I1="$_old_i1"
+        restore_regenerate_backup "$server_bak" "$client_bak" "$priv_bak" "$pub_bak" "$name"
+        exec {lock_fd}>&-
+        unset CLIENT_PSK
+        return 1
+    fi
+    generate_firewall_scripts >/dev/null 2>&1 || log_warn "Не удалось обновить P2P/firewall hook-скрипты."
+    sync_clients_hosts
+
+    if ! apply_config; then
+        log_error "apply_config упал после регенерации '$name'; выполняется rollback."
+        AWG_I1="$_old_i1"
+        restore_regenerate_backup "$server_bak" "$client_bak" "$priv_bak" "$pub_bak" "$name"
+        apply_config >/dev/null 2>&1 || true
+        exec {lock_fd}>&-
+        unset CLIENT_PSK
+        return 1
+    fi
+
+    exec {lock_fd}>&-
+
+    generate_qr "$name" || log_warn "QR-код не обновлён для '$name'."
+    if generate_vpn_uri "$name"; then
+        generate_qr_vpnuri "$name" || log_warn "QR vpn:// не обновлён для '$name'."
+    else
+        log_warn "vpn:// URI не обновлён для '$name'."
+    fi
+
+    AWG_I1="$_old_i1"
+    unset CLIENT_PSK
+    log "Конфиг клиента '$name' безопасно перегенерирован."
     return 0
 }
 
