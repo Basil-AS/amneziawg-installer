@@ -64,11 +64,28 @@ This is an `amneziawg-installer` fork with a lightweight Python stdlib web panel
 ```bash
 wget -O install_amneziawg.sh https://raw.githubusercontent.com/Basil-AS/amneziawg-installer/main/install_amneziawg.sh
 chmod +x install_amneziawg.sh
-sudo bash ./install_amneziawg.sh --route-all --server-name="my-vpn"
+sudo bash ./install_amneziawg.sh --yes --route-all --server-name="my-vpn"
 ```
 
 `--route-all` — route all client traffic through the VPN.  
 `--server-name="my-vpn"` — human-readable server name used in the panel and configs.
+
+### Advanced routed IPv6 and public web-panel example
+
+```bash
+sudo bash ./install_amneziawg.sh \
+  --yes \
+  --route-all \
+  --endpoint=64.112.125.125 \
+  --allow-ipv6 \
+  --enable-native-ipv6 \
+  --ipv6-mode=routed \
+  --ipv6-subnet=2a13:7c82:101f:30::/64 \
+  --server-name="sunny-sweden" \
+  --web-bind=0.0.0.0 \
+  --web-port=8443 \
+  --preset=mobile
+```
 
 ### For developers / custom branch
 
@@ -359,7 +376,7 @@ Useful flags:
 
 * `FULLCONENAT` depends on kernel/iptables target availability; `MASQUERADE` is the fallback.
 * Self-signed TLS is expected to trigger a browser warning.
-* Release SHA256 values are still `RELEASE_PLACEHOLDER` until the fork release build.
+* The single-file installer fetches helper scripts and web assets from `Basil-AS/amneziawg-installer/main` when they are not present locally, then verifies them against its pinned SHA256 manifest before installing.
 * Local checks covered `bash -n`, Python compile, and helper smoke tests; full Bats, ShellCheck, and clean Ubuntu VPS testing still need to run in Linux/CI.
 
 ---

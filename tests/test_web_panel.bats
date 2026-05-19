@@ -141,7 +141,11 @@
         fail "web index must use local assets only"
     fi
     grep -q 'style.css' "$BATS_TEST_DIRNAME/../web/index.html"
+    grep -q 'vendor/tailwindcss.js' "$BATS_TEST_DIRNAME/../web/index.html"
+    grep -q 'vendor/apexcharts.min.js' "$BATS_TEST_DIRNAME/../web/index.html"
     grep -q 'app.js' "$BATS_TEST_DIRNAME/../web/index.html"
+    [ -s "$BATS_TEST_DIRNAME/../web/vendor/tailwindcss.js" ]
+    [ -s "$BATS_TEST_DIRNAME/../web/vendor/apexcharts.min.js" ]
 }
 
 @test "web panel exposes RBAC and token controls" {
@@ -188,7 +192,15 @@ from pathlib import Path
 spec = importlib.util.spec_from_file_location("panel_server", Path(os.environ["REPO_ROOT"]) / "web" / "server.py")
 server = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(server)
-assert set(server.STATIC_FILES) == {"/", "/index.html", "/style.css", "/app.js", "/favicon.svg"}
+assert set(server.STATIC_FILES) == {
+    "/",
+    "/index.html",
+    "/style.css",
+    "/app.js",
+    "/favicon.svg",
+    "/vendor/tailwindcss.js",
+    "/vendor/apexcharts.min.js",
+}
 for private_path in {
     "/tokens.json",
     "/import_tokens.json",
