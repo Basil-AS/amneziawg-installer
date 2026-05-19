@@ -596,6 +596,7 @@ function renderClients() {
           <button data-action="copy-config" title="Copy config" aria-label="Copy config" class="${buttonClasses("client-action")}">${icon("copy")}<span class="client-action-label">Copy config</span></button>
           ${actionButton("qr", "Show QR", "qr", "Show QR")}
           <button data-action="copy-vpnuri" title="Copy vpn://" aria-label="Copy vpn://" class="${buttonClasses("client-action")}">${icon("link")}<span class="client-action-label">Copy vpn://</span></button>
+          <button data-action="copy-import-url" title="Copy import URL" aria-label="Copy import URL" class="${buttonClasses("client-action")}">${icon("link")}<span class="client-action-label">Import URL</span></button>
           <button data-action="toggle" title="${client.disabled ? "Enable Client" : "Disable Client"}" aria-label="${client.disabled ? "Enable Client" : "Disable Client"}" class="${buttonClasses("w-9 px-0")}">${icon("power")}</button>
           <button data-action="toggle-p2p" title="Toggle P2P Ports" aria-label="Toggle P2P Ports" class="${buttonClasses(shieldClass)}">${icon("shield")}</button>
           <button data-action="delete" title="Delete" aria-label="Delete" class="${buttonClasses("w-9 px-0 text-[var(--danger)]")}">${icon("trash")}</button>
@@ -794,6 +795,10 @@ function showHelp() {
         <p class="font-semibold text-[var(--text)]">Voice / Calls optimization</p>
         <p class="mt-1">MTU 1280 · PersistentKeepalive 25 · UDP conntrack timeout tuning · Full Cone NAT: not enabled by default · XUDP: not applicable to AWG.</p>
       </div>
+      <div class="rounded-lg border border-[var(--line)] bg-[var(--soft)] px-3 py-3 text-xs text-[var(--muted)]">
+        <p class="font-semibold text-[var(--text)]">WG Tunnel URL Import</p>
+        <p class="mt-1">Copy import URL creates a token-protected HTTPS link that returns raw config text starting with [Interface]. Links expire after 1 hour by default. WG Tunnel requires HTTPS; a self-signed certificate may be rejected by the app. Use a trusted domain/certificate for best results.</p>
+      </div>
       <div class="grid gap-4">
         ${helpClientGroups.map(renderHelpGroup).join("")}
       </div>
@@ -822,6 +827,7 @@ async function clientAction(name, action) {
     if (action === "download-config") return downloadConfig(name);
     if (action === "copy-config") return copyConfig(name);
     if (action === "copy-vpnuri") return copyVpnUri(name);
+    if (action === "copy-import-url") return copyImportUrl(name);
     if (action === "toggle") {
       await api(`/api/clients/${encodeURIComponent(name)}/toggle`, {method: "POST", body: "{}"});
       showToast("Client toggled");
@@ -900,6 +906,15 @@ async function copyVpnUri(name) {
   const blob = await api(`/api/clients/${encodeURIComponent(name)}/vpnuri`);
   await copyText((await blob.text()).trim());
   showToast("Copied");
+}
+
+async function copyImportUrl(name) {
+  const result = await api(`/api/clients/${encodeURIComponent(name)}/import-link`, {
+    method: "POST",
+    body: JSON.stringify({ttl: 3600, one_time: false}),
+  });
+  await copyText(result.url);
+  showToast("Import URL copied");
 }
 
 async function loadTokens() {

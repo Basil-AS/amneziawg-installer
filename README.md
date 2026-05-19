@@ -191,9 +191,10 @@ sudo /root/awg/manage_amneziawg.sh dns restart
 
 * Web-panel по умолчанию bind-ится к `10.9.9.1` и доступна только подключённым VPN-клиентам.
 * Static serving ограничен allowlist: `index.html`, `style.css`, `app.js`, `favicon.svg`.
-* Private files вроде `tokens.json`, `auth_token`, `key.pem`, `cert.pem`, `server.py` не отдаются как static HTTP.
-* `tokens.json` хранит hashes токенов, но всё равно должен оставаться приватным.
+* Private files вроде `tokens.json`, `import_tokens.json`, `auth_token`, `key.pem`, `cert.pem`, `server.py` не отдаются как static HTTP.
+* `tokens.json`, `import_tokens.json` и `/root/awg/INSTALL_SUMMARY.txt` хранят секреты или token hashes и должны оставаться приватными.
 * Не публикуйте client configs, QR и `vpn://` URI.
+* WG Tunnel import links требуют HTTPS, отдают raw config text и истекают; self-signed сертификат может не пройти проверку в приложении.
 * Для localhost-only режима используйте `--web-bind=127.0.0.1` и SSH tunnel; для публичной панели — firewall allowlist, VPN или reverse proxy с дополнительной авторизацией.
 
 
@@ -362,7 +363,8 @@ sudo bash ./install_amneziawg.sh --upgrade-ipv6
   `/root/awg/postup.sh`, `/root/awg/postdown.sh`, `/root/awg/p2p_rules.sh`.
 * Для native IPv6 с NDP proxy создаётся `/etc/ndppd.conf`. Для ULA-режима используется NAT66.
 * Веб-панель разворачивается в `/root/awg/web/`, по умолчанию слушает HTTPS только на VPN gateway `10.9.9.1:8443`, использует локальные assets без внешних CDN, self-signed сертификат и bearer tokens/RBAC через `tokens.json`.
-* В карточке клиента есть явные действия: скачать `.conf`, скопировать полный текст конфига, показать QR и скопировать `vpn://`. Config endpoints остаются под auth и RBAC.
+* В карточке клиента есть явные действия: скачать `.conf`, скопировать полный текст конфига, показать QR, скопировать `vpn://` и создать WG Tunnel import URL. Config/import-link endpoints остаются под auth и RBAC.
+* WG Tunnel import URL создаётся через `POST /api/clients/<name>/import-link`, живёт 1 час по умолчанию и отдаётся как raw `text/plain` через `GET /import/<client>/<token>` без `Content-Disposition`.
 * AdGuard Home ставится в `/opt/AdGuardHome`, слушает DNS на `127.0.0.1`, `10.9.9.1` и серверном IPv6 внутри VPN. Если сервис не стартует, VPN остаётся рабочим; fallback: `manage dns set-mode system`.
 
 ### Веб-панель
@@ -385,9 +387,13 @@ Super token печатается при первой установке, а toke
 /root/awg/web/tokens.json
 ```
 
+После успешной установки создаётся `/root/awg/INSTALL_SUMMARY.txt` с адресами панели, super token первого запуска, AdGuard credentials, endpoint/port/subnet/IPv6/routing/P2P параметрами, путями к конфигам и полезными командами. Файл содержит секреты, хранится рядом с установкой, получает права `0600`, а предыдущая версия сохраняется как `INSTALL_SUMMARY.txt.bak.<timestamp>`.
+
 Обычные user-token видят только назначенных им клиентов и не могут создавать новых. Если `tokens.json` повреждён, панель не перегенерирует доступ молча: сбросьте super-token через `manage web token reset-super`.
 
 Публичный bind (`--web-bind=0.0.0.0` или `::`) открывает панель наружу и сопровождается warning; безопасный default остаётся VPN-only/local-first.
+
+Для WG Tunnel и WireGuard-like клиентов в карточке клиента есть кнопка `Import URL`: панель создаёт короткоживущую HTTPS-ссылку вида `/import/<client>/<token>`, защищённую random token. Ссылка возвращает только raw `text/plain` конфиг, начинающийся с `[Interface]`, без HTML/JSON/download-страницы; raw token хранится только у пользователя, на сервере лежит hash в `/root/awg/web/import_tokens.json`. По умолчанию TTL 1 час, self-signed TLS может быть отклонён мобильным приложением, поэтому для URL Import лучше использовать доверенный домен/сертификат.
 
 API веб-панели:
 
@@ -398,6 +404,8 @@ POST   /api/clients
 DELETE /api/clients/<name>
 GET    /api/clients/<name>/config
 GET    /api/clients/<name>/config/download
+POST   /api/clients/<name>/import-link
+GET    /import/<client>/<token>
 GET    /api/clients/<name>/qr
 GET    /api/clients/<name>/vpnuri
 GET    /api/clients/<name>/p2p

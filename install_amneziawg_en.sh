@@ -3402,6 +3402,190 @@ step7_start_service() {
 # STEP 99: Completion
 # ==============================================================================
 
+route_mode_label() {
+    case "${ALLOWED_IPS_MODE:-}" in
+        1) echo "route-all" ;;
+        2) echo "amnezia-routes" ;;
+        3) echo "custom" ;;
+        *) echo "${ALLOWED_IPS_MODE:-unknown}" ;;
+    esac
+}
+
+server_ipv6_addr_for_summary() {
+    [[ "${AWG_IPV6_ENABLED:-0}" -eq 1 && -n "${AWG_IPV6_SUBNET:-}" ]] || return 0
+    python3 - "$AWG_IPV6_SUBNET" <<'PY' 2>/dev/null || true
+import ipaddress
+import sys
+net = ipaddress.ip_network(sys.argv[1], strict=False)
+print(net.network_address + 1)
+PY
+}
+
+write_install_summary() {
+    local summary_path="$AWG_DIR/INSTALL_SUMMARY.txt"
+    local tmp_path="$AWG_DIR/.INSTALL_SUMMARY.txt.tmp.$$"
+    local timestamp generated route_label server_v6 web_host
+    local web_public_url web_vpn_url web_local_url web_warning web_extra_url import_example
+    local ag_password_display state_display
+
+    mkdir -p "$AWG_DIR" || return 0
+    chmod 700 "$AWG_DIR" 2>/dev/null || true
+    generated="$(date '+%Y-%m-%d %H:%M:%S')"
+    timestamp="$(date '+%Y%m%d-%H%M%S')"
+    route_label="$(route_mode_label)"
+    server_v6="$(server_ipv6_addr_for_summary)"
+    web_host="${AWG_ENDPOINT:-<server>}"
+    web_public_url="not exposed"
+    web_vpn_url="not exposed"
+    web_local_url="not exposed"
+    web_warning="none"
+    web_extra_url="none"
+    import_example="https://<host>:${AWG_WEB_PORT:-8443}/import/<client>/<token>"
+    ag_password_display="${AG_PASSWORD:-not available after initial generation; reset in AdGuard if needed}"
+    state_display="$STATE_FILE"
+    [[ -f "$STATE_FILE" ]] || state_display="$STATE_FILE (not present after successful cleanup)"
+
+    if [[ "${AWG_WEB_ENABLED:-1}" -eq 1 ]]; then
+        if [[ "${AWG_WEB_BIND:-}" == "0.0.0.0" || "${AWG_WEB_BIND:-}" == "::" ]]; then
+            web_public_url="https://${web_host}:${AWG_WEB_PORT:-8443}"
+            web_vpn_url="https://${AWG_TUNNEL_SUBNET%/*}:${AWG_WEB_PORT:-8443}"
+            web_warning="WARNING: Web Panel is publicly exposed"
+            import_example="https://${web_host}:${AWG_WEB_PORT:-8443}/import/my_phone/<token>"
+        elif [[ "${AWG_WEB_BIND:-}" == "127.0.0.1" || "${AWG_WEB_BIND:-}" == "::1" ]]; then
+            web_local_url="https://${AWG_WEB_BIND}:${AWG_WEB_PORT:-8443}"
+            web_extra_url="SSH tunnel: ssh -L ${AWG_WEB_PORT:-8443}:${AWG_WEB_BIND}:${AWG_WEB_PORT:-8443} root@${web_host}"
+        else
+            web_vpn_url="https://${AWG_WEB_BIND:-${AWG_TUNNEL_SUBNET%/*}}:${AWG_WEB_PORT:-8443}"
+            import_example="https://${AWG_WEB_BIND:-${AWG_TUNNEL_SUBNET%/*}}:${AWG_WEB_PORT:-8443}/import/my_phone/<token>"
+        fi
+    fi
+
+    if [[ -f "$summary_path" ]]; then
+        cp -p "$summary_path" "${summary_path}.bak.${timestamp}" 2>/dev/null || cp "$summary_path" "${summary_path}.bak.${timestamp}" 2>/dev/null || true
+        chmod 600 "${summary_path}.bak.${timestamp}" 2>/dev/null || true
+        chown root:root "${summary_path}.bak.${timestamp}" 2>/dev/null || true
+    fi
+
+    cat > "$tmp_path" <<EOF
+============================================================
+AmneziaWG Installer Summary
+Generated: ${generated}
+Server name: ${AWG_SERVER_NAME:-MyVPN}
+Installer version: ${SCRIPT_VERSION}
+Repository: ${AWG_REPO}
+============================================================
+
+[Network]
+Endpoint: ${AWG_ENDPOINT:-not set}
+VPN UDP port: ${AWG_PORT}
+Tunnel IPv4 subnet: ${AWG_TUNNEL_SUBNET}
+Route mode: ${route_label}
+AllowedIPs mode: ${ALLOWED_IPS_MODE}
+AllowedIPs: ${ALLOWED_IPS}
+
+[IPv6]
+IPv6 enabled: $(if [[ "${AWG_IPV6_ENABLED:-0}" -eq 1 ]]; then echo "yes"; else echo "no"; fi)
+IPv6 mode: ${AWG_IPV6_MODE:-legacy}
+IPv6 client subnet: ${AWG_IPV6_SUBNET:-none}
+Server tunnel IPv6: ${server_v6:-none}
+
+[Web Panel]
+Enabled: $(if [[ "${AWG_WEB_ENABLED:-1}" -eq 1 ]]; then echo "yes"; else echo "no"; fi)
+Bind: ${AWG_WEB_BIND:-none}
+Port: ${AWG_WEB_PORT:-8443}
+Public URL: ${web_public_url}
+VPN URL: ${web_vpn_url}
+Local URL: ${web_local_url}
+Access note: ${web_extra_url}
+Exposure warning: ${web_warning}
+Super token: ${AWG_WEB_SUPER_TOKEN_ONCE:-not available here; reset with manage web token reset-super}
+Token file: ${AWG_DIR}/web/tokens.json
+TLS cert: ${AWG_DIR}/web/cert.pem
+TLS key: ${AWG_DIR}/web/key.pem
+
+[WG Tunnel URL Import]
+Supported: yes
+Endpoint pattern: https://<host>:${AWG_WEB_PORT:-8443}/import/<client>/<token>
+Example: ${import_example}
+Notes:
+- HTTPS only.
+- Response is raw config text starting with [Interface].
+- Links are token-protected and expire.
+- Self-signed TLS may be rejected by some mobile apps.
+
+[AdGuard Home]
+Enabled: $(if [[ "${AWG_ADGUARD_ENABLED:-0}" -eq 1 ]]; then echo "yes"; else echo "no"; fi)
+DNS listen: 10.9.9.1:53
+UI URL: http://10.9.9.1:${AWG_ADGUARD_PORT:-3000}
+Admin login: ${AG_USERNAME:-admin}
+Admin password: ${ag_password_display}
+Config file: ${AWG_ADGUARD_DIR:-/opt/AdGuardHome}/AdGuardHome.yaml
+
+[Clients]
+Config directory: ${AWG_DIR}
+Default clients:
+EOF
+    if [[ -f "$SERVER_CONF_FILE" ]]; then
+        grep '^#_Name = ' "$SERVER_CONF_FILE" 2>/dev/null | sed 's/^#_Name = //' | while IFS= read -r client_name; do
+            [[ -n "$client_name" ]] || continue
+            printf -- "- %s: %s/%s.conf\n" "$client_name" "$AWG_DIR" "$client_name" >> "$tmp_path"
+        done
+    else
+        printf -- "- none\n" >> "$tmp_path"
+    fi
+    cat >> "$tmp_path" <<EOF
+
+[AWG 2.0 Parameters]
+Preset: ${AWG_PRESET:-balanced}
+Jc: ${AWG_Jc}
+Jmin: ${AWG_Jmin}
+Jmax: ${AWG_Jmax}
+S1: ${AWG_S1}
+S2: ${AWG_S2}
+S3: ${AWG_S3}
+S4: ${AWG_S4}
+H1: ${AWG_H1}
+H2: ${AWG_H2}
+H3: ${AWG_H3}
+H4: ${AWG_H4}
+I1: ${AWG_I1:-}
+
+[P2P]
+Base port: ${AWG_P2P_BASE_PORT}
+Ports per client: ${AWG_P2P_PORTS_PER_CLIENT}
+Fullcone NAT: $(if [[ "${AWG_FULLCONE_NAT:-0}" -eq 1 ]]; then echo "yes"; else echo "no"; fi)
+
+[Files]
+Server config: ${SERVER_CONF_FILE}
+Manage script: ${MANAGE_SCRIPT_PATH}
+Common script: ${COMMON_SCRIPT_PATH}
+Install log: ${LOG_FILE}
+Install state: ${state_display}
+
+[Useful commands]
+systemctl status awg-quick@awg0 --no-pager
+systemctl status awg-web --no-pager
+systemctl status AdGuardHome --no-pager
+sudo bash ${MANAGE_SCRIPT_PATH} help
+sudo bash ${MANAGE_SCRIPT_PATH} web token reset-super
+sudo bash ${MANAGE_SCRIPT_PATH} add <client>
+sudo bash ${MANAGE_SCRIPT_PATH} qr <client>
+sudo bash ${MANAGE_SCRIPT_PATH} show <client>
+
+[Security notes]
+- This file contains secrets. Keep permissions 0600.
+- Rotate Web token if this file was exposed.
+- Change AdGuard password after first login.
+- Public Web Panel bind 0.0.0.0 exposes HTTPS panel to the Internet.
+============================================================
+EOF
+    chmod 600 "$tmp_path"
+    chown root:root "$tmp_path" 2>/dev/null || true
+    mv -f "$tmp_path" "$summary_path"
+    chmod 600 "$summary_path"
+    chown root:root "$summary_path" 2>/dev/null || true
+}
+
 step99_finish() {
     log "### INSTALLATION COMPLETE ###"
     log "=============================================================================="
@@ -3418,13 +3602,25 @@ step99_finish() {
     log "  systemctl status awg-quick@awg0      # VPN status"
     if [[ "${AWG_WEB_ENABLED:-1}" -eq 1 ]]; then
         log "  https://<SERVER_IP>:${AWG_WEB_PORT}              # Web panel"
-        log "  Web token: $(cat "$AWG_DIR/web/auth_token" 2>/dev/null || echo 'see /root/awg/web/auth_token')"
+        if [[ -n "${AWG_WEB_SUPER_TOKEN_ONCE:-}" ]]; then
+            log "  Web super token: ${AWG_WEB_SUPER_TOKEN_ONCE}"
+        else
+            log "  Web token reset: sudo bash $MANAGE_SCRIPT_PATH web token reset-super"
+        fi
     fi
     log "  awg show                              # AmneziaWG status"
     log "  ufw status verbose                    # Firewall status"
     log " "
     log "IMPORTANT: Use Amnezia VPN client >= 4.8.12.7 to connect"
     log "           with AWG 2.0 protocol support"
+    log " "
+    write_install_summary
+    log "IMPORTANT:"
+    log "Main server information, tokens, passwords, panel URLs and file paths were saved to:"
+    log " "
+    log "  $AWG_DIR/INSTALL_SUMMARY.txt"
+    log " "
+    log "This file contains secrets. File permissions: 0600."
     log " "
     cleanup_apt
     log " "

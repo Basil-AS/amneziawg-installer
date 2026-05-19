@@ -102,6 +102,10 @@ https://127.0.0.1:8443
 
 The panel ships local assets only, so bearer tokens are not exposed to third-party CDN JavaScript. User tokens can manage only assigned clients and cannot create new ones. If `tokens.json` becomes invalid, reset the super token with `manage web token reset-super` instead of expecting an automatic replacement.
 
+After a successful install, the installer writes `/root/awg/INSTALL_SUMMARY.txt` with panel URLs, the first-run super token, AdGuard credentials, endpoint/port/subnet/IPv6/routing/P2P choices, config paths, and useful commands. The file contains secrets, is stored next to the installation with `0600` permissions, and any previous copy is backed up as `INSTALL_SUMMARY.txt.bak.<timestamp>`.
+
+Client cards include `Copy import URL` for WG Tunnel and WireGuard-like clients. The panel creates a short-lived HTTPS URL at `/import/<client>/<token>` that returns raw `text/plain` config text starting with `[Interface]`, not HTML/JSON/download pages. Raw tokens are never stored; only hashes are written to `/root/awg/web/import_tokens.json`. Default TTL is 1 hour. WG Tunnel requires HTTPS, and self-signed TLS may be rejected by mobile apps, so a trusted domain/certificate is best.
+
 ### Public web panel, only when you really need it
 
 ```bash
@@ -193,9 +197,10 @@ sudo /root/awg/manage_amneziawg.sh dns restart
 
 * The web panel binds to VPN gateway `10.9.9.1` by default and is reachable only by connected VPN clients.
 * Static serving is restricted to an allowlist: `index.html`, `style.css`, `app.js`, `favicon.svg`.
-* Private files such as `tokens.json`, `auth_token`, `key.pem`, `cert.pem`, and `server.py` are not served over static HTTP.
-* `tokens.json` stores token hashes, but it still must remain private.
+* Private files such as `tokens.json`, `import_tokens.json`, `auth_token`, `key.pem`, `cert.pem`, and `server.py` are not served over static HTTP.
+* `tokens.json`, `import_tokens.json`, and `/root/awg/INSTALL_SUMMARY.txt` contain secrets or token hashes and must remain private.
 * Do not publish client configs, QR codes, or `vpn://` URIs.
+* WG Tunnel import links require HTTPS, return raw config text, and expire; self-signed certificates may be rejected by the app.
 * For localhost-only access, use `--web-bind=127.0.0.1` plus an SSH tunnel; for a public panel, use a firewall allowlist, VPN, or a reverse proxy with additional authentication.
 
 
@@ -346,7 +351,8 @@ Useful flags:
 * Peer blocks are the source of truth: `AllowedIPs = <ipv4>/32, <ipv6>/128` and `#_P2PPorts = p1,p2,p3`.
 * Default P2P ports for IPv4 last octet `N`: `20000+N`, `20256+N`, `20512+N`; extra ports are allocated from `20001-21024`.
 * Web files live in `/root/awg/web/`; the panel listens on VPN gateway `10.9.9.1:8443` by default, uses local assets without external CDNs, self-signed TLS, and stores bearer-token hashes/RBAC records in `/root/awg/web/tokens.json`.
-* The client card exposes explicit actions: download `.conf`, copy full config text, show QR, and copy the `vpn://` URI. Config endpoints stay authenticated and RBAC-scoped.
+* The client card exposes explicit actions: download `.conf`, copy full config text, show QR, copy the `vpn://` URI, and create a WG Tunnel import URL. Config/import-link endpoints stay authenticated and RBAC-scoped.
+* WG Tunnel import URLs are created with `POST /api/clients/<name>/import-link`, expire after 1 hour by default, and are served as raw `text/plain` from `GET /import/<client>/<token>` without `Content-Disposition`.
 * AdGuard Home is installed in `/opt/AdGuardHome`; DNS listens on `127.0.0.1`, `10.9.9.1`, and the server IPv6 address inside the VPN. If it fails, VPN remains usable; fallback: `manage dns set-mode system`.
 
 ### Not finished yet

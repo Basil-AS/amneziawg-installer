@@ -32,3 +32,5 @@ __pycache__/
 # Secrets
 .env
 .env.*
+INSTALL_SUMMARY.txt
+INSTALL_SUMMARY.txt.bak.*
