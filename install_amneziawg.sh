@@ -26,18 +26,24 @@ LOG_FILE="$AWG_DIR/install_amneziawg.log"
 KEYS_DIR="$AWG_DIR/keys"
 SERVER_CONF_FILE="/etc/amnezia/amneziawg/awg0.conf"
 AWG_REPO="${AWG_REPO:-Basil-AS/amneziawg-installer}"
-AWG_BRANCH="${AWG_BRANCH:-v${SCRIPT_VERSION}}"
-COMMON_SCRIPT_URL="https://raw.githubusercontent.com/${AWG_REPO}/${AWG_BRANCH}/awg_common.sh"
+AWG_BRANCH="${AWG_BRANCH:-main}"
 COMMON_SCRIPT_PATH="$AWG_DIR/awg_common.sh"
-MANAGE_SCRIPT_URL="https://raw.githubusercontent.com/${AWG_REPO}/${AWG_BRANCH}/manage_amneziawg.sh"
 MANAGE_SCRIPT_PATH="$AWG_DIR/manage_amneziawg.sh"
 
-# SHA256 checksums скачиваемых скриптов. Обновляются при каждом релизе.
-# Проверяются в step5_download_scripts() после curl.
-# Если AWG_BRANCH переопределён (не v$SCRIPT_VERSION), проверка пропускается.
-# Формат: sha256sum output (hex, 64 chars).
-COMMON_SCRIPT_SHA256="RELEASE_PLACEHOLDER"
-MANAGE_SCRIPT_SHA256="RELEASE_PLACEHOLDER"
+# SHA256 manifest для remote bootstrap assets. Local files рядом с installer
+# используются первыми; remote download разрешён только с pinned SHA256 либо
+# при явном AWG_ALLOW_UNVERIFIED_DOWNLOAD=1 для разработки.
+declare -A AWG_ASSET_SHA256=(
+    ["awg_common.sh"]="0e52a4739a91efc498f439b500f995107f85cc8bcaf1d006350bbdd77c01757a"
+    ["manage_amneziawg.sh"]="5bb82224364b316629548c7a7328dd167e70727d5bf60f0e266050c0ff2ddfbc"
+    ["web/server.py"]="f41fbd8b62833696f5e078a40e647fcff53d76e8d422a14d26a327c89aa8e98e"
+    ["web/index.html"]="206a6f090a0a633c47e84616d34a15b20f20dae6db5342b76ef04509aff6fcfc"
+    ["web/app.js"]="11087bc158f2670d0285dcf32a46abc2214f1e8279593d4cfd552c85dee44f6c"
+    ["web/style.css"]="32de7104fd58b8ccc52a170da0e7f5d26de87613de0b1f1c8cdc621ed30adb2e"
+    ["web/favicon.svg"]="ce339a4b3043c9d531c4a59b46e3ec51b9793a693a76bfabef441f114e7125b0"
+    ["web/vendor/tailwindcss.js"]="176e894661aa9cdc9a5cba6c720044cbbf7b8bd80d1c9a142a7c24b1b6c50d15"
+    ["web/vendor/apexcharts.min.js"]="a7400cd48b40b4f39d1c15137ae0cc8cbec31dc2b55a606640f1cd11912416dd"
+)
 
 # Флаги CLI
 UNINSTALL=0; HELP=0; DIAGNOSTIC=0; VERBOSE=0; NO_COLOR=0; AUTO_YES=0; NO_TWEAKS=0
@@ -2936,7 +2942,7 @@ step4_setup_firewall() {
 
 verify_sha256() {
     local file="$1" expected="$2" label="$3"
-    if [[ "$expected" == "RELEASE_PLACEHOLDER" ]]; then
+    if [[ -z "$expected" || "$expected" == "RELEASE_PLACEHOLDER" ]]; then
         log_error "SHA256 для $label не задан; небезопасная загрузка запрещена."
         return 1
     fi
@@ -2953,7 +2959,7 @@ verify_sha256() {
     return 0
 }
 
-# _secure_download <url> <target> <expected_sha256> <label>
+# _secure_download <url> <target> <expected_sha256> <label> <mode>
 # Atomic download:
 #   1. curl → mktemp на том же FS, что и target;
 #   2. verify_sha256 на temp (не на target, чтобы corrupt-файл не оказался
@@ -2962,20 +2968,28 @@ verify_sha256() {
 #   4. mv -f temp → target (атомарный rename).
 # Если любой шаг падает — temp удаляется, target не трогается.
 _secure_download() {
-    local url="$1" target="$2" expected_sha256="$3" label="$4"
-    local tmp target_dir
+    local url="$1" target="$2" expected_sha256="$3" label="$4" mode="${5:-644}"
+    local tmp target_dir verified=1
     target_dir=$(dirname "$target")
+    mkdir -p "$target_dir" || die "Не удалось создать каталог $target_dir"
     tmp=$(mktemp -p "$target_dir" ".${label//\//_}.tmp.XXXXXX") \
         || die "Не удалось создать временный файл для $label"
     if ! curl -fLso "$tmp" --max-time 60 --retry 2 "$url"; then
         rm -f "$tmp" 2>/dev/null
         die "Ошибка скачивания $label"
     fi
-    if ! verify_sha256 "$tmp" "$expected_sha256" "$label"; then
+    if [[ -z "$expected_sha256" || "$expected_sha256" == "RELEASE_PLACEHOLDER" ]]; then
+        if [[ "${AWG_ALLOW_UNVERIFIED_DOWNLOAD:-0}" != "1" ]]; then
+            rm -f "$tmp" 2>/dev/null
+            die "$label отсутствует локально, а SHA256 не задан. Установка остановлена; задайте SHA256 manifest или используйте AWG_ALLOW_UNVERIFIED_DOWNLOAD=1 только для разработки."
+        fi
+        log_warn "$label скачивается без SHA256 только из-за AWG_ALLOW_UNVERIFIED_DOWNLOAD=1."
+        verified=0
+    elif ! verify_sha256 "$tmp" "$expected_sha256" "$label"; then
         rm -f "$tmp" 2>/dev/null
         die "Целостность $label не подтверждена (SHA256 mismatch). Установка прервана."
     fi
-    if ! chmod 700 "$tmp"; then
+    if ! chmod "$mode" "$tmp"; then
         rm -f "$tmp" 2>/dev/null
         die "Ошибка chmod $label"
     fi
@@ -2983,7 +2997,26 @@ _secure_download() {
         rm -f "$tmp" 2>/dev/null
         die "Ошибка перемещения $label на целевой путь"
     fi
-    log "$label скачан и верифицирован."
+    if [[ "$verified" -eq 1 ]]; then
+        log "$label скачан и верифицирован."
+    else
+        log_warn "$label скачан без SHA256 verification."
+    fi
+}
+
+_deploy_asset() {
+    local asset_path="$1" target="$2" mode="${3:-644}" src url expected
+    src="${INSTALLER_DIR}/${asset_path}"
+    url="https://raw.githubusercontent.com/${AWG_REPO}/${AWG_BRANCH}/${asset_path}"
+    expected="${AWG_ASSET_SHA256[$asset_path]-}"
+    mkdir -p "$(dirname "$target")" || die "Не удалось создать каталог для $asset_path"
+    if [[ -f "$src" ]]; then
+        cp -a "$src" "$target" || die "Не удалось скопировать $asset_path"
+        chmod "$mode" "$target" || die "Ошибка chmod $asset_path"
+        log "$asset_path скопирован локально."
+        return 0
+    fi
+    _secure_download "$url" "$target" "$expected" "$asset_path" "$mode"
 }
 
 step5_download_scripts() {
@@ -2991,31 +3024,8 @@ step5_download_scripts() {
     log "### ШАГ 5: Скачивание скриптов управления ###"
     cd "$AWG_DIR" || die "Ошибка перехода в $AWG_DIR"
 
-    _deploy_helper_script() {
-        local asset="$1" src="$2" url="$3" target="$4" expected="$5"
-        if [[ -f "$src" ]]; then
-            cp -a "$src" "$target" || die "Не удалось скопировать $asset"
-            chmod 700 "$target" || die "Ошибка chmod $asset"
-            log "$asset скопирован локально."
-            return 0
-        fi
-        if [[ "$expected" == "RELEASE_PLACEHOLDER" && "${AWG_ALLOW_UNVERIFIED_DOWNLOAD:-0}" != "1" ]]; then
-            die "$asset отсутствует локально, а SHA256 не задан. Установка остановлена; используйте release bundle или явно задайте AWG_ALLOW_UNVERIFIED_DOWNLOAD=1 только для разработки."
-        fi
-        if [[ "$expected" == "RELEASE_PLACEHOLDER" ]]; then
-            log_warn "$asset скачивается без SHA256 только из-за AWG_ALLOW_UNVERIFIED_DOWNLOAD=1."
-            local tmp target_dir
-            target_dir=$(dirname "$target")
-            tmp=$(mktemp -p "$target_dir" ".${asset}.tmp.XXXXXX") || die "Не удалось создать временный файл для $asset"
-            curl -fLso "$tmp" --max-time 60 --retry 2 "$url" || { rm -f "$tmp"; die "Ошибка скачивания $asset"; }
-            chmod 700 "$tmp" && mv -f "$tmp" "$target" || { rm -f "$tmp"; die "Ошибка развёртывания $asset"; }
-            return 0
-        fi
-        _secure_download "$url" "$target" "$expected" "$asset"
-    }
-
-    _deploy_helper_script "awg_common.sh" "${INSTALLER_DIR}/awg_common.sh" "$COMMON_SCRIPT_URL" "$COMMON_SCRIPT_PATH" "$COMMON_SCRIPT_SHA256"
-    _deploy_helper_script "manage_amneziawg.sh" "${INSTALLER_DIR}/manage_amneziawg.sh" "$MANAGE_SCRIPT_URL" "$MANAGE_SCRIPT_PATH" "$MANAGE_SCRIPT_SHA256"
+    _deploy_asset "awg_common.sh" "$COMMON_SCRIPT_PATH" 700
+    _deploy_asset "manage_amneziawg.sh" "$MANAGE_SCRIPT_PATH" 700
 
     log "Шаг 5 завершен."
     update_state 6
@@ -3189,7 +3199,8 @@ deploy_web_panel() {
     log "Развёртывание веб-панели (fork delta)..."
     local web_dir="$AWG_DIR/web"
     mkdir -p "$web_dir" || die "Ошибка создания $web_dir"
-    chmod 700 "$web_dir"
+    mkdir -p "$web_dir/vendor" || die "Ошибка создания $web_dir/vendor"
+    chmod 755 "$web_dir" "$web_dir/vendor"
 
     if [[ ! -f "$web_dir/tokens.json" ]]; then
         local legacy_token="" super_token=""
@@ -3234,28 +3245,11 @@ PY
     chmod 600 "$web_dir/key.pem"
     chmod 644 "$web_dir/cert.pem"
 
-    local asset web_base src tmp_asset
-    web_base="https://raw.githubusercontent.com/${AWG_REPO}/${AWG_BRANCH}/web"
-    for asset in server.py index.html style.css app.js favicon.svg; do
-        src="${INSTALLER_DIR}/web/${asset}"
-        if [[ -f "$src" ]]; then
-            cp -a "$src" "$web_dir/$asset" || die "Не удалось скопировать web asset $asset"
-            continue
-        fi
-        tmp_asset="$web_dir/${asset}.tmp.$$"
-        if curl -fsSL --connect-timeout 10 --max-time 60 -o "$tmp_asset" "${web_base}/${asset}"; then
-            mv -f "$tmp_asset" "$web_dir/$asset"
-        else
-            rm -f "$tmp_asset"
-            if [[ "$asset" == "favicon.svg" ]]; then
-                log_warn "favicon.svg не найден; веб-панель продолжит работу без favicon."
-            else
-                die "Не удалось скачать web asset $asset из ${web_base}"
-            fi
-        fi
+    local asset
+    for asset in server.py index.html style.css app.js favicon.svg vendor/tailwindcss.js vendor/apexcharts.min.js; do
+        _deploy_asset "web/${asset}" "$web_dir/$asset" 644
     done
-    chmod 600 "$web_dir"/* 2>/dev/null || true
-    chmod 700 "$web_dir/server.py"
+    chmod 755 "$web_dir" "$web_dir/vendor"
     chmod 600 "$web_dir/key.pem" "$web_dir/tokens.json" 2>/dev/null || true
     chmod 644 "$web_dir/cert.pem" 2>/dev/null || true
 

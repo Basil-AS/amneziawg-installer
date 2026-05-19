@@ -33,6 +33,8 @@ STATIC_FILES = {
     "/style.css": ("style.css", "text/css; charset=utf-8"),
     "/app.js": ("app.js", "application/javascript; charset=utf-8"),
     "/favicon.svg": ("favicon.svg", "image/svg+xml"),
+    "/vendor/tailwindcss.js": ("vendor/tailwindcss.js", "application/javascript; charset=utf-8"),
+    "/vendor/apexcharts.min.js": ("vendor/apexcharts.min.js", "application/javascript; charset=utf-8"),
 }
 RATE = {}
 RATE_LOCK = threading.Lock()

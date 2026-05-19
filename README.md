@@ -64,11 +64,28 @@
 ```bash
 wget -O install_amneziawg.sh https://raw.githubusercontent.com/Basil-AS/amneziawg-installer/main/install_amneziawg.sh
 chmod +x install_amneziawg.sh
-sudo bash ./install_amneziawg.sh --route-all --server-name="my-vpn"
+sudo bash ./install_amneziawg.sh --yes --route-all --server-name="my-vpn"
 ```
 
 `--route-all` — направить весь трафик клиента через VPN.  
 `--server-name="my-vpn"` — человекочитаемое имя сервера в панели и конфигурациях.
+
+### Расширенный пример с routed IPv6 и публичной web-panel
+
+```bash
+sudo bash ./install_amneziawg.sh \
+  --yes \
+  --route-all \
+  --endpoint=64.112.125.125 \
+  --allow-ipv6 \
+  --enable-native-ipv6 \
+  --ipv6-mode=routed \
+  --ipv6-subnet=2a13:7c82:101f:30::/64 \
+  --server-name="sunny-sweden" \
+  --web-bind=0.0.0.0 \
+  --web-port=8443 \
+  --preset=mobile
+```
 
 ### Для разработчиков / кастомной ветки
 
@@ -421,7 +438,7 @@ GET    /api/server/logs
 * `FULLCONENAT` зависит от наличия `xt_FULLCONENAT`/совместимого target-а. Если его нет, используется `MASQUERADE`.
 * Мессенджеры вроде Telegram/WhatsApp не дают вручную выбрать порт звонка. Скрипт улучшает NAT/IPv6-условия, но не может заставить приложение использовать прямой P2P вместо relay.
 * Self-signed TLS в веб-панели вызовет предупреждение браузера. Это нормально для первого релиза панели; позже можно добавить автоматический Let's Encrypt/Caddy.
-* `RELEASE_PLACEHOLDER` для SHA256 нужно заменить при релизной сборке fork-ветки.
+* Single-file installer сам подтягивает helper scripts и web assets из `Basil-AS/amneziawg-installer/main`, если их нет рядом локально, и проверяет pinned SHA256 manifest перед установкой.
 * Локально проверены `bash -n`, Python compile и smoke-тесты helper-ов. Полный `bats tests/*.bats`, ShellCheck и ручная проверка на чистой Ubuntu 24.04 VPS ещё должны пройти в Linux/CI окружении.
 
 ---
