@@ -56,6 +56,22 @@ CLI_P2P_BASE_PORT=""; CLI_P2P_PORTS_PER_CLIENT=""
 CLI_FULLCONE_NAT=0; CLI_WEB_PORT=""; CLI_WEB_BIND=""; CLI_DISABLE_WEB=0
 CLI_ENABLE_ADGUARD=0; CLI_DISABLE_ADGUARD=0; CLI_ADGUARD_PORT=""; CLI_DNS_MODE=""
 CLI_SERVER_NAME=""
+CLI_PRESET=""; CLI_JC=""; CLI_JMIN=""; CLI_JMAX=""
+
+[[ -n "${AWG_SERVER_NAME+x}" ]] && ENV_AWG_SERVER_NAME_SET=1 || ENV_AWG_SERVER_NAME_SET=0
+[[ -n "${AWG_ENDPOINT+x}" ]] && ENV_AWG_ENDPOINT_SET=1 || ENV_AWG_ENDPOINT_SET=0
+[[ -n "${AWG_PRESET+x}" ]] && ENV_AWG_PRESET_SET=1 || ENV_AWG_PRESET_SET=0
+[[ -n "${AWG_IPV6_MODE+x}" ]] && ENV_AWG_IPV6_MODE_SET=1 || ENV_AWG_IPV6_MODE_SET=0
+[[ -n "${AWG_IPV6_SUBNET+x}" ]] && ENV_AWG_IPV6_SUBNET_SET=1 || ENV_AWG_IPV6_SUBNET_SET=0
+[[ -n "${AWG_WEB_ENABLED+x}" ]] && ENV_AWG_WEB_ENABLED_SET=1 || ENV_AWG_WEB_ENABLED_SET=0
+[[ -n "${AWG_WEB_BIND+x}" ]] && ENV_AWG_WEB_BIND_SET=1 || ENV_AWG_WEB_BIND_SET=0
+[[ -n "${AWG_WEB_PORT+x}" ]] && ENV_AWG_WEB_PORT_SET=1 || ENV_AWG_WEB_PORT_SET=0
+[[ -n "${AWG_ADGUARD_ENABLED+x}" ]] && ENV_AWG_ADGUARD_ENABLED_SET=1 || ENV_AWG_ADGUARD_ENABLED_SET=0
+[[ -n "${AWG_ADGUARD_PORT+x}" ]] && ENV_AWG_ADGUARD_PORT_SET=1 || ENV_AWG_ADGUARD_PORT_SET=0
+[[ -n "${AWG_P2P_ENABLED+x}" ]] && ENV_AWG_P2P_ENABLED_SET=1 || ENV_AWG_P2P_ENABLED_SET=0
+[[ -n "${AWG_P2P_BASE_PORT+x}" ]] && ENV_AWG_P2P_BASE_PORT_SET=1 || ENV_AWG_P2P_BASE_PORT_SET=0
+[[ -n "${AWG_P2P_PORTS_PER_CLIENT+x}" ]] && ENV_AWG_P2P_PORTS_PER_CLIENT_SET=1 || ENV_AWG_P2P_PORTS_PER_CLIENT_SET=0
+[[ -n "${AWG_FULLCONE_NAT+x}" ]] && ENV_AWG_FULLCONE_NAT_SET=1 || ENV_AWG_FULLCONE_NAT_SET=0
 
 # --- Автоочистка временных файлов ---
 _install_temp_files=()
@@ -917,6 +933,215 @@ configure_routing_mode() {
     export ALLOWED_IPS_MODE ALLOWED_IPS
 }
 
+detect_endpoint_for_installer() {
+    local ip="" svc
+    for svc in https://ifconfig.me https://api.ipify.org https://icanhazip.com https://ipinfo.io/ip; do
+        ip=$(curl -4 -sf --max-time 5 "$svc" 2>/dev/null | tr -d '[:space:]')
+        if validate_endpoint "$ip" 2>/dev/null; then
+            echo "$ip"
+            return 0
+        fi
+    done
+    return 1
+}
+
+prompt_server_name() {
+    [[ "$AUTO_YES" -eq 0 && -z "$CLI_SERVER_NAME" && "$ENV_AWG_SERVER_NAME_SET" -eq 0 ]] || return 0
+    local input_name
+    while true; do
+        read -rp "Введите имя сервера [${AWG_SERVER_NAME:-MyVPN}]: " input_name < /dev/tty
+        input_name="${input_name:-${AWG_SERVER_NAME:-MyVPN}}"
+        if validate_server_name "$input_name"; then
+            AWG_SERVER_NAME="$input_name"
+            break
+        fi
+        log_warn "Некорректное имя сервера: пустое, слишком длинное или содержит перевод строки."
+    done
+}
+
+prompt_endpoint() {
+    [[ "$AUTO_YES" -eq 0 && -z "$CLI_ENDPOINT" && "$ENV_AWG_ENDPOINT_SET" -eq 0 ]] || return 0
+    local input_endpoint
+    read -rp "Введите внешний IP/домен сервера или Enter для автоопределения: " input_endpoint < /dev/tty
+    if [[ -n "$input_endpoint" ]]; then
+        validate_endpoint "$input_endpoint" || die "Некорректный endpoint: '$input_endpoint'. Допустимые форматы: FQDN, IPv4 или [IPv6]."
+        AWG_ENDPOINT="$input_endpoint"
+        return 0
+    fi
+    if AWG_ENDPOINT=$(detect_endpoint_for_installer); then
+        log "Endpoint автоопределён: $AWG_ENDPOINT"
+    else
+        AWG_ENDPOINT=""
+        log_warn "Не удалось автоопределить внешний IP/домен. Endpoint останется пустым; проверьте клиентские конфиги после установки."
+    fi
+}
+
+prompt_awg_preset() {
+    [[ "$AUTO_YES" -eq 0 && -z "$CLI_PRESET" && "$ENV_AWG_PRESET_SET" -eq 0 ]] || return 0
+    local preset_choice
+    echo ""
+    echo "Выберите preset параметров AWG:"
+    echo "  1) default — универсальный"
+    echo "  2) mobile — для мобильных сетей, Tele2/Yota/Megafon/LTE/5G"
+    read -rp "Ваш выбор [1]: " preset_choice < /dev/tty
+    case "${preset_choice:-1}" in
+        1) AWG_PRESET="default" ;;
+        2) AWG_PRESET="mobile" ;;
+        *) log_warn "Неизвестный preset '$preset_choice', выбран default."; AWG_PRESET="default" ;;
+    esac
+}
+
+prompt_ipv6_mode() {
+    [[ "$AUTO_YES" -eq 0 && -z "$CLI_IPV6_MODE" && -z "$CLI_IPV6_SUBNET" && "$ENV_AWG_IPV6_MODE_SET" -eq 0 && "$ENV_AWG_IPV6_SUBNET_SET" -eq 0 ]] || return 0
+    [[ "${DISABLE_IPV6:-1}" -eq 0 ]] || return 0
+    local ipv6_choice input_subnet
+    echo ""
+    echo "Выберите IPv6 mode:"
+    echo "  1) routed — если провайдер выдал отдельный routed /64 или /48"
+    echo "  2) ndp — использовать публичный /64 интерфейса через NDP proxy"
+    echo "  3) nat66 — fallback через NAT66"
+    read -rp "Ваш выбор [auto]: " ipv6_choice < /dev/tty
+    case "${ipv6_choice:-auto}" in
+        1|routed)
+            AWG_IPV6_MODE="routed"
+            while true; do
+                read -rp "Введите IPv6 subnet для клиентов, например 2a13:...::/64: " input_subnet < /dev/tty
+                validate_ipv6_subnet "$input_subnet" || { log_warn "Некорректный IPv6 subnet. Нужен IPv6 /48../64."; continue; }
+                AWG_IPV6_SUBNET=$(normalize_ipv6_subnet_installer "$input_subnet")
+                break
+            done
+            ;;
+        2|ndp) AWG_IPV6_MODE="ndp" ;;
+        3|nat66) AWG_IPV6_MODE="nat66" ;;
+        ""|auto) AWG_IPV6_MODE="${AWG_IPV6_MODE:-legacy}" ;;
+        *) log_warn "Неизвестный IPv6 mode '$ipv6_choice', будет использован auto."; AWG_IPV6_MODE="${AWG_IPV6_MODE:-legacy}" ;;
+    esac
+}
+
+warn_public_web_bind() {
+    [[ "${AWG_WEB_ENABLED:-1}" -eq 1 ]] || return 0
+    [[ "${AWG_WEB_BIND:-}" == "0.0.0.0" || "${AWG_WEB_BIND:-}" == "::" ]] || return 0
+    log_warn "================================================================"
+    log_warn "ВНИМАНИЕ: Web Panel будет доступна из интернета (${AWG_WEB_BIND}:${AWG_WEB_PORT})."
+    log_warn "Оставляйте публичный доступ только если понимаете риск и используете токены/HTTPS."
+    log_warn "================================================================"
+}
+
+prompt_web_panel() {
+    [[ "$AUTO_YES" -eq 0 ]] || { warn_public_web_bind; return 0; }
+    [[ "$CLI_DISABLE_WEB" -eq 0 ]] || return 0
+    local web_enable web_choice input_port public_confirm
+    if [[ "$ENV_AWG_WEB_ENABLED_SET" -eq 0 ]]; then
+        read -rp "Включить Web Panel? [Y/n]: " web_enable < /dev/tty
+        if [[ "$web_enable" =~ ^[Nn]$ ]]; then
+            AWG_WEB_ENABLED=0
+            return 0
+        fi
+        AWG_WEB_ENABLED=1
+    fi
+    [[ "${AWG_WEB_ENABLED:-1}" -eq 1 ]] || return 0
+    if [[ -z "$CLI_WEB_BIND" && "$ENV_AWG_WEB_BIND_SET" -eq 0 ]]; then
+        echo ""
+        echo "Доступ к Web Panel:"
+        echo "  1) VPN-only, 10.9.9.1 — безопасно по умолчанию"
+        echo "  2) localhost, 127.0.0.1 — только SSH tunnel"
+        echo "  3) public, 0.0.0.0 — доступ из интернета"
+        read -rp "Ваш выбор [1]: " web_choice < /dev/tty
+        case "${web_choice:-1}" in
+            1) AWG_WEB_BIND="10.9.9.1" ;;
+            2) AWG_WEB_BIND="127.0.0.1" ;;
+            3) AWG_WEB_BIND="0.0.0.0" ;;
+            *) log_warn "Неизвестный режим Web Panel '$web_choice', выбран VPN-only."; AWG_WEB_BIND="10.9.9.1" ;;
+        esac
+    fi
+    warn_public_web_bind
+    if [[ "$AWG_WEB_BIND" == "0.0.0.0" || "$AWG_WEB_BIND" == "::" ]]; then
+        read -rp "Вы открываете Web Panel в интернет. Продолжить? type YES: " public_confirm < /dev/tty
+        [[ "$public_confirm" == "YES" ]] || die "Публичная Web Panel не подтверждена."
+    fi
+    if [[ -z "$CLI_WEB_PORT" && "$ENV_AWG_WEB_PORT_SET" -eq 0 ]]; then
+        read -rp "Введите HTTPS порт Web Panel [${AWG_WEB_PORT:-8443}]: " input_port < /dev/tty
+        [[ -n "$input_port" ]] && AWG_WEB_PORT="$input_port"
+    fi
+}
+
+prompt_adguard() {
+    [[ "$AUTO_YES" -eq 0 && "$CLI_ENABLE_ADGUARD" -eq 0 && "$CLI_DISABLE_ADGUARD" -eq 0 && "$ENV_AWG_ADGUARD_ENABLED_SET" -eq 0 ]] || return 0
+    local ag_enable input_port
+    read -rp "Установить AdGuard Home для DNS? [Y/n]: " ag_enable < /dev/tty
+    if [[ "$ag_enable" =~ ^[Nn]$ ]]; then
+        AWG_ADGUARD_ENABLED=0
+        AWG_DNS_MODE="system"
+        return 0
+    fi
+    AWG_ADGUARD_ENABLED=1
+    AWG_DNS_MODE="adguard"
+    if [[ -z "$CLI_ADGUARD_PORT" && "$ENV_AWG_ADGUARD_PORT_SET" -eq 0 ]]; then
+        read -rp "Введите порт AdGuard UI [${AWG_ADGUARD_PORT:-3000}]: " input_port < /dev/tty
+        [[ -n "$input_port" ]] && AWG_ADGUARD_PORT="$input_port"
+    fi
+}
+
+prompt_p2p() {
+    [[ "$AUTO_YES" -eq 0 && -z "$CLI_P2P_BASE_PORT" && -z "$CLI_P2P_PORTS_PER_CLIENT" && "$CLI_FULLCONE_NAT" -eq 0 && "$ENV_AWG_P2P_ENABLED_SET" -eq 0 ]] || return 0
+    local p2p_enable input_base input_count fullcone
+    read -rp "Настроить P2P ports для клиентов? [Y/n]: " p2p_enable < /dev/tty
+    if [[ "$p2p_enable" =~ ^[Nn]$ ]]; then
+        AWG_P2P_ENABLED=0
+        AWG_P2P_PORTS_PER_CLIENT=0
+        AWG_FULLCONE_NAT=0
+        return 0
+    fi
+    AWG_P2P_ENABLED=1
+    if [[ "$ENV_AWG_P2P_BASE_PORT_SET" -eq 0 ]]; then
+        read -rp "Введите базовый P2P порт [${AWG_P2P_BASE_PORT:-20000}]: " input_base < /dev/tty
+        [[ -n "$input_base" ]] && AWG_P2P_BASE_PORT="$input_base"
+    fi
+    if [[ "$ENV_AWG_P2P_PORTS_PER_CLIENT_SET" -eq 0 ]]; then
+        read -rp "Введите количество P2P ports на клиента [${AWG_P2P_PORTS_PER_CLIENT:-3}]: " input_count < /dev/tty
+        [[ -n "$input_count" ]] && AWG_P2P_PORTS_PER_CLIENT="$input_count"
+    fi
+    if [[ "$ENV_AWG_FULLCONE_NAT_SET" -eq 0 ]]; then
+        read -rp "Включить fullcone NAT? [y/N]: " fullcone < /dev/tty
+        if [[ "$fullcone" =~ ^[Yy]$ ]]; then AWG_FULLCONE_NAT=1; else AWG_FULLCONE_NAT=0; fi
+    fi
+}
+
+web_exposure_label() {
+    if [[ "${AWG_WEB_ENABLED:-1}" -ne 1 ]]; then
+        echo "disabled"
+    elif [[ "${AWG_WEB_BIND:-}" == "0.0.0.0" || "${AWG_WEB_BIND:-}" == "::" ]]; then
+        echo "public"
+    elif [[ "${AWG_WEB_BIND:-}" == "127.0.0.1" || "${AWG_WEB_BIND:-}" == "::1" ]]; then
+        echo "local"
+    else
+        echo "vpn-only"
+    fi
+}
+
+print_install_choice_summary() {
+    echo ""
+    echo "Итоговые параметры:"
+    echo "Server name: ${AWG_SERVER_NAME:-MyVPN}"
+    echo "Endpoint: ${AWG_ENDPOINT:-not set}"
+    echo "VPN port: ${AWG_PORT}"
+    echo "Route mode: $(route_mode_label)"
+    echo "Preset: ${AWG_PRESET:-default}"
+    echo "IPv6: $(if [[ "${AWG_IPV6_ENABLED:-0}" -eq 1 ]]; then echo "enabled, ${AWG_IPV6_MODE:-legacy}, ${AWG_IPV6_SUBNET:-auto}"; else echo "disabled"; fi)"
+    echo "Web: $(if [[ "${AWG_WEB_ENABLED:-1}" -eq 1 ]]; then echo "enabled, ${AWG_WEB_BIND:-none}, ${AWG_WEB_PORT:-8443}, $(web_exposure_label)"; else echo "disabled"; fi)"
+    echo "AdGuard: $(if [[ "${AWG_ADGUARD_ENABLED:-0}" -eq 1 ]]; then echo "enabled, port ${AWG_ADGUARD_PORT:-3000}"; else echo "disabled"; fi)"
+    echo "P2P: base ${AWG_P2P_BASE_PORT:-20000}, ports/client ${AWG_P2P_PORTS_PER_CLIENT:-0}, fullcone ${AWG_FULLCONE_NAT:-0}"
+}
+
+confirm_install_choices() {
+    print_install_choice_summary
+    [[ "$AUTO_YES" -eq 0 ]] || return 0
+    local confirm_install
+    read -rp "Продолжить установку? [Y/n]: " confirm_install < /dev/tty
+    [[ "$confirm_install" =~ ^[Nn]$ ]] && die "Установка отменена пользователем."
+    return 0
+}
+
 # ==============================================================================
 # Генерация AWG 2.0 параметров (inline — нужны в шаге 0, до скачивания awg_common.sh)
 # ==============================================================================
@@ -1006,7 +1231,7 @@ generate_cps_i1() {
 # Генерация всех AWG 2.0 параметров
 # Поддерживает --preset=default|mobile и точечные --jc/--jmin/--jmax overrides
 generate_awg_params() {
-    local preset="${CLI_PRESET:-default}"
+    local preset="${CLI_PRESET:-${AWG_PRESET:-default}}"
     log "Генерация параметров AWG 2.0 (preset: $preset)..."
 
     case "$preset" in
@@ -1919,24 +2144,25 @@ initialize_setup() {
     DISABLE_IPV6="default"
     ALLOWED_IPS_MODE="default"
     ALLOWED_IPS=""
-    AWG_ENDPOINT=""
-    AWG_SERVER_NAME="MyVPN"
-    AWG_IPV6_ENABLED=0
-    AWG_IPV6_MODE="legacy"
-    AWG_IPV6_SUBNET=""
-    AWG_IPV6_NDP_PROXY=0
-    AWG_P2P_ENABLED=1
-    AWG_P2P_BASE_PORT=20000
-    AWG_P2P_PORTS_PER_CLIENT=3
-    AWG_FULLCONE_NAT=0
-    AWG_WEB_ENABLED=1
-    AWG_WEB_PORT=8443
-    AWG_WEB_BIND="10.9.9.1"
+    AWG_ENDPOINT="${AWG_ENDPOINT:-}"
+    AWG_SERVER_NAME="${AWG_SERVER_NAME:-MyVPN}"
+    AWG_IPV6_ENABLED=${AWG_IPV6_ENABLED:-0}
+    AWG_IPV6_MODE="${AWG_IPV6_MODE:-legacy}"
+    AWG_IPV6_SUBNET="${AWG_IPV6_SUBNET:-}"
+    AWG_IPV6_NDP_PROXY=${AWG_IPV6_NDP_PROXY:-0}
+    AWG_P2P_ENABLED=${AWG_P2P_ENABLED:-1}
+    AWG_P2P_BASE_PORT=${AWG_P2P_BASE_PORT:-20000}
+    AWG_P2P_PORTS_PER_CLIENT=${AWG_P2P_PORTS_PER_CLIENT:-3}
+    AWG_FULLCONE_NAT=${AWG_FULLCONE_NAT:-0}
+    AWG_WEB_ENABLED=${AWG_WEB_ENABLED:-1}
+    AWG_WEB_PORT=${AWG_WEB_PORT:-8443}
+    AWG_WEB_BIND="${AWG_WEB_BIND:-10.9.9.1}"
     AWG_DNS_MODE="adguard"
     AWG_CUSTOM_DNS="1.1.1.1"
-    AWG_ADGUARD_ENABLED=1
-    AWG_ADGUARD_PORT=3000
-    AWG_ADGUARD_DIR="/opt/AdGuardHome"
+    AWG_ADGUARD_ENABLED=${AWG_ADGUARD_ENABLED:-1}
+    AWG_ADGUARD_PORT=${AWG_ADGUARD_PORT:-3000}
+    AWG_ADGUARD_DIR="${AWG_ADGUARD_DIR:-/opt/AdGuardHome}"
+    AWG_PRESET="${AWG_PRESET:-default}"
 
     # Загрузка конфига
     if [[ -f "$CONFIG_FILE" ]]; then
@@ -1967,6 +2193,7 @@ initialize_setup() {
         AWG_ADGUARD_ENABLED=${AWG_ADGUARD_ENABLED:-1}
         AWG_ADGUARD_PORT=${AWG_ADGUARD_PORT:-3000}
         AWG_ADGUARD_DIR=${AWG_ADGUARD_DIR:-/opt/AdGuardHome}
+        AWG_PRESET=${AWG_PRESET:-default}
         log "Настройки из файла загружены."
     else
         log "Файл конфигурации $CONFIG_FILE не найден."
@@ -1985,6 +2212,7 @@ initialize_setup() {
     [[ "$CLI_DISABLE_WEB" -eq 1 ]] && AWG_WEB_ENABLED=0
     [[ -n "$CLI_ADGUARD_PORT" ]] && AWG_ADGUARD_PORT="$CLI_ADGUARD_PORT"
     [[ -n "$CLI_SERVER_NAME" ]] && AWG_SERVER_NAME="$CLI_SERVER_NAME"
+    [[ -n "$CLI_PRESET" ]] && AWG_PRESET="$CLI_PRESET"
     if [[ -n "$CLI_DNS_MODE" ]]; then AWG_DNS_MODE="$CLI_DNS_MODE"; fi
     if [[ "$CLI_ENABLE_ADGUARD" -eq 1 ]]; then
         AWG_ADGUARD_ENABLED=1
@@ -2040,6 +2268,9 @@ initialize_setup() {
     # Запрос у пользователя только на первом запуске
     if [[ "$config_exists" -eq 0 ]]; then
         log "Запрос настроек у пользователя (первый запуск)."
+        prompt_server_name
+        prompt_endpoint
+        prompt_awg_preset
         if [[ "$AUTO_YES" -eq 0 ]]; then
             read -rp "Введите UDP порт AmneziaWG (1024-65535) [${AWG_PORT}]: " input_port < /dev/tty
             if [[ -n "$input_port" ]]; then AWG_PORT=$input_port; fi
@@ -2051,9 +2282,14 @@ initialize_setup() {
         fi
         validate_subnet "$AWG_TUNNEL_SUBNET"
         if [[ "$DISABLE_IPV6" == "default" ]]; then configure_ipv6; fi
+        prompt_ipv6_mode
         if [[ "$ALLOWED_IPS_MODE" == "default" ]]; then configure_routing_mode; fi
+        prompt_web_panel
+        prompt_adguard
+        prompt_p2p
     else
         log "Используются настройки из $CONFIG_FILE."
+        warn_public_web_bind
         if [[ "$ALLOWED_IPS_MODE" == "3" ]] && [[ -n "$ALLOWED_IPS" ]]; then
             if ! validate_cidr_list "$ALLOWED_IPS"; then
                 die "Некорректный ALLOWED_IPS в конфиге: '$ALLOWED_IPS'. Удалите $CONFIG_FILE и запустите установку заново."
@@ -2066,6 +2302,21 @@ initialize_setup() {
     if [[ "$ALLOWED_IPS_MODE" == "default" ]]; then ALLOWED_IPS_MODE=2; fi
     if [[ -z "$ALLOWED_IPS" ]]; then configure_routing_mode; fi
     configure_ipv6_client_mode
+
+    validate_port "$AWG_PORT"
+    validate_subnet "$AWG_TUNNEL_SUBNET"
+    validate_port "$AWG_P2P_BASE_PORT"
+    if [[ "$AWG_P2P_BASE_PORT" -gt 64511 ]]; then
+        die "Некорректный AWG_P2P_BASE_PORT: '$AWG_P2P_BASE_PORT' (нужно <= 64511, чтобы диапазон base+1..base+1024 помещался в TCP/UDP порты)."
+    fi
+    if ! [[ "$AWG_P2P_PORTS_PER_CLIENT" =~ ^[0-9]+$ ]] || [[ "$AWG_P2P_PORTS_PER_CLIENT" -lt 0 ]] || [[ "$AWG_P2P_PORTS_PER_CLIENT" -gt 12 ]]; then
+        die "Некорректный AWG_P2P_PORTS_PER_CLIENT: '$AWG_P2P_PORTS_PER_CLIENT' (0-12)."
+    fi
+    validate_port "$AWG_WEB_PORT"
+    validate_bind_addr "$AWG_WEB_BIND" || die "Некорректный AWG_WEB_BIND: '$AWG_WEB_BIND'. Нужен корректный IPv4/IPv6 адрес без пробелов и управляющих символов."
+    validate_port "$AWG_ADGUARD_PORT"
+    validate_server_name "$AWG_SERVER_NAME" || die "Некорректное имя сервера: пустое, слишком длинное или содержит перевод строки."
+    confirm_install_choices
 
     # Проверка порта (пропускаем если AWG-сервис уже слушает этот порт)
     if ! systemctl is-active --quiet awg-quick@awg0 2>/dev/null; then
@@ -3560,7 +3811,7 @@ EOF
     cat >> "$tmp_path" <<EOF
 
 [AWG 2.0 Parameters]
-Preset: ${AWG_PRESET:-balanced}
+Preset: ${AWG_PRESET:-default}
 Jc: ${AWG_Jc}
 Jmin: ${AWG_Jmin}
 Jmax: ${AWG_Jmax}

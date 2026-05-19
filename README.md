@@ -70,6 +70,31 @@ sudo bash ./install_amneziawg.sh --yes --route-all --server-name="my-vpn"
 `--route-all` — направить весь трафик клиента через VPN.  
 `--server-name="my-vpn"` — человекочитаемое имя сервера в панели и конфигурациях.
 
+### Интерактивная установка без флагов
+
+```bash
+sudo bash ./install_amneziawg.sh
+```
+
+Wizard спросит важные параметры до начала установки: имя сервера, endpoint/public IP или автоопределение, route mode, preset `default|mobile`, IPv6 mode `routed|ndp|nat66`, IPv6 subnet для `routed`, режим доступа к web-panel (`VPN-only`, `localhost`, `public`), HTTPS-порт web-panel, AdGuard Home и P2P-порты. Перед установкой будет показан итоговый summary; выбранные значения сохраняются в `/root/awg/awgsetup_cfg.init`, чтобы resume после reboot не вернулся к default preset/bind.
+
+### Non-interactive install через flags
+
+Для автоматизации передавайте параметры флагами. CLI имеет приоритет над сохранённым config и wizard-вопросами:
+
+```bash
+sudo bash ./install_amneziawg.sh \
+  --yes \
+  --route-all \
+  --endpoint=203.0.113.10 \
+  --server-name="my-vpn" \
+  --preset=mobile \
+  --web-bind=10.9.9.1 \
+  --web-port=8443 \
+  --enable-adguard \
+  --adguard-port=3000
+```
+
 ### Расширенный пример с routed IPv6 и публичной web-panel
 
 ```bash

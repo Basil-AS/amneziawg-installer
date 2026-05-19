@@ -71,6 +71,7 @@
     grep -qF 'Admin password: adguard-pass' "$summary"
     grep -qF 'Endpoint: 64.112.125.125' "$summary"
     grep -qF 'Route mode: route-all' "$summary"
+    grep -qF 'Preset: mobile' "$summary"
     grep -qF 'IPv6 mode: routed' "$summary"
     grep -qF 'IPv6 client subnet: 2a13:7c82:101f:30::/64' "$summary"
     grep -qF 'Config directory:' "$summary"
@@ -111,7 +112,7 @@
     grep -qF 'AWG_WEB_BIND="10.9.9.1"' "$BATS_TEST_DIRNAME/../install_amneziawg.sh"
     grep -qF 'AWG_WEB_BIND="10.9.9.1"' "$BATS_TEST_DIRNAME/../install_amneziawg_en.sh"
     grep -qF '10.9.9.1", int(os.environ.get("AWG_WEB_PORT", "8443"))' "$BATS_TEST_DIRNAME/../web/server.py"
-    if grep -qF 'AWG_WEB_BIND="0.0.0.0"' "$BATS_TEST_DIRNAME/../install_amneziawg.sh"; then
+    if sed -n '/# Инициализация переменных/,/# Загрузка конфига/p' "$BATS_TEST_DIRNAME/../install_amneziawg.sh" | grep -qF 'AWG_WEB_BIND="0.0.0.0"'; then
         fail "web panel must not default to public bind"
     fi
     grep -qF 'After=network-online.target' "$BATS_TEST_DIRNAME/../install_amneziawg.sh"
@@ -119,6 +120,30 @@
         fail "web panel service must not hard-require awg-quick"
     fi
     grep -qF 'RestartSec=3' "$BATS_TEST_DIRNAME/../install_amneziawg.sh"
+}
+
+@test "installer summary handles VPN-only web bind without public URL" {
+    local installer="$BATS_TEST_DIRNAME/../install_amneziawg.sh"
+    local tmp summary
+    tmp=$(mktemp -d)
+    run bash -c "
+        set -e
+        source <(sed -n '/^route_mode_label()/,/^}/p; /^server_ipv6_addr_for_summary()/,/^}/p; /^write_install_summary()/,/^}/p' '$installer')
+        AWG_DIR='$tmp/awg'; mkdir -p \"\$AWG_DIR\"
+        AWG_ENDPOINT='198.51.100.10'; AWG_PORT='51820'; AWG_TUNNEL_SUBNET='10.9.9.1/24'
+        ALLOWED_IPS_MODE='2'; ALLOWED_IPS='0.0.0.0/0'; AWG_SERVER_NAME='vpn-only'
+        AWG_IPV6_ENABLED='0'; AWG_IPV6_MODE='legacy'; AWG_WEB_ENABLED='1'; AWG_WEB_BIND='10.9.9.1'; AWG_WEB_PORT='8443'
+        AWG_ADGUARD_ENABLED='0'; AWG_ADGUARD_PORT='3000'; AWG_Jc='3'; AWG_Jmin='30'; AWG_Jmax='90'; AWG_PRESET='default'
+        AWG_P2P_BASE_PORT='20000'; AWG_P2P_PORTS_PER_CLIENT='3'; AWG_FULLCONE_NAT='0'
+        SERVER_CONF_FILE='$tmp/missing.conf'; MANAGE_SCRIPT_PATH='/root/awg/manage_amneziawg.sh'; COMMON_SCRIPT_PATH='/root/awg/awg_common.sh'; LOG_FILE='/root/awg/install_amneziawg.log'; STATE_FILE='/root/awg/.install_state'
+        write_install_summary
+    "
+    [ "$status" -eq 0 ]
+    summary="$tmp/awg/INSTALL_SUMMARY.txt"
+    grep -qF 'Public URL: not exposed' "$summary"
+    grep -qF 'VPN URL: https://10.9.9.1:8443' "$summary"
+    grep -qF 'Exposure warning: none' "$summary"
+    rm -rf "$tmp"
 }
 
 @test "English installer deploys repository web assets instead of legacy inline panel" {

@@ -51,10 +51,27 @@ FORCE_REINSTALL=0
 _APT_UPDATED=0
 CLI_PORT=""; CLI_SUBNET=""; CLI_DISABLE_IPV6="default"
 CLI_ROUTING_MODE="default"; CLI_CUSTOM_ROUTES=""; CLI_ENDPOINT=""; CLI_NO_TWEAKS=0
-CLI_ENABLE_NATIVE_IPV6=0; CLI_IPV6_SUBNET=""; CLI_UPGRADE_IPV6=0
+CLI_ENABLE_NATIVE_IPV6=0; CLI_IPV6_MODE=""; CLI_IPV6_SUBNET=""; CLI_UPGRADE_IPV6=0
 CLI_P2P_BASE_PORT=""; CLI_P2P_PORTS_PER_CLIENT=""
 CLI_FULLCONE_NAT=0; CLI_WEB_PORT=""; CLI_WEB_BIND=""; CLI_DISABLE_WEB=0
-CLI_ENABLE_ADGUARD=0; CLI_ADGUARD_PORT=""; CLI_DNS_MODE=""
+CLI_ENABLE_ADGUARD=0; CLI_DISABLE_ADGUARD=0; CLI_ADGUARD_PORT=""; CLI_DNS_MODE=""
+CLI_SERVER_NAME=""
+CLI_PRESET=""; CLI_JC=""; CLI_JMIN=""; CLI_JMAX=""
+
+[[ -n "${AWG_SERVER_NAME+x}" ]] && ENV_AWG_SERVER_NAME_SET=1 || ENV_AWG_SERVER_NAME_SET=0
+[[ -n "${AWG_ENDPOINT+x}" ]] && ENV_AWG_ENDPOINT_SET=1 || ENV_AWG_ENDPOINT_SET=0
+[[ -n "${AWG_PRESET+x}" ]] && ENV_AWG_PRESET_SET=1 || ENV_AWG_PRESET_SET=0
+[[ -n "${AWG_IPV6_MODE+x}" ]] && ENV_AWG_IPV6_MODE_SET=1 || ENV_AWG_IPV6_MODE_SET=0
+[[ -n "${AWG_IPV6_SUBNET+x}" ]] && ENV_AWG_IPV6_SUBNET_SET=1 || ENV_AWG_IPV6_SUBNET_SET=0
+[[ -n "${AWG_WEB_ENABLED+x}" ]] && ENV_AWG_WEB_ENABLED_SET=1 || ENV_AWG_WEB_ENABLED_SET=0
+[[ -n "${AWG_WEB_BIND+x}" ]] && ENV_AWG_WEB_BIND_SET=1 || ENV_AWG_WEB_BIND_SET=0
+[[ -n "${AWG_WEB_PORT+x}" ]] && ENV_AWG_WEB_PORT_SET=1 || ENV_AWG_WEB_PORT_SET=0
+[[ -n "${AWG_ADGUARD_ENABLED+x}" ]] && ENV_AWG_ADGUARD_ENABLED_SET=1 || ENV_AWG_ADGUARD_ENABLED_SET=0
+[[ -n "${AWG_ADGUARD_PORT+x}" ]] && ENV_AWG_ADGUARD_PORT_SET=1 || ENV_AWG_ADGUARD_PORT_SET=0
+[[ -n "${AWG_P2P_ENABLED+x}" ]] && ENV_AWG_P2P_ENABLED_SET=1 || ENV_AWG_P2P_ENABLED_SET=0
+[[ -n "${AWG_P2P_BASE_PORT+x}" ]] && ENV_AWG_P2P_BASE_PORT_SET=1 || ENV_AWG_P2P_BASE_PORT_SET=0
+[[ -n "${AWG_P2P_PORTS_PER_CLIENT+x}" ]] && ENV_AWG_P2P_PORTS_PER_CLIENT_SET=1 || ENV_AWG_P2P_PORTS_PER_CLIENT_SET=0
+[[ -n "${AWG_FULLCONE_NAT+x}" ]] && ENV_AWG_FULLCONE_NAT_SET=1 || ENV_AWG_FULLCONE_NAT_SET=0
 
 # --- Auto-cleanup of temporary files ---
 _install_temp_files=()
@@ -79,6 +96,7 @@ while [[ $# -gt 0 ]]; do
         --allow-ipv6)    CLI_DISABLE_IPV6=0 ;;
         --disallow-ipv6) CLI_DISABLE_IPV6=1 ;;
         --enable-native-ipv6) CLI_ENABLE_NATIVE_IPV6=1; CLI_DISABLE_IPV6=0 ;;
+        --ipv6-mode=*)  CLI_IPV6_MODE="${1#*=}"; CLI_DISABLE_IPV6=0 ;;
         --ipv6-subnet=*) CLI_IPV6_SUBNET="${1#*=}" ;;
         --upgrade-ipv6)  CLI_UPGRADE_IPV6=1; CLI_DISABLE_IPV6=0 ;;
         --p2p-base-port=*) CLI_P2P_BASE_PORT="${1#*=}" ;;
@@ -88,8 +106,10 @@ while [[ $# -gt 0 ]]; do
         --web-bind=*)    CLI_WEB_BIND="${1#*=}" ;;
         --disable-web)   CLI_DISABLE_WEB=1 ;;
         --enable-adguard) CLI_ENABLE_ADGUARD=1 ;;
+        --disable-adguard) CLI_DISABLE_ADGUARD=1 ;;
         --adguard-port=*) CLI_ADGUARD_PORT="${1#*=}" ;;
         --dns-mode=*)    CLI_DNS_MODE="${1#*=}" ;;
+        --server-name=*) CLI_SERVER_NAME="${1#*=}" ;;
         --route-all)     CLI_ROUTING_MODE=1 ;;
         --route-amnezia) CLI_ROUTING_MODE=2 ;;
         --route-custom=*) CLI_ROUTING_MODE=3; CLI_CUSTOM_ROUTES="${1#*=}" ;;
@@ -288,7 +308,7 @@ Options:
   --disallow-ipv6       Force-disable IPv6 non-interactively
   --enable-native-ipv6  Compatibility alias: enable client IPv6
   --ipv6-mode=MODE      Client IPv6 mode: routed, ndp, or nat66
-  --ipv6-subnet=CIDR    Set client IPv6 /64 (for example 2001:db8:1::/64)
+  --ipv6-subnet=CIDR    Set client IPv6 /48../64 (for example 2001:db8:1::/64)
   --upgrade-ipv6        Migrate existing clients to IPv6/P2P metadata
   --p2p-base-port=PORT  Base P2P port (default 20000; range base+1..base+1024)
   --p2p-ports-per-client=N
@@ -299,8 +319,10 @@ Options:
                         0.0.0.0 exposes the panel publicly; use only intentionally
   --disable-web         Do not install/start the web panel
   --enable-adguard      Install AdGuard Home and give clients DNS 10.9.9.1
+  --disable-adguard     Do not install AdGuard Home and use system DNS
   --adguard-port=PORT   AdGuard Home HTTP port on localhost/VPN (default 3000)
   --dns-mode=MODE       Client DNS mode: adguard, system, or custom
+  --server-name=NAME    Server name in .conf and vpn:// (default MyVPN)
   --route-all           Use 'All traffic' mode non-interactively
   --route-amnezia       Use 'Amnezia' mode non-interactively
   --route-custom=NETS   Use 'Custom' mode non-interactively
@@ -547,6 +569,12 @@ configure_ipv6() {
     log "IPv6 disable: $(if [ "$DISABLE_IPV6" -eq 1 ]; then echo 'Yes'; else echo 'No'; fi)"
 }
 
+shell_quote() {
+    local s="$1"
+    s="${s//\'/\'\\\'\'}"
+    printf "'%s'" "$s"
+}
+
 # Safe configuration loader (whitelist parser, no source/eval)
 safe_load_config() {
     local config_file="${1:-$CONFIG_FILE}"
@@ -580,7 +608,8 @@ safe_load_config() {
                 AWG_IPV6_ENABLED|AWG_IPV6_MODE|AWG_IPV6_SUBNET|AWG_IPV6_NDP_PROXY|\
                 AWG_P2P_ENABLED|AWG_P2P_BASE_PORT|AWG_P2P_PORTS_PER_CLIENT|AWG_FULLCONE_NAT|\
                 AWG_WEB_ENABLED|AWG_WEB_PORT|AWG_WEB_BIND|\
-                AWG_DNS_MODE|AWG_CUSTOM_DNS|AWG_ADGUARD_ENABLED|AWG_ADGUARD_PORT|AWG_ADGUARD_DIR)
+                AWG_DNS_MODE|AWG_CUSTOM_DNS|AWG_ADGUARD_ENABLED|AWG_ADGUARD_PORT|AWG_ADGUARD_DIR|\
+                AWG_SERVER_NAME)
                     export "$key=$value"
                     ;;
             esac
@@ -719,19 +748,19 @@ validate_cidr_list() {
 
 validate_ipv6_subnet() {
     local subnet="$1"
-    [[ -n "$subnet" && "$subnet" == *:* && "$subnet" == */64 ]] || return 1
+    [[ -n "$subnet" && "$subnet" == *:* && "$subnet" == */* ]] || return 1
     if command -v python3 >/dev/null 2>&1; then
         python3 - "$subnet" <<'PY'
 import ipaddress, sys
 try:
     net = ipaddress.ip_network(sys.argv[1], strict=False)
-    if net.version != 6 or net.prefixlen != 64:
+    if net.version != 6 or net.prefixlen < 48 or net.prefixlen > 64:
         raise ValueError
 except Exception:
     sys.exit(1)
 PY
     else
-        [[ "$subnet" =~ ^[0-9A-Fa-f:]+/64$ ]]
+        [[ "$subnet" =~ ^[0-9A-Fa-f:]+/(4[8-9]|5[0-9]|6[0-4])$ ]]
     fi
 }
 
@@ -909,6 +938,215 @@ configure_routing_mode() {
     export ALLOWED_IPS_MODE ALLOWED_IPS
 }
 
+detect_endpoint_for_installer() {
+    local ip="" svc
+    for svc in https://ifconfig.me https://api.ipify.org https://icanhazip.com https://ipinfo.io/ip; do
+        ip=$(curl -4 -sf --max-time 5 "$svc" 2>/dev/null | tr -d '[:space:]')
+        if validate_endpoint "$ip" 2>/dev/null; then
+            echo "$ip"
+            return 0
+        fi
+    done
+    return 1
+}
+
+prompt_server_name() {
+    [[ "$AUTO_YES" -eq 0 && -z "$CLI_SERVER_NAME" && "$ENV_AWG_SERVER_NAME_SET" -eq 0 ]] || return 0
+    local input_name
+    while true; do
+        read -rp "Enter server name [${AWG_SERVER_NAME:-MyVPN}]: " input_name < /dev/tty
+        input_name="${input_name:-${AWG_SERVER_NAME:-MyVPN}}"
+        if validate_server_name "$input_name"; then
+            AWG_SERVER_NAME="$input_name"
+            break
+        fi
+        log_warn "Invalid server name: empty, too long, or contains a newline."
+    done
+}
+
+prompt_endpoint() {
+    [[ "$AUTO_YES" -eq 0 && -z "$CLI_ENDPOINT" && "$ENV_AWG_ENDPOINT_SET" -eq 0 ]] || return 0
+    local input_endpoint
+    read -rp "Enter server public IP/domain or press Enter for auto-detect: " input_endpoint < /dev/tty
+    if [[ -n "$input_endpoint" ]]; then
+        validate_endpoint "$input_endpoint" || die "Invalid endpoint: '$input_endpoint'. Allowed formats: FQDN, IPv4, or [IPv6]."
+        AWG_ENDPOINT="$input_endpoint"
+        return 0
+    fi
+    if AWG_ENDPOINT=$(detect_endpoint_for_installer); then
+        log "Endpoint auto-detected: $AWG_ENDPOINT"
+    else
+        AWG_ENDPOINT=""
+        log_warn "Failed to auto-detect the public IP/domain. Endpoint will stay empty; check client configs after installation."
+    fi
+}
+
+prompt_awg_preset() {
+    [[ "$AUTO_YES" -eq 0 && -z "$CLI_PRESET" && "$ENV_AWG_PRESET_SET" -eq 0 ]] || return 0
+    local preset_choice
+    echo ""
+    echo "Choose AWG parameter preset:"
+    echo "  1) default - general purpose"
+    echo "  2) mobile - mobile networks, Tele2/Yota/Megafon/LTE/5G"
+    read -rp "Your choice [1]: " preset_choice < /dev/tty
+    case "${preset_choice:-1}" in
+        1) AWG_PRESET="default" ;;
+        2) AWG_PRESET="mobile" ;;
+        *) log_warn "Unknown preset '$preset_choice', using default."; AWG_PRESET="default" ;;
+    esac
+}
+
+prompt_ipv6_mode() {
+    [[ "$AUTO_YES" -eq 0 && -z "$CLI_IPV6_MODE" && -z "$CLI_IPV6_SUBNET" && "$ENV_AWG_IPV6_MODE_SET" -eq 0 && "$ENV_AWG_IPV6_SUBNET_SET" -eq 0 ]] || return 0
+    [[ "${DISABLE_IPV6:-1}" -eq 0 ]] || return 0
+    local ipv6_choice input_subnet
+    echo ""
+    echo "Choose IPv6 mode:"
+    echo "  1) routed - provider gave you a separate routed /64 or /48"
+    echo "  2) ndp - use the public interface /64 with NDP proxy"
+    echo "  3) nat66 - NAT66 fallback"
+    read -rp "Your choice [auto]: " ipv6_choice < /dev/tty
+    case "${ipv6_choice:-auto}" in
+        1|routed)
+            AWG_IPV6_MODE="routed"
+            while true; do
+                read -rp "Enter IPv6 subnet for clients, for example 2a13:...::/64: " input_subnet < /dev/tty
+                validate_ipv6_subnet "$input_subnet" || { log_warn "Invalid IPv6 subnet. IPv6 /48../64 is required."; continue; }
+                AWG_IPV6_SUBNET=$(normalize_ipv6_subnet_installer "$input_subnet")
+                break
+            done
+            ;;
+        2|ndp) AWG_IPV6_MODE="ndp" ;;
+        3|nat66) AWG_IPV6_MODE="nat66" ;;
+        ""|auto) AWG_IPV6_MODE="${AWG_IPV6_MODE:-legacy}" ;;
+        *) log_warn "Unknown IPv6 mode '$ipv6_choice', using auto."; AWG_IPV6_MODE="${AWG_IPV6_MODE:-legacy}" ;;
+    esac
+}
+
+warn_public_web_bind() {
+    [[ "${AWG_WEB_ENABLED:-1}" -eq 1 ]] || return 0
+    [[ "${AWG_WEB_BIND:-}" == "0.0.0.0" || "${AWG_WEB_BIND:-}" == "::" ]] || return 0
+    log_warn "================================================================"
+    log_warn "WARNING: Web Panel will be reachable from the Internet (${AWG_WEB_BIND}:${AWG_WEB_PORT})."
+    log_warn "Keep public access only if you understand the risk and use tokens/HTTPS."
+    log_warn "================================================================"
+}
+
+prompt_web_panel() {
+    [[ "$AUTO_YES" -eq 0 ]] || { warn_public_web_bind; return 0; }
+    [[ "$CLI_DISABLE_WEB" -eq 0 ]] || return 0
+    local web_enable web_choice input_port public_confirm
+    if [[ "$ENV_AWG_WEB_ENABLED_SET" -eq 0 ]]; then
+        read -rp "Enable Web Panel? [Y/n]: " web_enable < /dev/tty
+        if [[ "$web_enable" =~ ^[Nn]$ ]]; then
+            AWG_WEB_ENABLED=0
+            return 0
+        fi
+        AWG_WEB_ENABLED=1
+    fi
+    [[ "${AWG_WEB_ENABLED:-1}" -eq 1 ]] || return 0
+    if [[ -z "$CLI_WEB_BIND" && "$ENV_AWG_WEB_BIND_SET" -eq 0 ]]; then
+        echo ""
+        echo "Web Panel access:"
+        echo "  1) VPN-only, 10.9.9.1 - safe default"
+        echo "  2) localhost, 127.0.0.1 - SSH tunnel only"
+        echo "  3) public, 0.0.0.0 - reachable from the Internet"
+        read -rp "Your choice [1]: " web_choice < /dev/tty
+        case "${web_choice:-1}" in
+            1) AWG_WEB_BIND="10.9.9.1" ;;
+            2) AWG_WEB_BIND="127.0.0.1" ;;
+            3) AWG_WEB_BIND="0.0.0.0" ;;
+            *) log_warn "Unknown Web Panel access '$web_choice', using VPN-only."; AWG_WEB_BIND="10.9.9.1" ;;
+        esac
+    fi
+    warn_public_web_bind
+    if [[ "$AWG_WEB_BIND" == "0.0.0.0" || "$AWG_WEB_BIND" == "::" ]]; then
+        read -rp "You are exposing Web Panel to the Internet. Continue? type YES: " public_confirm < /dev/tty
+        [[ "$public_confirm" == "YES" ]] || die "Public Web Panel was not confirmed."
+    fi
+    if [[ -z "$CLI_WEB_PORT" && "$ENV_AWG_WEB_PORT_SET" -eq 0 ]]; then
+        read -rp "Enter HTTPS Web Panel port [${AWG_WEB_PORT:-8443}]: " input_port < /dev/tty
+        [[ -n "$input_port" ]] && AWG_WEB_PORT="$input_port"
+    fi
+}
+
+prompt_adguard() {
+    [[ "$AUTO_YES" -eq 0 && "$CLI_ENABLE_ADGUARD" -eq 0 && "$CLI_DISABLE_ADGUARD" -eq 0 && "$ENV_AWG_ADGUARD_ENABLED_SET" -eq 0 ]] || return 0
+    local ag_enable input_port
+    read -rp "Install AdGuard Home for DNS? [Y/n]: " ag_enable < /dev/tty
+    if [[ "$ag_enable" =~ ^[Nn]$ ]]; then
+        AWG_ADGUARD_ENABLED=0
+        AWG_DNS_MODE="system"
+        return 0
+    fi
+    AWG_ADGUARD_ENABLED=1
+    AWG_DNS_MODE="adguard"
+    if [[ -z "$CLI_ADGUARD_PORT" && "$ENV_AWG_ADGUARD_PORT_SET" -eq 0 ]]; then
+        read -rp "Enter AdGuard UI port [${AWG_ADGUARD_PORT:-3000}]: " input_port < /dev/tty
+        [[ -n "$input_port" ]] && AWG_ADGUARD_PORT="$input_port"
+    fi
+}
+
+prompt_p2p() {
+    [[ "$AUTO_YES" -eq 0 && -z "$CLI_P2P_BASE_PORT" && -z "$CLI_P2P_PORTS_PER_CLIENT" && "$CLI_FULLCONE_NAT" -eq 0 && "$ENV_AWG_P2P_ENABLED_SET" -eq 0 ]] || return 0
+    local p2p_enable input_base input_count fullcone
+    read -rp "Configure P2P ports for clients? [Y/n]: " p2p_enable < /dev/tty
+    if [[ "$p2p_enable" =~ ^[Nn]$ ]]; then
+        AWG_P2P_ENABLED=0
+        AWG_P2P_PORTS_PER_CLIENT=0
+        AWG_FULLCONE_NAT=0
+        return 0
+    fi
+    AWG_P2P_ENABLED=1
+    if [[ "$ENV_AWG_P2P_BASE_PORT_SET" -eq 0 ]]; then
+        read -rp "Enter base P2P port [${AWG_P2P_BASE_PORT:-20000}]: " input_base < /dev/tty
+        [[ -n "$input_base" ]] && AWG_P2P_BASE_PORT="$input_base"
+    fi
+    if [[ "$ENV_AWG_P2P_PORTS_PER_CLIENT_SET" -eq 0 ]]; then
+        read -rp "Enter P2P ports per client [${AWG_P2P_PORTS_PER_CLIENT:-3}]: " input_count < /dev/tty
+        [[ -n "$input_count" ]] && AWG_P2P_PORTS_PER_CLIENT="$input_count"
+    fi
+    if [[ "$ENV_AWG_FULLCONE_NAT_SET" -eq 0 ]]; then
+        read -rp "Enable fullcone NAT? [y/N]: " fullcone < /dev/tty
+        if [[ "$fullcone" =~ ^[Yy]$ ]]; then AWG_FULLCONE_NAT=1; else AWG_FULLCONE_NAT=0; fi
+    fi
+}
+
+web_exposure_label() {
+    if [[ "${AWG_WEB_ENABLED:-1}" -ne 1 ]]; then
+        echo "disabled"
+    elif [[ "${AWG_WEB_BIND:-}" == "0.0.0.0" || "${AWG_WEB_BIND:-}" == "::" ]]; then
+        echo "public"
+    elif [[ "${AWG_WEB_BIND:-}" == "127.0.0.1" || "${AWG_WEB_BIND:-}" == "::1" ]]; then
+        echo "local"
+    else
+        echo "vpn-only"
+    fi
+}
+
+print_install_choice_summary() {
+    echo ""
+    echo "Final parameters:"
+    echo "Server name: ${AWG_SERVER_NAME:-MyVPN}"
+    echo "Endpoint: ${AWG_ENDPOINT:-not set}"
+    echo "VPN port: ${AWG_PORT}"
+    echo "Route mode: $(route_mode_label)"
+    echo "Preset: ${AWG_PRESET:-default}"
+    echo "IPv6: $(if [[ "${AWG_IPV6_ENABLED:-0}" -eq 1 ]]; then echo "enabled, ${AWG_IPV6_MODE:-legacy}, ${AWG_IPV6_SUBNET:-auto}"; else echo "disabled"; fi)"
+    echo "Web: $(if [[ "${AWG_WEB_ENABLED:-1}" -eq 1 ]]; then echo "enabled, ${AWG_WEB_BIND:-none}, ${AWG_WEB_PORT:-8443}, $(web_exposure_label)"; else echo "disabled"; fi)"
+    echo "AdGuard: $(if [[ "${AWG_ADGUARD_ENABLED:-0}" -eq 1 ]]; then echo "enabled, port ${AWG_ADGUARD_PORT:-3000}"; else echo "disabled"; fi)"
+    echo "P2P: base ${AWG_P2P_BASE_PORT:-20000}, ports/client ${AWG_P2P_PORTS_PER_CLIENT:-0}, fullcone ${AWG_FULLCONE_NAT:-0}"
+}
+
+confirm_install_choices() {
+    print_install_choice_summary
+    [[ "$AUTO_YES" -eq 0 ]] || return 0
+    local confirm_install
+    read -rp "Continue installation? [Y/n]: " confirm_install < /dev/tty
+    [[ "$confirm_install" =~ ^[Nn]$ ]] && die "Installation cancelled by user."
+    return 0
+}
+
 # ==============================================================================
 # AWG 2.0 parameter generation (inline — needed in step 0, before downloading awg_common.sh)
 # ==============================================================================
@@ -997,7 +1235,7 @@ generate_cps_i1() {
 
 # Generate all AWG 2.0 parameters
 generate_awg_params() {
-    local preset="${CLI_PRESET:-default}"
+    local preset="${CLI_PRESET:-${AWG_PRESET:-default}}"
     log "Generating AWG 2.0 parameters (preset: $preset)..."
 
     case "$preset" in
@@ -1911,23 +2149,25 @@ initialize_setup() {
     DISABLE_IPV6="default"
     ALLOWED_IPS_MODE="default"
     ALLOWED_IPS=""
-    AWG_ENDPOINT=""
-    AWG_IPV6_ENABLED=0
-    AWG_IPV6_MODE="legacy"
-    AWG_IPV6_SUBNET=""
-    AWG_IPV6_NDP_PROXY=0
-    AWG_P2P_ENABLED=1
-    AWG_P2P_BASE_PORT=20000
-    AWG_P2P_PORTS_PER_CLIENT=3
-    AWG_FULLCONE_NAT=0
-    AWG_WEB_ENABLED=1
-    AWG_WEB_PORT=8443
-    AWG_WEB_BIND="10.9.9.1"
-    AWG_DNS_MODE="system"
+    AWG_ENDPOINT="${AWG_ENDPOINT:-}"
+    AWG_SERVER_NAME="${AWG_SERVER_NAME:-MyVPN}"
+    AWG_IPV6_ENABLED=${AWG_IPV6_ENABLED:-0}
+    AWG_IPV6_MODE="${AWG_IPV6_MODE:-legacy}"
+    AWG_IPV6_SUBNET="${AWG_IPV6_SUBNET:-}"
+    AWG_IPV6_NDP_PROXY=${AWG_IPV6_NDP_PROXY:-0}
+    AWG_P2P_ENABLED=${AWG_P2P_ENABLED:-1}
+    AWG_P2P_BASE_PORT=${AWG_P2P_BASE_PORT:-20000}
+    AWG_P2P_PORTS_PER_CLIENT=${AWG_P2P_PORTS_PER_CLIENT:-3}
+    AWG_FULLCONE_NAT=${AWG_FULLCONE_NAT:-0}
+    AWG_WEB_ENABLED=${AWG_WEB_ENABLED:-1}
+    AWG_WEB_PORT=${AWG_WEB_PORT:-8443}
+    AWG_WEB_BIND="${AWG_WEB_BIND:-10.9.9.1}"
+    AWG_DNS_MODE="adguard"
     AWG_CUSTOM_DNS="1.1.1.1"
-    AWG_ADGUARD_ENABLED=0
-    AWG_ADGUARD_PORT=3000
-    AWG_ADGUARD_DIR="/opt/AdGuardHome"
+    AWG_ADGUARD_ENABLED=${AWG_ADGUARD_ENABLED:-1}
+    AWG_ADGUARD_PORT=${AWG_ADGUARD_PORT:-3000}
+    AWG_ADGUARD_DIR="${AWG_ADGUARD_DIR:-/opt/AdGuardHome}"
+    AWG_PRESET="${AWG_PRESET:-default}"
 
     # Load config
     if [[ -f "$CONFIG_FILE" ]]; then
@@ -1941,6 +2181,7 @@ initialize_setup() {
         ALLOWED_IPS_MODE=${ALLOWED_IPS_MODE:-"default"}
         ALLOWED_IPS=${ALLOWED_IPS:-""}
         AWG_ENDPOINT=${AWG_ENDPOINT:-""}
+        AWG_SERVER_NAME=${AWG_SERVER_NAME:-MyVPN}
         AWG_IPV6_ENABLED=${AWG_IPV6_ENABLED:-0}
         AWG_IPV6_MODE=$(normalize_ipv6_mode_installer "${AWG_IPV6_MODE:-legacy}" 2>/dev/null || echo "legacy")
         AWG_IPV6_SUBNET=${AWG_IPV6_SUBNET:-}
@@ -1952,11 +2193,12 @@ initialize_setup() {
         AWG_WEB_ENABLED=${AWG_WEB_ENABLED:-1}
         AWG_WEB_PORT=${AWG_WEB_PORT:-8443}
         AWG_WEB_BIND=${AWG_WEB_BIND:-${AWG_TUNNEL_SUBNET%/*}}
-        AWG_DNS_MODE=${AWG_DNS_MODE:-system}
+        AWG_DNS_MODE=${AWG_DNS_MODE:-adguard}
         AWG_CUSTOM_DNS=${AWG_CUSTOM_DNS:-1.1.1.1}
-        AWG_ADGUARD_ENABLED=${AWG_ADGUARD_ENABLED:-0}
+        AWG_ADGUARD_ENABLED=${AWG_ADGUARD_ENABLED:-1}
         AWG_ADGUARD_PORT=${AWG_ADGUARD_PORT:-3000}
         AWG_ADGUARD_DIR=${AWG_ADGUARD_DIR:-/opt/AdGuardHome}
+        AWG_PRESET=${AWG_PRESET:-default}
         log "Settings loaded from file."
     else
         log "Configuration file $CONFIG_FILE not found."
@@ -1974,10 +2216,18 @@ initialize_setup() {
     [[ -n "$CLI_WEB_BIND" ]] && AWG_WEB_BIND="$CLI_WEB_BIND"
     [[ "$CLI_DISABLE_WEB" -eq 1 ]] && AWG_WEB_ENABLED=0
     [[ -n "$CLI_ADGUARD_PORT" ]] && AWG_ADGUARD_PORT="$CLI_ADGUARD_PORT"
+    [[ -n "$CLI_SERVER_NAME" ]] && AWG_SERVER_NAME="$CLI_SERVER_NAME"
+    [[ -n "$CLI_PRESET" ]] && AWG_PRESET="$CLI_PRESET"
     if [[ -n "$CLI_DNS_MODE" ]]; then AWG_DNS_MODE="$CLI_DNS_MODE"; fi
     if [[ "$CLI_ENABLE_ADGUARD" -eq 1 ]]; then
         AWG_ADGUARD_ENABLED=1
         AWG_DNS_MODE="adguard"
+    fi
+    if [[ "$CLI_DISABLE_ADGUARD" -eq 1 ]]; then
+        AWG_ADGUARD_ENABLED=0
+        if [[ -z "$CLI_DNS_MODE" || "$AWG_DNS_MODE" == "adguard" ]]; then
+            AWG_DNS_MODE="system"
+        fi
     fi
     if [[ "$CLI_ROUTING_MODE" != "default" ]]; then
         ALLOWED_IPS_MODE=$CLI_ROUTING_MODE
@@ -2004,6 +2254,7 @@ initialize_setup() {
     validate_port "$AWG_WEB_PORT"
     validate_bind_addr "$AWG_WEB_BIND" || die "Invalid AWG_WEB_BIND: '$AWG_WEB_BIND'. Expected a valid IPv4/IPv6 address without whitespace or control characters."
     validate_port "$AWG_ADGUARD_PORT"
+    validate_server_name "$AWG_SERVER_NAME" || die "Invalid server name: empty, too long, or contains a newline."
     case "$AWG_DNS_MODE" in
         adguard|system|custom) ;;
         *) die "Invalid --dns-mode: '$AWG_DNS_MODE' (expected adguard, system, or custom)." ;;
@@ -2022,6 +2273,9 @@ initialize_setup() {
     # Request settings from user only on first run
     if [[ "$config_exists" -eq 0 ]]; then
         log "Requesting settings from user (first run)."
+        prompt_server_name
+        prompt_endpoint
+        prompt_awg_preset
         if [[ "$AUTO_YES" -eq 0 ]]; then
             read -rp "Enter AmneziaWG UDP port (1024-65535) [${AWG_PORT}]: " input_port < /dev/tty
             if [[ -n "$input_port" ]]; then AWG_PORT=$input_port; fi
@@ -2033,9 +2287,14 @@ initialize_setup() {
         fi
         validate_subnet "$AWG_TUNNEL_SUBNET"
         if [[ "$DISABLE_IPV6" == "default" ]]; then configure_ipv6; fi
+        prompt_ipv6_mode
         if [[ "$ALLOWED_IPS_MODE" == "default" ]]; then configure_routing_mode; fi
+        prompt_web_panel
+        prompt_adguard
+        prompt_p2p
     else
         log "Using settings from $CONFIG_FILE."
+        warn_public_web_bind
         if [[ "$ALLOWED_IPS_MODE" == "3" ]] && [[ -n "$ALLOWED_IPS" ]]; then
             if ! validate_cidr_list "$ALLOWED_IPS"; then
                 die "Invalid ALLOWED_IPS in config: '$ALLOWED_IPS'. Delete $CONFIG_FILE and re-run the installer."
@@ -2048,6 +2307,21 @@ initialize_setup() {
     if [[ "$ALLOWED_IPS_MODE" == "default" ]]; then ALLOWED_IPS_MODE=2; fi
     if [[ -z "$ALLOWED_IPS" ]]; then configure_routing_mode; fi
     configure_ipv6_client_mode
+
+    validate_port "$AWG_PORT"
+    validate_subnet "$AWG_TUNNEL_SUBNET"
+    validate_port "$AWG_P2P_BASE_PORT"
+    if [[ "$AWG_P2P_BASE_PORT" -gt 64511 ]]; then
+        die "Invalid AWG_P2P_BASE_PORT: '$AWG_P2P_BASE_PORT' (must be <= 64511 so base+1..base+1024 fits in TCP/UDP ports)."
+    fi
+    if ! [[ "$AWG_P2P_PORTS_PER_CLIENT" =~ ^[0-9]+$ ]] || [[ "$AWG_P2P_PORTS_PER_CLIENT" -lt 0 ]] || [[ "$AWG_P2P_PORTS_PER_CLIENT" -gt 12 ]]; then
+        die "Invalid AWG_P2P_PORTS_PER_CLIENT: '$AWG_P2P_PORTS_PER_CLIENT' (0-12)."
+    fi
+    validate_port "$AWG_WEB_PORT"
+    validate_bind_addr "$AWG_WEB_BIND" || die "Invalid AWG_WEB_BIND: '$AWG_WEB_BIND'. Expected a valid IPv4/IPv6 address without whitespace or control characters."
+    validate_port "$AWG_ADGUARD_PORT"
+    validate_server_name "$AWG_SERVER_NAME" || die "Invalid server name: empty, too long, or contains a newline."
+    confirm_install_choices
 
     # Port check (skip if AWG service is already listening on this port)
     if ! systemctl is-active --quiet awg-quick@awg0 2>/dev/null; then
@@ -2070,6 +2344,8 @@ initialize_setup() {
     local temp_conf
     temp_conf=$(mktemp) || die "mktemp error."
     _install_temp_files+=("$temp_conf")
+    local quoted_server_name
+    quoted_server_name=$(shell_quote "$AWG_SERVER_NAME")
     cat > "$temp_conf" << EOF
 # AmneziaWG 2.0 installation configuration (Auto-generated)
 # Used by installation and management scripts
@@ -2082,6 +2358,7 @@ export DISABLE_IPV6=${DISABLE_IPV6}
 export ALLOWED_IPS_MODE=${ALLOWED_IPS_MODE}
 export ALLOWED_IPS='${ALLOWED_IPS}'
 export AWG_ENDPOINT='${AWG_ENDPOINT}'
+export AWG_SERVER_NAME=${quoted_server_name}
 export AWG_IPV6_ENABLED=${AWG_IPV6_ENABLED}
 export AWG_IPV6_MODE='${AWG_IPV6_MODE}'
 export AWG_IPV6_SUBNET='${AWG_IPV6_SUBNET}'
@@ -2121,7 +2398,7 @@ EOF
     fi
     chmod 600 "$CONFIG_FILE" || log_warn "chmod $CONFIG_FILE error"
     log "Settings saved."
-    export AWG_PORT AWG_TUNNEL_SUBNET DISABLE_IPV6 ALLOWED_IPS_MODE ALLOWED_IPS AWG_ENDPOINT
+    export AWG_PORT AWG_TUNNEL_SUBNET DISABLE_IPV6 ALLOWED_IPS_MODE ALLOWED_IPS AWG_ENDPOINT AWG_SERVER_NAME
     export AWG_IPV6_ENABLED AWG_IPV6_MODE AWG_IPV6_SUBNET AWG_IPV6_NDP_PROXY
     export AWG_P2P_ENABLED AWG_P2P_BASE_PORT AWG_P2P_PORTS_PER_CLIENT AWG_FULLCONE_NAT
     export AWG_WEB_ENABLED AWG_WEB_PORT AWG_WEB_BIND
@@ -2133,6 +2410,7 @@ EOF
     log "P2P: base=${AWG_P2P_BASE_PORT}, ports/client=${AWG_P2P_PORTS_PER_CLIENT}, fullcone=${AWG_FULLCONE_NAT}"
     log "Web: enabled=${AWG_WEB_ENABLED}, bind=${AWG_WEB_BIND}:${AWG_WEB_PORT}"
     log "DNS: mode=${AWG_DNS_MODE}, adguard=${AWG_ADGUARD_ENABLED}, port=${AWG_ADGUARD_PORT}"
+    log "Server name: ${AWG_SERVER_NAME}"
     log "AllowedIPs mode: $ALLOWED_IPS_MODE"
 
     # Loading state
@@ -3531,7 +3809,7 @@ EOF
     cat >> "$tmp_path" <<EOF
 
 [AWG 2.0 Parameters]
-Preset: ${AWG_PRESET:-balanced}
+Preset: ${AWG_PRESET:-default}
 Jc: ${AWG_Jc}
 Jmin: ${AWG_Jmin}
 Jmax: ${AWG_Jmax}
