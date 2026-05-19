@@ -82,6 +82,23 @@ CLIENT_NAME="${ARGS[0]}"
 PARAM="${ARGS[1]}"
 VALUE="${ARGS[2]}"
 
+if [[ "$COMMAND" == "client" ]]; then
+    case "${ARGS[0]:-}" in
+        regen|regenerate)
+            COMMAND="regen"
+            ARGS=("${ARGS[@]:1}")
+            CLIENT_NAME="${ARGS[0]:-}"
+            PARAM="${ARGS[1]:-}"
+            VALUE="${ARGS[2]:-}"
+            ;;
+        *)
+            echo "Unknown client command: ${ARGS[0]:-}" >&2
+            COMMAND="help"
+            ;;
+    esac
+fi
+[[ "$COMMAND" == "regenerate" ]] && COMMAND="regen"
+
 # Update paths after possible --conf-dir override
 CONFIG_FILE="$AWG_DIR/awgsetup_cfg.init"
 KEYS_DIR="$AWG_DIR/keys"
@@ -935,7 +952,7 @@ regenerate_all_clients_for_name() {
     local name rc=0
     while IFS= read -r name; do
         [[ -n "$name" ]] || continue
-        regenerate_client "$name" || { log_warn "Failed to regenerate '$name'"; rc=1; }
+        refresh_client_config "$name" || { log_warn "Failed to refresh '$name'"; rc=1; }
     done < <(grep '^#_Name = ' "$SERVER_CONF_FILE" 2>/dev/null | sed 's/^#_Name = //')
     return "$rc"
 }
@@ -1218,7 +1235,7 @@ regenerate_all_clients_for_dns() {
     local name rc=0
     while IFS= read -r name; do
         [[ -n "$name" ]] || continue
-        regenerate_client "$name" || { log_warn "Failed to regenerate '$name'"; rc=1; }
+        refresh_client_config "$name" || { log_warn "Failed to refresh '$name'"; rc=1; }
     done < <(grep '^#_Name = ' "$SERVER_CONF_FILE" 2>/dev/null | sed 's/^#_Name = //')
     return "$rc"
 }
@@ -1592,7 +1609,9 @@ usage() {
     echo "  web token revoke <hash> Revoke a user token"
     echo "  web token rotate <hash> Rotate a user token while preserving access"
     echo "  web token reset-super Regenerate the super token"
-    echo "  regen [name]          Regenerate client file(s)"
+    echo "  regen <name>          Safely regenerate a client config and rotate keys"
+    echo "  regenerate <name>     Alias for regen <name>"
+    echo "  client regenerate <name> Same action via the client namespace"
     echo "  modify <name> <p> <v> Modify a client parameter"
     echo "  backup                Create a backup"
     echo "  restore [file]        Restore from backup"
@@ -1905,7 +1924,7 @@ case $COMMAND in
                     _count=0
                     while IFS= read -r _name; do
                         [[ -n "$_name" ]] || continue
-                        regenerate_client "$_name" || { log_warn "Regeneration error '$_name'"; _cmd_rc=1; }
+                        refresh_client_config "$_name" || { log_warn "Refresh error '$_name'"; _cmd_rc=1; }
                         _count=$((_count + 1))
                     done < <(grep '^#_Name = ' "$SERVER_CONF_FILE" | sed 's/^#_Name = //')
                     bash "$AWG_DIR/postup.sh" 2>/dev/null || log_warn "Failed to apply firewall hooks live; restart awg-quick@awg0 if needed."

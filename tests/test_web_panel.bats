@@ -238,6 +238,7 @@ assert set(server.STATIC_FILES) == {
     "/index.html",
     "/style.css",
     "/app.js",
+    "/awg_i1.js",
     "/favicon.svg",
     "/vendor/tailwindcss.js",
     "/vendor/apexcharts.min.js",
@@ -625,6 +626,150 @@ assert server.require_dns_list("1.1.1.1,8.8.8.8") == "1.1.1.1,8.8.8.8"
 assert server.require_dns_list("2001:4860:4860::8888") == "2001:4860:4860::8888"
 assert server.require_server_name("My VPN Server-1") == "My VPN Server-1"
 PY
+}
+
+@test "client regenerate API validates I1 passes it via env and invalidates import tokens" {
+    command -v python3 &>/dev/null || skip "python3 not available"
+    local tmp
+    tmp=$(mktemp -d)
+    mkdir -p "$tmp/web"
+    printf '[Interface]\nPrivateKey = phone\n[Peer]\nEndpoint = vpn.example:51820\n' > "$tmp/phone.conf"
+    cat > "$tmp/awg0.conf" <<'CONF'
+[Interface]
+PrivateKey = SERVER
+
+[Peer]
+#_Name = phone
+PublicKey = OLD
+AllowedIPs = 10.9.9.2/32
+
+[Peer]
+#_Name = laptop
+PublicKey = LAPTOP
+AllowedIPs = 10.9.9.3/32
+CONF
+    AWG_DIR="$tmp" SERVER_CONF_FILE="$tmp/awg0.conf" REPO_ROOT="$BATS_TEST_DIRNAME/.." python3 - <<'PY'
+import importlib.util
+import io
+import json
+import os
+import time
+from pathlib import Path
+
+spec = importlib.util.spec_from_file_location("panel_server", Path(os.environ["REPO_ROOT"]) / "web" / "server.py")
+server = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(server)
+
+super_token = "super-token"
+user_token = "user-token"
+server.write_tokens({
+    "super_token_hash": server.token_hash(super_token),
+    "users": {server.token_hash(user_token): {"name": "Alice", "clients": ["phone"]}},
+})
+
+old_token = "old-import-token-abcdefghijklmnopqrstuvwxyz"
+server.write_import_tokens({"tokens": {server.token_hash(old_token): {
+    "client": "phone",
+    "expires_at": int(time.time()) + 3600,
+    "one_time": False,
+    "created_at": int(time.time()),
+}}})
+
+calls = []
+def fake_run_manage(*args, timeout=60, extra_env=None):
+    calls.append({"args": args, "timeout": timeout, "extra_env": extra_env or {}})
+    class Result:
+        returncode = 0
+        stdout = "ok"
+        stderr = ""
+    return Result()
+server.run_manage = fake_run_manage
+
+class Headers(dict):
+    def get(self, key, default=None):
+        return super().get(key, default)
+
+def make_handler(path, token=None, body=None):
+    payload = b"" if body is None else json.dumps(body).encode()
+    h = object.__new__(server.Handler)
+    h.path = path
+    h.client_address = ("127.0.0.1", 12345)
+    h.rfile = io.BytesIO(payload)
+    h.wfile = io.BytesIO()
+    h.responses = []
+    h.headers_sent = []
+    headers = Headers({"Host": "panel.example:8443", "Content-Length": str(len(payload))})
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    h.headers = headers
+    h.send_response = lambda code: h.responses.append(code)
+    h.send_error = lambda code, *args, **kwargs: h.responses.append(code)
+    h.send_header = lambda key, value: h.headers_sent.append((key, value))
+    h.end_headers = lambda: None
+    return h
+
+server.RATE.clear()
+valid_i1 = "<b 0xabcdef><r 0 1>"
+handler = make_handler("/api/clients/phone/regenerate", token=user_token, body={"i1": valid_i1, "i1_sni": "mail.ru"})
+handler.do_POST()
+assert handler.responses == [200]
+payload = json.loads(handler.wfile.getvalue().decode())
+assert payload["ok"] is True
+assert payload["client"] == "phone"
+assert payload["download_url"] == "/api/clients/phone/config/download"
+assert calls[-1]["args"] == ("client", "regenerate", "phone")
+assert calls[-1]["extra_env"] == {"AWG_I1_OVERRIDE": valid_i1}
+assert valid_i1 not in calls[-1]["args"]
+assert server.load_import_tokens()["tokens"] == {}
+
+handler = make_handler("/api/clients/laptop/regenerate", token=user_token, body={})
+handler.do_POST()
+assert handler.responses == [403]
+
+for bad in ["<b 0xabc>;id", "<b 0xabc>$x", "`id`", "'bad'", '"bad"', "<b 0xabc>/x", "<b 0xabc>|x", "<b 0x" + ("a" * 2100) + ">"]:
+    handler = make_handler("/api/clients/phone/regenerate", token=super_token, body={"i1": bad})
+    handler.do_POST()
+    assert handler.responses == [400], bad
+PY
+    rm -rf "$tmp"
+}
+
+@test "web static files and UI expose regenerate action and local I1 generator" {
+    local root="$BATS_TEST_DIRNAME/.."
+    grep -qF '<script src="/awg_i1.js"></script>' "$root/web/index.html"
+    grep -qF '"/awg_i1.js": ("awg_i1.js", "application/javascript; charset=utf-8")' "$root/web/server.py"
+    grep -qF 'data-action="regenerate-config"' "$root/web/app.js"
+    grep -qF 'Regenerate config for' "$root/web/app.js"
+    grep -qF 'Config regenerated. Download or copy the new config.' "$root/web/app.js"
+    grep -qF "default-src 'self'; script-src 'self'" "$root/web/server.py"
+    if grep -E "https?://|unpkg" "$root/web/index.html" >/dev/null; then
+        fail "index.html must not load external scripts"
+    fi
+    if grep -F 'localStorage.setItem("config' "$root/web/app.js" >/dev/null; then
+        fail "app.js must not store configs in localStorage"
+    fi
+    if grep -F 'localStorage.setItem("i1' "$root/web/app.js" >/dev/null; then
+        fail "app.js must not store I1 in localStorage"
+    fi
+}
+
+@test "browser I1 generator uses realistic ClientHello and public generateAwgI1 path" {
+    local js="$BATS_TEST_DIRNAME/../web/awg_i1.js"
+    [ -f "$js" ]
+    grep -qF 'function buildRealisticClientHello' "$js"
+    grep -qF 'async function generateAwgI1' "$js"
+    grep -qF '0x13, 0x01' "$js"
+    grep -qF '0x13, 0x02' "$js"
+    grep -qF '0x13, 0x03' "$js"
+    grep -qF '0x002b' "$js"
+    grep -qF '0x0010' "$js"
+    grep -qF '0x000a' "$js"
+    grep -qF '0x0033' "$js"
+    grep -qF '0x68, 0x33' "$js"
+    grep -qF 'const clientHello = buildRealisticClientHello(sni);' "$js"
+    if awk '/async function generateAwgI1/,/^}/' "$js" | grep -qF 'quicTlsClientHelloSniOnly'; then
+        fail "generateAwgI1 must not use legacy SNI-only ClientHello"
+    fi
 }
 
 @test "corrupt token store fails closed instead of silently rotating super token" {

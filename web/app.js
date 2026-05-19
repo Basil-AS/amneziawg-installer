@@ -40,6 +40,7 @@ const icons = {
   shield: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M9 12.75 11.25 15 15 9.75"/><path d="M12 3.75c2.1 1.95 4.95 3 7.88 3-.42 6.15-3.25 10.69-7.88 13.5-4.63-2.81-7.46-7.35-7.88-13.5 2.93 0 5.78-1.05 7.88-3Z"/></svg>',
   link: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M10.5 13.5 13.5 10.5"/><path d="M8.5 15.5 7 17a4 4 0 0 1-5.7-5.6l2.1-2.1A4 4 0 0 1 9 9"/><path d="M15.5 8.5 17 7a4 4 0 0 1 5.7 5.6l-2.1 2.1A4 4 0 0 1 15 15"/></svg>',
   pencil: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="m4 20 4.2-1 10.6-10.6a2.1 2.1 0 0 0-3-3L5.2 16 4 20Z"/><path d="m14.5 6.5 3 3"/></svg>',
+  refresh: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 6v5h-5"/><path d="M4 18v-5h5"/><path d="M18.5 9A7 7 0 0 0 6.7 6.7L4 9"/><path d="M5.5 15a7 7 0 0 0 11.8 2.3L20 15"/></svg>',
 };
 
 const theme = localStorage.getItem("panelTheme") || "light";
@@ -597,6 +598,7 @@ function renderClients() {
           ${actionButton("qr", "Show QR", "qr", "Show QR")}
           <button data-action="copy-vpnuri" title="Copy vpn://" aria-label="Copy vpn://" class="${buttonClasses("client-action")}">${icon("link")}<span class="client-action-label">Copy vpn://</span></button>
           <button data-action="copy-import-url" title="Copy import URL" aria-label="Copy import URL" class="${buttonClasses("client-action")}">${icon("link")}<span class="client-action-label">Import URL</span></button>
+          <button data-action="regenerate-config" title="Regenerate config" aria-label="Regenerate config for ${esc(client.name)}" class="${buttonClasses("client-action text-amber-700")}">${icon("refresh")}<span class="client-action-label">Regenerate</span></button>
           <button data-action="toggle" title="${client.disabled ? "Enable Client" : "Disable Client"}" aria-label="${client.disabled ? "Enable Client" : "Disable Client"}" class="${buttonClasses("w-9 px-0")}">${icon("power")}</button>
           <button data-action="toggle-p2p" title="Toggle P2P Ports" aria-label="Toggle P2P Ports" class="${buttonClasses(shieldClass)}">${icon("shield")}</button>
           <button data-action="delete" title="Delete" aria-label="Delete" class="${buttonClasses("w-9 px-0 text-[var(--danger)]")}">${icon("trash")}</button>
@@ -828,6 +830,7 @@ async function clientAction(name, action) {
     if (action === "copy-config") return copyConfig(name);
     if (action === "copy-vpnuri") return copyVpnUri(name);
     if (action === "copy-import-url") return copyImportUrl(name);
+    if (action === "regenerate-config") return regenerateConfig(name);
     if (action === "toggle") {
       await api(`/api/clients/${encodeURIComponent(name)}/toggle`, {method: "POST", body: "{}"});
       showToast("Client toggled");
@@ -849,6 +852,32 @@ async function clientAction(name, action) {
   } catch (error) {
     showToast("Failed", "error");
   }
+}
+
+async function regenerateConfig(name) {
+  const ok = await confirmModal(
+    "Regenerate config",
+    `Regenerate config for "${name}"?\nThe old client config will stop working. Traffic history and client name will be preserved.`
+  );
+  if (!ok) return;
+  const body = {};
+  try {
+    if (typeof window.generateAwgI1 === "function" && typeof window.pickAwgI1Sni === "function" && window.crypto?.subtle) {
+      const sni = window.pickAwgI1Sni();
+      body.i1 = await window.generateAwgI1(sni, 0);
+      body.i1_sni = sni;
+    }
+  } catch (error) {
+    const fallback = await confirmModal(
+      "Regenerate without browser I1?",
+      "Browser-side AWG I1 generation failed. Continue with server fallback?"
+    );
+    if (!fallback) return;
+  }
+  await api(`/api/clients/${encodeURIComponent(name)}/regenerate`, {method: "POST", body: JSON.stringify(body)});
+  configTextCache.delete(name);
+  showToast("Config regenerated. Download or copy the new config.");
+  await loadClients();
 }
 
 async function showConfig(name) {

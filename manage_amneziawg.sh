@@ -82,6 +82,23 @@ CLIENT_NAME="${ARGS[0]}"
 PARAM="${ARGS[1]}"
 VALUE="${ARGS[2]}"
 
+if [[ "$COMMAND" == "client" ]]; then
+    case "${ARGS[0]:-}" in
+        regen|regenerate)
+            COMMAND="regen"
+            ARGS=("${ARGS[@]:1}")
+            CLIENT_NAME="${ARGS[0]:-}"
+            PARAM="${ARGS[1]:-}"
+            VALUE="${ARGS[2]:-}"
+            ;;
+        *)
+            echo "Неизвестная client команда: ${ARGS[0]:-}" >&2
+            COMMAND="help"
+            ;;
+    esac
+fi
+[[ "$COMMAND" == "regenerate" ]] && COMMAND="regen"
+
 # Обновляем пути после возможного переопределения --conf-dir
 CONFIG_FILE="$AWG_DIR/awgsetup_cfg.init"
 KEYS_DIR="$AWG_DIR/keys"
@@ -932,7 +949,7 @@ regenerate_all_clients_for_name() {
     local name rc=0
     while IFS= read -r name; do
         [[ -n "$name" ]] || continue
-        regenerate_client "$name" || { log_warn "Ошибка перегенерации '$name'"; rc=1; }
+        refresh_client_config "$name" || { log_warn "Ошибка обновления '$name'"; rc=1; }
     done < <(grep '^#_Name = ' "$SERVER_CONF_FILE" 2>/dev/null | sed 's/^#_Name = //')
     return "$rc"
 }
@@ -1215,7 +1232,7 @@ regenerate_all_clients_for_dns() {
     local name rc=0
     while IFS= read -r name; do
         [[ -n "$name" ]] || continue
-        regenerate_client "$name" || { log_warn "Ошибка перегенерации '$name'"; rc=1; }
+        refresh_client_config "$name" || { log_warn "Ошибка обновления '$name'"; rc=1; }
     done < <(grep '^#_Name = ' "$SERVER_CONF_FILE" 2>/dev/null | sed 's/^#_Name = //')
     return "$rc"
 }
@@ -1589,7 +1606,9 @@ usage() {
     echo "  web token revoke <hash> Удалить обычный токен"
     echo "  web token rotate <hash> Заменить обычный токен, сохранив доступы"
     echo "  web token reset-super Перегенерировать super token"
-    echo "  regen [имя]           Перегенерировать файлы клиента(ов)"
+    echo "  regen <имя>           Безопасно перегенерировать конфиг клиента с ротацией ключей"
+    echo "  regenerate <имя>      Алиас для regen <имя>"
+    echo "  client regenerate <имя> То же самое через client namespace"
     echo "  modify <имя> <пар> <зн> Изменить параметр клиента"
     echo "  backup                Создать бэкап"
     echo "  restore [файл]        Восстановить из бэкапа"
@@ -1905,7 +1924,7 @@ case $COMMAND in
                     _count=0
                     while IFS= read -r _name; do
                         [[ -n "$_name" ]] || continue
-                        regenerate_client "$_name" || { log_warn "Ошибка regen '$_name'"; _cmd_rc=1; }
+                        refresh_client_config "$_name" || { log_warn "Ошибка обновления '$_name'"; _cmd_rc=1; }
                         _count=$((_count + 1))
                     done < <(grep '^#_Name = ' "$SERVER_CONF_FILE" | sed 's/^#_Name = //')
                     bash "$AWG_DIR/postup.sh" 2>/dev/null || log_warn "Не удалось применить firewall hooks live; перезапустите awg-quick@awg0."

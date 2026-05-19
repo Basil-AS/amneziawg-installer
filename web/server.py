@@ -27,11 +27,13 @@ LEGACY_TOKEN_FILE = WEB_DIR / "auth_token"
 NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 TOKEN_HASH_RE = re.compile(r"^[0-9a-f]{64}$")
 RAW_IMPORT_TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{32,256}$")
+I1_RE = re.compile(r"^[<>a-fA-F0-9xbr\s]+$")
 STATIC_FILES = {
     "/": ("index.html", "text/html; charset=utf-8"),
     "/index.html": ("index.html", "text/html; charset=utf-8"),
     "/style.css": ("style.css", "text/css; charset=utf-8"),
     "/app.js": ("app.js", "application/javascript; charset=utf-8"),
+    "/awg_i1.js": ("awg_i1.js", "application/javascript; charset=utf-8"),
     "/favicon.svg": ("favicon.svg", "image/svg+xml"),
     "/vendor/tailwindcss.js": ("vendor/tailwindcss.js", "application/javascript; charset=utf-8"),
     "/vendor/apexcharts.min.js": ("vendor/apexcharts.min.js", "application/javascript; charset=utf-8"),
@@ -50,9 +52,11 @@ SERVER_NAME_RE = re.compile(r"^[\w .,!?\-()]{1,128}$", re.UNICODE)
 DELETED_TRAFFIC_KEY = "_deleted_clients_total"
 
 
-def run_manage(*args, timeout=60):
+def run_manage(*args, timeout=60, extra_env=None):
     env = os.environ.copy()
     env["AWG_YES"] = "1"
+    if extra_env:
+        env.update(extra_env)
     return subprocess.run(
         ["/bin/bash", str(MANAGE), "--yes", *args],
         text=True,
@@ -115,6 +119,20 @@ def write_import_tokens(data):
         os.chmod(tmp, 0o600)
         os.replace(tmp, IMPORT_TOKEN_FILE)
         os.chmod(IMPORT_TOKEN_FILE, 0o600)
+
+
+def remove_import_tokens_for_client(client_name):
+    client_name = safe_name(client_name)
+    with IMPORT_TOKENS_LOCK:
+        data = load_import_tokens()
+        tokens = data.setdefault("tokens", {})
+        changed = False
+        for digest, record in list(tokens.items()):
+            if isinstance(record, dict) and record.get("client") == client_name:
+                tokens.pop(digest, None)
+                changed = True
+        if changed:
+            write_import_tokens(data)
 
 
 def require_import_ttl(value):
@@ -636,6 +654,23 @@ def safe_token_hash(value):
     return value
 
 
+def validate_i1(value: str) -> str:
+    if not isinstance(value, str):
+        raise ValueError("invalid I1 format")
+    value = value.strip()
+    if not value:
+        raise ValueError("empty I1")
+    if len(value) > 2000:
+        raise ValueError("I1 is too long")
+    if any(ord(ch) < 32 and ch != " " for ch in value):
+        raise ValueError("invalid I1 format")
+    if not I1_RE.fullmatch(value):
+        raise ValueError("invalid I1 format")
+    if "<b 0x" not in value and "<r " not in value:
+        raise ValueError("invalid I1 chunks")
+    return value
+
+
 def require_server_name(name):
     if not isinstance(name, str) or not name.strip() or not SERVER_NAME_RE.fullmatch(name):
         raise ValueError("invalid server name")
@@ -1050,6 +1085,28 @@ class Handler(SimpleHTTPRequestHandler):
                 if custom:
                     args.append(require_dns_list(custom))
                 p = run_manage(*args, timeout=120)
+            elif re.match(r"^/api/clients/[^/]+/regenerate$", u.path):
+                name = safe_name(re.match(r"^/api/clients/([^/]+)/regenerate$", u.path).group(1))
+                if not self.require_client_access(auth, name):
+                    return
+                if not any(peer.get("name") == name for peer in parse_peers()):
+                    self.send_json({"error": "client not found"}, 404)
+                    return
+                extra_env = {}
+                if "i1" in body and body["i1"] is not None:
+                    extra_env["AWG_I1_OVERRIDE"] = validate_i1(body["i1"])
+                p = run_manage("client", "regenerate", name, timeout=120, extra_env=extra_env)
+                if p.returncode == 0:
+                    remove_import_tokens_for_client(name)
+                    self.send_json({
+                        "ok": True,
+                        "client": name,
+                        "message": "Config regenerated",
+                        "download_url": f"/api/clients/{quote(name)}/config/download",
+                    })
+                    return
+                self.send_json({"error": "regenerate failed"}, 500)
+                return
             elif u.path == "/api/tokens":
                 if not self.require_super(auth):
                     return

@@ -148,6 +148,14 @@ After a successful install, the installer writes `/root/awg/INSTALL_SUMMARY.txt`
 
 Client cards include `Copy import URL` for WG Tunnel and WireGuard-like clients. The panel creates a short-lived HTTPS URL at `/import/<client>/<token>` that returns raw `text/plain` config text starting with `[Interface]`, not HTML/JSON/download pages. Raw tokens are never stored; only hashes are written to `/root/awg/web/import_tokens.json`. Default TTL is 1 hour. WG Tunnel requires HTTPS, and self-signed TLS may be rejected by mobile apps, so a trusted domain/certificate is best.
 
+The `Regenerate` action on a client card safely rebuilds an existing client config: the old `.conf` stops working, while the client name, file path, traffic history, expiry/P2P metadata, and RBAC access are preserved. After regeneration, download, copy, open QR, or create a new WG Tunnel import URL; old import links for that client are invalidated. During web regeneration the panel can generate a browser-side AWG I1 obfuscation parameter from local `web/awg_i1.js`; CLI regeneration works without a browser and uses fallback behavior.
+
+CLI equivalent:
+
+```bash
+sudo bash /root/awg/manage_amneziawg.sh client regenerate <name>
+```
+
 ### Public web panel, only when you really need it
 
 ```bash
