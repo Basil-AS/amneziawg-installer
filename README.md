@@ -145,10 +145,16 @@ https://127.0.0.1:8443
 ### Публичная web-panel, если очень нужно
 
 ```bash
-sudo bash install_amneziawg.sh --web-bind=0.0.0.0 --web-port=8443
+sudo bash install_amneziawg.sh \
+  --web-bind=0.0.0.0 \
+  --web-cert-mode=ip-domain \
+  --web-cert-provider=sslip.io \
+  --web-port=443
 ```
 
-> Открывать web-panel всему интернету не рекомендуется. Лучше использовать firewall allowlist, VPN, SSH tunnel или reverse proxy с дополнительной авторизацией. Bearer token должен быть длинным и секретным; не публикуйте `tokens.json`, client configs, QR и `vpn://` URI.
+Интерактивный wizard для публичной панели по умолчанию предлагает trusted HTTPS через pseudo-domain вида `https://64-112-125-125.sslip.io/` и Let's Encrypt на `443/tcp`. Для этого порт `80/tcp` должен быть доступен на время HTTP-01 проверки.
+
+> Открывать web-panel всему интернету не рекомендуется. Лучше использовать firewall allowlist, VPN, SSH tunnel или reverse proxy с дополнительной авторизацией. Публичный self-signed режим не рекомендуется: браузеры и WG Tunnel URL Import могут отклонять сертификат. Bearer token должен быть длинным и секретным; не публикуйте `tokens.json`, client configs, QR и `vpn://` URI.
 
 ## Частые сценарии установки
 
@@ -162,8 +168,11 @@ sudo bash install_amneziawg.sh --web-bind=10.9.9.1 --web-port=8443
 # Web-panel только на localhost, если нужен SSH tunnel
 sudo bash install_amneziawg.sh --web-bind=127.0.0.1 --web-port=8443
 
-# Публичная web-panel — только если вы осознанно этого хотите
-sudo bash install_amneziawg.sh --web-bind=0.0.0.0 --web-port=8443
+# Публичная web-panel с trusted HTTPS через sslip.io + Let's Encrypt
+sudo bash install_amneziawg.sh --web-bind=0.0.0.0 --web-cert-mode=ip-domain --web-cert-provider=sslip.io --web-port=443
+
+# Публичная web-panel со своим доменом + Let's Encrypt
+sudo bash install_amneziawg.sh --web-bind=0.0.0.0 --web-cert-mode=letsencrypt --web-domain=vpn.example.com --web-port=443
 
 # IPv6 через NDP proxy
 sudo bash install_amneziawg.sh --enable-native-ipv6 --ipv6-mode=ndp
@@ -192,7 +201,7 @@ sudo /root/awg/manage_amneziawg.sh p2p toggle CLIENT_NAME
 | --- | --- | --- |
 | `--yes` | Запуск без интерактивных подтверждений | `sudo bash install_amneziawg.sh --yes` |
 | `--web-bind=ADDR` | IP, на котором слушает web-panel. По умолчанию `10.9.9.1` внутри VPN | `--web-bind=0.0.0.0` |
-| `--web-port=PORT` | HTTPS-порт web-panel | `--web-port=8443` |
+| `--web-port=PORT` | HTTPS-порт web-panel. VPN-only/localhost default `8443`; public trusted HTTPS default `443` в wizard/fresh install | `--web-port=443` |
 | `--disable-web` | Не разворачивать web-panel | `--disable-web` |
 | `--enable-native-ipv6` | Совместимый алиас для включения IPv6 клиентов | `--enable-native-ipv6` |
 | `--disallow-ipv6` | Принудительно отключить IPv6 | `--disallow-ipv6` |
@@ -210,7 +219,9 @@ sudo /root/awg/manage_amneziawg.sh p2p toggle CLIENT_NAME
 | `--preset=TYPE` | Preset обфускации: `default` или `mobile` | `--preset=mobile` |
 | `--no-tweaks` | Пропустить hardening/оптимизацию | `--no-tweaks` |
 | `--disable-ufw` | Не включать UFW, если firewall/NAT управляются снаружи | `AWG_DISABLE_UFW=1` |
-| `--web-cert-mode=selfsigned\|custom\|letsencrypt\|ip-domain` | TLS mode web-panel. Default `selfsigned`; `custom` требует `--web-cert-file`/`--web-key-file`; Let's Encrypt требует доступный `80/tcp` | `AWG_WEB_CERT_MODE` |
+| `--web-cert-mode=selfsigned\|custom\|letsencrypt\|ip-domain` | TLS mode web-panel. Default `selfsigned` для VPN-only/localhost; public wizard default `ip-domain` (`sslip.io` + Let's Encrypt). `custom` требует `--web-cert-file`/`--web-key-file`; Let's Encrypt требует доступный `80/tcp` | `--web-cert-mode=ip-domain` |
+| `--web-cert-provider=sslip.io\|nip.io` | Provider для `ip-domain`; `64.112.125.125` превращается в `64-112-125-125.sslip.io` | `--web-cert-provider=sslip.io` |
+| `--web-domain=DOMAIN` | Домен для `letsencrypt` или public URL при custom cert | `--web-domain=vpn.example.com` |
 
 Полный список — в `sudo bash install_amneziawg.sh --help`.
 

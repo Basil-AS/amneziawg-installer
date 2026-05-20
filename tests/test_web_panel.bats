@@ -63,7 +63,7 @@
     [ "$(stat -c '%a' "$summary")" = "600" ]
     backup_count=$(find "$tmp/awg" -maxdepth 1 -name 'INSTALL_SUMMARY.txt.bak.*' | wc -l)
     [ "$backup_count" -eq 1 ]
-    grep -qF 'Public URL: https://64.112.125.125:8443' "$summary"
+    grep -qF 'Public URL: https://64.112.125.125:8443/' "$summary"
     grep -qF 'WARNING: Web Panel is publicly exposed' "$summary"
     grep -qF 'Super token: raw-super-token' "$summary"
     grep -qF 'Token file:' "$summary"
