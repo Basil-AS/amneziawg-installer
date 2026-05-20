@@ -163,10 +163,16 @@ sudo bash /root/awg/manage_amneziawg.sh server rotate-profile --preset default
 ### Public web panel, only when you really need it
 
 ```bash
-sudo bash install_amneziawg_en.sh --web-bind=0.0.0.0 --web-port=8443
+sudo bash install_amneziawg_en.sh \
+  --web-bind=0.0.0.0 \
+  --web-cert-mode=ip-domain \
+  --web-cert-provider=sslip.io \
+  --web-port=443
 ```
 
-> Exposing the web panel to the whole internet is not recommended. Prefer a firewall allowlist, VPN, SSH tunnel, or a reverse proxy with extra authentication. Keep the bearer token long and secret; do not publish `tokens.json`, client configs, QR codes, or `vpn://` URIs.
+For a public panel, the interactive wizard now defaults to trusted HTTPS through a pseudo-domain such as `https://64-112-125-125.sslip.io/` with Let's Encrypt on `443/tcp`. Port `80/tcp` must be reachable during the HTTP-01 challenge.
+
+> Exposing the web panel to the whole internet is not recommended. Prefer a firewall allowlist, VPN, SSH tunnel, or a reverse proxy with extra authentication. Public self-signed mode is not recommended: browsers and WG Tunnel URL Import may reject the certificate. Keep the bearer token long and secret; do not publish `tokens.json`, client configs, QR codes, or `vpn://` URIs.
 
 ## Common installation scenarios
 
@@ -180,8 +186,11 @@ sudo bash install_amneziawg_en.sh --web-bind=10.9.9.1 --web-port=8443
 # Web panel on localhost only, when you want an SSH tunnel
 sudo bash install_amneziawg_en.sh --web-bind=127.0.0.1 --web-port=8443
 
-# Public web panel — only when you intentionally want one
-sudo bash install_amneziawg_en.sh --web-bind=0.0.0.0 --web-port=8443
+# Public web panel with trusted HTTPS through sslip.io + Let's Encrypt
+sudo bash install_amneziawg_en.sh --web-bind=0.0.0.0 --web-cert-mode=ip-domain --web-cert-provider=sslip.io --web-port=443
+
+# Public web panel with your own domain + Let's Encrypt
+sudo bash install_amneziawg_en.sh --web-bind=0.0.0.0 --web-cert-mode=letsencrypt --web-domain=vpn.example.com --web-port=443
 
 # IPv6 through NDP proxy
 sudo bash install_amneziawg_en.sh --enable-native-ipv6 --ipv6-mode=ndp
@@ -210,7 +219,7 @@ sudo /root/awg/manage_amneziawg.sh p2p toggle CLIENT_NAME
 | --- | --- | --- |
 | `--yes` | Run without interactive confirmations | `sudo bash install_amneziawg_en.sh --yes` |
 | `--web-bind=ADDR` | Address the web panel listens on. Default: VPN gateway `10.9.9.1` | `--web-bind=0.0.0.0` |
-| `--web-port=PORT` | Web panel HTTPS port | `--web-port=8443` |
+| `--web-port=PORT` | Web panel HTTPS port. VPN-only/localhost default `8443`; public trusted HTTPS default `443` in the wizard/fresh install | `--web-port=443` |
 | `--disable-web` | Do not deploy the web panel | `--disable-web` |
 | `--enable-native-ipv6` | Compatibility alias for enabling client IPv6 | `--enable-native-ipv6` |
 | `--disallow-ipv6` | Force-disable IPv6 | `--disallow-ipv6` |
@@ -228,7 +237,9 @@ sudo /root/awg/manage_amneziawg.sh p2p toggle CLIENT_NAME
 | `--preset=TYPE` | Obfuscation preset: `default` or `mobile` | `--preset=mobile` |
 | `--no-tweaks` | Skip hardening/optimization | `--no-tweaks` |
 | `--disable-ufw` | Do not enable UFW when firewall/NAT are managed externally | `AWG_DISABLE_UFW=1` |
-| `--web-cert-mode=selfsigned\|custom\|letsencrypt\|ip-domain` | Web panel TLS mode. Default `selfsigned`; `custom` requires `--web-cert-file`/`--web-key-file`; Let's Encrypt requires reachable `80/tcp` | `AWG_WEB_CERT_MODE` |
+| `--web-cert-mode=selfsigned\|custom\|letsencrypt\|ip-domain` | Web panel TLS mode. Default `selfsigned` for VPN-only/localhost; public wizard default `ip-domain` (`sslip.io` + Let's Encrypt). `custom` requires `--web-cert-file`/`--web-key-file`; Let's Encrypt requires reachable `80/tcp` | `--web-cert-mode=ip-domain` |
+| `--web-cert-provider=sslip.io\|nip.io` | Provider for `ip-domain`; `64.112.125.125` becomes `64-112-125-125.sslip.io` | `--web-cert-provider=sslip.io` |
+| `--web-domain=DOMAIN` | Domain for `letsencrypt` or public URL with a custom cert | `--web-domain=vpn.example.com` |
 
 See `sudo bash install_amneziawg_en.sh --help` for the full list.
 

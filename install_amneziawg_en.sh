@@ -34,7 +34,7 @@ MANAGE_SCRIPT_PATH="$AWG_DIR/manage_amneziawg.sh"
 # are used first; remote download is allowed only with pinned SHA256 or explicit
 # AWG_ALLOW_UNVERIFIED_DOWNLOAD=1 for development.
 declare -A AWG_ASSET_SHA256=(
-    ["awg_common_en.sh"]="361159d8e04a9bac6b45bc33d7581d6356c9acde4febbcc5ba4446332c641163"
+    ["awg_common_en.sh"]="568c2193166b9aaa365e311a559aa83fff96f9457ae01878ce1e1d88edc9c093"
     ["manage_amneziawg_en.sh"]="22df56b7a51129262190569e0e7e5eecf93ef6865f12019dfad36f9176cebe61"
     ["web/server.py"]="671f01c4be25f8797e807fb444e8b3784c49bf08823448e50870a39239a20f36"
     ["web/index.html"]="a41e458c832f82d8d834ecc67f2cb35da4eed11bf7b76acd493413d082de0483"
@@ -55,7 +55,7 @@ CLI_ROUTING_MODE="default"; CLI_CUSTOM_ROUTES=""; CLI_ENDPOINT=""; CLI_NO_TWEAKS
 CLI_ENABLE_NATIVE_IPV6=0; CLI_IPV6_MODE=""; CLI_IPV6_SUBNET=""; CLI_UPGRADE_IPV6=0
 CLI_P2P_BASE_PORT=""; CLI_P2P_PORTS_PER_CLIENT=""
 CLI_FULLCONE_NAT=0; CLI_WEB_PORT=""; CLI_WEB_BIND=""; CLI_DISABLE_WEB=0
-CLI_WEB_CERT_MODE=""; CLI_WEB_DOMAIN=""; CLI_WEB_CERT_FILE=""; CLI_WEB_KEY_FILE=""; CLI_WEB_CERT_PROVIDER=""
+CLI_WEB_CERT_MODE=""; CLI_WEB_DOMAIN=""; CLI_WEB_CERT_FILE=""; CLI_WEB_KEY_FILE=""; CLI_WEB_CERT_PROVIDER=""; CLI_WEB_LE_EMAIL=""
 CLI_ENABLE_ADGUARD=0; CLI_DISABLE_ADGUARD=0; CLI_ADGUARD_PORT=""; CLI_DNS_MODE=""
 CLI_SERVER_NAME=""
 CLI_PRESET=""; CLI_JC=""; CLI_JMIN=""; CLI_JMAX=""
@@ -68,6 +68,7 @@ CLI_PRESET=""; CLI_JC=""; CLI_JMIN=""; CLI_JMAX=""
 [[ -n "${AWG_WEB_ENABLED+x}" ]] && ENV_AWG_WEB_ENABLED_SET=1 || ENV_AWG_WEB_ENABLED_SET=0
 [[ -n "${AWG_WEB_BIND+x}" ]] && ENV_AWG_WEB_BIND_SET=1 || ENV_AWG_WEB_BIND_SET=0
 [[ -n "${AWG_WEB_PORT+x}" ]] && ENV_AWG_WEB_PORT_SET=1 || ENV_AWG_WEB_PORT_SET=0
+[[ -n "${AWG_WEB_CERT_MODE+x}" ]] && ENV_AWG_WEB_CERT_MODE_SET=1 || ENV_AWG_WEB_CERT_MODE_SET=0
 [[ -n "${AWG_ADGUARD_ENABLED+x}" ]] && ENV_AWG_ADGUARD_ENABLED_SET=1 || ENV_AWG_ADGUARD_ENABLED_SET=0
 [[ -n "${AWG_ADGUARD_PORT+x}" ]] && ENV_AWG_ADGUARD_PORT_SET=1 || ENV_AWG_ADGUARD_PORT_SET=0
 [[ -n "${AWG_P2P_ENABLED+x}" ]] && ENV_AWG_P2P_ENABLED_SET=1 || ENV_AWG_P2P_ENABLED_SET=0
@@ -112,6 +113,7 @@ while [[ $# -gt 0 ]]; do
         --web-cert-file=*) CLI_WEB_CERT_FILE="${1#*=}" ;;
         --web-key-file=*) CLI_WEB_KEY_FILE="${1#*=}" ;;
         --web-cert-provider=*) CLI_WEB_CERT_PROVIDER="${1#*=}" ;;
+        --web-le-email=*) CLI_WEB_LE_EMAIL="${1#*=}" ;;
         --enable-adguard) CLI_ENABLE_ADGUARD=1 ;;
         --disable-adguard) CLI_DISABLE_ADGUARD=1 ;;
         --adguard-port=*) CLI_ADGUARD_PORT="${1#*=}" ;;
@@ -330,6 +332,7 @@ Options:
   --web-cert-file=PATH  fullchain.pem for --web-cert-mode=custom
   --web-key-file=PATH   privkey.pem for --web-cert-mode=custom
   --web-cert-provider=sslip.io|nip.io  ip-domain provider (default: sslip.io)
+  --web-le-email=EMAIL  Email for Let's Encrypt notices (optional)
   --disable-web         Do not install/start the web panel
   --enable-adguard      Install AdGuard Home and give clients DNS 10.9.9.1
   --disable-adguard     Do not install AdGuard Home and use system DNS
@@ -513,6 +516,24 @@ check_port_availability() {
     fi
 }
 
+check_web_port_availability() {
+    [[ "${AWG_WEB_ENABLED:-1}" -eq 1 ]] || return 0
+    is_public_web_bind || return 0
+    [[ "${AWG_WEB_PORT:-8443}" == "443" ]] || return 0
+    log "Checking port 443/tcp for public Web Panel..."
+    if ss -ltn 2>/dev/null | awk '{print $4}' | grep -Eq '(^|:)443$'; then
+        if [[ "$AUTO_YES" -eq 0 && -z "$CLI_WEB_PORT" && "$ENV_AWG_WEB_PORT_SET" -eq 0 ]]; then
+            local fallback
+            read -rp "Port 443/tcp is busy. Use 8443 instead of 443? [y/N]: " fallback < /dev/tty
+            if [[ "$fallback" =~ ^[Yy]$ ]]; then
+                AWG_WEB_PORT=8443
+                return 0
+            fi
+        fi
+        die "Port 443/tcp is busy; choose another --web-port or free the port."
+    fi
+}
+
 install_packages() {
     local packages=("$@")
     local to_install=()
@@ -621,7 +642,7 @@ safe_load_config() {
                 AWG_H1|AWG_H2|AWG_H3|AWG_H4|AWG_I1|AWG_PRESET|NO_TWEAKS|AWG_APPLY_MODE|\
                 AWG_IPV6_ENABLED|AWG_IPV6_MODE|AWG_IPV6_SUBNET|AWG_IPV6_NDP_PROXY|\
                 AWG_P2P_ENABLED|AWG_P2P_BASE_PORT|AWG_P2P_PORTS_PER_CLIENT|AWG_FULLCONE_NAT|AWG_DISABLE_UFW|\
-                AWG_WEB_ENABLED|AWG_WEB_PORT|AWG_WEB_BIND|AWG_WEB_CERT_MODE|AWG_WEB_DOMAIN|AWG_WEB_CERT_FILE|AWG_WEB_KEY_FILE|AWG_WEB_CERT_PROVIDER|\
+                AWG_WEB_ENABLED|AWG_WEB_PORT|AWG_WEB_BIND|AWG_WEB_CERT_MODE|AWG_WEB_DOMAIN|AWG_WEB_CERT_FILE|AWG_WEB_KEY_FILE|AWG_WEB_CERT_PROVIDER|AWG_WEB_LE_EMAIL|AWG_WEB_PUBLIC_URL|\
                 AWG_DNS_MODE|AWG_CUSTOM_DNS|AWG_ADGUARD_ENABLED|AWG_ADGUARD_PORT|AWG_ADGUARD_DIR|\
                 AWG_SERVER_NAME)
                     export "$key=$value"
@@ -1046,6 +1067,127 @@ warn_public_web_bind() {
     log_warn "================================================================"
 }
 
+is_public_web_bind() {
+    [[ "${AWG_WEB_BIND:-}" == "0.0.0.0" || "${AWG_WEB_BIND:-}" == "::" ]]
+}
+
+is_trusted_web_cert_mode() {
+    case "${AWG_WEB_CERT_MODE:-selfsigned}" in
+        ip-domain|letsencrypt|custom) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+generate_ip_domain() {
+    local endpoint="$1" provider="$2"
+    [[ "$provider" == "sslip.io" || "$provider" == "nip.io" ]] || return 1
+    [[ "$endpoint" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || return 1
+    local IFS=. octet
+    for octet in $endpoint; do
+        [[ "$octet" =~ ^[0-9]+$ && "$octet" -le 255 ]] || return 1
+    done
+    printf '%s.%s\n' "${endpoint//./-}" "$provider"
+}
+
+format_https_url() {
+    local host="$1" port="${2:-443}"
+    [[ -n "$host" ]] || return 1
+    if [[ "$port" == "443" ]]; then
+        printf 'https://%s/\n' "$host"
+    else
+        printf 'https://%s:%s/\n' "$host" "$port"
+    fi
+}
+
+apply_web_port_default() {
+    local config_exists="${1:-0}"
+    [[ "${AWG_WEB_ENABLED:-1}" -eq 1 ]] || return 0
+    [[ "$config_exists" -eq 0 ]] || return 0
+    [[ -z "$CLI_WEB_PORT" && "$ENV_AWG_WEB_PORT_SET" -eq 0 ]] || return 0
+    if is_public_web_bind && is_trusted_web_cert_mode; then
+        AWG_WEB_PORT=443
+    else
+        AWG_WEB_PORT=8443
+    fi
+}
+
+update_web_public_url() {
+    AWG_WEB_PUBLIC_URL=""
+    [[ "${AWG_WEB_ENABLED:-1}" -eq 1 ]] || return 0
+    is_public_web_bind || return 0
+    local host="${AWG_WEB_DOMAIN:-${AWG_ENDPOINT:-}}"
+    [[ -n "$host" ]] || return 0
+    AWG_WEB_PUBLIC_URL="$(format_https_url "$host" "${AWG_WEB_PORT:-8443}")"
+}
+
+prompt_web_certificate() {
+    [[ "$AUTO_YES" -eq 0 ]] || return 0
+    [[ "${AWG_WEB_ENABLED:-1}" -eq 1 ]] || return 0
+    is_public_web_bind || return 0
+    [[ -z "$CLI_WEB_CERT_MODE" && "$ENV_AWG_WEB_CERT_MODE_SET" -eq 0 ]] || return 0
+    local cert_choice provider_choice domain_input cert_input key_input email_input generated_domain
+    echo ""
+    echo "HTTPS setup for public Web Panel:"
+    echo "  1) Automatic IP domain via sslip.io + Let's Encrypt - recommended"
+    if generated_domain=$(generate_ip_domain "${AWG_ENDPOINT:-}" "sslip.io"); then
+        echo "     Example: $(format_https_url "$generated_domain" 443)"
+    else
+        echo "     Requires an IPv4 endpoint; choose option 2 for a real domain endpoint"
+    fi
+    echo "  2) Your domain + Let's Encrypt"
+    echo "     Example: https://vpn.example.com/"
+    echo "  3) Your certificate and key"
+    echo "  4) Self-signed certificate"
+    echo "     Works, but browsers and WG Tunnel may complain"
+    read -rp "Your choice [1]: " cert_choice < /dev/tty
+    case "${cert_choice:-1}" in
+        1)
+            AWG_WEB_CERT_MODE="ip-domain"
+            echo ""
+            echo "Pseudo-domain provider:"
+            echo "  1) sslip.io - recommended"
+            echo "  2) nip.io"
+            read -rp "Your choice [1]: " provider_choice < /dev/tty
+            case "${provider_choice:-1}" in
+                1|sslip.io) AWG_WEB_CERT_PROVIDER="sslip.io" ;;
+                2|nip.io) AWG_WEB_CERT_PROVIDER="nip.io" ;;
+                *) log_warn "Unknown provider '$provider_choice', using sslip.io."; AWG_WEB_CERT_PROVIDER="sslip.io" ;;
+            esac
+            AWG_WEB_DOMAIN="$(generate_ip_domain "${AWG_ENDPOINT:-}" "$AWG_WEB_CERT_PROVIDER")" || die "ip-domain requires an IPv4 endpoint. Set an IPv4 endpoint or choose your own domain."
+            AWG_WEB_PUBLIC_URL="$(format_https_url "$AWG_WEB_DOMAIN" 443)"
+            log "Web Panel domain: $AWG_WEB_DOMAIN"
+            log_warn "Let's Encrypt requires reachable port 80/tcp during validation; pseudo-domain depends on ${AWG_WEB_CERT_PROVIDER} and its rate limits."
+            ;;
+        2)
+            AWG_WEB_CERT_MODE="letsencrypt"
+            while [[ -z "${AWG_WEB_DOMAIN:-}" ]]; do
+                read -rp "Enter Web Panel domain (for example vpn.example.com): " domain_input < /dev/tty
+                AWG_WEB_DOMAIN="$domain_input"
+            done
+            read -rp "Email for Let's Encrypt notices, Enter to skip: " email_input < /dev/tty
+            [[ -n "$email_input" ]] && AWG_WEB_LE_EMAIL="$email_input"
+            ;;
+        3)
+            AWG_WEB_CERT_MODE="custom"
+            while [[ ! -f "${AWG_WEB_CERT_FILE:-}" ]]; do
+                read -rp "Path to fullchain/cert.pem: " cert_input < /dev/tty
+                AWG_WEB_CERT_FILE="$cert_input"
+            done
+            while [[ ! -f "${AWG_WEB_KEY_FILE:-}" ]]; do
+                read -rp "Path to private key: " key_input < /dev/tty
+                AWG_WEB_KEY_FILE="$key_input"
+            done
+            read -rp "Web Panel domain/Public URL host for the certificate: " domain_input < /dev/tty
+            [[ -n "$domain_input" ]] && AWG_WEB_DOMAIN="$domain_input"
+            ;;
+        4|selfsigned)
+            AWG_WEB_CERT_MODE="selfsigned"
+            log_warn "Public Web Panel with self-signed TLS is not recommended: browsers and WG Tunnel URL Import may reject the certificate."
+            ;;
+        *) log_warn "Unknown TLS mode '$cert_choice', using ip-domain."; AWG_WEB_CERT_MODE="ip-domain"; AWG_WEB_CERT_PROVIDER="sslip.io"; AWG_WEB_DOMAIN="$(generate_ip_domain "${AWG_ENDPOINT:-}" "$AWG_WEB_CERT_PROVIDER")" || die "ip-domain requires an IPv4 endpoint." ;;
+    esac
+}
+
 prompt_web_panel() {
     [[ "$AUTO_YES" -eq 0 ]] || { warn_public_web_bind; return 0; }
     [[ "$CLI_DISABLE_WEB" -eq 0 ]] || return 0
@@ -1073,6 +1215,8 @@ prompt_web_panel() {
             *) log_warn "Unknown Web Panel access '$web_choice', using VPN-only."; AWG_WEB_BIND="10.9.9.1" ;;
         esac
     fi
+    prompt_web_certificate
+    apply_web_port_default 0
     warn_public_web_bind
     if [[ "$AWG_WEB_BIND" == "0.0.0.0" || "$AWG_WEB_BIND" == "::" ]]; then
         read -rp "You are exposing Web Panel to the Internet. Continue? type YES: " public_confirm < /dev/tty
@@ -2189,6 +2333,8 @@ initialize_setup() {
     AWG_WEB_CERT_FILE="${AWG_WEB_CERT_FILE:-}"
     AWG_WEB_KEY_FILE="${AWG_WEB_KEY_FILE:-}"
     AWG_WEB_CERT_PROVIDER="${AWG_WEB_CERT_PROVIDER:-sslip.io}"
+    AWG_WEB_LE_EMAIL="${AWG_WEB_LE_EMAIL:-}"
+    AWG_WEB_PUBLIC_URL="${AWG_WEB_PUBLIC_URL:-}"
     AWG_DNS_MODE="adguard"
     AWG_CUSTOM_DNS="1.1.1.1"
     AWG_ADGUARD_ENABLED=${AWG_ADGUARD_ENABLED:-1}
@@ -2226,6 +2372,8 @@ initialize_setup() {
         AWG_WEB_CERT_FILE=${AWG_WEB_CERT_FILE:-}
         AWG_WEB_KEY_FILE=${AWG_WEB_KEY_FILE:-}
         AWG_WEB_CERT_PROVIDER=${AWG_WEB_CERT_PROVIDER:-sslip.io}
+        AWG_WEB_LE_EMAIL=${AWG_WEB_LE_EMAIL:-}
+        AWG_WEB_PUBLIC_URL=${AWG_WEB_PUBLIC_URL:-}
         AWG_DNS_MODE=${AWG_DNS_MODE:-adguard}
         AWG_CUSTOM_DNS=${AWG_CUSTOM_DNS:-1.1.1.1}
         AWG_ADGUARD_ENABLED=${AWG_ADGUARD_ENABLED:-1}
@@ -2254,6 +2402,7 @@ initialize_setup() {
     [[ -n "$CLI_WEB_CERT_FILE" ]] && AWG_WEB_CERT_FILE="$CLI_WEB_CERT_FILE"
     [[ -n "$CLI_WEB_KEY_FILE" ]] && AWG_WEB_KEY_FILE="$CLI_WEB_KEY_FILE"
     [[ -n "$CLI_WEB_CERT_PROVIDER" ]] && AWG_WEB_CERT_PROVIDER="$CLI_WEB_CERT_PROVIDER"
+    [[ -n "$CLI_WEB_LE_EMAIL" ]] && AWG_WEB_LE_EMAIL="$CLI_WEB_LE_EMAIL"
     [[ -n "$CLI_ADGUARD_PORT" ]] && AWG_ADGUARD_PORT="$CLI_ADGUARD_PORT"
     [[ -n "$CLI_SERVER_NAME" ]] && AWG_SERVER_NAME="$CLI_SERVER_NAME"
     [[ -n "$CLI_PRESET" ]] && AWG_PRESET="$CLI_PRESET"
@@ -2349,6 +2498,20 @@ initialize_setup() {
         fi
     fi
 
+    apply_web_port_default "$config_exists"
+    case "${AWG_WEB_CERT_MODE:-selfsigned}" in selfsigned|custom|letsencrypt|ip-domain) ;; *) die "Invalid --web-cert-mode=${AWG_WEB_CERT_MODE}" ;; esac
+    case "${AWG_WEB_CERT_PROVIDER:-sslip.io}" in sslip.io|nip.io) ;; *) die "Invalid --web-cert-provider=${AWG_WEB_CERT_PROVIDER}" ;; esac
+    if [[ "${AWG_WEB_CERT_MODE:-selfsigned}" == "ip-domain" && -z "${AWG_WEB_DOMAIN:-}" ]]; then
+        AWG_WEB_DOMAIN="$(generate_ip_domain "${AWG_ENDPOINT:-}" "${AWG_WEB_CERT_PROVIDER:-sslip.io}")" || die "--web-cert-mode=ip-domain requires IPv4 --endpoint."
+    fi
+    if [[ "${AWG_WEB_CERT_MODE:-selfsigned}" == "letsencrypt" && -z "${AWG_WEB_DOMAIN:-}" ]]; then
+        die "--web-cert-mode=letsencrypt requires --web-domain=DOMAIN."
+    fi
+    if [[ "${AWG_WEB_CERT_MODE:-selfsigned}" == "custom" ]]; then
+        [[ -f "${AWG_WEB_CERT_FILE:-}" && -f "${AWG_WEB_KEY_FILE:-}" ]] || die "--web-cert-mode=custom requires existing --web-cert-file and --web-key-file."
+    fi
+    update_web_public_url
+
     # Default values
     if [[ "$DISABLE_IPV6" == "default" ]]; then DISABLE_IPV6=1; fi
     if [[ "$ALLOWED_IPS_MODE" == "default" ]]; then ALLOWED_IPS_MODE=2; fi
@@ -2376,6 +2539,7 @@ initialize_setup() {
     else
         log "AWG service is active — skipping port check."
     fi
+    check_web_port_availability
 
     # AWG 2.0 parameter generation
     # Regenerate if: first run OR explicit CLI override (--preset/--jc/--jmin/--jmax)
@@ -2423,6 +2587,8 @@ export AWG_WEB_DOMAIN='${AWG_WEB_DOMAIN}'
 export AWG_WEB_CERT_FILE='${AWG_WEB_CERT_FILE}'
 export AWG_WEB_KEY_FILE='${AWG_WEB_KEY_FILE}'
 export AWG_WEB_CERT_PROVIDER='${AWG_WEB_CERT_PROVIDER}'
+export AWG_WEB_LE_EMAIL='${AWG_WEB_LE_EMAIL}'
+export AWG_WEB_PUBLIC_URL='${AWG_WEB_PUBLIC_URL}'
 export AWG_DNS_MODE='${AWG_DNS_MODE}'
 export AWG_CUSTOM_DNS='${AWG_CUSTOM_DNS}'
 export AWG_ADGUARD_ENABLED=${AWG_ADGUARD_ENABLED}
@@ -2455,7 +2621,7 @@ EOF
     export AWG_IPV6_ENABLED AWG_IPV6_MODE AWG_IPV6_SUBNET AWG_IPV6_NDP_PROXY
     export AWG_P2P_ENABLED AWG_P2P_BASE_PORT AWG_P2P_PORTS_PER_CLIENT AWG_FULLCONE_NAT
     export AWG_WEB_ENABLED AWG_WEB_PORT AWG_WEB_BIND AWG_DISABLE_UFW
-    export AWG_WEB_CERT_MODE AWG_WEB_DOMAIN AWG_WEB_CERT_FILE AWG_WEB_KEY_FILE AWG_WEB_CERT_PROVIDER
+    export AWG_WEB_CERT_MODE AWG_WEB_DOMAIN AWG_WEB_CERT_FILE AWG_WEB_KEY_FILE AWG_WEB_CERT_PROVIDER AWG_WEB_LE_EMAIL AWG_WEB_PUBLIC_URL
     export AWG_DNS_MODE AWG_CUSTOM_DNS AWG_ADGUARD_ENABLED AWG_ADGUARD_PORT AWG_ADGUARD_DIR
     log "Port: ${AWG_PORT}/udp"
     log "Subnet: ${AWG_TUNNEL_SUBNET}"
@@ -3716,8 +3882,7 @@ EOF
 
 web_ip_domain() {
     local ip="${AWG_ENDPOINT:-}" provider="${AWG_WEB_CERT_PROVIDER:-sslip.io}"
-    [[ "$ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || return 1
-    printf '%s.%s\n' "${ip//./-}" "$provider"
+    generate_ip_domain "$ip" "$provider"
 }
 
 deploy_web_tls() {
@@ -3746,16 +3911,43 @@ deploy_web_tls() {
                 die "Port 80 is busy; certbot standalone cannot pass the challenge."
             fi
             install_packages certbot
-            if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q active; then
-                ufw allow 80/tcp comment "Temporary Let's Encrypt HTTP-01" || log_warn "Failed to allow 80/tcp in UFW."
+            local certbot_account_args=()
+            if [[ -n "${AWG_WEB_LE_EMAIL:-}" ]]; then
+                certbot_account_args=(--email "$AWG_WEB_LE_EMAIL")
+            else
+                certbot_account_args=(--register-unsafely-without-email)
             fi
-            certbot certonly --standalone --non-interactive --agree-tos --register-unsafely-without-email \
+            local added_ufw_http=0
+            if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q active; then
+                if ufw status 2>/dev/null | grep -Eq '(^|[[:space:]])80/tcp[[:space:]].*ALLOW'; then
+                    log "UFW already allows 80/tcp; no temporary rule added."
+                elif ufw allow 80/tcp comment "Temporary Let's Encrypt HTTP-01"; then
+                    added_ufw_http=1
+                else
+                    log_warn "Failed to allow 80/tcp in UFW."
+                fi
+            fi
+            certbot certonly --standalone --non-interactive --agree-tos "${certbot_account_args[@]}" \
                 -d "$domain" --deploy-hook "systemctl restart awg-web" || {
-                log_warn "Let's Encrypt issuance failed; falling back to self-signed certificate."
-                AWG_WEB_CERT_MODE="selfsigned"
-                deploy_web_tls "$web_dir"
-                return 0
+                if [[ "$added_ufw_http" -eq 1 ]]; then ufw delete allow 80/tcp 2>/dev/null || true; fi
+                if [[ "${AWG_CERT_FALLBACK_SELFSIGNED:-0}" == "1" ]]; then
+                    log_warn "Let's Encrypt issuance failed; self-signed fallback allowed by AWG_CERT_FALLBACK_SELFSIGNED=1."
+                    AWG_WEB_CERT_MODE="selfsigned"
+                    deploy_web_tls "$web_dir"
+                    return 0
+                fi
+                if [[ "$AUTO_YES" -eq 0 ]]; then
+                    local fallback
+                    read -rp "Let's Encrypt did not issue a certificate. Switch to self-signed? [y/N]: " fallback < /dev/tty
+                    if [[ "$fallback" =~ ^[Yy]$ ]]; then
+                        AWG_WEB_CERT_MODE="selfsigned"
+                        deploy_web_tls "$web_dir"
+                        return 0
+                    fi
+                fi
+                die "Let's Encrypt issuance failed; trusted HTTPS was not configured."
             }
+            if [[ "$added_ufw_http" -eq 1 ]]; then ufw delete allow 80/tcp 2>/dev/null || true; fi
             install -m 644 "/etc/letsencrypt/live/${domain}/fullchain.pem" "$web_dir/cert.pem" || die "Failed to install fullchain.pem"
             install -m 600 "/etc/letsencrypt/live/${domain}/privkey.pem" "$web_dir/key.pem" || die "Failed to install privkey.pem"
             ;;
@@ -4027,7 +4219,7 @@ PY
 write_install_summary() {
     local summary_path="$AWG_DIR/INSTALL_SUMMARY.txt"
     local tmp_path="$AWG_DIR/.INSTALL_SUMMARY.txt.tmp.$$"
-    local timestamp generated route_label server_v6 web_host
+    local timestamp generated route_label server_v6 web_host web_public_host trusted_https
     local web_public_url web_vpn_url web_local_url web_warning web_extra_url import_example
     local ag_password_display state_display ag_dns_listen ag_allowed_clients ufw_state firewall_resp
 
@@ -4038,6 +4230,11 @@ write_install_summary() {
     route_label="$(route_mode_label)"
     server_v6="$(server_ipv6_addr_for_summary)"
     web_host="${AWG_ENDPOINT:-<server>}"
+    web_public_host="${AWG_WEB_DOMAIN:-$web_host}"
+    case "${AWG_WEB_CERT_MODE:-selfsigned}" in
+        ip-domain|letsencrypt|custom) trusted_https="yes" ;;
+        *) trusted_https="no" ;;
+    esac
     web_public_url="not exposed"
     web_vpn_url="not exposed"
     web_local_url="not exposed"
@@ -4058,10 +4255,15 @@ write_install_summary() {
 
     if [[ "${AWG_WEB_ENABLED:-1}" -eq 1 ]]; then
         if [[ "${AWG_WEB_BIND:-}" == "0.0.0.0" || "${AWG_WEB_BIND:-}" == "::" ]]; then
-            web_public_url="https://${web_host}:${AWG_WEB_PORT:-8443}"
+            if [[ "${AWG_WEB_PORT:-8443}" == "443" ]]; then
+                web_public_url="https://${web_public_host}/"
+            else
+                web_public_url="https://${web_public_host}:${AWG_WEB_PORT:-8443}/"
+            fi
+            AWG_WEB_PUBLIC_URL="$web_public_url"
             web_vpn_url="https://${AWG_TUNNEL_SUBNET%/*}:${AWG_WEB_PORT:-8443}"
             web_warning="WARNING: Web Panel is publicly exposed"
-            import_example="https://${web_host}:${AWG_WEB_PORT:-8443}/import/my_phone/<token>"
+            import_example="${web_public_url}import/my_phone/<token>"
         elif [[ "${AWG_WEB_BIND:-}" == "127.0.0.1" || "${AWG_WEB_BIND:-}" == "::1" ]]; then
             web_local_url="https://${AWG_WEB_BIND}:${AWG_WEB_PORT:-8443}"
             web_extra_url="SSH tunnel: ssh -L ${AWG_WEB_PORT:-8443}:${AWG_WEB_BIND}:${AWG_WEB_PORT:-8443} root@${web_host}"
@@ -4115,8 +4317,12 @@ Super token: ${AWG_WEB_SUPER_TOKEN_ONCE:-not available here; reset with manage w
 Token file: ${AWG_DIR}/web/tokens.json
 TLS cert: ${AWG_DIR}/web/cert.pem
 TLS key: ${AWG_DIR}/web/key.pem
-Cert mode: ${AWG_WEB_CERT_MODE:-selfsigned}
+Certificate mode: ${AWG_WEB_CERT_MODE:-selfsigned}
+Certificate provider: ${AWG_WEB_CERT_PROVIDER:-none}
 Domain: ${AWG_WEB_DOMAIN:-none}
+Trusted HTTPS: ${trusted_https}
+Certificate file: ${AWG_DIR}/web/cert.pem
+Private key file: ${AWG_DIR}/web/key.pem
 Renewal note: Let's Encrypt modes install certbot renewal; deploy hook restarts awg-web.
 TLS warning: $(if [[ "${AWG_WEB_CERT_MODE:-selfsigned}" == "selfsigned" && ( "${AWG_WEB_BIND:-}" == "0.0.0.0" || "${AWG_WEB_BIND:-}" == "::" ) ]]; then echo "public self-signed TLS may be rejected by browsers/WG Tunnel"; else echo "none"; fi)
 
