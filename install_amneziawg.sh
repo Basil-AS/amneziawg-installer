@@ -84,7 +84,21 @@ _install_cleanup() {
     # Очистка временных файлов из awg_common.sh (если уже подключён через source)
     type _awg_cleanup &>/dev/null && _awg_cleanup
 }
-trap _install_cleanup EXIT INT TERM
+handle_interrupt() {
+    trap - INT TERM EXIT
+    echo >&2
+    if declare -F log_msg >/dev/null 2>&1; then
+        log_msg "WARN" "Установка прервана пользователем (Ctrl-C)."
+        log_msg "WARN" "Частичные файлы могут остаться в $AWG_DIR. Для очистки используйте: sudo bash ./install_amneziawg.sh --uninstall"
+    else
+        echo "WARN: Установка прервана пользователем (Ctrl-C)." >&2
+        echo "WARN: Частичные файлы могут остаться в $AWG_DIR. Для очистки используйте: sudo bash ./install_amneziawg.sh --uninstall" >&2
+    fi
+    _install_cleanup
+    exit 130
+}
+trap _install_cleanup EXIT
+trap handle_interrupt INT TERM
 
 # --- Обработка аргументов ---
 while [[ $# -gt 0 ]]; do
@@ -1226,9 +1240,9 @@ prompt_web_panel() {
     if [[ -z "$CLI_WEB_BIND" && "$ENV_AWG_WEB_BIND_SET" -eq 0 ]]; then
         echo ""
         echo "Доступ к Web Panel:"
-        echo "  1) VPN-only, 10.9.9.1 — безопасно по умолчанию"
-        echo "  2) localhost, 127.0.0.1 — только SSH tunnel"
-        echo "  3) public, 0.0.0.0 — доступ из интернета"
+        echo "  1) VPN-only, 10.9.9.1 — безопасно по умолчанию, порт 8443"
+        echo "  2) localhost, 127.0.0.1 — только SSH tunnel, порт 8443"
+        echo "  3) public, 0.0.0.0 — доступ из интернета, домен + HTTPS, порт 443"
         read -rp "Ваш выбор [1]: " web_choice < /dev/tty
         case "${web_choice:-1}" in
             1) AWG_WEB_BIND="10.9.9.1" ;;

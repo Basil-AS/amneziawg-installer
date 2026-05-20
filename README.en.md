@@ -76,7 +76,7 @@ sudo bash ./install_amneziawg.sh --yes --route-all --server-name="my-vpn"
 sudo bash ./install_amneziawg.sh
 ```
 
-The wizard asks for the important deployment choices before installation starts: server name, endpoint/public IP or auto-detect, route mode, `default|mobile` preset, IPv6 mode `routed|ndp|nat66`, IPv6 subnet for `routed`, web-panel exposure (`VPN-only`, `localhost`, `public`), web-panel HTTPS port, AdGuard Home, and P2P ports. It prints a final summary before installation; selected values are saved to `/root/awg/awgsetup_cfg.init` so reboot resume does not fall back to default preset/bind.
+The wizard asks for the important deployment choices before installation starts: server name, endpoint/public IP or auto-detect, route mode, `default|mobile` preset, IPv6 mode `routed|ndp|nat66`, IPv6 subnet for `routed`, web-panel exposure (`VPN-only`, `localhost`, `public`), web-panel HTTPS port, AdGuard Home, and P2P ports. Pressing Enter at the Web Panel access step keeps the safe VPN-only default `https://10.9.9.1:8443`; choose `public` for a public domain, where domain modes (`ip-domain`, `letsencrypt`, `custom`) default to `443`. It prints a final summary before installation; selected values are saved to `/root/awg/awgsetup_cfg.init` so reboot resume does not fall back to default preset/bind.
 
 ### Non-interactive install with flags
 
@@ -170,7 +170,7 @@ sudo bash install_amneziawg_en.sh \
   --web-port=443
 ```
 
-For a public panel, the interactive wizard now defaults to trusted HTTPS through a pseudo-domain such as `https://64-112-125-125.sslip.io/` with Let's Encrypt on `443/tcp`. Port `80/tcp` must be reachable during the HTTP-01 challenge.
+For a public panel, the interactive wizard now defaults to trusted HTTPS through a pseudo-domain such as `https://64-112-125-125.sslip.io/` with Let's Encrypt on `443/tcp`; the final URL for port `443` is shown without `:443`. Port `80/tcp` must be reachable during the HTTP-01 challenge. VPN-only and localhost stay on `8443` by default.
 
 > Exposing the web panel to the whole internet is not recommended. Prefer a firewall allowlist, VPN, SSH tunnel, or a reverse proxy with extra authentication. Public self-signed mode is not recommended: browsers and WG Tunnel URL Import may reject the certificate. Keep the bearer token long and secret; do not publish `tokens.json`, client configs, QR codes, or `vpn://` URIs.
 

@@ -76,7 +76,7 @@ sudo bash ./install_amneziawg.sh --yes --route-all --server-name="my-vpn"
 sudo bash ./install_amneziawg.sh
 ```
 
-Wizard спросит важные параметры до начала установки: имя сервера, endpoint/public IP или автоопределение, route mode, preset `default|mobile`, IPv6 mode `routed|ndp|nat66`, IPv6 subnet для `routed`, режим доступа к web-panel (`VPN-only`, `localhost`, `public`), HTTPS-порт web-panel, AdGuard Home и P2P-порты. Перед установкой будет показан итоговый summary; выбранные значения сохраняются в `/root/awg/awgsetup_cfg.init`, чтобы resume после reboot не вернулся к default preset/bind.
+Wizard спросит важные параметры до начала установки: имя сервера, endpoint/public IP или автоопределение, route mode, preset `default|mobile`, IPv6 mode `routed|ndp|nat66`, IPv6 subnet для `routed`, режим доступа к web-panel (`VPN-only`, `localhost`, `public`), HTTPS-порт web-panel, AdGuard Home и P2P-порты. Enter на шаге доступа к Web Panel оставляет безопасный VPN-only default `https://10.9.9.1:8443`; для публичного домена нужно выбрать `public`, тогда domain modes (`ip-domain`, `letsencrypt`, `custom`) по умолчанию используют `443`. Перед установкой будет показан итоговый summary; выбранные значения сохраняются в `/root/awg/awgsetup_cfg.init`, чтобы resume после reboot не вернулся к default preset/bind.
 
 ### Non-interactive install через flags
 
@@ -152,7 +152,7 @@ sudo bash install_amneziawg.sh \
   --web-port=443
 ```
 
-Интерактивный wizard для публичной панели по умолчанию предлагает trusted HTTPS через pseudo-domain вида `https://64-112-125-125.sslip.io/` и Let's Encrypt на `443/tcp`. Для этого порт `80/tcp` должен быть доступен на время HTTP-01 проверки.
+Интерактивный wizard для публичной панели по умолчанию предлагает trusted HTTPS через pseudo-domain вида `https://64-112-125-125.sslip.io/` и Let's Encrypt на `443/tcp`; итоговый URL для port `443` пишется без `:443`. Для этого порт `80/tcp` должен быть доступен на время HTTP-01 проверки. VPN-only и localhost остаются на `8443` по умолчанию.
 
 > Открывать web-panel всему интернету не рекомендуется. Лучше использовать firewall allowlist, VPN, SSH tunnel или reverse proxy с дополнительной авторизацией. Публичный self-signed режим не рекомендуется: браузеры и WG Tunnel URL Import могут отклонять сертификат. Bearer token должен быть длинным и секретным; не публикуйте `tokens.json`, client configs, QR и `vpn://` URI.
 

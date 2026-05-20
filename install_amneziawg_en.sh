@@ -84,7 +84,21 @@ _install_cleanup() {
     # Clean up temporary files from awg_common.sh (if already sourced)
     type _awg_cleanup &>/dev/null && _awg_cleanup
 }
-trap _install_cleanup EXIT INT TERM
+handle_interrupt() {
+    trap - INT TERM EXIT
+    echo >&2
+    if declare -F log_msg >/dev/null 2>&1; then
+        log_msg "WARN" "Installation interrupted by user (Ctrl-C)."
+        log_msg "WARN" "Partial files may remain in $AWG_DIR. To clean up, run: sudo bash ./install_amneziawg.sh --uninstall"
+    else
+        echo "WARN: Installation interrupted by user (Ctrl-C)." >&2
+        echo "WARN: Partial files may remain in $AWG_DIR. To clean up, run: sudo bash ./install_amneziawg.sh --uninstall" >&2
+    fi
+    _install_cleanup
+    exit 130
+}
+trap _install_cleanup EXIT
+trap handle_interrupt INT TERM
 
 # --- Argument processing ---
 while [[ $# -gt 0 ]]; do
@@ -1231,9 +1245,9 @@ prompt_web_panel() {
     if [[ -z "$CLI_WEB_BIND" && "$ENV_AWG_WEB_BIND_SET" -eq 0 ]]; then
         echo ""
         echo "Web Panel access:"
-        echo "  1) VPN-only, 10.9.9.1 - safe default"
-        echo "  2) localhost, 127.0.0.1 - SSH tunnel only"
-        echo "  3) public, 0.0.0.0 - reachable from the Internet"
+        echo "  1) VPN-only, 10.9.9.1 - safe default, port 8443"
+        echo "  2) localhost, 127.0.0.1 - SSH tunnel only, port 8443"
+        echo "  3) public, 0.0.0.0 - Internet access, domain + HTTPS, port 443"
         read -rp "Your choice [1]: " web_choice < /dev/tty
         case "${web_choice:-1}" in
             1) AWG_WEB_BIND="10.9.9.1" ;;
