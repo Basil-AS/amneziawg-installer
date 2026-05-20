@@ -401,6 +401,8 @@ PY
     local app="$BATS_TEST_DIRNAME/../web/app.js"
     grep -qF 'data-action="download-config"' "$app"
     grep -qF 'data-action="copy-config"' "$app"
+    grep -qF 'copy-import-url' "$app"
+    grep -qF 'regenerate-config' "$app"
     grep -qF 'copy-vpnuri' "$app"
     grep -qF 'Download .conf' "$app"
     grep -qF 'Copy config' "$app"
@@ -748,8 +750,30 @@ PY
     grep -qF 'const preservedMenu = openClientMenu' "$root/web/app.js"
     grep -qF 'menu.classList.remove("hidden")' "$root/web/app.js"
     grep -qF 'client-card-menu-open' "$root/web/app.js"
+    grep -qF 'clientActionMenuPortal' "$root/web/app.js"
+    grep -qF 'getBoundingClientRect' "$root/web/app.js"
+    grep -qF 'window.innerHeight' "$root/web/app.js"
+    grep -qF 'window.innerWidth' "$root/web/app.js"
+    grep -qF 'spaceBelow < height + gap' "$root/web/app.js"
+    grep -qF 'event.key === "Escape"' "$root/web/app.js"
     grep -qF 'p2p-summary' "$root/web/app.js"
     grep -qF 'p2p-chip' "$root/web/app.js"
+    grep -qF 'ports.map(port => `<span class="p2p-chip">' "$root/web/app.js"
+    if grep -qF 'ports.slice(0, 2)' "$root/web/app.js"; then
+        fail "P2P ports must not be truncated"
+    fi
+    if grep -qF '+${ports.length' "$root/web/app.js"; then
+        fail "P2P ports must not render +N overflow chips"
+    fi
+    grep -qF 'client-card-chart-bg' "$root/web/app.js"
+    grep -qF 'clientCharts' "$root/web/app.js"
+    grep -qF 'background: "transparent"' "$root/web/app.js"
+    grep -qF '.client-card-chart-bg' "$root/web/style.css"
+    grep -qF 'pointer-events:none' "$root/web/style.css"
+    grep -qF 'z-index:10' "$root/web/style.css"
+    grep -qF 'z-index:1000' "$root/web/style.css"
+    grep -qF '@media(max-width:640px)' "$root/web/style.css"
+    grep -qF 'grid-template-columns:repeat(4,minmax(0,1fr))' "$root/web/style.css"
     grep -qF 'z-index:200' "$root/web/style.css"
     grep -qF -- '--accent:#b91c1c' "$root/web/style.css"
     grep -qF '/api/server/rotate-profile' "$root/web/app.js"
@@ -770,6 +794,12 @@ PY
     if grep -F 'localStorage.setItem("i1' "$root/web/app.js" >/dev/null; then
         fail "app.js must not store I1 in localStorage"
     fi
+}
+
+@test "web JavaScript assets pass syntax check when node is available" {
+    command -v node &>/dev/null || skip "node not available"
+    node --check "$BATS_TEST_DIRNAME/../web/app.js"
+    node --check "$BATS_TEST_DIRNAME/../web/awg_i1.js"
 }
 
 @test "server rotate-profile API is super-only and passes I1 overrides via temp file" {
