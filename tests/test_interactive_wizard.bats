@@ -8,6 +8,8 @@
     grep -qF 'Введите внешний IP/домен сервера или Enter для автоопределения:' "$installer"
     grep -qF 'Выберите preset параметров AWG:' "$installer"
     grep -qF 'Доступ к Web Panel:' "$installer"
+    grep -qF 'VPN-only, 10.9.9.1 — безопасно по умолчанию, порт 8443' "$installer"
+    grep -qF 'public, 0.0.0.0 — доступ из интернета, домен + HTTPS, порт 443' "$installer"
     grep -qF 'Настройка HTTPS для публичной Web Panel:' "$installer"
     grep -qF 'Автоматический домен по IP через sslip.io + Let' "$installer"
     grep -qF 'AWG_WEB_CERT_MODE="ip-domain"' "$installer"
@@ -86,6 +88,8 @@
     grep -qF 'Enter server public IP/domain or press Enter for auto-detect:' "$installer"
     grep -qF 'Choose AWG parameter preset:' "$installer"
     grep -qF 'Web Panel access:' "$installer"
+    grep -qF 'VPN-only, 10.9.9.1 - safe default, port 8443' "$installer"
+    grep -qF 'public, 0.0.0.0 - Internet access, domain + HTTPS, port 443' "$installer"
     grep -qF 'HTTPS setup for public Web Panel:' "$installer"
     grep -qF 'Automatic IP domain via sslip.io + Let' "$installer"
     grep -qF 'AWG_WEB_CERT_MODE="ip-domain"' "$installer"
@@ -126,6 +130,22 @@
     grep -qF 'ip-domain' "$en"
 }
 
+@test "installer handles Ctrl-C with explicit interrupt trap and exit 130" {
+    local ru="$BATS_TEST_DIRNAME/../install_amneziawg.sh"
+    local en="$BATS_TEST_DIRNAME/../install_amneziawg_en.sh"
+
+    grep -qF 'handle_interrupt()' "$ru"
+    grep -qF 'trap handle_interrupt INT TERM' "$ru"
+    grep -qF 'exit 130' "$ru"
+    grep -qF 'Установка прервана пользователем (Ctrl-C).' "$ru"
+    grep -qF 'sudo bash ./install_amneziawg.sh --uninstall' "$ru"
+
+    grep -qF 'handle_interrupt()' "$en"
+    grep -qF 'trap handle_interrupt INT TERM' "$en"
+    grep -qF 'exit 130' "$en"
+    grep -qF 'Installation interrupted by user (Ctrl-C).' "$en"
+}
+
 @test "web panel HTTPS port validator allows 443 while VPN UDP port keeps user range" {
     local installer="$BATS_TEST_DIRNAME/../install_amneziawg.sh"
     run bash -c '
@@ -160,6 +180,46 @@
     ' _ "$installer"
     [ "$status" -eq 97 ]
     [[ "$output" == *"1-65535"* ]]
+}
+
+@test "web panel port defaults follow exposure and certificate mode" {
+    local installer="$BATS_TEST_DIRNAME/../install_amneziawg.sh"
+    run bash -c '
+        log_warn(){ :; }
+        die(){ echo "$*" >&2; return 97; }
+        source <(sed -n "/^is_public_web_bind() {$/,/^prompt_web_panel() {$/p" "$1" | head -n -1)
+
+        CLI_WEB_PORT=""; ENV_AWG_WEB_PORT_SET=0; AWG_WEB_ENABLED=1
+
+        AWG_WEB_BIND="10.9.9.1"; AWG_WEB_CERT_MODE="selfsigned"; AWG_WEB_PORT=""
+        apply_web_port_default 0
+        [ "$AWG_WEB_PORT" = "8443" ]
+
+        AWG_WEB_BIND="127.0.0.1"; AWG_WEB_CERT_MODE="selfsigned"; AWG_WEB_PORT=""
+        apply_web_port_default 0
+        [ "$AWG_WEB_PORT" = "8443" ]
+
+        AWG_WEB_BIND="0.0.0.0"; AWG_WEB_CERT_MODE="ip-domain"; AWG_WEB_PORT=""
+        apply_web_port_default 0
+        [ "$AWG_WEB_PORT" = "443" ]
+
+        AWG_WEB_BIND="0.0.0.0"; AWG_WEB_CERT_MODE="letsencrypt"; AWG_WEB_PORT=""
+        apply_web_port_default 0
+        [ "$AWG_WEB_PORT" = "443" ]
+
+        AWG_WEB_BIND="0.0.0.0"; AWG_WEB_CERT_MODE="custom"; AWG_WEB_PORT=""
+        apply_web_port_default 0
+        [ "$AWG_WEB_PORT" = "443" ]
+
+        AWG_WEB_BIND="0.0.0.0"; AWG_WEB_CERT_MODE="selfsigned"; AWG_WEB_PORT=""
+        apply_web_port_default 0
+        [ "$AWG_WEB_PORT" = "8443" ]
+
+        CLI_WEB_PORT="8443"; AWG_WEB_BIND="0.0.0.0"; AWG_WEB_CERT_MODE="ip-domain"; AWG_WEB_PORT="8443"
+        apply_web_port_default 0
+        [ "$AWG_WEB_PORT" = "8443" ]
+    ' _ "$installer"
+    [ "$status" -eq 0 ]
 }
 
 @test "pseudo-domain provider prompt sanitizes defaults and control input" {
@@ -199,4 +259,11 @@
     grep -qF 'NDP proxy' "$BATS_TEST_DIRNAME/../README.md"
     grep -qF 'additional routed IPv6 prefix' "$BATS_TEST_DIRNAME/../README.en.md"
     grep -qF 'existing public `/64`' "$BATS_TEST_DIRNAME/../README.en.md"
+}
+
+@test "README documents Web Panel access defaults for Enter, public domains, and port 443 URLs" {
+    grep -qF 'Enter на шаге доступа к Web Panel оставляет безопасный VPN-only default `https://10.9.9.1:8443`' "$BATS_TEST_DIRNAME/../README.md"
+    grep -qF 'итоговый URL для port `443` пишется без `:443`' "$BATS_TEST_DIRNAME/../README.md"
+    grep -qF 'Pressing Enter at the Web Panel access step keeps the safe VPN-only default `https://10.9.9.1:8443`' "$BATS_TEST_DIRNAME/../README.en.md"
+    grep -qF 'the final URL for port `443` is shown without `:443`' "$BATS_TEST_DIRNAME/../README.en.md"
 }
