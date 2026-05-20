@@ -34,7 +34,7 @@ MANAGE_SCRIPT_PATH="$AWG_DIR/manage_amneziawg.sh"
 # используются первыми; remote download разрешён только с pinned SHA256 либо
 # при явном AWG_ALLOW_UNVERIFIED_DOWNLOAD=1 для разработки.
 declare -A AWG_ASSET_SHA256=(
-    ["awg_common.sh"]="fc2851182a26eddaf5bcded3b8c0830a3cb6dca4ab9432ce9e8cd30246c4f0b5"
+    ["awg_common.sh"]="47ddd5a356ebaf0b5fb1d81bff7e90fea9bd3e35a0539f404fcb3a7ac872ad90"
     ["manage_amneziawg.sh"]="73c8134d3885ed627bbae93be3ddcbd305ed37606b570e86c1966fb7721e71fe"
     ["web/server.py"]="671f01c4be25f8797e807fb444e8b3784c49bf08823448e50870a39239a20f36"
     ["web/index.html"]="a41e458c832f82d8d834ecc67f2cb35da4eed11bf7b76acd493413d082de0483"
@@ -55,7 +55,7 @@ CLI_ROUTING_MODE="default"; CLI_CUSTOM_ROUTES=""; CLI_ENDPOINT=""; CLI_NO_TWEAKS
 CLI_ENABLE_NATIVE_IPV6=0; CLI_IPV6_MODE=""; CLI_IPV6_SUBNET=""; CLI_UPGRADE_IPV6=0
 CLI_P2P_BASE_PORT=""; CLI_P2P_PORTS_PER_CLIENT=""
 CLI_FULLCONE_NAT=0; CLI_WEB_PORT=""; CLI_WEB_BIND=""; CLI_DISABLE_WEB=0
-CLI_WEB_CERT_MODE=""; CLI_WEB_DOMAIN=""; CLI_WEB_CERT_FILE=""; CLI_WEB_KEY_FILE=""; CLI_WEB_CERT_PROVIDER=""; CLI_WEB_LE_EMAIL=""
+CLI_WEB_CERT_MODE=""; CLI_WEB_DOMAIN=""; CLI_WEB_CERT_FILE=""; CLI_WEB_KEY_FILE=""; CLI_WEB_CERT_PROVIDER=""; CLI_WEB_LE_EMAIL=""; CLI_WEB_CERT_FALLBACK=""
 CLI_ENABLE_ADGUARD=0; CLI_DISABLE_ADGUARD=0; CLI_ADGUARD_PORT=""; CLI_DNS_MODE=""
 CLI_SERVER_NAME=""
 CLI_PRESET=""; CLI_JC=""; CLI_JMIN=""; CLI_JMAX=""
@@ -81,6 +81,7 @@ _install_temp_files=()
 _install_cleanup() {
     local f
     for f in "${_install_temp_files[@]}"; do [[ -f "$f" ]] && rm -f "$f"; done
+    type ufw_remove_http01_temporary_rule &>/dev/null && ufw_remove_http01_temporary_rule
     # Очистка временных файлов из awg_common.sh (если уже подключён через source)
     type _awg_cleanup &>/dev/null && _awg_cleanup
 }
@@ -128,6 +129,7 @@ while [[ $# -gt 0 ]]; do
         --web-key-file=*) CLI_WEB_KEY_FILE="${1#*=}" ;;
         --web-cert-provider=*) CLI_WEB_CERT_PROVIDER="${1#*=}" ;;
         --web-le-email=*) CLI_WEB_LE_EMAIL="${1#*=}" ;;
+        --web-cert-fallback=*) CLI_WEB_CERT_FALLBACK="${1#*=}" ;;
         --enable-adguard) CLI_ENABLE_ADGUARD=1 ;;
         --disable-adguard) CLI_DISABLE_ADGUARD=1 ;;
         --adguard-port=*) CLI_ADGUARD_PORT="${1#*=}" ;;
@@ -344,6 +346,8 @@ show_help() {
   --web-key-file=PATH   privkey.pem для --web-cert-mode=custom
   --web-cert-provider=sslip.io|nip.io  Провайдер ip-domain (умолч. sslip.io)
   --web-le-email=EMAIL  Email для Let's Encrypt уведомлений (опционально)
+  --web-cert-fallback=selfsigned|abort
+                        Поведение при ошибке Let's Encrypt (default: abort в --yes, prompt в wizard)
   --disable-web         Не устанавливать и не запускать веб-панель
   --enable-adguard      Установить AdGuard Home (по умолчанию включено)
   --disable-adguard     Не устанавливать AdGuard Home и использовать системный DNS
@@ -651,7 +655,7 @@ safe_load_config() {
                 AWG_H1|AWG_H2|AWG_H3|AWG_H4|AWG_I1|AWG_PRESET|NO_TWEAKS|AWG_APPLY_MODE|\
                 AWG_IPV6_ENABLED|AWG_IPV6_MODE|AWG_IPV6_SUBNET|AWG_IPV6_NDP_PROXY|\
                 AWG_P2P_ENABLED|AWG_P2P_BASE_PORT|AWG_P2P_PORTS_PER_CLIENT|AWG_FULLCONE_NAT|AWG_DISABLE_UFW|\
-                AWG_WEB_ENABLED|AWG_WEB_PORT|AWG_WEB_BIND|AWG_WEB_CERT_MODE|AWG_WEB_DOMAIN|AWG_WEB_CERT_FILE|AWG_WEB_KEY_FILE|AWG_WEB_CERT_PROVIDER|AWG_WEB_LE_EMAIL|AWG_WEB_PUBLIC_URL|\
+                AWG_WEB_ENABLED|AWG_WEB_PORT|AWG_WEB_BIND|AWG_WEB_CERT_MODE|AWG_WEB_DOMAIN|AWG_WEB_CERT_FILE|AWG_WEB_KEY_FILE|AWG_WEB_CERT_PROVIDER|AWG_WEB_LE_EMAIL|AWG_WEB_PUBLIC_URL|AWG_WEB_CERT_FALLBACK|AWG_WEB_CERT_ATTEMPTED_MODE|AWG_WEB_CERT_FAILURE_REASON|AWG_WEB_CERT_FALLBACK_USED|\
                 AWG_DNS_MODE|AWG_CUSTOM_DNS|AWG_ADGUARD_ENABLED|AWG_ADGUARD_PORT|AWG_ADGUARD_DIR|\
                 AWG_SERVER_NAME)
                     export "$key=$value"
@@ -1163,24 +1167,41 @@ prompt_web_certificate() {
     local cert_choice provider_choice domain_input cert_input key_input email_input generated_domain
     echo ""
     echo "Настройка HTTPS для публичной Web Panel:"
-    echo "  1) Автоматический домен по IP через sslip.io + Let's Encrypt — рекомендуется"
+    echo "  1) Свой домен + Let's Encrypt — рекомендуется для доверенного HTTPS"
+    echo "     Пример: https://vpn.example.com/"
+    echo "  2) Автоматический IP-домен sslip.io/nip.io + Let's Encrypt — экспериментально"
     if generated_domain=$(generate_ip_domain "${AWG_ENDPOINT:-}" "sslip.io"); then
         echo "     Пример: $(format_https_url "$generated_domain" 443)"
     else
-        echo "     Требует IPv4 endpoint; для доменного endpoint выберите вариант 2"
+        echo "     Требует IPv4 endpoint; для обычного домена выберите вариант 1"
     fi
-    echo "  2) Свой домен + Let's Encrypt"
-    echo "     Пример: https://vpn.example.com/"
+    echo "     Может упереться в лимиты Let's Encrypt для sslip.io/nip.io"
     echo "  3) Свой сертификат и ключ"
     echo "  4) Самоподписанный сертификат"
-    echo "     Работает, но браузер и WG Tunnel могут ругаться"
+    echo "     Работает сразу, но браузер и WG Tunnel могут ругаться"
     read -rp "Ваш выбор [1]: " cert_choice < /dev/tty
     case "${cert_choice:-1}" in
         1)
+            AWG_WEB_CERT_MODE="letsencrypt"
+            read -rp "Введите домен Web Panel [Enter = выбрать экспериментальный IP-домен]: " domain_input < /dev/tty
+            if [[ -n "$domain_input" ]]; then
+                AWG_WEB_DOMAIN="$domain_input"
+            else
+                log_warn "Домен не указан; выбран экспериментальный IP-domain mode."
+                AWG_WEB_CERT_MODE="ip-domain"
+                cert_choice=2
+            fi
+            if [[ "${AWG_WEB_CERT_MODE:-}" == "letsencrypt" ]]; then
+                read -rp "Email для Let's Encrypt уведомлений, Enter чтобы пропустить: " email_input < /dev/tty
+                [[ -n "$email_input" ]] && AWG_WEB_LE_EMAIL="$email_input"
+                return 0
+            fi
+            ;&
+        2)
             AWG_WEB_CERT_MODE="ip-domain"
             echo ""
             echo "Провайдер pseudo-domain:"
-            echo "  1) sslip.io — рекомендуется"
+            echo "  1) sslip.io — удобно, но best-effort"
             echo "  2) nip.io"
             read -rp "Ваш выбор [1]: " provider_choice < /dev/tty
             provider_choice="$(sanitize_menu_choice "$provider_choice")"
@@ -1192,14 +1213,8 @@ prompt_web_certificate() {
             AWG_WEB_DOMAIN="$(generate_ip_domain "${AWG_ENDPOINT:-}" "$AWG_WEB_CERT_PROVIDER")" || die "ip-domain требует IPv4 endpoint. Укажите IPv4 endpoint или выберите свой домен."
             AWG_WEB_PUBLIC_URL="$(format_https_url "$AWG_WEB_DOMAIN" 443)"
             log "Web Panel domain: $AWG_WEB_DOMAIN"
-            log_warn "Let's Encrypt требует доступный port 80/tcp на время проверки; pseudo-domain зависит от ${AWG_WEB_CERT_PROVIDER} и его rate limits."
-            ;;
-        2)
-            AWG_WEB_CERT_MODE="letsencrypt"
-            while [[ -z "${AWG_WEB_DOMAIN:-}" ]]; do
-                read -rp "Введите домен Web Panel (например vpn.example.com): " domain_input < /dev/tty
-                AWG_WEB_DOMAIN="$domain_input"
-            done
+            log_warn "IP-domain через ${AWG_WEB_CERT_PROVIDER} — best-effort: Let's Encrypt может отказать из-за лимитов registered domain sslip.io/nip.io."
+            log_warn "HTTP-01 требует входящий TCP/80 в UFW и provider firewall/security group."
             read -rp "Email для Let's Encrypt уведомлений, Enter чтобы пропустить: " email_input < /dev/tty
             [[ -n "$email_input" ]] && AWG_WEB_LE_EMAIL="$email_input"
             ;;
@@ -2371,6 +2386,10 @@ initialize_setup() {
     AWG_WEB_CERT_PROVIDER="${AWG_WEB_CERT_PROVIDER:-sslip.io}"
     AWG_WEB_LE_EMAIL="${AWG_WEB_LE_EMAIL:-}"
     AWG_WEB_PUBLIC_URL="${AWG_WEB_PUBLIC_URL:-}"
+    AWG_WEB_CERT_FALLBACK="${AWG_WEB_CERT_FALLBACK:-abort}"
+    AWG_WEB_CERT_ATTEMPTED_MODE="${AWG_WEB_CERT_ATTEMPTED_MODE:-}"
+    AWG_WEB_CERT_FAILURE_REASON="${AWG_WEB_CERT_FAILURE_REASON:-}"
+    AWG_WEB_CERT_FALLBACK_USED="${AWG_WEB_CERT_FALLBACK_USED:-}"
     AWG_DNS_MODE="adguard"
     AWG_CUSTOM_DNS="1.1.1.1"
     AWG_ADGUARD_ENABLED=${AWG_ADGUARD_ENABLED:-1}
@@ -2410,6 +2429,10 @@ initialize_setup() {
         AWG_WEB_CERT_PROVIDER=${AWG_WEB_CERT_PROVIDER:-sslip.io}
         AWG_WEB_LE_EMAIL=${AWG_WEB_LE_EMAIL:-}
         AWG_WEB_PUBLIC_URL=${AWG_WEB_PUBLIC_URL:-}
+        AWG_WEB_CERT_FALLBACK=${AWG_WEB_CERT_FALLBACK:-abort}
+        AWG_WEB_CERT_ATTEMPTED_MODE=${AWG_WEB_CERT_ATTEMPTED_MODE:-}
+        AWG_WEB_CERT_FAILURE_REASON=${AWG_WEB_CERT_FAILURE_REASON:-}
+        AWG_WEB_CERT_FALLBACK_USED=${AWG_WEB_CERT_FALLBACK_USED:-}
         AWG_DNS_MODE=${AWG_DNS_MODE:-adguard}
         AWG_CUSTOM_DNS=${AWG_CUSTOM_DNS:-1.1.1.1}
         AWG_ADGUARD_ENABLED=${AWG_ADGUARD_ENABLED:-1}
@@ -2439,6 +2462,7 @@ initialize_setup() {
     [[ -n "$CLI_WEB_KEY_FILE" ]] && AWG_WEB_KEY_FILE="$CLI_WEB_KEY_FILE"
     [[ -n "$CLI_WEB_CERT_PROVIDER" ]] && AWG_WEB_CERT_PROVIDER="$CLI_WEB_CERT_PROVIDER"
     [[ -n "$CLI_WEB_LE_EMAIL" ]] && AWG_WEB_LE_EMAIL="$CLI_WEB_LE_EMAIL"
+    [[ -n "$CLI_WEB_CERT_FALLBACK" ]] && AWG_WEB_CERT_FALLBACK="$CLI_WEB_CERT_FALLBACK"
     [[ -n "$CLI_ADGUARD_PORT" ]] && AWG_ADGUARD_PORT="$CLI_ADGUARD_PORT"
     [[ -n "$CLI_SERVER_NAME" ]] && AWG_SERVER_NAME="$CLI_SERVER_NAME"
     [[ -n "$CLI_PRESET" ]] && AWG_PRESET="$CLI_PRESET"
@@ -2479,6 +2503,7 @@ initialize_setup() {
     validate_bind_addr "$AWG_WEB_BIND" || die "Некорректный AWG_WEB_BIND: '$AWG_WEB_BIND'. Нужен корректный IPv4/IPv6 адрес без пробелов и управляющих символов."
     case "${AWG_WEB_CERT_MODE:-selfsigned}" in selfsigned|custom|letsencrypt|ip-domain) ;; *) die "Некорректный --web-cert-mode=${AWG_WEB_CERT_MODE}" ;; esac
     case "${AWG_WEB_CERT_PROVIDER:-sslip.io}" in sslip.io|nip.io) ;; *) die "Некорректный --web-cert-provider=${AWG_WEB_CERT_PROVIDER}" ;; esac
+    case "${AWG_WEB_CERT_FALLBACK:-abort}" in selfsigned|abort) ;; *) die "Некорректный --web-cert-fallback=${AWG_WEB_CERT_FALLBACK}" ;; esac
     if [[ "${AWG_WEB_CERT_MODE:-selfsigned}" == "custom" ]]; then
         [[ -f "${AWG_WEB_CERT_FILE:-}" && -f "${AWG_WEB_KEY_FILE:-}" ]] || die "Для --web-cert-mode=custom нужны существующие --web-cert-file и --web-key-file."
     fi
@@ -2537,6 +2562,7 @@ initialize_setup() {
     apply_web_port_default "$config_exists"
     case "${AWG_WEB_CERT_MODE:-selfsigned}" in selfsigned|custom|letsencrypt|ip-domain) ;; *) die "Некорректный --web-cert-mode=${AWG_WEB_CERT_MODE}" ;; esac
     case "${AWG_WEB_CERT_PROVIDER:-sslip.io}" in sslip.io|nip.io) ;; *) die "Некорректный --web-cert-provider=${AWG_WEB_CERT_PROVIDER}" ;; esac
+    case "${AWG_WEB_CERT_FALLBACK:-abort}" in selfsigned|abort) ;; *) die "Некорректный --web-cert-fallback=${AWG_WEB_CERT_FALLBACK}" ;; esac
     if [[ "${AWG_WEB_CERT_MODE:-selfsigned}" == "ip-domain" && -z "${AWG_WEB_DOMAIN:-}" ]]; then
         AWG_WEB_DOMAIN="$(generate_ip_domain "${AWG_ENDPOINT:-}" "${AWG_WEB_CERT_PROVIDER:-sslip.io}")" || die "--web-cert-mode=ip-domain требует IPv4 --endpoint."
     fi
@@ -2625,6 +2651,10 @@ export AWG_WEB_KEY_FILE='${AWG_WEB_KEY_FILE}'
 export AWG_WEB_CERT_PROVIDER='${AWG_WEB_CERT_PROVIDER}'
 export AWG_WEB_LE_EMAIL='${AWG_WEB_LE_EMAIL}'
 export AWG_WEB_PUBLIC_URL='${AWG_WEB_PUBLIC_URL}'
+export AWG_WEB_CERT_FALLBACK='${AWG_WEB_CERT_FALLBACK}'
+export AWG_WEB_CERT_ATTEMPTED_MODE='${AWG_WEB_CERT_ATTEMPTED_MODE}'
+export AWG_WEB_CERT_FAILURE_REASON='${AWG_WEB_CERT_FAILURE_REASON}'
+export AWG_WEB_CERT_FALLBACK_USED='${AWG_WEB_CERT_FALLBACK_USED}'
 export AWG_DNS_MODE='${AWG_DNS_MODE}'
 export AWG_CUSTOM_DNS='${AWG_CUSTOM_DNS}'
 export AWG_ADGUARD_ENABLED=${AWG_ADGUARD_ENABLED}
@@ -2658,6 +2688,7 @@ EOF
     export AWG_P2P_ENABLED AWG_P2P_BASE_PORT AWG_P2P_PORTS_PER_CLIENT AWG_FULLCONE_NAT
     export AWG_WEB_ENABLED AWG_WEB_PORT AWG_WEB_BIND AWG_DISABLE_UFW
     export AWG_WEB_CERT_MODE AWG_WEB_DOMAIN AWG_WEB_CERT_FILE AWG_WEB_KEY_FILE AWG_WEB_CERT_PROVIDER AWG_WEB_LE_EMAIL AWG_WEB_PUBLIC_URL
+    export AWG_WEB_CERT_FALLBACK AWG_WEB_CERT_ATTEMPTED_MODE AWG_WEB_CERT_FAILURE_REASON AWG_WEB_CERT_FALLBACK_USED
     export AWG_DNS_MODE AWG_CUSTOM_DNS AWG_ADGUARD_ENABLED AWG_ADGUARD_PORT AWG_ADGUARD_DIR
     log "Порт: ${AWG_PORT}/udp"
     log "Подсеть: ${AWG_TUNNEL_SUBNET}"
@@ -3910,6 +3941,184 @@ web_ip_domain() {
     generate_ip_domain "$ip" "$provider"
 }
 
+persist_config_value() {
+    local key="$1" value="$2" tmp quoted
+    [[ -f "$CONFIG_FILE" ]] || return 0
+    quoted="$(shell_quote "$value")"
+    tmp="$(mktemp "${CONFIG_FILE}.tmp.XXXXXX")" || return 1
+    awk -v key="$key" -v line="export ${key}=${quoted}" '
+        $0 ~ "^export " key "=" || $0 ~ "^" key "=" { print line; done=1; next }
+        { print }
+        END { if (!done) print line }
+    ' "$CONFIG_FILE" > "$tmp" && mv -f "$tmp" "$CONFIG_FILE" || {
+        rm -f "$tmp" 2>/dev/null
+        return 1
+    }
+    chmod 600 "$CONFIG_FILE" 2>/dev/null || true
+}
+
+persist_web_cert_state() {
+    persist_config_value AWG_WEB_CERT_MODE "${AWG_WEB_CERT_MODE:-selfsigned}" || log_warn "Не удалось сохранить AWG_WEB_CERT_MODE."
+    persist_config_value AWG_WEB_DOMAIN "${AWG_WEB_DOMAIN:-}" || log_warn "Не удалось сохранить AWG_WEB_DOMAIN."
+    persist_config_value AWG_WEB_PUBLIC_URL "${AWG_WEB_PUBLIC_URL:-}" || log_warn "Не удалось сохранить AWG_WEB_PUBLIC_URL."
+    persist_config_value AWG_WEB_CERT_ATTEMPTED_MODE "${AWG_WEB_CERT_ATTEMPTED_MODE:-}" || log_warn "Не удалось сохранить AWG_WEB_CERT_ATTEMPTED_MODE."
+    persist_config_value AWG_WEB_CERT_FAILURE_REASON "${AWG_WEB_CERT_FAILURE_REASON:-}" || log_warn "Не удалось сохранить AWG_WEB_CERT_FAILURE_REASON."
+    persist_config_value AWG_WEB_CERT_FALLBACK_USED "${AWG_WEB_CERT_FALLBACK_USED:-}" || log_warn "Не удалось сохранить AWG_WEB_CERT_FALLBACK_USED."
+}
+
+ufw_allow_http01_temporarily() {
+    local added=0
+    AWG_CERTBOT_UFW80_ADDED=0
+    export AWG_CERTBOT_UFW80_ADDED
+
+    if ! command -v ufw >/dev/null 2>&1; then
+        log_msg "WARN" "UFW не установлен; убедитесь, что 80/tcp открыт внешним firewall/security group."
+        return 0
+    fi
+    if ! ufw status 2>/dev/null | grep -qi "Status: active"; then
+        log_msg "WARN" "UFW неактивен; убедитесь, что 80/tcp открыт внешним firewall/security group."
+        return 0
+    fi
+    if ufw status numbered 2>/dev/null | grep -Eq '(^|[[:space:]])80/tcp[[:space:]]+ALLOW IN'; then
+        log_msg "INFO" "80/tcp уже открыт в UFW."
+        return 0
+    fi
+    if ufw allow 80/tcp comment "Temporary Let's Encrypt HTTP-01" >/dev/null 2>&1; then
+        added=1
+    elif ufw allow 80/tcp >/dev/null 2>&1; then
+        added=1
+    else
+        log_msg "WARN" "Не удалось открыть 80/tcp в UFW. Проверьте внешний firewall/security group."
+        return 1
+    fi
+    ufw reload >/dev/null 2>&1 || true
+    AWG_CERTBOT_UFW80_ADDED="$added"
+    export AWG_CERTBOT_UFW80_ADDED
+    log_msg "INFO" "Временно открыт 80/tcp для Let's Encrypt HTTP-01."
+}
+
+ufw_remove_http01_temporary_rule() {
+    [[ "${AWG_CERTBOT_UFW80_ADDED:-0}" == "1" ]] || return 0
+    AWG_CERTBOT_UFW80_ADDED=0
+    export AWG_CERTBOT_UFW80_ADDED
+    ufw delete allow 80/tcp >/dev/null 2>&1 || true
+    ufw reload >/dev/null 2>&1 || true
+    log_msg "INFO" "Временное правило 80/tcp удалено."
+}
+
+resolve_domain_ipv4() {
+    local domain="$1"
+    if command -v getent >/dev/null 2>&1; then
+        getent ahostsv4 "$domain" 2>/dev/null | awk '/^[0-9]+\./ {print $1; exit}'
+        return 0
+    fi
+    if command -v dig >/dev/null 2>&1; then
+        dig +short A "$domain" 2>/dev/null | awk '/^[0-9]+\./ {print $1; exit}'
+        return 0
+    fi
+    return 0
+}
+
+preflight_letsencrypt_domain() {
+    local domain="$1" resolved endpoint="${AWG_ENDPOINT:-}" confirm
+    log_warn "HTTP-01 требует входящий TCP/80 в UFW и provider firewall/security group."
+    resolved="$(resolve_domain_ipv4 "$domain")"
+    if [[ -z "$resolved" ]]; then
+        log_warn "Не удалось проверить DNS A-record для $domain. Убедитесь, что домен указывает на сервер."
+        return 0
+    fi
+    if [[ "$endpoint" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ && "$resolved" != "$endpoint" ]]; then
+        log_warn "DNS $domain resolves to $resolved, но endpoint сервера: $endpoint."
+        if [[ "$AUTO_YES" -ne 0 ]]; then
+            return 1
+        fi
+        read -rp "Продолжить попытку Let's Encrypt несмотря на DNS mismatch? [y/N]: " confirm < /dev/tty
+        [[ "$confirm" =~ ^[Yy]$ ]]
+        return $?
+    fi
+    log "DNS preflight: $domain -> $resolved"
+}
+
+check_http01_port_available() {
+    if ss -tulpen 2>/dev/null | awk '{print $5}' | grep -Eq '(^|:)80$'; then
+        log_error "Port 80 is already in use; standalone certbot cannot run. Stop the service or use custom/self-signed cert."
+        return 1
+    fi
+}
+
+classify_certbot_failure() {
+    local log_file="$1"
+    if grep -Eqi 'too many certificates|rate limit' "$log_file" 2>/dev/null; then
+        printf 'rate_limit\n'
+    elif grep -Eqi 'Timeout during connect|likely firewall problem' "$log_file" 2>/dev/null; then
+        printf 'http01_timeout\n'
+    elif grep -Eqi 'DNS problem|NXDOMAIN' "$log_file" 2>/dev/null; then
+        printf 'dns\n'
+    else
+        printf 'certbot_failed\n'
+    fi
+}
+
+certbot_failure_reason_text() {
+    case "$1" in
+        rate_limit) printf "Let's Encrypt rate limit for this domain/provider" ;;
+        http01_timeout) printf "HTTP-01 timeout; check inbound TCP/80 in UFW and provider firewall/security group" ;;
+        dns) printf "DNS problem; domain does not resolve correctly" ;;
+        port_80_busy) printf "Port 80 is already in use on this server" ;;
+        ufw_http01_failed) printf "Could not open temporary UFW 80/tcp rule" ;;
+        dns_mismatch) printf "Domain does not resolve to the configured endpoint" ;;
+        *) printf "certbot failed" ;;
+    esac
+}
+
+handle_letsencrypt_failure() {
+    local web_dir="$1" domain="$2" reason="$3" choice domain_input
+    AWG_WEB_CERT_ATTEMPTED_MODE="${AWG_WEB_CERT_ATTEMPTED_MODE:-${AWG_WEB_CERT_MODE:-letsencrypt}}"
+    AWG_WEB_CERT_FAILURE_REASON="$(certbot_failure_reason_text "$reason")"
+    log_warn "Let's Encrypt не выпустил сертификат для ${domain}: ${AWG_WEB_CERT_FAILURE_REASON}."
+    if [[ "${AWG_WEB_CERT_FALLBACK:-abort}" == "selfsigned" || "${AWG_CERT_FALLBACK_SELFSIGNED:-0}" == "1" ]]; then
+        log_warn "VPN будет работать. Web Panel продолжит с self-signed HTTPS до настройки trusted cert."
+        AWG_WEB_CERT_MODE="selfsigned"
+        AWG_WEB_CERT_FALLBACK_USED="selfsigned"
+        persist_web_cert_state
+        deploy_web_tls "$web_dir"
+        return 0
+    fi
+    if [[ "$AUTO_YES" -ne 0 ]]; then
+        persist_web_cert_state
+        die "Let's Encrypt issuance failed; trusted HTTPS не настроен. Для fallback задайте --web-cert-fallback=selfsigned или AWG_WEB_CERT_FALLBACK=selfsigned."
+    fi
+    echo ""
+    echo "Let's Encrypt не выпустил сертификат для ${domain}."
+    echo "Причина: ${AWG_WEB_CERT_FAILURE_REASON}"
+    echo "Выберите:"
+    echo "  1) Перейти на self-signed и продолжить"
+    echo "  2) Ввести другой домен"
+    echo "  3) Повторить certbot"
+    echo "  4) Прервать установку"
+    read -rp "Ваш выбор [1]: " choice < /dev/tty
+    case "${choice:-1}" in
+        1)
+            log_warn "VPN будет работать. Web Panel продолжит с self-signed HTTPS до настройки trusted cert."
+            AWG_WEB_CERT_MODE="selfsigned"
+            AWG_WEB_CERT_FALLBACK_USED="selfsigned"
+            persist_web_cert_state
+            deploy_web_tls "$web_dir"
+            ;;
+        2)
+            read -rp "Введите новый домен Web Panel: " domain_input < /dev/tty
+            [[ -n "$domain_input" ]] || die "Домен не указан."
+            AWG_WEB_CERT_MODE="letsencrypt"
+            AWG_WEB_DOMAIN="$domain_input"
+            deploy_web_tls "$web_dir"
+            ;;
+        3)
+            deploy_web_tls "$web_dir"
+            ;;
+        *) die "Let's Encrypt issuance failed; trusted HTTPS не настроен." ;;
+    esac
+}
+
 deploy_web_tls() {
     local web_dir="$1" mode="${AWG_WEB_CERT_MODE:-selfsigned}" domain="${AWG_WEB_DOMAIN:-}"
     case "$mode" in
@@ -3926,15 +4135,17 @@ deploy_web_tls() {
             install -m 600 "$AWG_WEB_KEY_FILE" "$web_dir/key.pem" || die "Ошибка копирования custom key"
             ;;
         letsencrypt|ip-domain)
+            AWG_WEB_CERT_ATTEMPTED_MODE="$mode"
+            AWG_WEB_CERT_FAILURE_REASON=""
+            AWG_WEB_CERT_FALLBACK_USED=""
             if [[ "$mode" == "ip-domain" ]]; then
                 domain="$(web_ip_domain)" || die "ip-domain требует IPv4 AWG_ENDPOINT."
                 AWG_WEB_DOMAIN="$domain"
             fi
             [[ -n "$domain" ]] || die "Let's Encrypt требует domain."
             log_warn "Let's Encrypt standalone требует временно доступный port 80/tcp и DNS ${domain} → endpoint."
-            if ss -ltn 2>/dev/null | awk '{print $4}' | grep -Eq '(^|:)80$'; then
-                die "Port 80 занят; certbot standalone не сможет пройти challenge."
-            fi
+            preflight_letsencrypt_domain "$domain" || { handle_letsencrypt_failure "$web_dir" "$domain" "dns_mismatch"; return 0; }
+            check_http01_port_available || { handle_letsencrypt_failure "$web_dir" "$domain" "port_80_busy"; return 0; }
             install_packages certbot
             local certbot_account_args=()
             if [[ -n "${AWG_WEB_LE_EMAIL:-}" ]]; then
@@ -3942,43 +4153,32 @@ deploy_web_tls() {
             else
                 certbot_account_args=(--register-unsafely-without-email)
             fi
-            local added_ufw_http=0
-            if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q active; then
-                if ufw status 2>/dev/null | grep -Eq '(^|[[:space:]])80/tcp[[:space:]].*ALLOW'; then
-                    log "UFW уже разрешает 80/tcp; временное правило не добавляется."
-                elif ufw allow 80/tcp comment "Temporary Let's Encrypt HTTP-01"; then
-                    added_ufw_http=1
-                else
-                    log_warn "Не удалось открыть 80/tcp в UFW."
-                fi
-            fi
+            ufw_allow_http01_temporarily || { handle_letsencrypt_failure "$web_dir" "$domain" "ufw_http01_failed"; return 0; }
+            local certbot_log certbot_rc failure_class
+            certbot_log="$(mktemp /tmp/awg-certbot-XXXXXX.log)" || die "Ошибка mktemp certbot log."
+            _install_temp_files+=("$certbot_log")
             certbot certonly --standalone --non-interactive --agree-tos "${certbot_account_args[@]}" \
-                -d "$domain" --deploy-hook "systemctl restart awg-web" || {
-                if [[ "$added_ufw_http" -eq 1 ]]; then ufw delete allow 80/tcp 2>/dev/null || true; fi
-                if [[ "${AWG_CERT_FALLBACK_SELFSIGNED:-0}" == "1" ]]; then
-                    log_warn "Let's Encrypt issuance failed; fallback to self-signed certificate разрешён AWG_CERT_FALLBACK_SELFSIGNED=1."
-                    AWG_WEB_CERT_MODE="selfsigned"
-                    deploy_web_tls "$web_dir"
-                    return 0
+                -d "$domain" --deploy-hook "systemctl restart awg-web" >"$certbot_log" 2>&1
+            certbot_rc=$?
+            ufw_remove_http01_temporary_rule
+            if [[ "$certbot_rc" -ne 0 ]]; then
+                failure_class="$(classify_certbot_failure "$certbot_log")"
+                if [[ "$VERBOSE" -eq 1 ]]; then
+                    while IFS= read -r line; do log_debug "certbot: $line"; done < "$certbot_log"
                 fi
-                if [[ "$AUTO_YES" -eq 0 ]]; then
-                    local fallback
-                    read -rp "Let's Encrypt не выпустил сертификат. Перейти на self-signed? [y/N]: " fallback < /dev/tty
-                    if [[ "$fallback" =~ ^[Yy]$ ]]; then
-                        AWG_WEB_CERT_MODE="selfsigned"
-                        deploy_web_tls "$web_dir"
-                        return 0
-                    fi
-                fi
-                die "Let's Encrypt issuance failed; trusted HTTPS не настроен."
-            }
-            if [[ "$added_ufw_http" -eq 1 ]]; then ufw delete allow 80/tcp 2>/dev/null || true; fi
+                handle_letsencrypt_failure "$web_dir" "$domain" "$failure_class"
+                return 0
+            fi
             install -m 644 "/etc/letsencrypt/live/${domain}/fullchain.pem" "$web_dir/cert.pem" || die "Ошибка установки fullchain.pem"
             install -m 600 "/etc/letsencrypt/live/${domain}/privkey.pem" "$web_dir/key.pem" || die "Ошибка установки privkey.pem"
+            AWG_WEB_CERT_FAILURE_REASON=""
+            AWG_WEB_CERT_FALLBACK_USED=""
+            persist_web_cert_state
             ;;
     esac
     chmod 600 "$web_dir/key.pem"
     chmod 644 "$web_dir/cert.pem"
+    persist_web_cert_state
 }
 
 deploy_web_panel() {
@@ -4068,6 +4268,13 @@ EOF
 # ШАГ 6: Генерация конфигураций (нативная, без awgcfg.py)
 # ==============================================================================
 
+configs_ready_for_step6_resume() {
+    [[ -f "$SERVER_CONF_FILE" ]] || return 1
+    [[ -f "$AWG_DIR/my_phone.conf" && -f "$AWG_DIR/my_laptop.conf" ]] || return 1
+    grep -qxF "#_Name = my_phone" "$SERVER_CONF_FILE" 2>/dev/null || return 1
+    grep -qxF "#_Name = my_laptop" "$SERVER_CONF_FILE" 2>/dev/null || return 1
+}
+
 step6_generate_configs() {
     update_state 6
     log "### ШАГ 6: Генерация конфигураций AWG 2.0 ###"
@@ -4082,6 +4289,18 @@ step6_generate_configs() {
 
     # Создаём директорию для ключей
     mkdir -p "$KEYS_DIR" || die "Ошибка создания $KEYS_DIR"
+
+    if [[ "$FORCE_REINSTALL" -ne 1 && "$CLI_UPGRADE_IPV6" -ne 1 ]] && configs_ready_for_step6_resume; then
+        log "Конфиги AWG и дефолтные клиенты уже созданы; resume step 6 продолжит web/cert deploy без пересоздания клиентов."
+        validate_awg_config || log_warn "Валидация конфига выявила проблемы."
+        generate_firewall_scripts || log_warn "Не удалось обновить firewall/P2P hook-скрипты."
+        setup_ndppd_config
+        deploy_web_panel
+        secure_files
+        log "Шаг 6 завершен."
+        update_state 7
+        return 0
+    fi
 
     # Генерация серверных ключей (если ещё нет)
     if [[ ! -f "$AWG_DIR/server_private.key" ]]; then
@@ -4345,9 +4564,13 @@ Certificate mode: ${AWG_WEB_CERT_MODE:-selfsigned}
 Certificate provider: ${AWG_WEB_CERT_PROVIDER:-none}
 Domain: ${AWG_WEB_DOMAIN:-none}
 Trusted HTTPS: ${trusted_https}
+Certificate attempted mode: ${AWG_WEB_CERT_ATTEMPTED_MODE:-none}
+Certificate fallback: ${AWG_WEB_CERT_FALLBACK_USED:-none}
+Certificate failure reason: ${AWG_WEB_CERT_FAILURE_REASON:-none}
 Certificate file: ${AWG_DIR}/web/cert.pem
 Private key file: ${AWG_DIR}/web/key.pem
 Renewal note: Let's Encrypt modes install certbot renewal; deploy hook restarts awg-web.
+Retry trusted cert: use your own domain and rerun the installer with --web-cert-mode=letsencrypt --web-domain=vpn.example.com, or install a custom certificate.
 TLS warning: $(if [[ "${AWG_WEB_CERT_MODE:-selfsigned}" == "selfsigned" && ( "${AWG_WEB_BIND:-}" == "0.0.0.0" || "${AWG_WEB_BIND:-}" == "::" ) ]]; then echo "public self-signed TLS may be rejected by browsers/WG Tunnel"; else echo "none"; fi)
 
 [WG Tunnel URL Import]

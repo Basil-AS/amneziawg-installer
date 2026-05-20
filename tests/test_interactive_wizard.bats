@@ -11,7 +11,11 @@
     grep -qF 'VPN-only, 10.9.9.1 — безопасно по умолчанию, порт 8443' "$installer"
     grep -qF 'public, 0.0.0.0 — доступ из интернета, домен + HTTPS, порт 443' "$installer"
     grep -qF 'Настройка HTTPS для публичной Web Panel:' "$installer"
-    grep -qF 'Автоматический домен по IP через sslip.io + Let' "$installer"
+    grep -qF 'Свой домен + Let' "$installer"
+    grep -qF 'рекомендуется для доверенного HTTPS' "$installer"
+    grep -qF 'Автоматический IP-домен sslip.io/nip.io + Let' "$installer"
+    grep -qF 'экспериментально' "$installer"
+    grep -qF 'лимиты Let' "$installer"
     grep -qF 'AWG_WEB_CERT_MODE="ip-domain"' "$installer"
     grep -qF 'AWG_WEB_CERT_PROVIDER="sslip.io"' "$installer"
     grep -qF 'AWG_WEB_PORT=443' "$installer"
@@ -65,6 +69,8 @@
     grep -qF "export AWG_WEB_DOMAIN='\${AWG_WEB_DOMAIN}'" "$installer"
     grep -qF "export AWG_WEB_LE_EMAIL='\${AWG_WEB_LE_EMAIL}'" "$installer"
     grep -qF "export AWG_WEB_PUBLIC_URL='\${AWG_WEB_PUBLIC_URL}'" "$installer"
+    grep -qF "export AWG_WEB_CERT_FALLBACK='\${AWG_WEB_CERT_FALLBACK}'" "$installer"
+    grep -qF "export AWG_WEB_CERT_FAILURE_REASON='\${AWG_WEB_CERT_FAILURE_REASON}'" "$installer"
     grep -qF 'export AWG_ADGUARD_ENABLED=${AWG_ADGUARD_ENABLED}' "$installer"
     grep -qF 'export AWG_ADGUARD_PORT=${AWG_ADGUARD_PORT}' "$installer"
     grep -qF 'export AWG_P2P_ENABLED=${AWG_P2P_ENABLED}' "$installer"
@@ -91,7 +97,11 @@
     grep -qF 'VPN-only, 10.9.9.1 - safe default, port 8443' "$installer"
     grep -qF 'public, 0.0.0.0 - Internet access, domain + HTTPS, port 443' "$installer"
     grep -qF 'HTTPS setup for public Web Panel:' "$installer"
-    grep -qF 'Automatic IP domain via sslip.io + Let' "$installer"
+    grep -qF 'Your domain + Let' "$installer"
+    grep -qF 'recommended for trusted HTTPS' "$installer"
+    grep -qF 'Automatic IP domain sslip.io/nip.io + Let' "$installer"
+    grep -qF 'experimental' "$installer"
+    grep -qF 'rate limits' "$installer"
     grep -qF 'AWG_WEB_CERT_MODE="ip-domain"' "$installer"
     grep -qF 'AWG_WEB_CERT_PROVIDER="sslip.io"' "$installer"
     grep -qF 'AWG_WEB_PORT=443' "$installer"
@@ -123,11 +133,58 @@
     grep -qF 'Certificate mode: ${AWG_WEB_CERT_MODE:-selfsigned}' "$ru"
     grep -qF 'Certificate provider: ${AWG_WEB_CERT_PROVIDER:-none}' "$ru"
     grep -qF 'Trusted HTTPS: ${trusted_https}' "$ru"
-    grep -qF 'AWG_CERT_FALLBACK_SELFSIGNED' "$ru"
-    grep -qF 'ufw delete allow 80/tcp' "$ru"
+    grep -qF 'AWG_WEB_CERT_FALLBACK' "$ru"
+    grep -qF 'Certificate fallback: ${AWG_WEB_CERT_FALLBACK_USED:-none}' "$ru"
+    grep -qF 'ufw_remove_http01_temporary_rule' "$ru"
     grep -qF 'sslip.io' "$BATS_TEST_DIRNAME/../README.md"
     grep -qF 'self-signed' "$BATS_TEST_DIRNAME/../README.en.md"
     grep -qF 'ip-domain' "$en"
+}
+
+@test "web certificate flow has robust UFW 80 helper preflight classification and fallback" {
+    local ru="$BATS_TEST_DIRNAME/../install_amneziawg.sh"
+    local en="$BATS_TEST_DIRNAME/../install_amneziawg_en.sh"
+
+    grep -qF 'ufw_allow_http01_temporarily()' "$ru"
+    grep -qF 'ufw allow 80/tcp comment "Temporary Let' "$ru"
+    grep -qF 'elif ufw allow 80/tcp >/dev/null 2>&1; then' "$ru"
+    grep -qF 'Проверьте внешний firewall/security group' "$ru"
+    grep -qF 'AWG_CERTBOT_UFW80_ADDED="$added"' "$ru"
+    grep -qF '[[ "${AWG_CERTBOT_UFW80_ADDED:-0}" == "1" ]] || return 0' "$ru"
+    grep -qF 'ufw delete allow 80/tcp' "$ru"
+    grep -qF 'resolve_domain_ipv4()' "$ru"
+    grep -qF 'preflight_letsencrypt_domain()' "$ru"
+    grep -qF 'Port 80 is already in use; standalone certbot cannot run' "$ru"
+    grep -qF 'classify_certbot_failure()' "$ru"
+    grep -qF 'handle_letsencrypt_failure()' "$ru"
+    grep -qF 'Switch to self-signed and continue' "$en"
+}
+
+@test "certbot failure classifier maps rate limit timeout and DNS failures" {
+    local installer="$BATS_TEST_DIRNAME/../install_amneziawg.sh"
+    local tmp
+    tmp="$(mktemp)"
+    run bash -c '
+        source <(sed -n "/^classify_certbot_failure() {$/,/^certbot_failure_reason_text() {$/p" "$1" | head -n -1)
+        printf "%s\n" "too many certificates already issued for sslip.io" > "$2"
+        [ "$(classify_certbot_failure "$2")" = "rate_limit" ]
+        printf "%s\n" "Timeout during connect (likely firewall problem)" > "$2"
+        [ "$(classify_certbot_failure "$2")" = "http01_timeout" ]
+        printf "%s\n" "DNS problem: NXDOMAIN looking up A" > "$2"
+        [ "$(classify_certbot_failure "$2")" = "dns" ]
+    ' _ "$installer" "$tmp"
+    rm -f "$tmp"
+    [ "$status" -eq 0 ]
+}
+
+@test "step 6 resume skips AWG config regeneration when cert retry resumes" {
+    local ru="$BATS_TEST_DIRNAME/../install_amneziawg.sh"
+    local en="$BATS_TEST_DIRNAME/../install_amneziawg_en.sh"
+
+    grep -qF 'configs_ready_for_step6_resume()' "$ru"
+    grep -qF 'resume step 6 продолжит web/cert deploy без пересоздания клиентов' "$ru"
+    grep -qF 'configs_ready_for_step6_resume()' "$en"
+    grep -qF 'without recreating clients' "$en"
 }
 
 @test "installer handles Ctrl-C with explicit interrupt trap and exit 130" {
@@ -263,7 +320,13 @@
 
 @test "README documents Web Panel access defaults for Enter, public domains, and port 443 URLs" {
     grep -qF 'Enter на шаге доступа к Web Panel оставляет безопасный VPN-only default `https://10.9.9.1:8443`' "$BATS_TEST_DIRNAME/../README.md"
-    grep -qF 'итоговый URL для port `443` пишется без `:443`' "$BATS_TEST_DIRNAME/../README.md"
+    grep -qF 'Итоговый URL для port `443` пишется без `:443`' "$BATS_TEST_DIRNAME/../README.md"
+    grep -qF 'свой домен + Let' "$BATS_TEST_DIRNAME/../README.md"
+    grep -qF 'best-effort из-за общих rate limits Let' "$BATS_TEST_DIRNAME/../README.md"
+    grep -qF 'TCP/80 открыт во внешнем firewall/security group' "$BATS_TEST_DIRNAME/../README.md"
     grep -qF 'Pressing Enter at the Web Panel access step keeps the safe VPN-only default `https://10.9.9.1:8443`' "$BATS_TEST_DIRNAME/../README.en.md"
-    grep -qF 'the final URL for port `443` is shown without `:443`' "$BATS_TEST_DIRNAME/../README.en.md"
+    grep -qF 'The final URL for port `443` is shown without `:443`' "$BATS_TEST_DIRNAME/../README.en.md"
+    grep -qF 'your own domain + Let' "$BATS_TEST_DIRNAME/../README.en.md"
+    grep -qF 'best-effort because they share Let' "$BATS_TEST_DIRNAME/../README.en.md"
+    grep -qF 'provider firewall/security group' "$BATS_TEST_DIRNAME/../README.en.md"
 }
