@@ -689,11 +689,27 @@ validate_junk_size() {
     [[ "$v" =~ ^[0-9]+$ ]] && [[ "$v" -ge 0 ]] && [[ "$v" -le 1280 ]]
 }
 
-validate_port() {
+validate_port_user() {
     local port="$1"
     if ! [[ "$port" =~ ^[0-9]+$ ]] || [[ "$port" -lt 1024 ]] || [[ "$port" -gt 65535 ]]; then
         die "Invalid port: '$port'. Allowed range: 1024-65535."
     fi
+}
+
+validate_port_system() {
+    local port="$1"
+    [[ "$port" =~ ^[0-9]+$ ]] && [[ "$port" -ge 1 ]] && [[ "$port" -le 65535 ]]
+}
+
+validate_web_port() {
+    local port="$1"
+    if ! validate_port_system "$port"; then
+        die "Invalid Web Panel HTTPS port: '$port'. Allowed range: 1-65535."
+    fi
+}
+
+validate_port() {
+    validate_port_user "$1"
 }
 
 validate_bind_addr() {
@@ -1037,9 +1053,9 @@ prompt_ipv6_mode() {
     local ipv6_choice input_subnet
     echo ""
     echo "Choose IPv6 mode:"
-    echo "  1) routed - provider gave you a separate routed /64 or /48"
-    echo "  2) ndp - use the public interface /64 with NDP proxy"
-    echo "  3) nat66 - NAT66 fallback"
+    echo "  1) routed - use when your provider gives you an additional routed IPv6 prefix (/64, /56, /48) for VPN clients"
+    echo "  2) ndp - use the existing public /64 already assigned to the server interface via NDP proxy"
+    echo "  3) nat66 - fallback via NAT66 when routed/NDP is not suitable"
     read -rp "Your choice [auto]: " ipv6_choice < /dev/tty
     case "${ipv6_choice:-auto}" in
         1|routed)
@@ -1099,6 +1115,16 @@ format_https_url() {
     fi
 }
 
+sanitize_menu_choice() {
+    local value="$1"
+    if [[ "$value" == *$'\e'* || "$value" == *[[:cntrl:]]* ]]; then
+        printf ''
+        return 0
+    fi
+    value="${value//[[:space:]]/}"
+    printf '%s' "$value"
+}
+
 apply_web_port_default() {
     local config_exists="${1:-0}"
     [[ "${AWG_WEB_ENABLED:-1}" -eq 1 ]] || return 0
@@ -1148,10 +1174,11 @@ prompt_web_certificate() {
             echo "  1) sslip.io - recommended"
             echo "  2) nip.io"
             read -rp "Your choice [1]: " provider_choice < /dev/tty
+            provider_choice="$(sanitize_menu_choice "$provider_choice")"
             case "${provider_choice:-1}" in
                 1|sslip.io) AWG_WEB_CERT_PROVIDER="sslip.io" ;;
                 2|nip.io) AWG_WEB_CERT_PROVIDER="nip.io" ;;
-                *) log_warn "Unknown provider '$provider_choice', using sslip.io."; AWG_WEB_CERT_PROVIDER="sslip.io" ;;
+                *) log_warn "Unknown provider '${provider_choice}', using sslip.io."; AWG_WEB_CERT_PROVIDER="sslip.io" ;;
             esac
             AWG_WEB_DOMAIN="$(generate_ip_domain "${AWG_ENDPOINT:-}" "$AWG_WEB_CERT_PROVIDER")" || die "ip-domain requires an IPv4 endpoint. Set an IPv4 endpoint or choose your own domain."
             AWG_WEB_PUBLIC_URL="$(format_https_url "$AWG_WEB_DOMAIN" 443)"
@@ -2430,16 +2457,16 @@ initialize_setup() {
     if [[ "$CLI_NO_TWEAKS" -eq 1 ]]; then NO_TWEAKS=1; fi
 
     # Validate after CLI override
-    validate_port "$AWG_PORT"
+    validate_port_user "$AWG_PORT"
     validate_subnet "$AWG_TUNNEL_SUBNET"
-    validate_port "$AWG_P2P_BASE_PORT"
+    validate_port_user "$AWG_P2P_BASE_PORT"
     if [[ "$AWG_P2P_BASE_PORT" -gt 64511 ]]; then
         die "Invalid AWG_P2P_BASE_PORT: '$AWG_P2P_BASE_PORT' (must be <= 64511 so base+1..base+1024 fits in TCP/UDP ports)."
     fi
     if ! [[ "$AWG_P2P_PORTS_PER_CLIENT" =~ ^[0-9]+$ ]] || [[ "$AWG_P2P_PORTS_PER_CLIENT" -lt 0 ]] || [[ "$AWG_P2P_PORTS_PER_CLIENT" -gt 12 ]]; then
         die "Invalid AWG_P2P_PORTS_PER_CLIENT: '$AWG_P2P_PORTS_PER_CLIENT' (0-12)."
     fi
-    validate_port "$AWG_WEB_PORT"
+    validate_web_port "$AWG_WEB_PORT"
     validate_bind_addr "$AWG_WEB_BIND" || die "Invalid AWG_WEB_BIND: '$AWG_WEB_BIND'. Expected a valid IPv4/IPv6 address without whitespace or control characters."
     case "${AWG_WEB_CERT_MODE:-selfsigned}" in selfsigned|custom|letsencrypt|ip-domain) ;; *) die "Invalid --web-cert-mode=${AWG_WEB_CERT_MODE}" ;; esac
     case "${AWG_WEB_CERT_PROVIDER:-sslip.io}" in sslip.io|nip.io) ;; *) die "Invalid --web-cert-provider=${AWG_WEB_CERT_PROVIDER}" ;; esac
@@ -2476,7 +2503,7 @@ initialize_setup() {
             read -rp "Enter AmneziaWG UDP port (1024-65535) [${AWG_PORT}]: " input_port < /dev/tty
             if [[ -n "$input_port" ]]; then AWG_PORT=$input_port; fi
         fi
-        validate_port "$AWG_PORT"
+        validate_port_user "$AWG_PORT"
         if [[ "$AUTO_YES" -eq 0 ]]; then
             read -rp "Enter tunnel subnet [${AWG_TUNNEL_SUBNET}]: " input_subnet < /dev/tty
             if [[ -n "$input_subnet" ]]; then AWG_TUNNEL_SUBNET=$input_subnet; fi
@@ -2518,16 +2545,16 @@ initialize_setup() {
     if [[ -z "$ALLOWED_IPS" ]]; then configure_routing_mode; fi
     configure_ipv6_client_mode
 
-    validate_port "$AWG_PORT"
+    validate_port_user "$AWG_PORT"
     validate_subnet "$AWG_TUNNEL_SUBNET"
-    validate_port "$AWG_P2P_BASE_PORT"
+    validate_port_user "$AWG_P2P_BASE_PORT"
     if [[ "$AWG_P2P_BASE_PORT" -gt 64511 ]]; then
         die "Invalid AWG_P2P_BASE_PORT: '$AWG_P2P_BASE_PORT' (must be <= 64511 so base+1..base+1024 fits in TCP/UDP ports)."
     fi
     if ! [[ "$AWG_P2P_PORTS_PER_CLIENT" =~ ^[0-9]+$ ]] || [[ "$AWG_P2P_PORTS_PER_CLIENT" -lt 0 ]] || [[ "$AWG_P2P_PORTS_PER_CLIENT" -gt 12 ]]; then
         die "Invalid AWG_P2P_PORTS_PER_CLIENT: '$AWG_P2P_PORTS_PER_CLIENT' (0-12)."
     fi
-    validate_port "$AWG_WEB_PORT"
+    validate_web_port "$AWG_WEB_PORT"
     validate_bind_addr "$AWG_WEB_BIND" || die "Invalid AWG_WEB_BIND: '$AWG_WEB_BIND'. Expected a valid IPv4/IPv6 address without whitespace or control characters."
     validate_port "$AWG_ADGUARD_PORT"
     validate_server_name "$AWG_SERVER_NAME" || die "Invalid server name: empty, too long, or contains a newline."

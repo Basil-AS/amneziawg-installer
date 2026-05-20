@@ -205,6 +205,14 @@ sudo bash install_amneziawg_en.sh --enable-native-ipv6 --ipv6-mode=routed --ipv6
 sudo bash install_amneziawg_en.sh --enable-adguard --dns-mode=adguard
 ```
 
+IPv6 modes:
+
+| Mode | When to use it |
+| --- | --- |
+| `routed` | Your provider gives you an additional routed IPv6 prefix (`/64`, `/56`, `/48`) for VPN clients |
+| `ndp` | The server already has an existing public `/64` on its interface; client IPv6 addresses are announced through NDP proxy |
+| `nat66` | Fallback via NAT66 when routed/NDP is not suitable |
+
 P2P/DNAT is configured after installation:
 
 ```bash

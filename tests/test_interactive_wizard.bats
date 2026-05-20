@@ -15,6 +15,8 @@
     grep -qF 'AWG_WEB_PORT=443' "$installer"
     grep -qF 'Введите HTTPS порт Web Panel' "$installer"
     grep -qF 'Выберите IPv6 mode:' "$installer"
+    grep -qF 'отдельный routed IPv6 prefix' "$installer"
+    grep -qF 'текущая публичная /64 на eth0' "$installer"
     grep -qF 'Введите IPv6 subnet для клиентов' "$installer"
     grep -qF 'Установить AdGuard Home для DNS?' "$installer"
     grep -qF 'Настроить P2P ports для клиентов?' "$installer"
@@ -91,6 +93,8 @@
     grep -qF 'AWG_WEB_PORT=443' "$installer"
     grep -qF 'Enter HTTPS Web Panel port' "$installer"
     grep -qF 'Choose IPv6 mode:' "$installer"
+    grep -qF 'additional routed IPv6 prefix' "$installer"
+    grep -qF 'existing public /64 already assigned to the server interface' "$installer"
     grep -qF 'Enter IPv6 subnet for clients' "$installer"
     grep -qF 'Install AdGuard Home for DNS?' "$installer"
     grep -qF 'Configure P2P ports for clients?' "$installer"
@@ -120,4 +124,79 @@
     grep -qF 'sslip.io' "$BATS_TEST_DIRNAME/../README.md"
     grep -qF 'self-signed' "$BATS_TEST_DIRNAME/../README.en.md"
     grep -qF 'ip-domain' "$en"
+}
+
+@test "web panel HTTPS port validator allows 443 while VPN UDP port keeps user range" {
+    local installer="$BATS_TEST_DIRNAME/../install_amneziawg.sh"
+    run bash -c '
+        die(){ echo "$*" >&2; return 97; }
+        source <(sed -n "/^validate_port_user() {$/,/^validate_bind_addr() {$/p" "$1" | head -n -1)
+        validate_web_port 443
+        validate_web_port 1
+        validate_web_port 65535
+    ' _ "$installer"
+    [ "$status" -eq 0 ]
+
+    run bash -c '
+        die(){ echo "$*" >&2; return 97; }
+        source <(sed -n "/^validate_port_user() {$/,/^validate_bind_addr() {$/p" "$1" | head -n -1)
+        validate_port_user 443
+    ' _ "$installer"
+    [ "$status" -eq 97 ]
+    [[ "$output" == *"1024-65535"* ]]
+
+    run bash -c '
+        die(){ echo "$*" >&2; return 97; }
+        source <(sed -n "/^validate_port_user() {$/,/^validate_bind_addr() {$/p" "$1" | head -n -1)
+        validate_web_port 0
+    ' _ "$installer"
+    [ "$status" -eq 97 ]
+    [[ "$output" == *"1-65535"* ]]
+
+    run bash -c '
+        die(){ echo "$*" >&2; return 97; }
+        source <(sed -n "/^validate_port_user() {$/,/^validate_bind_addr() {$/p" "$1" | head -n -1)
+        validate_web_port 65536
+    ' _ "$installer"
+    [ "$status" -eq 97 ]
+    [[ "$output" == *"1-65535"* ]]
+}
+
+@test "pseudo-domain provider prompt sanitizes defaults and control input" {
+    local installer="$BATS_TEST_DIRNAME/../install_amneziawg.sh"
+    grep -qF 'provider_choice="$(sanitize_menu_choice "$provider_choice")"' "$installer"
+    grep -qF 'case "${provider_choice:-1}" in' "$installer"
+    grep -qF '1|sslip.io) AWG_WEB_CERT_PROVIDER="sslip.io"' "$installer"
+    grep -qF '2|nip.io) AWG_WEB_CERT_PROVIDER="nip.io"' "$installer"
+    run bash -c '
+        log_warn(){ :; }
+        die(){ echo "$*" >&2; return 97; }
+        source <(sed -n "/^is_public_web_bind() {$/,/^prompt_web_panel() {$/p" "$1" | head -n -1)
+        [ "$(sanitize_menu_choice "")" = "" ]
+        [ "$(sanitize_menu_choice "1")" = "1" ]
+        [ "$(sanitize_menu_choice "2")" = "2" ]
+        [ "$(sanitize_menu_choice "sslip.io")" = "sslip.io" ]
+        [ "$(sanitize_menu_choice "nip.io")" = "nip.io" ]
+        [ "$(sanitize_menu_choice $'"'"'\e[B'"'"')" = "" ]
+    ' _ "$installer"
+    [ "$status" -eq 0 ]
+}
+
+@test "web public URL formatting omits 443 and keeps non-default ports" {
+    local installer="$BATS_TEST_DIRNAME/../install_amneziawg.sh"
+    run bash -c '
+        log_warn(){ :; }
+        die(){ echo "$*" >&2; return 97; }
+        source <(sed -n "/^is_public_web_bind() {$/,/^prompt_web_panel() {$/p" "$1" | head -n -1)
+        [ "$(format_https_url 77-90-29-231.sslip.io 443)" = "https://77-90-29-231.sslip.io/" ]
+        [ "$(format_https_url 77-90-29-231.sslip.io 8443)" = "https://77-90-29-231.sslip.io:8443/" ]
+    ' _ "$installer"
+    [ "$status" -eq 0 ]
+}
+
+@test "README documents clarified IPv6 routed and NDP modes" {
+    grep -qF 'отдельный routed IPv6 prefix' "$BATS_TEST_DIRNAME/../README.md"
+    grep -qF 'NDP proxy' "$BATS_TEST_DIRNAME/../README.md"
+    grep -qF 'additional routed IPv6 prefix' "$BATS_TEST_DIRNAME/../README.en.md"
+    grep -qF 'existing public `/64`' "$BATS_TEST_DIRNAME/../README.en.md"
 }
