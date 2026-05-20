@@ -76,7 +76,7 @@ sudo bash ./install_amneziawg.sh --yes --route-all --server-name="my-vpn"
 sudo bash ./install_amneziawg.sh
 ```
 
-Wizard спросит важные параметры до начала установки: имя сервера, endpoint/public IP или автоопределение, route mode, preset `default|mobile`, IPv6 mode `routed|ndp|nat66`, IPv6 subnet для `routed`, режим доступа к web-panel (`VPN-only`, `localhost`, `public`), HTTPS-порт web-panel, AdGuard Home и P2P-порты. Enter на шаге доступа к Web Panel оставляет безопасный VPN-only default `https://10.9.9.1:8443`; для публичного домена нужно выбрать `public`, тогда domain modes (`ip-domain`, `letsencrypt`, `custom`) по умолчанию используют `443`. Перед установкой будет показан итоговый summary; выбранные значения сохраняются в `/root/awg/awgsetup_cfg.init`, чтобы resume после reboot не вернулся к default preset/bind.
+Wizard спросит важные параметры до начала установки: имя сервера, endpoint/public IP или автоопределение, route mode, preset `default|mobile`, IPv6 mode `routed|ndp|nat66`, IPv6 subnet для `routed`, режим доступа к web-panel (`VPN-only`, `localhost`, `public`), HTTPS-порт web-panel, AdGuard Home и P2P-порты. Enter на шаге доступа к Web Panel оставляет безопасный VPN-only default `https://10.9.9.1:8443`; для публичного домена нужно выбрать `public`, тогда domain modes (`ip-domain`, `letsencrypt`, `custom`) по умолчанию используют `443`. Для trusted HTTPS рекомендуется свой домен + Let's Encrypt; `sslip.io`/`nip.io` удобны, но best-effort из-за общих rate limits Let's Encrypt. Перед установкой будет показан итоговый summary; выбранные значения сохраняются в `/root/awg/awgsetup_cfg.init`, чтобы resume после reboot не вернулся к default preset/bind.
 
 ### Non-interactive install через flags
 
@@ -152,9 +152,15 @@ sudo bash install_amneziawg.sh \
   --web-port=443
 ```
 
-Интерактивный wizard для публичной панели по умолчанию предлагает trusted HTTPS через pseudo-domain вида `https://64-112-125-125.sslip.io/` и Let's Encrypt на `443/tcp`; итоговый URL для port `443` пишется без `:443`. Для этого порт `80/tcp` должен быть доступен на время HTTP-01 проверки. VPN-only и localhost остаются на `8443` по умолчанию.
+Интерактивный wizard для публичной панели рекомендует trusted HTTPS через свой домен + Let's Encrypt. Pseudo-domain вида `https://64-112-125-125.sslip.io/` или `nip.io` доступен как экспериментальный вариант: он удобен, но может упереться в лимиты Let's Encrypt для registered domain `sslip.io`/`nip.io`. Итоговый URL для port `443` пишется без `:443`. Для выпуска сертификата порт `80/tcp` должен быть доступен и в UFW, и во внешнем firewall/security group провайдера. Для публичной панели на `443` также откройте TCP/443. VPN-only и localhost остаются на `8443` по умолчанию.
 
 > Открывать web-panel всему интернету не рекомендуется. Лучше использовать firewall allowlist, VPN, SSH tunnel или reverse proxy с дополнительной авторизацией. Публичный self-signed режим не рекомендуется: браузеры и WG Tunnel URL Import могут отклонять сертификат. Bearer token должен быть длинным и секретным; не публикуйте `tokens.json`, client configs, QR и `vpn://` URI.
+
+Troubleshooting Let's Encrypt:
+
+* `Timeout during connect` / `likely firewall problem`: проверьте, что домен указывает на IP сервера, TCP/80 открыт в UFW, TCP/80 открыт во внешнем firewall/security group, и на сервере нет процесса, который уже слушает `:80`.
+* `too many certificates` / `rate limit` для `sslip.io` или `nip.io`: используйте свой домен, выберите self-signed fallback, принесите custom cert или дождитесь reset лимита.
+* Если выпуск сертификата не удался, VPN всё равно может быть установлен; Web Panel продолжит работать с self-signed HTTPS до настройки trusted cert.
 
 ## Частые сценарии установки
 
@@ -227,9 +233,10 @@ sudo /root/awg/manage_amneziawg.sh p2p toggle CLIENT_NAME
 | `--preset=TYPE` | Preset обфускации: `default` или `mobile` | `--preset=mobile` |
 | `--no-tweaks` | Пропустить hardening/оптимизацию | `--no-tweaks` |
 | `--disable-ufw` | Не включать UFW, если firewall/NAT управляются снаружи | `AWG_DISABLE_UFW=1` |
-| `--web-cert-mode=selfsigned\|custom\|letsencrypt\|ip-domain` | TLS mode web-panel. Default `selfsigned` для VPN-only/localhost; public wizard default `ip-domain` (`sslip.io` + Let's Encrypt). `custom` требует `--web-cert-file`/`--web-key-file`; Let's Encrypt требует доступный `80/tcp` | `--web-cert-mode=ip-domain` |
+| `--web-cert-mode=selfsigned\|custom\|letsencrypt\|ip-domain` | TLS mode web-panel. Default `selfsigned` для VPN-only/localhost; public wizard рекомендует `letsencrypt` со своим доменом. `ip-domain` (`sslip.io`/`nip.io`) best-effort из-за rate limits. `custom` требует `--web-cert-file`/`--web-key-file`; Let's Encrypt требует доступный `80/tcp` | `--web-cert-mode=letsencrypt` |
 | `--web-cert-provider=sslip.io\|nip.io` | Provider для `ip-domain`; `64.112.125.125` превращается в `64-112-125-125.sslip.io` | `--web-cert-provider=sslip.io` |
 | `--web-domain=DOMAIN` | Домен для `letsencrypt` или public URL при custom cert | `--web-domain=vpn.example.com` |
+| `--web-cert-fallback=selfsigned\|abort` | Non-interactive fallback при ошибке Let's Encrypt. Default `abort`; `selfsigned` продолжит установку с недоверенным cert | `--web-cert-fallback=selfsigned` |
 
 Полный список — в `sudo bash install_amneziawg.sh --help`.
 

@@ -88,12 +88,18 @@ export AWG_FULLCONE_NAT=1
 export AWG_WEB_ENABLED=1
 export AWG_WEB_PORT=8443
 export AWG_WEB_BIND='0.0.0.0'
+export AWG_WEB_CERT_FALLBACK='selfsigned'
+export AWG_WEB_CERT_ATTEMPTED_MODE='ip-domain'
+export AWG_WEB_CERT_FAILURE_REASON='rate limit'
+export AWG_WEB_CERT_FALLBACK_USED='selfsigned'
 EOF
     safe_load_config "$CONFIG_FILE"
     [ "$AWG_IPV6_ENABLED" = "1" ]
     [ "$AWG_IPV6_MODE" = "ula" ]
     [ "$AWG_P2P_BASE_PORT" = "20000" ]
     [ "$AWG_WEB_PORT" = "8443" ]
+    [ "$AWG_WEB_CERT_FALLBACK" = "selfsigned" ]
+    [ "$AWG_WEB_CERT_FAILURE_REASON" = "rate limit" ]
 }
 
 @test "safe_load_config: unquoted numeric values" {
