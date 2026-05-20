@@ -12,10 +12,11 @@ const previousRx = new Map();
 const previousTx = new Map();
 const previousSampleAt = new Map();
 const speedHistory = new Map();
-const charts = new Map();
+const clientCharts = new Map();
 const configTextCache = new Map();
 let trafficChart = null;
 let openClientMenu = null;
+const CLIENT_ACTION_MENU_PORTAL_ID = "clientActionMenuPortal";
 const CLIENT_NAME_RE = /^[A-Za-z0-9_-]+$/;
 const CLIENT_NAME_HINT_RU = "Используйте только латиницу, цифры, дефис и подчёркивание: A-Z, a-z, 0-9, _ и -";
 const CLIENT_NAME_HINT_EN = "Use only Latin letters, digits, underscore and hyphen: A-Z, a-z, 0-9, _ and -";
@@ -58,6 +59,12 @@ document.addEventListener("click", event => {
 });
 document.addEventListener("keydown", event => {
   if (event.key === "Escape") closeClientMenus();
+});
+document.addEventListener("scroll", () => {
+  if (openClientMenu) closeClientMenus();
+}, true);
+window.addEventListener("resize", () => {
+  if (openClientMenu) closeClientMenus();
 });
 
 function esc(value) {
@@ -262,7 +269,15 @@ function actionButton(action, title, iconName, label, extra = "") {
 }
 
 function closeClientMenus(except = null) {
+  const portal = document.getElementById(CLIENT_ACTION_MENU_PORTAL_ID);
+  if (!except && portal) {
+    portal.classList.add("hidden");
+    portal.innerHTML = "";
+    portal.removeAttribute("data-client-name");
+    portal.removeAttribute("data-source-menu");
+  }
   document.querySelectorAll(".client-menu").forEach(menu => {
+    if (menu.id === CLIENT_ACTION_MENU_PORTAL_ID) return;
     if (except && menu.id === except) return;
     menu.classList.add("hidden");
     const btn = document.querySelector(`[aria-controls="${menu.id}"]`);
@@ -272,10 +287,68 @@ function closeClientMenus(except = null) {
   if (!except) openClientMenu = null;
 }
 
+function clientActionMenuPortal() {
+  let portal = document.getElementById(CLIENT_ACTION_MENU_PORTAL_ID);
+  if (portal) return portal;
+  portal = document.createElement("div");
+  portal.id = CLIENT_ACTION_MENU_PORTAL_ID;
+  portal.className = "client-menu client-menu-portal hidden";
+  portal.setAttribute("role", "menu");
+  portal.addEventListener("click", event => {
+    const item = event.target.closest("[data-action]");
+    if (!item) return;
+    const name = portal.dataset.clientName;
+    closeClientMenus();
+    if (name) clientAction(name, item.dataset.action);
+  });
+  document.body.appendChild(portal);
+  return portal;
+}
+
+function positionClientActionMenu(button, menu) {
+  const margin = 8;
+  const gap = 6;
+  const rect = button.getBoundingClientRect();
+  menu.classList.remove("hidden");
+  menu.style.visibility = "hidden";
+  menu.style.width = "";
+  const menuRect = menu.getBoundingClientRect();
+  const width = Math.min(menuRect.width || 208, window.innerWidth - margin * 2);
+  const height = menuRect.height || 0;
+  const spaceBelow = window.innerHeight - rect.bottom - margin;
+  const spaceAbove = rect.top - margin;
+  const openUp = spaceBelow < height + gap && spaceAbove > spaceBelow;
+  let top = openUp ? rect.top - height - gap : rect.bottom + gap;
+  top = Math.max(margin, Math.min(top, window.innerHeight - height - margin));
+  let left = rect.right - width;
+  if (left < margin) left = rect.left;
+  left = Math.max(margin, Math.min(left, window.innerWidth - width - margin));
+  menu.style.top = `${top}px`;
+  menu.style.left = `${left}px`;
+  menu.style.width = `${width}px`;
+  menu.dataset.placement = openUp ? "top" : "bottom";
+  menu.style.visibility = "";
+}
+
+function openClientActionMenu(button) {
+  const id = button.dataset.menuToggle;
+  const template = document.getElementById(id);
+  const card = button.closest(".client-card");
+  if (!template || !card) return;
+  closeClientMenus(id);
+  const portal = clientActionMenuPortal();
+  portal.innerHTML = template.innerHTML;
+  portal.dataset.clientName = card.dataset.name;
+  portal.dataset.sourceMenu = id;
+  positionClientActionMenu(button, portal);
+  button.setAttribute("aria-expanded", "true");
+  card.classList.add("client-card-menu-open");
+  openClientMenu = id;
+}
+
 function renderP2pSummary(ports, disabled) {
   if (!ports.length) return "";
-  const chips = ports.slice(0, 2).map(port => `<span class="p2p-chip">${esc(port)}</span>`);
-  if (ports.length > 2) chips.push(`<span class="p2p-chip">+${ports.length - 2}</span>`);
+  const chips = ports.map(port => `<span class="p2p-chip">${esc(port)}</span>`);
   return `<div class="p2p-summary ${disabled ? "is-off" : ""}" title="${esc(ports.join(", "))}"><span class="p2p-label">P2P</span>${chips.join("")}${disabled ? '<span class="p2p-state">off</span>' : ""}</div>`;
 }
 
@@ -609,8 +682,8 @@ function jumpToClient(name) {
 }
 
 function renderClients() {
-  charts.forEach(chart => chart.destroy());
-  charts.clear();
+  clientCharts.forEach(chart => chart.destroy());
+  clientCharts.clear();
   const preservedMenu = openClientMenu;
   const host = document.querySelector("#clientsList");
   if (!latestClients.length) {
@@ -634,44 +707,48 @@ function renderClients() {
     const search = `${client.name} ${ip} ${endpoint} ${(client.p2p_ports || []).join(" ")}`.toLowerCase();
     return `
       <article class="client-card bg-[var(--panel)] border-b border-[var(--line)] p-4 relative last:border-b-0" data-name="${esc(client.name)}" data-search="${esc(search)}">
-        <div class="relative z-10 shrink-0 self-start sm:self-auto">
-          ${client.avatar}
-          <span class="absolute -right-0.5 -bottom-0.5 grid h-3.5 w-3.5 place-items-center">
-            ${online ? '<span class="absolute inline-flex h-full w-full rounded-full bg-green-500 opacity-75 animate-ping"></span><span class="relative inline-flex h-3 w-3 rounded-full bg-green-600 ring-2 ring-[var(--panel)]"></span>' : '<span class="relative inline-flex h-3 w-3 rounded-full bg-[var(--muted)] ring-2 ring-[var(--panel)]"></span>'}
-          </span>
-        </div>
-        <div class="relative z-10 min-w-0 flex-1">
-          <div class="flex min-w-0 flex-wrap items-center gap-2">
-            <h3 class="min-w-0 truncate text-base font-semibold" title="${esc(client.name)}">${esc(client.name)}</h3>
-            ${client.disabled ? '<span class="rounded-full border border-[var(--danger)] px-2 py-0.5 text-xs font-semibold text-[var(--danger)]">disabled</span>' : ""}
+        <div id="chart-${esc(client.name)}" class="client-card-chart-bg"></div>
+        <div class="client-card-content">
+          <div class="client-header-row">
+            <div class="client-avatar relative z-10 shrink-0 self-start sm:self-auto">
+              ${client.avatar}
+              <span class="absolute -right-0.5 -bottom-0.5 grid h-3.5 w-3.5 place-items-center">
+                ${online ? '<span class="absolute inline-flex h-full w-full rounded-full bg-green-500 opacity-75 animate-ping"></span><span class="relative inline-flex h-3 w-3 rounded-full bg-green-600 ring-2 ring-[var(--panel)]"></span>' : '<span class="relative inline-flex h-3 w-3 rounded-full bg-[var(--muted)] ring-2 ring-[var(--panel)]"></span>'}
+              </span>
+            </div>
+            <div class="client-main relative z-10 min-w-0 flex-1">
+              <div class="flex min-w-0 flex-wrap items-center gap-2">
+                <h3 class="min-w-0 truncate text-base font-semibold" title="${esc(client.name)}">${esc(client.name)}</h3>
+                ${client.disabled ? '<span class="rounded-full border border-[var(--danger)] px-2 py-0.5 text-xs font-semibold text-[var(--danger)]">disabled</span>' : ""}
+              </div>
+              <div class="mt-1 flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 text-sm text-[var(--muted)]">
+                <span class="shrink-0 font-mono text-xs text-[var(--text)]" title="${esc(ipv4)}">${esc(ipv4)}</span>
+                ${ipv6 ? `<span class="min-w-0 max-w-full truncate font-mono text-xs" title="${esc(ipv6)}">${esc(ipv6)}</span>` : ""}
+              </div>
+              <p class="mt-1 text-xs text-[var(--muted)]">${active ? "Active recently" : "No recent traffic"} · Last seen ${esc(timeAgo(client.latestHandshakeAt || client.last_handshake))}</p>
+              <p class="mt-1 truncate text-xs text-[var(--muted)]">Endpoint: ${esc(endpoint)}</p>
+              ${p2pMarkup ? `<div class="mt-2">${p2pMarkup}</div>` : ""}
+            </div>
           </div>
-          <div class="mt-1 flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 text-sm text-[var(--muted)]">
-            <span class="shrink-0 font-mono text-xs text-[var(--text)]" title="${esc(ipv4)}">${esc(ipv4)}</span>
-            ${ipv6 ? `<span class="min-w-0 max-w-full truncate font-mono text-xs" title="${esc(ipv6)}">${esc(ipv6)}</span>` : ""}
+          <div class="client-traffic relative z-10 min-w-0 text-left sm:min-w-36 sm:text-right">
+            <p class="flex flex-wrap gap-x-3 gap-y-1 text-sm font-semibold sm:justify-end"><span>↓ ${esc(speed(client.rxSpeedBps))}</span><span>↑ ${esc(speed(client.txSpeedBps))}</span></p>
+            <p class="mt-1 text-xs text-[var(--muted)]" title="${esc(trafficText(clientTotal.rx || 0, clientTotal.tx || 0))}">Total ${esc(compactTrafficText(clientTotal.rx || 0, clientTotal.tx || 0))}</p>
+            <p class="mt-1 text-xs text-[var(--muted)]" title="${esc(trafficText(client30d.rx || 0, client30d.tx || 0))}">30d ${esc(compactTrafficText(client30d.rx || 0, client30d.tx || 0))}</p>
           </div>
-          <p class="mt-1 text-xs text-[var(--muted)]">${active ? "Active recently" : "No recent traffic"} · Last seen ${esc(timeAgo(client.latestHandshakeAt || client.last_handshake))}</p>
-          <p class="mt-1 truncate text-xs text-[var(--muted)]">Endpoint: ${esc(endpoint)}</p>
-          ${p2pMarkup ? `<div class="mt-2">${p2pMarkup}</div>` : ""}
-        </div>
-        <div class="relative z-10 min-w-0 text-left sm:min-w-36 sm:text-right">
-          <p class="flex flex-wrap gap-x-3 gap-y-1 text-sm font-semibold sm:justify-end"><span>↓ ${esc(speed(client.rxSpeedBps))}</span><span>↑ ${esc(speed(client.txSpeedBps))}</span></p>
-          <p class="mt-1 text-xs text-[var(--muted)]" title="${esc(trafficText(clientTotal.rx || 0, clientTotal.tx || 0))}">Total ${esc(compactTrafficText(clientTotal.rx || 0, clientTotal.tx || 0))}</p>
-          <p class="mt-1 text-xs text-[var(--muted)]" title="${esc(trafficText(client30d.rx || 0, client30d.tx || 0))}">30d ${esc(compactTrafficText(client30d.rx || 0, client30d.tx || 0))}</p>
-          <div id="chart-${esc(client.name)}" class="client-sparkline mt-2"></div>
-        </div>
-        <div class="client-actions relative z-20 flex w-full shrink-0 flex-wrap justify-end gap-1 sm:w-auto">
-          <button data-action="download-config" title="Download .conf" aria-label="Download .conf" class="${buttonClasses("client-action client-action-primary")}">${icon("download")}<span class="client-action-label">Download</span></button>
-          ${actionButton("qr", "Show QR", "qr", "QR", "client-action-primary")}
-          <button data-action="copy-config" title="Copy config" aria-label="Copy config" class="${buttonClasses("client-action client-action-primary")}">${icon("copy")}<span class="client-action-label">Copy</span></button>
-          <button type="button" data-menu-toggle="${esc(menuId)}" aria-expanded="false" aria-controls="${esc(menuId)}" title="More actions" aria-label="More actions for ${esc(client.name)}" class="${buttonClasses("w-9 px-0")}">${icon("more")}</button>
-          <div id="${esc(menuId)}" class="client-menu hidden" role="menu">
-            ${renderMenuItem("copy-config", "copy", "Copy config")}
-            ${renderMenuItem("copy-vpnuri", "link", "Copy vpn://")}
-            ${renderMenuItem("copy-import-url", "link", "Copy import URL")}
-            ${renderMenuItem("regenerate-config", "refresh", "Regenerate", "text-amber-700")}
-            ${renderMenuItem("toggle", "power", client.disabled ? "Enable client" : "Disable client")}
-            ${renderMenuItem("toggle-p2p", "shield", "P2P details / toggle", shieldClass)}
-            ${renderMenuItem("delete", "trash", "Delete", "text-[var(--danger)]")}
+          <div class="client-actions relative z-20 flex w-full shrink-0 flex-wrap justify-end gap-1 sm:w-auto">
+            <button data-action="download-config" title="Download .conf" aria-label="Download .conf" class="${buttonClasses("client-action client-action-primary")}">${icon("download")}<span class="client-action-label">Download</span></button>
+            ${actionButton("qr", "Show QR", "qr", "QR", "client-action-primary")}
+            <button data-action="copy-config" title="Copy config" aria-label="Copy config" class="${buttonClasses("client-action client-action-primary")}">${icon("copy")}<span class="client-action-label">Copy</span></button>
+            <button type="button" data-menu-toggle="${esc(menuId)}" aria-expanded="false" aria-controls="${esc(menuId)}" title="More actions" aria-label="More actions for ${esc(client.name)}" class="${buttonClasses("client-action w-9 px-0")}">${icon("more")}</button>
+            <div id="${esc(menuId)}" class="client-menu hidden" role="menu">
+              ${renderMenuItem("copy-config", "copy", "Copy config")}
+              ${renderMenuItem("copy-vpnuri", "link", "Copy vpn://")}
+              ${renderMenuItem("copy-import-url", "link", "Copy import URL")}
+              ${renderMenuItem("regenerate-config", "refresh", "Regenerate", "text-amber-700")}
+              ${renderMenuItem("toggle", "power", client.disabled ? "Enable client" : "Disable client")}
+              ${renderMenuItem("toggle-p2p", "shield", "P2P details / toggle", shieldClass)}
+              ${renderMenuItem("delete", "trash", "Delete", "text-[var(--danger)]")}
+            </div>
           </div>
         </div>
       </article>
@@ -692,20 +769,14 @@ function renderClients() {
       closeClientMenus(expanded ? null : id);
       const menu = document.getElementById(id);
       if (!menu) return;
-      menu.classList.toggle("hidden", expanded);
-      btn.setAttribute("aria-expanded", expanded ? "false" : "true");
-      menu.closest(".client-card")?.classList.toggle("client-card-menu-open", !expanded);
-      openClientMenu = expanded ? null : id;
+      if (expanded) return;
+      openClientActionMenu(btn);
     };
   });
   if (preservedMenu) {
-    const menu = document.getElementById(preservedMenu);
     const btn = document.querySelector(`[aria-controls="${preservedMenu}"]`);
-    if (menu && btn) {
-      menu.classList.remove("hidden");
-      btn.setAttribute("aria-expanded", "true");
-      menu.closest(".client-card")?.classList.add("client-card-menu-open");
-      openClientMenu = preservedMenu;
+    if (btn) {
+      openClientActionMenu(btn);
     } else {
       openClientMenu = null;
     }
@@ -719,17 +790,18 @@ function drawCharts() {
     const el = document.getElementById(`chart-${client.name}`);
     if (!el) return;
     const chart = new ApexCharts(el, {
-      chart: {type: "area", height: "100%", sparkline: {enabled: true}, animations: {enabled: false}},
+      chart: {type: "area", height: "100%", sparkline: {enabled: true}, animations: {enabled: false}, toolbar: {show: false}, background: "transparent"},
       series: [{data: speedHistory.get(client.name) || []}],
       stroke: {curve: "smooth", width: 2, colors: ["var(--accent)"]},
-      fill: {type: "solid", colors: ["var(--accent)"], opacity: 0.35},
+      fill: {type: "gradient", colors: ["var(--accent)"], gradient: {shadeIntensity: 0.2, opacityFrom: 0.5, opacityTo: 0.05, stops: [0, 90, 100]}},
       tooltip: {enabled: false},
       grid: {show: false},
+      dataLabels: {enabled: false},
       xaxis: {labels: {show: false}, axisBorder: {show: false}, axisTicks: {show: false}},
       yaxis: {show: false},
     });
     chart.render();
-    charts.set(client.name, chart);
+    clientCharts.set(client.name, chart);
   });
 }
 
