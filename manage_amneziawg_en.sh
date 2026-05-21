@@ -986,10 +986,10 @@ set_server_name() {
 }
 
 web_token_py() {
-    local action="$1" name="${2:-}"
+    local action="$1" name="${2:-}" clients_csv="${3:-}"
     local token_file="$AWG_DIR/web/tokens.json"
     mkdir -p "$AWG_DIR/web" || return 1
-    python3 - "$token_file" "$action" "$name" <<'PY'
+    python3 - "$token_file" "$action" "$name" "$clients_csv" <<'PY'
 import hashlib
 import json
 import os
@@ -1003,7 +1003,8 @@ from pathlib import Path
 path = Path(sys.argv[1])
 action = sys.argv[2]
 name = sys.argv[3]
-name_re = re.compile(r"^[A-Za-z0-9_-]{1,63}$")
+clients_csv = sys.argv[4]
+client_re = re.compile(r"^[A-Za-z0-9_-]{1,63}$")
 
 def digest(token):
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
@@ -1031,13 +1032,13 @@ def normalize(data, allow_new_super=False):
             record = {"name": value.get("name", ""), "clients": value.get("clients", [])}
         else:
             raise SystemExit("tokens.json is invalid; run manage_amneziawg_en.sh web token reset-super")
-        if not isinstance(record["name"], str) or "\n" in record["name"] or "\r" in record["name"] or len(record["name"]) > 128:
+        if not isinstance(record["name"], str) or any(ord(ch) < 32 or ord(ch) == 127 for ch in record["name"]) or len(record["name"]) > 64:
             raise SystemExit("tokens.json is invalid; run manage_amneziawg_en.sh web token reset-super")
         if not isinstance(record["clients"], list):
             raise SystemExit("tokens.json is invalid; run manage_amneziawg_en.sh web token reset-super")
         clean_users[key] = {
             "name": record["name"],
-            "clients": [item for item in record["clients"] if isinstance(item, str) and re.fullmatch(r"^[A-Za-z0-9_-]{1,63}$", item)],
+            "clients": [item for item in record["clients"] if isinstance(item, str) and client_re.fullmatch(item)],
         }
     super_hash = data.get("super_token_hash") or data.get("super")
     if not isinstance(super_hash, str) or not re.fullmatch(r"[0-9a-f]{64}", super_hash):
@@ -1073,6 +1074,22 @@ def backup_existing():
     os.chmod(backup, 0o600)
     return backup
 
+def clean_name(value):
+    value = (value or "").strip()
+    if len(value) > 64 or any(ord(ch) < 32 or ord(ch) == 127 for ch in value):
+        raise SystemExit("invalid token name")
+    return value
+
+def clean_clients(value):
+    out, seen = [], set()
+    for item in [part.strip() for part in value.split(",") if part.strip()]:
+        if not client_re.fullmatch(item):
+            raise SystemExit("invalid client name")
+        if item not in seen:
+            out.append(item)
+            seen.add(item)
+    return out
+
 if action == "reset-super":
     backup = backup_existing()
     try:
@@ -1090,12 +1107,15 @@ if action == "list":
         suffix = ",".join(record["clients"]) if record["clients"] else "-"
         print(f"user: {key[:12]}... name={record['name'] or '-'} clients={suffix}")
 elif action == "add":
-    if not name_re.fullmatch(name):
-        raise SystemExit("invalid token name")
+    name = clean_name(name)
+    clients = clean_clients(clients_csv)
     token = secrets.token_urlsafe(32)
-    data["users"][digest(token)] = {"name": name, "clients": []}
+    data["users"][digest(token)] = {"name": name, "clients": clients}
     save(data)
-    print("Token created. By default, it has access to 0 clients. Log in to the Web Panel with the Super Token to assign clients to this user.")
+    if clients:
+        print("Token created.")
+    else:
+        print("Token created. By default, it has access to 0 clients. Log in to the Web Panel with the Super Token to assign clients to this user.")
     print(token)
 elif action == "revoke":
     matches = [key for key in data["users"] if key == name or key.startswith(name)]
@@ -1627,7 +1647,9 @@ usage() {
     echo "  rotate-awg            Alias for server rotate-profile"
     echo "  refresh-server-config Alias for server rotate-profile"
     echo "  web token list        Show web panel tokens"
-    echo "  web token add <name>  Create a user token and print its value"
+    echo "  web token create [--client NAME] [--name ALIAS]"
+    echo "                        Create a user token and print its value"
+    echo "  web token add [ALIAS] Compatibility alias for create --name ALIAS"
     echo "  web token revoke <hash> Revoke a user token"
     echo "  web token rotate <hash> Rotate a user token while preserving access"
     echo "  web token reset-super Regenerate the super token"
@@ -2026,16 +2048,48 @@ case $COMMAND in
     web)
         _sub="${ARGS[0]:-}"
         if [[ "$_sub" != "token" ]]; then
-            die "Usage: web token list|add <name>|revoke <hash>|rotate <hash>|reset-super"
+            die "Usage: web token list|create [--client NAME] [--name ALIAS]|add [ALIAS]|revoke <hash>|rotate <hash>|reset-super"
         fi
         _token_cmd="${ARGS[1]:-list}"
         case "$_token_cmd" in
             list)
                 web_token_py "list" || _cmd_rc=1
                 ;;
-            add)
-                [[ -z "${ARGS[2]:-}" ]] && die "Usage: web token add <name>"
-                web_token_py "add" "${ARGS[2]}" || _cmd_rc=1
+            create|add)
+                _token_name=""
+                _token_clients=()
+                if [[ "$_token_cmd" == "add" && -n "${ARGS[2]:-}" && "${ARGS[2]:0:2}" != "--" ]]; then
+                    _token_name="${ARGS[2]}"
+                    _idx=3
+                else
+                    _idx=2
+                fi
+                while [[ $_idx -lt ${#ARGS[@]} ]]; do
+                    case "${ARGS[$_idx]}" in
+                        --name)
+                            _idx=$((_idx + 1))
+                            [[ $_idx -lt ${#ARGS[@]} ]] || die "Usage: web token create --name ALIAS"
+                            _token_name="${ARGS[$_idx]}"
+                            ;;
+                        --name=*)
+                            _token_name="${ARGS[$_idx]#--name=}"
+                            ;;
+                        --client)
+                            _idx=$((_idx + 1))
+                            [[ $_idx -lt ${#ARGS[@]} ]] || die "Usage: web token create --client NAME"
+                            _token_clients+=("${ARGS[$_idx]}")
+                            ;;
+                        --client=*)
+                            _token_clients+=("${ARGS[$_idx]#--client=}")
+                            ;;
+                        *)
+                            die "Unknown web token create argument: ${ARGS[$_idx]}"
+                            ;;
+                    esac
+                    _idx=$((_idx + 1))
+                done
+                _clients_csv="$(IFS=,; echo "${_token_clients[*]}")"
+                web_token_py "add" "$_token_name" "$_clients_csv" || _cmd_rc=1
                 ;;
             revoke)
                 [[ -z "${ARGS[2]:-}" ]] && die "Usage: web token revoke <hash>"

@@ -1241,6 +1241,10 @@ async function newToken() {
     </label>
   `).join("") || `<p class="text-sm text-[var(--muted)]">Create clients first or issue an empty token.</p>`;
   const ok = await showModal("Generate Token", `
+    <label class="mb-3 block text-sm">
+      <span class="mb-1 block text-[var(--muted)]">Token name / alias (optional)</span>
+      <input id="newTokenName" class="h-10 w-full rounded-md border border-[var(--line)] bg-[var(--soft)] px-3 text-[var(--text)] outline-none focus:border-[var(--accent)]" maxlength="64" autocomplete="off">
+    </label>
     <div class="grid gap-2">${body}</div>
     <div class="mt-4 flex justify-end">
       <button id="createTokenConfirm" class="${primaryButtonClasses()}">${icon("key")}<span>Create</span></button>
@@ -1251,7 +1255,8 @@ async function newToken() {
 
 async function createTokenFromModal(dialog) {
   const clients = Array.from(dialog.querySelectorAll(".client-token-check:checked")).map(input => input.value);
-  const result = await api("/api/tokens", {method: "POST", body: JSON.stringify({clients})});
+  const name = (dialog.querySelector("#newTokenName")?.value || "").trim();
+  const result = await api("/api/tokens", {method: "POST", body: JSON.stringify({clients, name})});
   try {
     if (navigator.clipboard) await navigator.clipboard.writeText(result.token);
   } catch {

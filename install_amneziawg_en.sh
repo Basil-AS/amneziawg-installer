@@ -34,11 +34,11 @@ MANAGE_SCRIPT_PATH="$AWG_DIR/manage_amneziawg.sh"
 # are used first; remote download is allowed only with pinned SHA256 or explicit
 # AWG_ALLOW_UNVERIFIED_DOWNLOAD=1 for development.
 declare -A AWG_ASSET_SHA256=(
-    ["awg_common_en.sh"]="f3f35958c31ee235c4b7655486403071906e2f62c0066984c212d78e0c955345"
-    ["manage_amneziawg_en.sh"]="22df56b7a51129262190569e0e7e5eecf93ef6865f12019dfad36f9176cebe61"
-    ["web/server.py"]="671f01c4be25f8797e807fb444e8b3784c49bf08823448e50870a39239a20f36"
+    ["awg_common_en.sh"]="17c1e8625b265cfe88b74aced0389438abcbd9ca49333bad44ce032aa6aa860e"
+    ["manage_amneziawg_en.sh"]="de3a4fc26c721ec333c54f7a7793d58b8b326da4f2c1001b2cb89fd2069c96cb"
+    ["web/server.py"]="ebee2b69aee3b99f4476b136f7251987cd89abebeadd9194faebc52514efa994"
     ["web/index.html"]="a41e458c832f82d8d834ecc67f2cb35da4eed11bf7b76acd493413d082de0483"
-    ["web/app.js"]="e03f8c6dd1fe5f9d173757fdc046ee23ec5113a350332ebb5bd6e9c53ac4dd64"
+    ["web/app.js"]="9a6ac51f2573d0570a77524e48a316a7177dcb9688a7bd01f69cdff5f37a75b8"
     ["web/awg_i1.js"]="d1951b9de2c8ab8170cf78ad320f274fc9dc5da622b8e60b2650871fb7ddf1e4"
     ["web/style.css"]="fe373a5258618afbb42455372bbfc4680ab40ed624f67463c3eeceedb105133e"
     ["web/favicon.svg"]="ce339a4b3043c9d531c4a59b46e3ec51b9793a693a76bfabef441f114e7125b0"
@@ -57,6 +57,7 @@ CLI_P2P_BASE_PORT=""; CLI_P2P_PORTS_PER_CLIENT=""
 CLI_FULLCONE_NAT=0; CLI_WEB_PORT=""; CLI_WEB_BIND=""; CLI_DISABLE_WEB=0
 CLI_WEB_CERT_MODE=""; CLI_WEB_DOMAIN=""; CLI_WEB_CERT_FILE=""; CLI_WEB_KEY_FILE=""; CLI_WEB_CERT_PROVIDER=""; CLI_WEB_LE_EMAIL=""; CLI_WEB_CERT_FALLBACK=""
 CLI_ENABLE_ADGUARD=0; CLI_DISABLE_ADGUARD=0; CLI_ADGUARD_PORT=""; CLI_DNS_MODE=""
+CLI_WIRESOCK_HINTS=""; CLI_WIRESOCK_ID=""; CLI_WIRESOCK_IP=""; CLI_WIRESOCK_IB=""
 CLI_SERVER_NAME=""
 CLI_PRESET=""; CLI_JC=""; CLI_JMIN=""; CLI_JMAX=""
 
@@ -134,6 +135,10 @@ while [[ $# -gt 0 ]]; do
         --disable-adguard) CLI_DISABLE_ADGUARD=1 ;;
         --adguard-port=*) CLI_ADGUARD_PORT="${1#*=}" ;;
         --dns-mode=*)    CLI_DNS_MODE="${1#*=}" ;;
+        --wiresock-hints=*) CLI_WIRESOCK_HINTS="${1#*=}" ;;
+        --wiresock-id=*) CLI_WIRESOCK_ID="${1#*=}" ;;
+        --wiresock-ip=*) CLI_WIRESOCK_IP="${1#*=}" ;;
+        --wiresock-ib=*) CLI_WIRESOCK_IB="${1#*=}" ;;
         --server-name=*) CLI_SERVER_NAME="${1#*=}" ;;
         --route-all)     CLI_ROUTING_MODE=1 ;;
         --route-amnezia) CLI_ROUTING_MODE=2 ;;
@@ -356,6 +361,10 @@ Options:
   --disable-adguard     Do not install AdGuard Home and use system DNS
   --adguard-port=PORT   AdGuard Home HTTP port on localhost/VPN (default 3000)
   --dns-mode=MODE       Client DNS mode: adguard, system, or custom
+  --wiresock-hints=MODE WireSock hints: off, auto, mobile, quic, or dns (default: off)
+  --wiresock-id=DOMAIN  Domain for #@ws:Id
+  --wiresock-ip=quic|dns Value for #@ws:Ip
+  --wiresock-ib=curl|chrome Value for #@ws:Ib
   --server-name=NAME    Server name in .conf and vpn:// (default MyVPN)
   --route-all           Use 'All traffic' mode non-interactively
   --route-amnezia       Use 'Amnezia' mode non-interactively
@@ -662,6 +671,7 @@ safe_load_config() {
                 AWG_P2P_ENABLED|AWG_P2P_BASE_PORT|AWG_P2P_PORTS_PER_CLIENT|AWG_FULLCONE_NAT|AWG_DISABLE_UFW|\
                 AWG_WEB_ENABLED|AWG_WEB_PORT|AWG_WEB_BIND|AWG_WEB_CERT_MODE|AWG_WEB_DOMAIN|AWG_WEB_CERT_FILE|AWG_WEB_KEY_FILE|AWG_WEB_CERT_PROVIDER|AWG_WEB_LE_EMAIL|AWG_WEB_PUBLIC_URL|AWG_WEB_CERT_FALLBACK|AWG_WEB_CERT_ATTEMPTED_MODE|AWG_WEB_CERT_FAILURE_REASON|AWG_WEB_CERT_FALLBACK_USED|\
                 AWG_DNS_MODE|AWG_CUSTOM_DNS|AWG_ADGUARD_ENABLED|AWG_ADGUARD_PORT|AWG_ADGUARD_DIR|\
+                AWG_WIRESOCK_HINTS|AWG_WIRESOCK_ID|AWG_WIRESOCK_IP|AWG_WIRESOCK_IB|\
                 AWG_SERVER_NAME)
                     export "$key=$value"
                     ;;
@@ -1125,12 +1135,66 @@ generate_ip_domain() {
 
 format_https_url() {
     local host="$1" port="${2:-443}"
-    [[ -n "$host" ]] || return 1
+    if [[ -z "$host" || "$host" == "not exposed" ]]; then
+        printf 'not exposed\n'
+        return 0
+    fi
+    if [[ "$host" == *:* && "$host" != \[* ]]; then
+        host="[$host]"
+    fi
     if [[ "$port" == "443" ]]; then
         printf 'https://%s/\n' "$host"
     else
         printf 'https://%s:%s/\n' "$host" "$port"
     fi
+}
+
+compute_web_public_url() {
+    [[ "${AWG_WEB_ENABLED:-1}" -eq 1 ]] || { printf 'not exposed\n'; return 0; }
+    is_public_web_bind || { printf 'not exposed\n'; return 0; }
+    format_https_url "${AWG_WEB_DOMAIN:-${AWG_ENDPOINT:-}}" "${AWG_WEB_PORT:-8443}"
+}
+
+compute_web_vpn_url() {
+    [[ "${AWG_WEB_ENABLED:-1}" -eq 1 ]] || { printf 'not exposed\n'; return 0; }
+    if is_public_web_bind || [[ "${AWG_WEB_BIND:-}" == "127.0.0.1" || "${AWG_WEB_BIND:-}" == "::1" ]]; then
+        printf 'not exposed\n'
+    else
+        format_https_url "${AWG_WEB_BIND:-${AWG_TUNNEL_SUBNET%/*}}" "${AWG_WEB_PORT:-8443}"
+    fi
+}
+
+compute_web_local_url() {
+    [[ "${AWG_WEB_ENABLED:-1}" -eq 1 ]] || { printf 'not exposed\n'; return 0; }
+    if [[ "${AWG_WEB_BIND:-}" == "127.0.0.1" || "${AWG_WEB_BIND:-}" == "::1" ]]; then
+        format_https_url "${AWG_WEB_BIND}" "${AWG_WEB_PORT:-8443}"
+    else
+        printf 'not exposed\n'
+    fi
+}
+
+compute_trusted_https_status() {
+    local cert_file="${AWG_DIR}/web/cert.pem"
+    [[ "${AWG_WEB_ENABLED:-1}" -eq 1 ]] || { printf 'no\n'; return 0; }
+    [[ -f "$cert_file" ]] || { printf 'no\n'; return 0; }
+    [[ "${AWG_WEB_CERT_FALLBACK_USED:-}" == "selfsigned" ]] && { printf 'no\n'; return 0; }
+    case "${AWG_WEB_CERT_MODE:-selfsigned}" in
+        letsencrypt|ip-domain|custom) printf 'yes\n' ;;
+        *) printf 'no\n' ;;
+    esac
+}
+
+compute_cert_summary() {
+    local trusted_https
+    trusted_https="$(compute_trusted_https_status)"
+    cat <<EOF
+Certificate mode: ${AWG_WEB_CERT_MODE:-selfsigned}
+Certificate provider: ${AWG_WEB_CERT_PROVIDER:-none}
+Certificate attempted mode: ${AWG_WEB_CERT_ATTEMPTED_MODE:-none}
+Certificate fallback: ${AWG_WEB_CERT_FALLBACK_USED:-none}
+Certificate failure reason: ${AWG_WEB_CERT_FAILURE_REASON:-none}
+Trusted HTTPS: ${trusted_https}
+EOF
 }
 
 sanitize_menu_choice() {
@@ -1324,6 +1388,66 @@ prompt_p2p() {
         read -rp "Enable fullcone NAT? [y/N]: " fullcone < /dev/tty
         if [[ "$fullcone" =~ ^[Yy]$ ]]; then AWG_FULLCONE_NAT=1; else AWG_FULLCONE_NAT=0; fi
     fi
+}
+
+validate_wiresock_domain() {
+    local value="$1"
+    [[ -n "$value" && ${#value} -le 253 ]] || return 1
+    [[ "$value" != *[[:space:]]* && "$value" != *[[:cntrl:]]* ]] || return 1
+    [[ "$value" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+$ ]]
+}
+
+apply_wiresock_profile_defaults() {
+    case "${AWG_WIRESOCK_HINTS:-off}" in
+        mobile)
+            AWG_WIRESOCK_ID="${AWG_WIRESOCK_ID:-bag.itunes.apple.com}"
+            AWG_WIRESOCK_IP="${AWG_WIRESOCK_IP:-quic}"
+            AWG_WIRESOCK_IB="${AWG_WIRESOCK_IB:-curl}"
+            ;;
+        dns)
+            AWG_WIRESOCK_ID="${AWG_WIRESOCK_ID:-yandex.ru}"
+            AWG_WIRESOCK_IP="${AWG_WIRESOCK_IP:-dns}"
+            AWG_WIRESOCK_IB="${AWG_WIRESOCK_IB:-chrome}"
+            ;;
+        quic|auto)
+            AWG_WIRESOCK_ID="${AWG_WIRESOCK_ID:-ozon.ru}"
+            AWG_WIRESOCK_IP="${AWG_WIRESOCK_IP:-quic}"
+            AWG_WIRESOCK_IB="${AWG_WIRESOCK_IB:-curl}"
+            ;;
+    esac
+}
+
+validate_wiresock_settings() {
+    case "${AWG_WIRESOCK_HINTS:-off}" in off|auto|mobile|quic|dns) ;; *) die "Invalid --wiresock-hints=${AWG_WIRESOCK_HINTS}" ;; esac
+    [[ "${AWG_WIRESOCK_HINTS:-off}" == "off" ]] && return 0
+    apply_wiresock_profile_defaults
+    validate_wiresock_domain "${AWG_WIRESOCK_ID:-}" || die "Invalid WireSock Id/domain: '${AWG_WIRESOCK_ID:-}'"
+    case "${AWG_WIRESOCK_IP:-}" in quic|dns) ;; *) die "Invalid --wiresock-ip=${AWG_WIRESOCK_IP:-}" ;; esac
+    case "${AWG_WIRESOCK_IB:-}" in curl|chrome) ;; *) die "Invalid --wiresock-ib=${AWG_WIRESOCK_IB:-}" ;; esac
+}
+
+prompt_wiresock_hints() {
+    [[ "$AUTO_YES" -eq 0 && -z "$CLI_WIRESOCK_HINTS" ]] || return 0
+    local enable profile custom_id
+    read -rp "Add WireSock compatibility hints to client configs? [y/N]: " enable < /dev/tty
+    if [[ ! "$enable" =~ ^[Yy]$ ]]; then
+        AWG_WIRESOCK_HINTS="off"
+        return 0
+    fi
+    echo "These are #@ws:* comments; standard clients ignore them."
+    echo "  1) quic/mobile-compatible: ozon.ru, quic, curl"
+    echo "  2) mobile: bag.itunes.apple.com, quic, curl"
+    echo "  3) dns: yandex.ru, dns, chrome"
+    read -rp "WireSock profile [1]: " profile < /dev/tty
+    case "${profile:-1}" in
+        1|quic) AWG_WIRESOCK_HINTS="quic" ;;
+        2|mobile) AWG_WIRESOCK_HINTS="mobile" ;;
+        3|dns) AWG_WIRESOCK_HINTS="dns" ;;
+        *) log_warn "Unknown WireSock profile '$profile', using quic."; AWG_WIRESOCK_HINTS="quic" ;;
+    esac
+    apply_wiresock_profile_defaults
+    read -rp "WireSock Id/domain [${AWG_WIRESOCK_ID}]: " custom_id < /dev/tty
+    [[ -n "$custom_id" ]] && AWG_WIRESOCK_ID="$custom_id"
 }
 
 web_exposure_label() {
@@ -2400,6 +2524,10 @@ initialize_setup() {
     AWG_ADGUARD_ENABLED=${AWG_ADGUARD_ENABLED:-1}
     AWG_ADGUARD_PORT=${AWG_ADGUARD_PORT:-3000}
     AWG_ADGUARD_DIR="${AWG_ADGUARD_DIR:-/opt/AdGuardHome}"
+    AWG_WIRESOCK_HINTS="${AWG_WIRESOCK_HINTS:-off}"
+    AWG_WIRESOCK_ID="${AWG_WIRESOCK_ID:-}"
+    AWG_WIRESOCK_IP="${AWG_WIRESOCK_IP:-}"
+    AWG_WIRESOCK_IB="${AWG_WIRESOCK_IB:-}"
     AWG_PRESET="${AWG_PRESET:-default}"
 
     # Load config
@@ -2443,6 +2571,10 @@ initialize_setup() {
         AWG_ADGUARD_ENABLED=${AWG_ADGUARD_ENABLED:-1}
         AWG_ADGUARD_PORT=${AWG_ADGUARD_PORT:-3000}
         AWG_ADGUARD_DIR=${AWG_ADGUARD_DIR:-/opt/AdGuardHome}
+        AWG_WIRESOCK_HINTS=${AWG_WIRESOCK_HINTS:-off}
+        AWG_WIRESOCK_ID=${AWG_WIRESOCK_ID:-}
+        AWG_WIRESOCK_IP=${AWG_WIRESOCK_IP:-}
+        AWG_WIRESOCK_IB=${AWG_WIRESOCK_IB:-}
         AWG_PRESET=${AWG_PRESET:-default}
         log "Settings loaded from file."
     else
@@ -2469,6 +2601,10 @@ initialize_setup() {
     [[ -n "$CLI_WEB_LE_EMAIL" ]] && AWG_WEB_LE_EMAIL="$CLI_WEB_LE_EMAIL"
     [[ -n "$CLI_WEB_CERT_FALLBACK" ]] && AWG_WEB_CERT_FALLBACK="$CLI_WEB_CERT_FALLBACK"
     [[ -n "$CLI_ADGUARD_PORT" ]] && AWG_ADGUARD_PORT="$CLI_ADGUARD_PORT"
+    [[ -n "$CLI_WIRESOCK_HINTS" ]] && AWG_WIRESOCK_HINTS="$CLI_WIRESOCK_HINTS"
+    [[ -n "$CLI_WIRESOCK_ID" ]] && AWG_WIRESOCK_ID="$CLI_WIRESOCK_ID"
+    [[ -n "$CLI_WIRESOCK_IP" ]] && AWG_WIRESOCK_IP="$CLI_WIRESOCK_IP"
+    [[ -n "$CLI_WIRESOCK_IB" ]] && AWG_WIRESOCK_IB="$CLI_WIRESOCK_IB"
     [[ -n "$CLI_SERVER_NAME" ]] && AWG_SERVER_NAME="$CLI_SERVER_NAME"
     [[ -n "$CLI_PRESET" ]] && AWG_PRESET="$CLI_PRESET"
     if [[ -n "$CLI_DNS_MODE" ]]; then AWG_DNS_MODE="$CLI_DNS_MODE"; fi
@@ -2516,6 +2652,7 @@ initialize_setup() {
         die "--web-cert-mode=letsencrypt requires --web-domain=DOMAIN."
     fi
     validate_port "$AWG_ADGUARD_PORT"
+    validate_wiresock_settings
     validate_server_name "$AWG_SERVER_NAME" || die "Invalid server name: empty, too long, or contains a newline."
     case "$AWG_DNS_MODE" in
         adguard|system|custom) ;;
@@ -2554,6 +2691,7 @@ initialize_setup() {
         prompt_web_panel
         prompt_adguard
         prompt_p2p
+        prompt_wiresock_hints
     else
         log "Using settings from $CONFIG_FILE."
         warn_public_web_bind
@@ -2597,6 +2735,7 @@ initialize_setup() {
     validate_web_port "$AWG_WEB_PORT"
     validate_bind_addr "$AWG_WEB_BIND" || die "Invalid AWG_WEB_BIND: '$AWG_WEB_BIND'. Expected a valid IPv4/IPv6 address without whitespace or control characters."
     validate_port "$AWG_ADGUARD_PORT"
+    validate_wiresock_settings
     validate_server_name "$AWG_SERVER_NAME" || die "Invalid server name: empty, too long, or contains a newline."
     confirm_install_choices
 
@@ -2665,6 +2804,10 @@ export AWG_CUSTOM_DNS='${AWG_CUSTOM_DNS}'
 export AWG_ADGUARD_ENABLED=${AWG_ADGUARD_ENABLED}
 export AWG_ADGUARD_PORT=${AWG_ADGUARD_PORT}
 export AWG_ADGUARD_DIR='${AWG_ADGUARD_DIR}'
+export AWG_WIRESOCK_HINTS='${AWG_WIRESOCK_HINTS}'
+export AWG_WIRESOCK_ID='${AWG_WIRESOCK_ID}'
+export AWG_WIRESOCK_IP='${AWG_WIRESOCK_IP}'
+export AWG_WIRESOCK_IB='${AWG_WIRESOCK_IB}'
 # AWG 2.0 Parameters
 export AWG_Jc=${AWG_Jc}
 export AWG_Jmin=${AWG_Jmin}
@@ -2695,6 +2838,7 @@ EOF
     export AWG_WEB_CERT_MODE AWG_WEB_DOMAIN AWG_WEB_CERT_FILE AWG_WEB_KEY_FILE AWG_WEB_CERT_PROVIDER AWG_WEB_LE_EMAIL AWG_WEB_PUBLIC_URL
     export AWG_WEB_CERT_FALLBACK AWG_WEB_CERT_ATTEMPTED_MODE AWG_WEB_CERT_FAILURE_REASON AWG_WEB_CERT_FALLBACK_USED
     export AWG_DNS_MODE AWG_CUSTOM_DNS AWG_ADGUARD_ENABLED AWG_ADGUARD_PORT AWG_ADGUARD_DIR
+    export AWG_WIRESOCK_HINTS AWG_WIRESOCK_ID AWG_WIRESOCK_IP AWG_WIRESOCK_IB
     log "Port: ${AWG_PORT}/udp"
     log "Subnet: ${AWG_TUNNEL_SUBNET}"
     log "IPv6 disable: $DISABLE_IPV6"
@@ -2702,6 +2846,7 @@ EOF
     log "P2P: base=${AWG_P2P_BASE_PORT}, ports/client=${AWG_P2P_PORTS_PER_CLIENT}, fullcone=${AWG_FULLCONE_NAT}"
     log "Web: enabled=${AWG_WEB_ENABLED}, bind=${AWG_WEB_BIND}:${AWG_WEB_PORT}"
     log "DNS: mode=${AWG_DNS_MODE}, adguard=${AWG_ADGUARD_ENABLED}, port=${AWG_ADGUARD_PORT}"
+    log "WireSock hints: ${AWG_WIRESOCK_HINTS:-off}"
     log "Server name: ${AWG_SERVER_NAME}"
     log "AllowedIPs mode: $ALLOWED_IPS_MODE"
 
@@ -3697,9 +3842,66 @@ bootstrap_dns = [
     "185.222.222.222", "45.11.45.11", "2a09::", "2a11::",
     "119.29.29.29", "2402:4e00::",
 ]
+curated_user_rules = [
+    "@@||cdn.jsdelivr.net^",
+    "@@||sso.yandex.ru^",
+    "@@||passport.yandex.ru^",
+    "@@||yastatic.net^",
+    "@@||admitad.com^",
+    "@@||awin1.com^",
+    "||mc.yandex.ru^",
+    "||an.yandex.ru^",
+    "||bs.yandex.ru^",
+    "||top-fwz1.mail.ru^",
+    "||vk-portal.net^",
+    "||appmetrica.yandex.com^",
+    "||startup.mobile.yandex.net^",
+    "||ad.mail.ru^",
+    "||r3.mail.ru^",
+    "||trg.mail.ru^",
+    "||app-measurement.com^",
+    "@@||4pda.to^$important",
+    "@@||eth0.me^$important",
+    "||doubleclick.net^",
+    "||googlesyndication.com^",
+    "||googleadservices.com^",
+    "||media.net^",
+    "||adcolony.com^",
+    "||stats.wp.com^",
+    "||pixel.facebook.com^",
+    "||an.facebook.com^",
+    "||ads.linkedin.com^",
+    "||events.reddit.com^",
+    "||events.redditmedia.com^",
+    "||ads-api.tiktok.com^",
+    "||analytics.tiktok.com^",
+    "||ads.tiktok.com^",
+    "||static.ads-twitter.com^",
+    "||ads-api.twitter.com^",
+    "||ads.pinterest.com^",
+    "||trk.pinterest.com^",
+    "||ads.yahoo.com^",
+    "||partnerads.ysm.yahoo.com^",
+    "||unityads.unity3d.com^",
+    "||appmetrica.yandex.ru^",
+    "||adfstat.yandex.ru^",
+    "||metrika.yandex.ru^",
+    "||adfox.yandex.ru^",
+    "||bdapi-ads.realmemobile.com^",
+    "||adsfs.oppomobile.com^",
+    "||iadsdk.apple.com^",
+    "||api-adservices.apple.com^",
+    "||api.ad.xiaomi.com^",
+    "||tracking.rus.miui.com^",
+    "||samsungads.com^",
+    "||smetrics.samsung.com^",
+]
 
 def q(value):
     return json.dumps(str(value), ensure_ascii=False)
+
+def sq(value):
+    return "'" + str(value).replace("'", "''") + "'"
 
 def top_level(line):
     return line and not line.startswith((" ", "\t")) and ":" in line
@@ -3731,6 +3933,20 @@ def extract_clients_persistent(lines):
                 j += 1
             return out
     return []
+
+def extract_user_rules(lines):
+    block = extract_top_block(lines, "user_rules")
+    rules = []
+    for line in block[1:]:
+        m = re.match(r"^\s*-\s*(.*)\s*$", line)
+        if not m:
+            continue
+        value = m.group(1).strip()
+        if (value.startswith("'") and value.endswith("'")) or (value.startswith('"') and value.endswith('"')):
+            value = value[1:-1]
+        if value and value not in rules:
+            rules.append(value)
+    return rules
 
 def parse_peers(path):
     peers = []
@@ -3796,6 +4012,10 @@ def render_clients(lines, peers):
 
 lines = existing_yaml.read_text(encoding="utf-8", errors="ignore").splitlines() if existing_yaml.is_file() else []
 peers = parse_peers(server_conf)
+user_rules = []
+for rule in curated_user_rules + extract_user_rules(lines):
+    if rule not in user_rules:
+        user_rules.append(rule)
 tunnel = ipaddress.ip_interface(os.environ.get("AWG_TUNNEL_SUBNET", "10.9.9.1/24"))
 vpn_ip = str(tunnel.ip)
 allowed_clients = [str(tunnel.network)]
@@ -3827,7 +4047,9 @@ out.extend(["  safe_fs_patterns: []", "  cache_time: 30", "  filters_update_inte
 for enabled, data in [(True, enabled_filters), (False, disabled_filters)]:
     for filter_id, url, name in data:
         out.extend([f"  - enabled: {str(enabled).lower()}", f"    url: {url}", f"    name: {q(name)}", f"    id: {filter_id}"])
-out.extend(["whitelist_filters: []", "user_rules:", "  - '@@||cdn.jsdelivr.net^'", "  - '@@||sso.yandex.ru^'", "  - '@@||passport.yandex.ru^'", "  - '@@||yastatic.net^'", "  - '@@||admitad.com^'", "  - '@@||awin1.com^'", "  - '||mc.yandex.ru^'", "  - '||an.yandex.ru^'", "  - '||bs.yandex.ru^'", "  - '||top-fwz1.mail.ru^'", "  - '||vk-portal.net^'", "  - '||appmetrica.yandex.ru^'", "  - '||appmetrica.yandex.com^'", "  - '||startup.mobile.yandex.net^'", "  - '||ad.mail.ru^'", "  - '||r3.mail.ru^'", "  - '||trg.mail.ru^'", "  - '||app-measurement.com^'", "  - '@@||4pda.to^$important'", "  - '@@||eth0.me^$important'", "querylog:", "  dir_path: \"\"", "  ignored:", "    - '*.arpa'", "    - '*.lan'", "  interval: 2160h", "  size_memory: 1000", "  enabled: true", "  ignored_enabled: true", "  file_enabled: true", "statistics:", "  dir_path: \"\"", "  ignored:", "    - '*.arpa'", "    - '*.lan'", "  interval: 2160h", "  enabled: true", "  ignored_enabled: true"])
+out.extend(["whitelist_filters: []", "user_rules:"])
+out.extend(f"  - {sq(rule)}" for rule in user_rules)
+out.extend(["querylog:", "  dir_path: \"\"", "  ignored:", "    - '*.arpa'", "    - '*.lan'", "  interval: 2160h", "  size_memory: 1000", "  enabled: true", "  ignored_enabled: true", "  file_enabled: true", "statistics:", "  dir_path: \"\"", "  ignored:", "    - '*.arpa'", "    - '*.lan'", "  interval: 2160h", "  enabled: true", "  ignored_enabled: true"])
 out.extend(render_clients(lines, peers))
 out.extend(["dhcp:", "  enabled: false", "tls:", "  enabled: false", "  server_name: \"\"", "  force_https: false", "  port_https: 0", "  port_dns_over_tls: 0", "  port_dns_over_quic: 0", "  port_dnscrypt: 0", "log:", "  enabled: true", "  file: \"\"", "  max_backups: 0", "  max_size: 100", "  max_age: 3", "  compress: false", "  local_time: false", "  verbose: false", "schema_version: 29"])
 output_yaml.write_text("\n".join(out) + "\n", encoding="utf-8")
@@ -4223,6 +4445,7 @@ os.chmod(tmp, 0o600)
 os.replace(tmp, path)
 os.chmod(path, 0o600)
 PY
+            AWG_WEB_SUPER_TOKEN_ONCE="$legacy_token"
         else
             super_token=$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')
             python3 - "$web_dir/tokens.json" "$super_token" <<'PY' || die "Failed to generate web tokens"
@@ -4238,6 +4461,18 @@ os.chmod(path, 0o600)
 PY
             AWG_WEB_SUPER_TOKEN_ONCE="$super_token"
         fi
+    fi
+    if [[ -n "${AWG_WEB_SUPER_TOKEN_ONCE:-}" ]]; then
+        python3 - "$web_dir/tokens.json" "$AWG_WEB_SUPER_TOKEN_ONCE" <<'PY' || die "Generated Web super token failed verification"
+import hashlib, hmac, json, sys
+path, token = sys.argv[1], sys.argv[2]
+with open(path, encoding="utf-8") as fh:
+    data = json.load(fh)
+stored = data.get("super_token_hash", "")
+actual = hashlib.sha256(token.encode()).hexdigest()
+if not hmac.compare_digest(stored, actual):
+    raise SystemExit(1)
+PY
     fi
 
     deploy_web_tls "$web_dir"
@@ -4443,6 +4678,70 @@ step7_start_service() {
 # STEP 99: Completion
 # ==============================================================================
 
+format_https_url() {
+    local host="$1" port="${2:-443}"
+    if [[ -z "$host" || "$host" == "not exposed" ]]; then
+        printf 'not exposed\n'
+        return 0
+    fi
+    if [[ "$host" == *:* && "$host" != \[* ]]; then
+        host="[$host]"
+    fi
+    if [[ "$port" == "443" ]]; then
+        printf 'https://%s/\n' "$host"
+    else
+        printf 'https://%s:%s/\n' "$host" "$port"
+    fi
+}
+
+compute_web_public_url() {
+    [[ "${AWG_WEB_ENABLED:-1}" -eq 1 ]] || { printf 'not exposed\n'; return 0; }
+    [[ "${AWG_WEB_BIND:-}" == "0.0.0.0" || "${AWG_WEB_BIND:-}" == "::" ]] || { printf 'not exposed\n'; return 0; }
+    format_https_url "${AWG_WEB_DOMAIN:-${AWG_ENDPOINT:-}}" "${AWG_WEB_PORT:-8443}"
+}
+
+compute_web_vpn_url() {
+    [[ "${AWG_WEB_ENABLED:-1}" -eq 1 ]] || { printf 'not exposed\n'; return 0; }
+    if [[ "${AWG_WEB_BIND:-}" == "0.0.0.0" || "${AWG_WEB_BIND:-}" == "::" || "${AWG_WEB_BIND:-}" == "127.0.0.1" || "${AWG_WEB_BIND:-}" == "::1" ]]; then
+        printf 'not exposed\n'
+    else
+        format_https_url "${AWG_WEB_BIND:-${AWG_TUNNEL_SUBNET%/*}}" "${AWG_WEB_PORT:-8443}"
+    fi
+}
+
+compute_web_local_url() {
+    [[ "${AWG_WEB_ENABLED:-1}" -eq 1 ]] || { printf 'not exposed\n'; return 0; }
+    if [[ "${AWG_WEB_BIND:-}" == "127.0.0.1" || "${AWG_WEB_BIND:-}" == "::1" ]]; then
+        format_https_url "${AWG_WEB_BIND}" "${AWG_WEB_PORT:-8443}"
+    else
+        printf 'not exposed\n'
+    fi
+}
+
+compute_trusted_https_status() {
+    local cert_file="${AWG_DIR}/web/cert.pem"
+    [[ "${AWG_WEB_ENABLED:-1}" -eq 1 ]] || { printf 'no\n'; return 0; }
+    [[ -f "$cert_file" ]] || { printf 'no\n'; return 0; }
+    [[ "${AWG_WEB_CERT_FALLBACK_USED:-}" == "selfsigned" ]] && { printf 'no\n'; return 0; }
+    case "${AWG_WEB_CERT_MODE:-selfsigned}" in
+        letsencrypt|ip-domain|custom) printf 'yes\n' ;;
+        *) printf 'no\n' ;;
+    esac
+}
+
+compute_cert_summary() {
+    local trusted_https
+    trusted_https="$(compute_trusted_https_status)"
+    cat <<EOF
+Certificate mode: ${AWG_WEB_CERT_MODE:-selfsigned}
+Certificate provider: ${AWG_WEB_CERT_PROVIDER:-none}
+Certificate attempted mode: ${AWG_WEB_CERT_ATTEMPTED_MODE:-none}
+Certificate fallback: ${AWG_WEB_CERT_FALLBACK_USED:-none}
+Certificate failure reason: ${AWG_WEB_CERT_FAILURE_REASON:-none}
+Trusted HTTPS: ${trusted_https}
+EOF
+}
+
 route_mode_label() {
     case "${ALLOWED_IPS_MODE:-}" in
         1) echo "route-all" ;;
@@ -4476,10 +4775,97 @@ PY
     fi
 }
 
+client_value_from_server_conf() {
+    local client_name="$1" key="$2"
+    [[ -f "$SERVER_CONF_FILE" ]] || return 0
+    awk -v name="$client_name" -v key="$key" '
+        $0 == "[Peer]" { in_peer=1; found=0; next }
+        in_peer && $0 ~ /^#_Name[[:space:]]*=/ {
+            value=$0; sub(/^#_Name[[:space:]]*=[[:space:]]*/, "", value)
+            found=(value == name)
+            next
+        }
+        in_peer && found && key == "AllowedIPs" && $0 ~ /^AllowedIPs[[:space:]]*=/ {
+            value=$0; sub(/^AllowedIPs[[:space:]]*=[[:space:]]*/, "", value); print value; exit
+        }
+        in_peer && found && key == "P2P" && $0 ~ /^#_P2PPorts(_Disabled)?[[:space:]]*=/ {
+            value=$0; sub(/^[^=]+=[[:space:]]*/, "", value); print value; exit
+        }
+    ' "$SERVER_CONF_FILE"
+}
+
+client_ipv4_for_summary() {
+    local allowed
+    allowed="$(client_value_from_server_conf "$1" "AllowedIPs")"
+    printf '%s\n' "$allowed" | grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}/32' | head -n 1 | sed 's#/32##'
+}
+
+client_ipv6_for_summary() {
+    local allowed
+    allowed="$(client_value_from_server_conf "$1" "AllowedIPs")"
+    printf '%s\n' "$allowed" | grep -oE '([0-9A-Fa-f:]+)/128' | head -n 1 | sed 's#/128##'
+}
+
+client_file_status() {
+    local path="$1"
+    if [[ -f "$path" ]]; then
+        printf '%s\n' "$path"
+    else
+        printf 'not generated\n'
+    fi
+}
+
+write_client_files_summary() {
+    local out_file="$1" client_name ipv4 ipv6 p2p
+    if [[ ! -f "$SERVER_CONF_FILE" ]] || ! grep -q '^#_Name = ' "$SERVER_CONF_FILE" 2>/dev/null; then
+        printf -- "- none\n" >> "$out_file"
+        return 0
+    fi
+    grep '^#_Name = ' "$SERVER_CONF_FILE" 2>/dev/null | sed 's/^#_Name = //' | while IFS= read -r client_name; do
+        [[ -n "$client_name" ]] || continue
+        ipv4="$(client_ipv4_for_summary "$client_name")"
+        ipv6="$(client_ipv6_for_summary "$client_name")"
+        p2p="$(client_value_from_server_conf "$client_name" "P2P")"
+        {
+            printf -- "- %s:\n" "$client_name"
+            printf '    config: %s\n' "$(client_file_status "$AWG_DIR/${client_name}.conf")"
+            printf '    qr: %s\n' "$(client_file_status "$AWG_DIR/${client_name}.png")"
+            printf '    vpnuri: %s\n' "$(client_file_status "$AWG_DIR/${client_name}.vpnuri")"
+            printf '    vpnuri qr: %s\n' "$(client_file_status "$AWG_DIR/${client_name}.vpnuri.png")"
+            printf '    IPv4: %s\n' "${ipv4:-none}"
+            printf '    IPv6: %s\n' "${ipv6:-none}"
+            printf '    P2P ports: %s\n' "${p2p:-none}"
+        } >> "$out_file"
+    done
+}
+
+print_client_files_console() {
+    local client_name ipv4 ipv6 p2p
+    log "CLIENTS:"
+    if [[ ! -f "$SERVER_CONF_FILE" ]] || ! grep -q '^#_Name = ' "$SERVER_CONF_FILE" 2>/dev/null; then
+        log "  none"
+        return 0
+    fi
+    grep '^#_Name = ' "$SERVER_CONF_FILE" 2>/dev/null | sed 's/^#_Name = //' | while IFS= read -r client_name; do
+        [[ -n "$client_name" ]] || continue
+        ipv4="$(client_ipv4_for_summary "$client_name")"
+        ipv6="$(client_ipv6_for_summary "$client_name")"
+        p2p="$(client_value_from_server_conf "$client_name" "P2P")"
+        log "  ${client_name}"
+        log "    .conf:       $(client_file_status "$AWG_DIR/${client_name}.conf")"
+        log "    QR:          $(client_file_status "$AWG_DIR/${client_name}.png")"
+        log "    vpn://:      $(client_file_status "$AWG_DIR/${client_name}.vpnuri")"
+        log "    vpn:// QR:   $(client_file_status "$AWG_DIR/${client_name}.vpnuri.png")"
+        log "    IPv4:        ${ipv4:-none}"
+        log "    IPv6:        ${ipv6:-none}"
+        log "    P2P ports:   ${p2p:-none}"
+    done
+}
+
 write_install_summary() {
     local summary_path="$AWG_DIR/INSTALL_SUMMARY.txt"
     local tmp_path="$AWG_DIR/.INSTALL_SUMMARY.txt.tmp.$$"
-    local timestamp generated route_label server_v6 web_host web_public_host trusted_https
+    local timestamp generated route_label server_v6 web_host trusted_https cert_summary
     local web_public_url web_vpn_url web_local_url web_warning web_extra_url import_example
     local ag_password_display state_display ag_dns_listen ag_allowed_clients ufw_state firewall_resp
 
@@ -4489,18 +4875,16 @@ write_install_summary() {
     timestamp="$(date '+%Y%m%d-%H%M%S')"
     route_label="$(route_mode_label)"
     server_v6="$(server_ipv6_addr_for_summary)"
-    web_host="${AWG_ENDPOINT:-<server>}"
-    web_public_host="${AWG_WEB_DOMAIN:-$web_host}"
-    case "${AWG_WEB_CERT_MODE:-selfsigned}" in
-        ip-domain|letsencrypt|custom) trusted_https="yes" ;;
-        *) trusted_https="no" ;;
-    esac
-    web_public_url="not exposed"
-    web_vpn_url="not exposed"
-    web_local_url="not exposed"
+    web_host="${AWG_ENDPOINT:-server}"
+    trusted_https="$(compute_trusted_https_status)"
+    cert_summary="$(compute_cert_summary)"
+    web_public_url="$(compute_web_public_url)"
+    web_vpn_url="$(compute_web_vpn_url)"
+    web_local_url="$(compute_web_local_url)"
     web_warning="none"
     web_extra_url="none"
-    import_example="https://<host>:${AWG_WEB_PORT:-8443}/import/<client>/<token>"
+    import_example="${web_public_url%/}/import/my_phone/<token>"
+    [[ "$web_public_url" == "not exposed" ]] && import_example="${web_vpn_url%/}/import/my_phone/<token>"
     ag_password_display="${AG_PASSWORD:-not available after initial generation; reset in AdGuard if needed}"
     ag_dns_listen="${AWG_TUNNEL_SUBNET%/*}:53"
     ag_allowed_clients="$(adguard_allowed_clients_for_summary)"
@@ -4513,24 +4897,12 @@ write_install_summary() {
     fi
     [[ -f "$STATE_FILE" ]] || state_display="$STATE_FILE (not present after successful cleanup)"
 
-    if [[ "${AWG_WEB_ENABLED:-1}" -eq 1 ]]; then
-        if [[ "${AWG_WEB_BIND:-}" == "0.0.0.0" || "${AWG_WEB_BIND:-}" == "::" ]]; then
-            if [[ "${AWG_WEB_PORT:-8443}" == "443" ]]; then
-                web_public_url="https://${web_public_host}/"
-            else
-                web_public_url="https://${web_public_host}:${AWG_WEB_PORT:-8443}/"
-            fi
-            AWG_WEB_PUBLIC_URL="$web_public_url"
-            web_vpn_url="https://${AWG_TUNNEL_SUBNET%/*}:${AWG_WEB_PORT:-8443}"
-            web_warning="WARNING: Web Panel is publicly exposed"
-            import_example="${web_public_url}import/my_phone/<token>"
-        elif [[ "${AWG_WEB_BIND:-}" == "127.0.0.1" || "${AWG_WEB_BIND:-}" == "::1" ]]; then
-            web_local_url="https://${AWG_WEB_BIND}:${AWG_WEB_PORT:-8443}"
-            web_extra_url="SSH tunnel: ssh -L ${AWG_WEB_PORT:-8443}:${AWG_WEB_BIND}:${AWG_WEB_PORT:-8443} root@${web_host}"
-        else
-            web_vpn_url="https://${AWG_WEB_BIND:-${AWG_TUNNEL_SUBNET%/*}}:${AWG_WEB_PORT:-8443}"
-            import_example="https://${AWG_WEB_BIND:-${AWG_TUNNEL_SUBNET%/*}}:${AWG_WEB_PORT:-8443}/import/my_phone/<token>"
-        fi
+    if [[ "${AWG_WEB_ENABLED:-1}" -eq 1 && ( "${AWG_WEB_BIND:-}" == "0.0.0.0" || "${AWG_WEB_BIND:-}" == "::" ) ]]; then
+        AWG_WEB_PUBLIC_URL="$web_public_url"
+        web_warning="WARNING: Web Panel is publicly exposed"
+    elif [[ "${AWG_WEB_ENABLED:-1}" -eq 1 && ( "${AWG_WEB_BIND:-}" == "127.0.0.1" || "${AWG_WEB_BIND:-}" == "::1" ) ]]; then
+        web_extra_url="SSH tunnel: ssh -L ${AWG_WEB_PORT:-8443}:${AWG_WEB_BIND}:${AWG_WEB_PORT:-8443} root@${web_host}"
+        import_example="${web_local_url%/}/import/my_phone/<token>"
     fi
 
     if [[ -f "$summary_path" ]]; then
@@ -4546,23 +4918,28 @@ Generated: ${generated}
 Server name: ${AWG_SERVER_NAME:-MyVPN}
 Installer version: ${SCRIPT_VERSION}
 Repository: ${AWG_REPO}
+Permissions: 0600
 ============================================================
 
-[Network]
-Endpoint: ${AWG_ENDPOINT:-not set}
-VPN UDP port: ${AWG_PORT}
-Tunnel IPv4 subnet: ${AWG_TUNNEL_SUBNET}
-Route mode: ${route_label}
-AllowedIPs mode: ${ALLOWED_IPS_MODE}
-AllowedIPs: ${ALLOWED_IPS}
-UFW: ${ufw_state}
-Firewall responsibility: ${firewall_resp}
-
-[IPv6]
-IPv6 enabled: $(if [[ "${AWG_IPV6_ENABLED:-0}" -eq 1 ]]; then echo "yes"; else echo "no"; fi)
-IPv6 mode: ${AWG_IPV6_MODE:-legacy}
-IPv6 client subnet: ${AWG_IPV6_SUBNET:-none}
-Server tunnel IPv6: ${server_v6:-none}
+[!!! IMPORTANT ACCESS INFO / SECRETS !!!]
+Web Panel Public URL: ${web_public_url}
+Web Panel VPN URL: ${web_vpn_url}
+Web Panel Local URL: ${web_local_url}
+Web Panel Domain: ${AWG_WEB_DOMAIN:-none}
+Web Panel Token file: ${AWG_DIR}/web/tokens.json
+Web Super Token: ${AWG_WEB_SUPER_TOKEN_ONCE:-not available here; reset with sudo bash ${MANAGE_SCRIPT_PATH} web token reset-super}
+AdGuard UI URL: http://${AWG_TUNNEL_SUBNET%/*}:${AWG_ADGUARD_PORT:-3000}
+AdGuard Admin login: ${AG_USERNAME:-admin}
+AdGuard Admin password: ${ag_password_display}
+Trusted HTTPS: ${trusted_https}
+Certificate fallback: ${AWG_WEB_CERT_FALLBACK_USED:-none}
+Certificate failure reason: ${AWG_WEB_CERT_FAILURE_REASON:-none}
+Default client configs:
+EOF
+    write_client_files_summary "$tmp_path"
+    cat >> "$tmp_path" <<EOF
+Summary file: ${summary_path}
+Install log: ${LOG_FILE}
 
 [Web Panel]
 Enabled: $(if [[ "${AWG_WEB_ENABLED:-1}" -eq 1 ]]; then echo "yes"; else echo "no"; fi)
@@ -4577,28 +4954,13 @@ Super token: ${AWG_WEB_SUPER_TOKEN_ONCE:-not available here; reset with manage w
 Token file: ${AWG_DIR}/web/tokens.json
 TLS cert: ${AWG_DIR}/web/cert.pem
 TLS key: ${AWG_DIR}/web/key.pem
-Certificate mode: ${AWG_WEB_CERT_MODE:-selfsigned}
-Certificate provider: ${AWG_WEB_CERT_PROVIDER:-none}
+${cert_summary}
 Domain: ${AWG_WEB_DOMAIN:-none}
-Trusted HTTPS: ${trusted_https}
-Certificate attempted mode: ${AWG_WEB_CERT_ATTEMPTED_MODE:-none}
-Certificate fallback: ${AWG_WEB_CERT_FALLBACK_USED:-none}
-Certificate failure reason: ${AWG_WEB_CERT_FAILURE_REASON:-none}
 Certificate file: ${AWG_DIR}/web/cert.pem
 Private key file: ${AWG_DIR}/web/key.pem
 Renewal note: Let's Encrypt modes install certbot renewal; deploy hook restarts awg-web.
 Retry trusted cert: use your own domain and rerun the installer with --web-cert-mode=letsencrypt --web-domain=vpn.example.com, or install a custom certificate.
 TLS warning: $(if [[ "${AWG_WEB_CERT_MODE:-selfsigned}" == "selfsigned" && ( "${AWG_WEB_BIND:-}" == "0.0.0.0" || "${AWG_WEB_BIND:-}" == "::" ) ]]; then echo "public self-signed TLS may be rejected by browsers/WG Tunnel"; else echo "none"; fi)
-
-[WG Tunnel URL Import]
-Supported: yes
-Endpoint pattern: https://<host>:${AWG_WEB_PORT:-8443}/import/<client>/<token>
-Example: ${import_example}
-Notes:
-- HTTPS only.
-- Response is raw config text starting with [Interface].
-- Links are token-protected and expire.
-- Self-signed TLS may be rejected by some mobile apps.
 
 [AdGuard Home]
 Enabled: $(if [[ "${AWG_ADGUARD_ENABLED:-0}" -eq 1 ]]; then echo "yes"; else echo "no"; fi)
@@ -4626,18 +4988,37 @@ Admin login: ${AG_USERNAME:-admin}
 Admin password: ${ag_password_display}
 Config file: ${AWG_ADGUARD_DIR:-/opt/AdGuardHome}/AdGuardHome.yaml
 
+[Network]
+Endpoint: ${AWG_ENDPOINT:-not set}
+VPN UDP port: ${AWG_PORT}
+Tunnel IPv4 subnet: ${AWG_TUNNEL_SUBNET}
+Route mode: ${route_label}
+AllowedIPs mode: ${ALLOWED_IPS_MODE}
+AllowedIPs: ${ALLOWED_IPS}
+UFW: ${ufw_state}
+Firewall responsibility: ${firewall_resp}
+
+[IPv6]
+IPv6 enabled: $(if [[ "${AWG_IPV6_ENABLED:-0}" -eq 1 ]]; then echo "yes"; else echo "no"; fi)
+IPv6 mode: ${AWG_IPV6_MODE:-legacy}
+IPv6 client subnet: ${AWG_IPV6_SUBNET:-none}
+Server tunnel IPv6: ${server_v6:-none}
+
+[WG Tunnel URL Import]
+Supported: yes
+Endpoint pattern: ${import_example}
+Example: ${import_example}
+Notes:
+- HTTPS only.
+- Response is raw config text starting with [Interface].
+- Links are token-protected and expire.
+- Self-signed TLS may be rejected by some mobile apps.
+
 [Clients]
 Config directory: ${AWG_DIR}
 Default clients:
 EOF
-    if [[ -f "$SERVER_CONF_FILE" ]]; then
-        grep '^#_Name = ' "$SERVER_CONF_FILE" 2>/dev/null | sed 's/^#_Name = //' | while IFS= read -r client_name; do
-            [[ -n "$client_name" ]] || continue
-            printf -- "- %s: %s/%s.conf\n" "$client_name" "$AWG_DIR" "$client_name" >> "$tmp_path"
-        done
-    else
-        printf -- "- none\n" >> "$tmp_path"
-    fi
+    write_client_files_summary "$tmp_path"
     cat >> "$tmp_path" <<EOF
 
 [AWG 2.0 Parameters]
@@ -4654,6 +5035,12 @@ H2: ${AWG_H2}
 H3: ${AWG_H3}
 H4: ${AWG_H4}
 I1: ${AWG_I1:-}
+
+[WireSock]
+Hints: ${AWG_WIRESOCK_HINTS:-off}
+Id: ${AWG_WIRESOCK_ID:-none}
+Ip: ${AWG_WIRESOCK_IP:-none}
+Ib: ${AWG_WIRESOCK_IB:-none}
 
 [P2P]
 Base port: ${AWG_P2P_BASE_PORT}
@@ -4692,27 +5079,52 @@ EOF
 }
 
 step99_finish() {
+    local web_public_url web_vpn_url web_local_url trusted_https
+    web_public_url="$(compute_web_public_url)"
+    web_vpn_url="$(compute_web_vpn_url)"
+    web_local_url="$(compute_web_local_url)"
+    trusted_https="$(compute_trusted_https_status)"
     log "### INSTALLATION COMPLETE ###"
-    log "=============================================================================="
-    log "AmneziaWG 2.0 installation and configuration COMPLETED SUCCESSFULLY!"
+    log "============================================================"
+    log "INSTALLATION COMPLETED SUCCESSFULLY"
+    log "============================================================"
     log " "
-    log "CLIENT FILES:"
-    log "  Configs (.conf) and QR codes (.png) in: $AWG_DIR"
-    log "  Copy them securely."
-    log "  Example (on your PC):"
-    log "    scp root@<SERVER_IP>:$AWG_DIR/*.conf ./"
+    log "MAIN:"
+    if [[ "${AWG_WEB_ENABLED:-1}" -eq 1 ]]; then
+        log "  Web Panel:"
+        log "    Public URL: ${web_public_url}"
+        [[ "$web_vpn_url" != "not exposed" ]] && log "    VPN URL: ${web_vpn_url}"
+        [[ "$web_local_url" != "not exposed" ]] && log "    Local URL: ${web_local_url}"
+        if [[ "${AWG_WEB_BIND:-}" == "127.0.0.1" || "${AWG_WEB_BIND:-}" == "::1" ]]; then
+            log "    SSH tunnel: ssh -L ${AWG_WEB_PORT:-8443}:${AWG_WEB_BIND}:${AWG_WEB_PORT:-8443} root@${AWG_ENDPOINT:-server}"
+        fi
+        log "  Web bind: ${AWG_WEB_BIND:-none}:${AWG_WEB_PORT:-8443}"
+        log "  Domain: ${AWG_WEB_DOMAIN:-none}"
+        log "  Certificate mode: ${AWG_WEB_CERT_MODE:-selfsigned}"
+        log "  Trusted HTTPS: ${trusted_https}"
+        log "  Web token file: $AWG_DIR/web/tokens.json"
+        if [[ -n "${AWG_WEB_SUPER_TOKEN_ONCE:-}" ]]; then
+            log "  Web super token: ${AWG_WEB_SUPER_TOKEN_ONCE}"
+        else
+            log "  Reset super token:"
+            log "    sudo bash $MANAGE_SCRIPT_PATH web token reset-super"
+        fi
+    fi
+    if [[ "${AWG_ADGUARD_ENABLED:-0}" -eq 1 && -n "${AG_PASSWORD:-}" ]]; then
+        log " "
+        log "  AdGuard Home: http://${AWG_TUNNEL_SUBNET%/*}:${AWG_ADGUARD_PORT:-3000}"
+        log "  AdGuard login: ${AG_USERNAME:-admin}"
+        log "  AdGuard password: ${AG_PASSWORD}"
+    fi
+    log " "
+    log "  VPN endpoint: ${AWG_ENDPOINT:-not set}:${AWG_PORT}"
+    log "  Client configs/QR/vpnuri: $AWG_DIR"
+    log " "
+    print_client_files_console
     log " "
     log "USEFUL COMMANDS:"
     log "  sudo bash $MANAGE_SCRIPT_PATH help   # Client management"
     log "  systemctl status awg-quick@awg0      # VPN status"
-    if [[ "${AWG_WEB_ENABLED:-1}" -eq 1 ]]; then
-        log "  https://<SERVER_IP>:${AWG_WEB_PORT}              # Web panel"
-        if [[ -n "${AWG_WEB_SUPER_TOKEN_ONCE:-}" ]]; then
-            log "  Web super token: ${AWG_WEB_SUPER_TOKEN_ONCE}"
-        else
-            log "  Web token reset: sudo bash $MANAGE_SCRIPT_PATH web token reset-super"
-        fi
-    fi
     log "  awg show                              # AmneziaWG status"
     log "  ufw status verbose                    # Firewall status"
     log " "

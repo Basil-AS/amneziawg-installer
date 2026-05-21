@@ -229,6 +229,100 @@ awg_dns_servers() {
     esac
 }
 
+ensure_dns_allowedips_routes() {
+    local allowed_ips="$1" dns_servers="$2" tunnel_subnet="${3:-${AWG_TUNNEL_SUBNET:-10.9.9.1/24}}" ipv6_subnet="${4:-${AWG_IPV6_SUBNET:-}}"
+    [[ -n "$allowed_ips" ]] || allowed_ips="0.0.0.0/0"
+    python3 - "$allowed_ips" "$dns_servers" "$tunnel_subnet" "$ipv6_subnet" <<'PY'
+import ipaddress
+import re
+import sys
+
+allowed, dns_servers, tunnel_subnet, ipv6_subnet = sys.argv[1:5]
+routes = [item.strip() for item in allowed.split(",") if item.strip()]
+seen = set(routes)
+
+def has_covering_route(ip):
+    for route in routes:
+        try:
+            if ip in ipaddress.ip_network(route, strict=False):
+                return True
+        except ValueError:
+            continue
+    return False
+
+networks = []
+for value in (tunnel_subnet, ipv6_subnet):
+    if not value:
+        continue
+    try:
+        networks.append(ipaddress.ip_interface(value).network)
+    except ValueError:
+        try:
+            networks.append(ipaddress.ip_network(value, strict=False))
+        except ValueError:
+            pass
+
+for token in re.split(r"[,;\s]+", dns_servers):
+    token = token.strip().strip("[]")
+    if not token:
+        continue
+    try:
+        ip = ipaddress.ip_address(token)
+    except ValueError:
+        continue
+    if has_covering_route(ip):
+        continue
+    if any(ip in network for network in networks):
+        route = f"{ip}/{'32' if ip.version == 4 else '128'}"
+        if route not in seen:
+            routes.append(route)
+            seen.add(route)
+
+print(", ".join(routes))
+PY
+}
+
+validate_wiresock_hint_domain() {
+    local value="$1"
+    [[ -n "$value" && ${#value} -le 253 ]] || return 1
+    [[ "$value" != *[[:space:]]* && "$value" != *[[:cntrl:]]* ]] || return 1
+    [[ "$value" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+$ ]]
+}
+
+apply_wiresock_hint_defaults() {
+    case "${AWG_WIRESOCK_HINTS:-off}" in
+        mobile)
+            AWG_WIRESOCK_ID="${AWG_WIRESOCK_ID:-bag.itunes.apple.com}"
+            AWG_WIRESOCK_IP="${AWG_WIRESOCK_IP:-quic}"
+            AWG_WIRESOCK_IB="${AWG_WIRESOCK_IB:-curl}"
+            ;;
+        dns)
+            AWG_WIRESOCK_ID="${AWG_WIRESOCK_ID:-yandex.ru}"
+            AWG_WIRESOCK_IP="${AWG_WIRESOCK_IP:-dns}"
+            AWG_WIRESOCK_IB="${AWG_WIRESOCK_IB:-chrome}"
+            ;;
+        quic|auto)
+            AWG_WIRESOCK_ID="${AWG_WIRESOCK_ID:-ozon.ru}"
+            AWG_WIRESOCK_IP="${AWG_WIRESOCK_IP:-quic}"
+            AWG_WIRESOCK_IB="${AWG_WIRESOCK_IB:-curl}"
+            ;;
+    esac
+}
+
+render_wiresock_hints() {
+    [[ "${AWG_WIRESOCK_HINTS:-off}" != "off" ]] || return 0
+    apply_wiresock_hint_defaults
+    validate_wiresock_hint_domain "${AWG_WIRESOCK_ID:-}" || return 1
+    case "${AWG_WIRESOCK_IP:-}" in quic|dns) ;; *) return 1 ;; esac
+    case "${AWG_WIRESOCK_IB:-}" in curl|chrome) ;; *) return 1 ;; esac
+    cat <<EOF
+# WireSock compatibility hints (ignored by standard clients)
+#@ws:Id = ${AWG_WIRESOCK_ID}
+#@ws:Ip = ${AWG_WIRESOCK_IP}
+#@ws:Ib = ${AWG_WIRESOCK_IB}
+EOF
+}
+
 normalize_ipv6_subnet() {
     local subnet="$1"
     [[ -n "$subnet" ]] || return 1
@@ -1026,6 +1120,7 @@ safe_load_config() {
                 AWG_P2P_ENABLED|AWG_P2P_BASE_PORT|AWG_P2P_PORTS_PER_CLIENT|AWG_FULLCONE_NAT|\
                 AWG_WEB_ENABLED|AWG_WEB_PORT|AWG_WEB_BIND|AWG_WEB_CERT_MODE|AWG_WEB_DOMAIN|AWG_WEB_CERT_FILE|AWG_WEB_KEY_FILE|AWG_WEB_CERT_PROVIDER|AWG_WEB_LE_EMAIL|AWG_WEB_PUBLIC_URL|AWG_WEB_CERT_FALLBACK|AWG_WEB_CERT_ATTEMPTED_MODE|AWG_WEB_CERT_FAILURE_REASON|AWG_WEB_CERT_FALLBACK_USED|\
                 AWG_DNS_MODE|AWG_CUSTOM_DNS|AWG_ADGUARD_ENABLED|AWG_ADGUARD_PORT|AWG_ADGUARD_DIR|\
+                AWG_WIRESOCK_HINTS|AWG_WIRESOCK_ID|AWG_WIRESOCK_IP|AWG_WIRESOCK_IB|\
                 AWG_SERVER_NAME)
                     export "$key=$value"
                     ;;
@@ -1390,6 +1485,9 @@ render_client_config() {
     local allowed_ips="${ALLOWED_IPS:-0.0.0.0/0}"
     local dns_servers
     dns_servers=$(awg_dns_servers)
+    if [[ "${ALLOWED_IPS_MODE:-}" != "1" ]]; then
+        allowed_ips="$(ensure_dns_allowedips_routes "$allowed_ips" "$dns_servers" "${AWG_TUNNEL_SUBNET:-10.9.9.1/24}" "${AWG_IPV6_SUBNET:-}")"
+    fi
     local address_line="${client_ip}/32"
     if awg_ipv6_enabled; then
         if [[ -z "$client_ipv6" ]]; then
@@ -1428,6 +1526,9 @@ EOF
 
     if [[ -n "${AWG_I1}" ]]; then
         echo "I1 = ${AWG_I1}" >> "$tmpfile"
+    fi
+    if [[ "${AWG_WIRESOCK_HINTS:-off}" != "off" ]]; then
+        render_wiresock_hints >> "$tmpfile" || { rm -f "$tmpfile"; log_error "Некорректные WireSock compatibility hints"; return 1; }
     fi
 
     cat >> "$tmpfile" << EOF

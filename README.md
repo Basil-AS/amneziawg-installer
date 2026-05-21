@@ -193,6 +193,8 @@ sudo bash install_amneziawg.sh --enable-native-ipv6 --ipv6-mode=routed --ipv6-su
 sudo bash install_amneziawg.sh --enable-adguard --dns-mode=adguard
 ```
 
+AdGuard Home получает curated `user_rules` для популярных advertising/analytics domains. Если DNS клиентов указывает на локальный AdGuard (`10.9.9.1` или IPv6 tunnel address), split AllowedIPs modes автоматически добавляют точный маршрут к DNS-серверу, не ломая LAN exclusions и не меняя route-all mode.
+
 IPv6 modes:
 
 | Mode | Когда использовать |
@@ -224,6 +226,7 @@ sudo /root/awg/manage_amneziawg.sh p2p toggle CLIENT_NAME
 | `--upgrade-ipv6` | Добавить IPv6/P2P metadata существующим клиентам | `--upgrade-ipv6` |
 | `--p2p-base-port=PORT` | Базовый диапазон P2P-портов | `--p2p-base-port=20000` |
 | `--p2p-ports-per-client=N` | Сколько P2P-портов выдать новому клиенту | `--p2p-ports-per-client=3` |
+| `--wiresock-hints=MODE` | Добавить безопасные WireSock comments `#@ws:*` в клиентские конфиги. По умолчанию `off` | `--wiresock-hints=mobile` |
 | `--fullcone-nat` | Попробовать `FULLCONENAT`, иначе fallback на `MASQUERADE` | `--fullcone-nat` |
 | `--enable-adguard` | Установить AdGuard Home | `--enable-adguard` |
 | `--dns-mode=MODE` | DNS mode: `adguard`, `system`, `custom` | `--dns-mode=adguard` |
@@ -458,9 +461,17 @@ Super token печатается при первой установке, а toke
 /root/awg/web/tokens.json
 ```
 
-После успешной установки создаётся `/root/awg/INSTALL_SUMMARY.txt` с адресами панели, super token первого запуска, AdGuard credentials, endpoint/port/subnet/IPv6/routing/P2P параметрами, путями к конфигам и полезными командами. Файл содержит секреты, хранится рядом с установкой, получает права `0600`, а предыдущая версия сохраняется как `INSTALL_SUMMARY.txt.bak.<timestamp>`.
+После успешной установки создаётся `/root/awg/INSTALL_SUMMARY.txt`: наверху лежат реальные Public/VPN/Local URL web-panel, Trusted HTTPS/cert fallback, super token первого запуска или команда reset, AdGuard credentials и файлы каждого клиента, сгруппированные по имени. Файл содержит секреты, получает права `0600`, а предыдущая версия сохраняется как `INSTALL_SUMMARY.txt.bak.<timestamp>`. Финальный console output использует те же вычисленные URL и больше не печатает placeholder-адреса.
 
-Обычные user-token видят только назначенных им клиентов и не могут создавать новых. Если `tokens.json` повреждён, панель не перегенерирует доступ молча: сбросьте super-token через `manage web token reset-super`.
+Обычные user-token видят только назначенных им клиентов и не могут создавать новых. У токена может быть необязательный alias/name:
+
+```bash
+sudo bash /root/awg/manage_amneziawg.sh web token create --client my_phone --name "phone token"
+sudo bash /root/awg/manage_amneziawg.sh web token create --client my_phone
+sudo bash /root/awg/manage_amneziawg.sh web token list
+```
+
+Alias хранится как metadata, не является секретом и экранируется в Web UI. При fresh install и `reset-super` хранится только hash super token, raw token проверяется перед выводом и показывается один раз. Если `tokens.json` повреждён, панель не перегенерирует доступ молча: сбросьте super-token через `manage web token reset-super`.
 
 Публичный bind (`--web-bind=0.0.0.0` или `::`) открывает панель наружу и сопровождается warning; безопасный default остаётся VPN-only/local-first.
 
