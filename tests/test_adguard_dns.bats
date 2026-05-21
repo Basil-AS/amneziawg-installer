@@ -27,6 +27,65 @@ load test_helper
     run render_client_config "dnsclient" "10.9.9.9" "CLIENT_PRIV" "SERVER_PUB" "vpn.example.com" "39743"
     [ "$status" -eq 0 ]
     grep -q '^DNS = 10\.9\.9\.1$' "$AWG_DIR/dnsclient.conf"
+    grep -q '^AllowedIPs = .*10\.9\.9\.1/32' "$AWG_DIR/dnsclient.conf"
+}
+
+@test "render_client_config keeps route-all unchanged for AdGuard DNS" {
+    create_init_config
+    cat >> "$CONFIG_FILE" <<'CONF'
+export ALLOWED_IPS_MODE=1
+export ALLOWED_IPS='0.0.0.0/0'
+export AWG_DNS_MODE='adguard'
+CONF
+    create_server_config
+    run render_client_config "allroute" "10.9.9.10" "CLIENT_PRIV" "SERVER_PUB" "vpn.example.com" "39743"
+    [ "$status" -eq 0 ]
+    grep -q '^AllowedIPs = 0\.0\.0\.0/0$' "$AWG_DIR/allroute.conf"
+}
+
+@test "custom AllowedIPs includes tunnel-local DNS route without duplicates" {
+    create_init_config
+    create_server_config
+    export AWG_DNS_MODE=custom
+    export AWG_CUSTOM_DNS="10.9.9.1, 1.1.1.1"
+    export ALLOWED_IPS_MODE=3
+    export ALLOWED_IPS="203.0.113.0/24, 10.9.9.1/32"
+    run render_client_config "customdns" "10.9.9.11" "CLIENT_PRIV" "SERVER_PUB" "vpn.example.com" "39743"
+    [ "$status" -eq 0 ]
+    [ "$(grep -o '10\.9\.9\.1/32' "$AWG_DIR/customdns.conf" | wc -l)" -eq 1 ]
+}
+
+@test "IPv6 tunnel-local DNS route is added when needed" {
+    create_init_config
+    cat >> "$CONFIG_FILE" <<'CONF'
+export AWG_DNS_MODE='custom'
+export AWG_CUSTOM_DNS='fd12:3456:789a:1::1'
+export AWG_IPV6_ENABLED=1
+export AWG_IPV6_SUBNET='fd12:3456:789a:1::/64'
+export ALLOWED_IPS_MODE=3
+export ALLOWED_IPS='203.0.113.0/24'
+CONF
+    create_server_config
+    run render_client_config "v6dns" "10.9.9.12" "CLIENT_PRIV" "SERVER_PUB" "vpn.example.com" "39743" "fd12:3456:789a:1::12"
+    [ "$status" -eq 0 ]
+    grep -q 'fd12:3456:789a:1::1/128' "$AWG_DIR/v6dns.conf"
+}
+
+@test "WireSock hints are comments and default off" {
+    create_init_config
+    create_server_config
+    run render_client_config "plain" "10.9.9.13" "CLIENT_PRIV" "SERVER_PUB" "vpn.example.com" "39743"
+    [ "$status" -eq 0 ]
+    if grep -q '#@ws:' "$AWG_DIR/plain.conf"; then
+        fail "WireSock hints must be off by default"
+    fi
+    export AWG_WIRESOCK_HINTS=mobile
+    run render_client_config "wiresock" "10.9.9.14" "CLIENT_PRIV" "SERVER_PUB" "vpn.example.com" "39743"
+    [ "$status" -eq 0 ]
+    grep -q '^# WireSock compatibility hints' "$AWG_DIR/wiresock.conf"
+    grep -q '^#@ws:Id = bag\.itunes\.apple\.com$' "$AWG_DIR/wiresock.conf"
+    grep -q '^#@ws:Ip = quic$' "$AWG_DIR/wiresock.conf"
+    grep -q '^#@ws:Ib = curl$' "$AWG_DIR/wiresock.conf"
 }
 
 @test "safe_load_config accepts DNS and AdGuard fork keys" {
@@ -93,6 +152,9 @@ CONF
     grep -qF 'allowed_clients = [str(tunnel.network)]' "$installer"
     grep -qF 'bind_hosts.append(str(v6_net.network_address + 1))' "$installer"
     grep -qF 'allowed_clients.append(str(v6_net))' "$installer"
+    grep -qF '"||doubleclick.net^"' "$installer"
+    grep -qF '"||smetrics.samsung.com^"' "$installer"
+    grep -qF 'extract_user_rules(lines)' "$installer"
 }
 
 @test "curated AdGuard config excludes Yandex DNS and unfiltered AdGuard upstreams" {

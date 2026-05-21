@@ -142,9 +142,17 @@ Then open:
 https://127.0.0.1:8443
 ```
 
-The panel ships local assets only, so bearer tokens are not exposed to third-party CDN JavaScript. User tokens can manage only assigned clients and cannot create new ones. If `tokens.json` becomes invalid, reset the super token with `manage web token reset-super` instead of expecting an automatic replacement.
+The panel ships local assets only, so bearer tokens are not exposed to third-party CDN JavaScript. User tokens can manage only assigned clients and cannot create new ones. User tokens may have an optional alias/name:
 
-After a successful install, the installer writes `/root/awg/INSTALL_SUMMARY.txt` with panel URLs, the first-run super token, AdGuard credentials, endpoint/port/subnet/IPv6/routing/P2P choices, config paths, and useful commands. The file contains secrets, is stored next to the installation with `0600` permissions, and any previous copy is backed up as `INSTALL_SUMMARY.txt.bak.<timestamp>`.
+```bash
+sudo bash /root/awg/manage_amneziawg.sh web token create --client my_phone --name "phone token"
+sudo bash /root/awg/manage_amneziawg.sh web token create --client my_phone
+sudo bash /root/awg/manage_amneziawg.sh web token list
+```
+
+The alias is metadata, not a secret, and is escaped in the Web UI. If `tokens.json` becomes invalid, reset the super token with `manage web token reset-super` instead of expecting an automatic replacement.
+
+After a successful install, the installer writes `/root/awg/INSTALL_SUMMARY.txt` with real Public/VPN/Local web-panel URLs, Trusted HTTPS/cert fallback, the first-run super token or reset command, AdGuard credentials, and each client's files grouped under the client name at the top. The file contains secrets, uses `0600` permissions, and any previous copy is backed up as `INSTALL_SUMMARY.txt.bak.<timestamp>`. The final console output uses the same computed URLs and no longer prints placeholder panel addresses.
 
 Client cards include `Copy import URL` for WG Tunnel and WireGuard-like clients. The panel creates a short-lived HTTPS URL at `/import/<client>/<token>` that returns raw `text/plain` config text starting with `[Interface]`, not HTML/JSON/download pages. Raw tokens are never stored; only hashes are written to `/root/awg/web/import_tokens.json`. Default TTL is 1 hour. WG Tunnel requires HTTPS, and self-signed TLS may be rejected by mobile apps, so a trusted domain/certificate is best.
 
@@ -211,6 +219,8 @@ sudo bash install_amneziawg_en.sh --enable-native-ipv6 --ipv6-mode=routed --ipv6
 sudo bash install_amneziawg_en.sh --enable-adguard --dns-mode=adguard
 ```
 
+AdGuard Home gets curated `user_rules` for common advertising/analytics domains. If client DNS points to local AdGuard (`10.9.9.1` or the IPv6 tunnel address), split AllowedIPs modes automatically add the exact DNS route, preserving LAN exclusions and leaving route-all unchanged.
+
 IPv6 modes:
 
 | Mode | When to use it |
@@ -242,6 +252,7 @@ sudo /root/awg/manage_amneziawg.sh p2p toggle CLIENT_NAME
 | `--upgrade-ipv6` | Add IPv6/P2P metadata to existing clients | `--upgrade-ipv6` |
 | `--p2p-base-port=PORT` | Base P2P port range | `--p2p-base-port=20000` |
 | `--p2p-ports-per-client=N` | P2P ports assigned to each new client | `--p2p-ports-per-client=3` |
+| `--wiresock-hints=MODE` | Add safe WireSock `#@ws:*` comments to client configs. Default: `off` | `--wiresock-hints=mobile` |
 | `--fullcone-nat` | Try `FULLCONENAT`, otherwise fall back to `MASQUERADE` | `--fullcone-nat` |
 | `--enable-adguard` | Install AdGuard Home | `--enable-adguard` |
 | `--dns-mode=MODE` | DNS mode: `adguard`, `system`, `custom` | `--dns-mode=adguard` |

@@ -383,7 +383,7 @@ def clean_token_name(value):
     if not isinstance(value, str):
         return ""
     value = value.strip()
-    if "\n" in value or "\r" in value or len(value) > 128:
+    if len(value) > 64 or any(ord(ch) < 32 or ord(ch) == 127 for ch in value):
         raise ValueError("invalid token name")
     return value
 
@@ -1173,13 +1173,14 @@ class Handler(SimpleHTTPRequestHandler):
                 if not self.require_super(auth):
                     return
                 clients = clean_client_list(body.get("clients", []))
+                name = clean_token_name(body.get("name", ""))
                 token = secrets.token_urlsafe(32)
                 digest = token_hash(token)
                 with TOKENS_LOCK:
                     data = load_tokens()
-                    data.setdefault("users", {})[digest] = {"name": "", "clients": clients}
+                    data.setdefault("users", {})[digest] = {"name": name, "clients": clients}
                     write_tokens(data)
-                self.send_json({"token": token, "token_hash": digest, "name": "", "clients": clients})
+                self.send_json({"token": token, "token_hash": digest, "name": name, "clients": clients})
                 return
             elif re.match(r"^/api/tokens/[^/]+/rotate$", u.path):
                 if not self.require_super(auth):

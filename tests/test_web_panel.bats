@@ -10,6 +10,9 @@
     grep -qF 'awg-web.service' "$BATS_TEST_DIRNAME/../install_amneziawg.sh"
     grep -qF 'tokens.json' "$BATS_TEST_DIRNAME/../install_amneziawg.sh"
     grep -qF 'Authorization' "$BATS_TEST_DIRNAME/../web/server.py"
+    grep -qF 'Generated Web super token failed verification' "$BATS_TEST_DIRNAME/../install_amneziawg_en.sh"
+    grep -qF 'Сгенерированный Web super token не проходит проверку' "$BATS_TEST_DIRNAME/../install_amneziawg.sh"
+    grep -qF 'os.chmod(path, 0o600)' "$BATS_TEST_DIRNAME/../install_amneziawg.sh"
     grep -qF 'validate_bind_addr "$AWG_WEB_BIND"' "$BATS_TEST_DIRNAME/../install_amneziawg.sh"
     grep -qF 'allow_web_panel_ufw()' "$BATS_TEST_DIRNAME/../install_amneziawg.sh"
     grep -qF 'Веб-панель привязана публично' "$BATS_TEST_DIRNAME/../install_amneziawg.sh"
@@ -26,7 +29,7 @@
     mkdir -p "$tmp/awg/web"
     printf '#_Name = my_phone\n[Peer]\n#_Name = my_laptop\n[Peer]\n' > "$server_conf"
     AWG_DIR="$tmp/awg" SERVER_CONF_FILE="$server_conf" bash -c '
-        source <(sed -n "/^route_mode_label() {$/,/^step99_finish() {$/p" "$0" | head -n -1)
+        source <(sed -n "/^format_https_url() {$/,/^step99_finish() {$/p" "$0" | head -n -1)
         SCRIPT_VERSION="5.13.0"
         AWG_REPO="Basil-AS/amneziawg-installer"
         AWG_SERVER_NAME="sunny-sweden"
@@ -64,6 +67,9 @@
     backup_count=$(find "$tmp/awg" -maxdepth 1 -name 'INSTALL_SUMMARY.txt.bak.*' | wc -l)
     [ "$backup_count" -eq 1 ]
     grep -qF 'Public URL: https://64.112.125.125:8443/' "$summary"
+    grep -qF '[!!! IMPORTANT ACCESS INFO / SECRETS !!!]' "$summary"
+    grep -qF 'Web Panel Public URL: https://64.112.125.125:8443/' "$summary"
+    grep -qF 'Permissions: 0600' "$summary"
     grep -qF 'WARNING: Web Panel is publicly exposed' "$summary"
     grep -qF 'Super token: raw-super-token' "$summary"
     grep -qF 'Token file:' "$summary"
@@ -91,10 +97,24 @@
     grep -qF 'IPv6 mode: routed' "$summary"
     grep -qF 'IPv6 client subnet: 2a13:7c82:101f:30::/64' "$summary"
     grep -qF 'Config directory:' "$summary"
+    grep -qF -- '- my_phone:' "$summary"
+    grep -qF '    config: not generated' "$summary"
+    grep -qF '    vpnuri qr: not generated' "$summary"
+    grep -qF -- '- my_laptop:' "$summary"
     grep -qF '[Useful commands]' "$summary"
     grep -qF '[WG Tunnel URL Import]' "$summary"
     grep -qF '/import/my_phone/<token>' "$summary"
     rm -rf "$tmp"
+}
+
+@test "installer final output has no placeholder web URLs and prints grouped client files" {
+    local installer="$BATS_TEST_DIRNAME/../install_amneziawg.sh"
+    grep -qF 'print_client_files_console' "$installer"
+    grep -qF 'Public URL: ${web_public_url}' "$installer"
+    grep -qF 'VPN endpoint: ${AWG_ENDPOINT:-not set}:${AWG_PORT}' "$installer"
+    if grep -qF 'https://<IP_' "$installer" || grep -qF 'https://<SERVER_IP>' "$BATS_TEST_DIRNAME/../install_amneziawg_en.sh"; then
+        fail "final installer output must not contain placeholder web URLs"
+    fi
 }
 
 @test "installer summary handles local-only web bind without public URL" {
@@ -103,7 +123,7 @@
     tmp=$(mktemp -d)
     mkdir -p "$tmp/awg"
     AWG_DIR="$tmp/awg" SERVER_CONF_FILE="$tmp/missing.conf" bash -c '
-        source <(sed -n "/^route_mode_label() {$/,/^step99_finish() {$/p" "$0" | head -n -1)
+        source <(sed -n "/^format_https_url() {$/,/^step99_finish() {$/p" "$0" | head -n -1)
         SCRIPT_VERSION="5.13.0"; AWG_REPO="Basil-AS/amneziawg-installer"; AWG_ENDPOINT="203.0.113.10"
         AWG_PORT="51820"; AWG_TUNNEL_SUBNET="10.9.9.1/24"; ALLOWED_IPS_MODE="2"; ALLOWED_IPS="0.0.0.0/5"
         AWG_IPV6_ENABLED="0"; AWG_IPV6_MODE="legacy"; AWG_WEB_ENABLED="1"; AWG_WEB_BIND="127.0.0.1"; AWG_WEB_PORT="8443"
@@ -144,7 +164,7 @@
     tmp=$(mktemp -d)
     run bash -c "
         set -e
-        source <(sed -n '/^route_mode_label()/,/^}/p; /^server_ipv6_addr_for_summary()/,/^}/p; /^adguard_allowed_clients_for_summary()/,/^}/p; /^write_install_summary()/,/^}/p' '$installer')
+        source <(sed -n '/^format_https_url()/,/^}/p; /^compute_web_public_url()/,/^}/p; /^compute_web_vpn_url()/,/^}/p; /^compute_web_local_url()/,/^}/p; /^compute_trusted_https_status()/,/^}/p; /^compute_cert_summary()/,/^}/p; /^route_mode_label()/,/^}/p; /^server_ipv6_addr_for_summary()/,/^}/p; /^adguard_allowed_clients_for_summary()/,/^}/p; /^client_value_from_server_conf()/,/^}/p; /^client_ipv4_for_summary()/,/^}/p; /^client_ipv6_for_summary()/,/^}/p; /^client_file_status()/,/^}/p; /^write_client_files_summary()/,/^}/p; /^write_install_summary()/,/^}/p' '$installer')
         AWG_DIR='$tmp/awg'; mkdir -p \"\$AWG_DIR\"
         AWG_ENDPOINT='198.51.100.10'; AWG_PORT='51820'; AWG_TUNNEL_SUBNET='10.9.9.1/24'
         ALLOWED_IPS_MODE='2'; ALLOWED_IPS='0.0.0.0/0'; AWG_SERVER_NAME='vpn-only'
@@ -193,6 +213,8 @@
     grep -qF 'tokens.json' "$BATS_TEST_DIRNAME/../web/server.py"
     grep -qF '/api/tokens' "$BATS_TEST_DIRNAME/../web/server.py"
     grep -qF '/api/tokens/([^/]+)/name' "$BATS_TEST_DIRNAME/../web/server.py"
+    grep -qF 'clean_token_name(body.get("name", ""))' "$BATS_TEST_DIRNAME/../web/server.py"
+    grep -qF 'Token name / alias (optional)' "$BATS_TEST_DIRNAME/../web/app.js"
     grep -qF 'super_token_hash' "$BATS_TEST_DIRNAME/../web/server.py"
     grep -A4 -qF 'if u.path == "/api/clients":' "$BATS_TEST_DIRNAME/../web/server.py"
     grep -A4 'if u.path == "/api/clients":' "$BATS_TEST_DIRNAME/../web/server.py" | grep -qF 'require_super'
@@ -562,6 +584,13 @@ assert data["users"][result["token_hash"]] == {"name": "Alice", "clients": ["my_
 assert server.rotate_user_token(old_hash) is None
 PY
     rm -rf "$tmp"
+}
+
+@test "web token names validate aliases and escape through app renderer" {
+    grep -qF 'len(value) > 64' "$BATS_TEST_DIRNAME/../web/server.py"
+    grep -qF 'ord(ch) < 32' "$BATS_TEST_DIRNAME/../web/server.py"
+    grep -qF 'const label = row.name || "Unnamed token";' "$BATS_TEST_DIRNAME/../web/app.js"
+    grep -qF '${esc(label)}' "$BATS_TEST_DIRNAME/../web/app.js"
 }
 
 @test "rate limiter cleanup removes stale IP buckets" {
@@ -959,6 +988,29 @@ import json, re, sys
 data = json.load(open(sys.argv[1]))
 assert re.fullmatch(r"[0-9a-f]{64}", data["super_token_hash"])
 assert next(iter(data["users"].values())) == {"name": "Alice", "clients": ["phone"]}
+PY
+    rm -rf "$tmp"
+}
+
+@test "CLI web token create supports optional alias and client binding" {
+    local tmp token_file out hash
+    tmp=$(mktemp -d)
+    mkdir -p "$tmp/web"
+    token_file="$tmp/web/tokens.json"
+    printf '{"super_token_hash":"%064d","users":{}}\n' 0 > "$token_file"
+    out=$(AWG_DIR="$tmp" bash -c "source <(sed -n '/^web_token_py() {$/,/^}$/p' '$BATS_TEST_DIRNAME/../manage_amneziawg.sh'); web_token_py add 'phone token' 'my_phone'")
+    grep -qF 'Token created.' <<< "$out"
+    python3 - "$token_file" <<'PY'
+import json, sys
+data = json.load(open(sys.argv[1]))
+records = list(data["users"].values())
+assert records == [{"clients": ["my_phone"], "name": "phone token"}]
+PY
+    out=$(AWG_DIR="$tmp" bash -c "source <(sed -n '/^web_token_py() {$/,/^}$/p' '$BATS_TEST_DIRNAME/../manage_amneziawg.sh'); web_token_py add '' ''")
+    python3 - "$token_file" <<'PY'
+import json, sys
+data = json.load(open(sys.argv[1]))
+assert any(record["name"] == "" for record in data["users"].values())
 PY
     rm -rf "$tmp"
 }
