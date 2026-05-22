@@ -34,11 +34,11 @@ MANAGE_SCRIPT_PATH="$AWG_DIR/manage_amneziawg.sh"
 # используются первыми; remote download разрешён только с pinned SHA256 либо
 # при явном AWG_ALLOW_UNVERIFIED_DOWNLOAD=1 для разработки.
 declare -A AWG_ASSET_SHA256=(
-    ["awg_common.sh"]="608a26cc54f36689413c5c6eac508095c39f66a203b78ccd067902ef30a4669d"
-    ["manage_amneziawg.sh"]="c51dbeabcb4f585378398fe7e251b2f050b0ce59c04bfb7b02e07d6239bc34a2"
+    ["awg_common.sh"]="1ed79ca83bb5a9fdd12aba04a1a893c80a63345558274ab6bfde41964ae75f9e"
+    ["manage_amneziawg.sh"]="f07981f0e4f956d72c92f673211e08b276007f76d6221be6aed0c2bfbd8b398d"
     ["web/server.py"]="ebee2b69aee3b99f4476b136f7251987cd89abebeadd9194faebc52514efa994"
     ["web/index.html"]="a41e458c832f82d8d834ecc67f2cb35da4eed11bf7b76acd493413d082de0483"
-    ["web/app.js"]="9a6ac51f2573d0570a77524e48a316a7177dcb9688a7bd01f69cdff5f37a75b8"
+    ["web/app.js"]="35f645c5d3d702ce5f77f7b830a3bcc00d5a2d5441e2f5023c6c32166a594ffb"
     ["web/awg_i1.js"]="d1951b9de2c8ab8170cf78ad320f274fc9dc5da622b8e60b2650871fb7ddf1e4"
     ["web/style.css"]="fe373a5258618afbb42455372bbfc4680ab40ed624f67463c3eeceedb105133e"
     ["web/favicon.svg"]="ce339a4b3043c9d531c4a59b46e3ec51b9793a693a76bfabef441f114e7125b0"
@@ -659,7 +659,7 @@ safe_load_config() {
             fi
             case "$key" in
                 OS_ID|OS_VERSION|OS_CODENAME|AWG_PORT|AWG_TUNNEL_SUBNET|\
-                DISABLE_IPV6|ALLOWED_IPS_MODE|ALLOWED_IPS|AWG_ENDPOINT|\
+                DISABLE_IPV6|ALLOWED_IPS_MODE|ALLOWED_IPS|AWG_ENDPOINT|AWG_MTU|\
                 AWG_Jc|AWG_Jmin|AWG_Jmax|AWG_S1|AWG_S2|AWG_S3|AWG_S4|\
                 AWG_H1|AWG_H2|AWG_H3|AWG_H4|AWG_I1|AWG_PRESET|NO_TWEAKS|AWG_APPLY_MODE|\
                 AWG_IPV6_ENABLED|AWG_IPV6_MODE|AWG_IPV6_SUBNET|AWG_IPV6_NDP_PROXY|\
@@ -1671,6 +1671,30 @@ detect_hardware() {
 cleanup_system() {
     log "Очистка системы от ненужных компонентов..."
 
+    # Снимок default route ДО очистки: cleanup не должен ломать сетевой стек.
+    # На новых Ubuntu ISO autoremove после purge cloud-init может удалить
+    # netplan-generator как transitive dependency и оставить сервер без сети.
+    local pre_default_route
+    pre_default_route="$(ip -4 route show default 2>/dev/null | head -1 || true)"
+    log_debug "Pre-cleanup default route: ${pre_default_route:-<none>}"
+
+    # Hold критичных пакетов сетевого стека. Сохраняем pre-existing user holds:
+    # снимаем только те hold, которые поставили сами в этом запуске.
+    local _hold_pkgs="netplan.io netplan-generator systemd-resolved netcfg ifupdown"
+    local _preexisting_holds=""
+    _preexisting_holds="$(apt-mark showhold 2>/dev/null || true)"
+    local _held_actual=()
+    local _hpkg
+    for _hpkg in $_hold_pkgs; do
+        if dpkg-query -W -f='${Status}' "$_hpkg" 2>/dev/null | grep -q "ok installed"; then
+            if grep -qxF "$_hpkg" <<<"$_preexisting_holds"; then
+                continue
+            fi
+            apt-mark hold "$_hpkg" >/dev/null 2>&1 && _held_actual+=("$_hpkg")
+        fi
+    done
+    [ ${#_held_actual[@]} -gt 0 ] && log_debug "Apt-mark hold: ${_held_actual[*]}"
+
     # Пакеты для удаления (безопасные для VPS)
     # snapd и lxd-agent-loader — только на Ubuntu, на Debian их нет
     local packages_to_remove=()
@@ -1717,7 +1741,55 @@ cleanup_system() {
         fi
     fi
 
-    apt-get autoremove -y 2>/dev/null || log_warn "Ошибка autoremove"
+    # apt-get autoremove намеренно не запускаем: он может снести netplan-generator
+    # и сломать default route. Небольшой объём orphan-пакетов безопаснее
+    # потенциальной потери SSH-доступа.
+    local _upkg
+    for _upkg in "${_held_actual[@]}"; do
+        apt-mark unhold "$_upkg" >/dev/null 2>&1 || true
+    done
+
+    local post_default_route
+    post_default_route="$(ip -4 route show default 2>/dev/null | head -1 || true)"
+    if [[ -n "$pre_default_route" && -z "$post_default_route" ]]; then
+        log_error "Маршрут по умолчанию потерян после очистки. Попытка восстановления..."
+        DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            netplan.io 2>/dev/null || true
+        if apt-cache show netplan-generator &>/dev/null; then
+            DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+                netplan-generator 2>/dev/null || true
+        fi
+        systemctl restart systemd-networkd 2>/dev/null || true
+        netplan apply 2>/dev/null || true
+        local _wait
+        for _wait in 1 2 3 5 5 5 5; do
+            post_default_route="$(ip -4 route show default 2>/dev/null | head -1 || true)"
+            [[ -n "$post_default_route" ]] && break
+            sleep "$_wait"
+        done
+        if [[ -z "$post_default_route" ]]; then
+            local _iface
+            _iface="$(awk '{for (i=1; i<=NF; i++) if ($i == "dev") { print $(i+1); exit } }' <<<"$pre_default_route")"
+            if [[ -n "$_iface" ]]; then
+                log_warn "Финальная попытка поднять интерфейс $_iface..."
+                ip link set "$_iface" up 2>/dev/null || true
+                if command -v networkctl &>/dev/null; then
+                    networkctl renew "$_iface" 2>/dev/null || true
+                    sleep 3
+                    post_default_route="$(ip -4 route show default 2>/dev/null | head -1 || true)"
+                fi
+                if [[ -z "$post_default_route" ]] && command -v dhclient &>/dev/null; then
+                    dhclient -4 "$_iface" 2>/dev/null || true
+                    sleep 3
+                    post_default_route="$(ip -4 route show default 2>/dev/null | head -1 || true)"
+                fi
+            fi
+        fi
+        if [[ -z "$post_default_route" ]]; then
+            die "Сеть не восстановилась после cleanup_system. Восстановите её с консоли (например: sudo dhclient -4 <интерфейс>) и перезапустите установщик с флагом --no-tweaks."
+        fi
+        log_warn "Сеть восстановлена: $post_default_route"
+    fi
     log "Очистка системы завершена."
 }
 
@@ -2490,6 +2562,7 @@ initialize_setup() {
     ALLOWED_IPS_MODE="default"
     ALLOWED_IPS=""
     AWG_ENDPOINT="${AWG_ENDPOINT:-}"
+    AWG_MTU="${AWG_MTU:-1280}"
     AWG_SERVER_NAME="${AWG_SERVER_NAME:-MyVPN}"
     AWG_IPV6_ENABLED=${AWG_IPV6_ENABLED:-0}
     AWG_IPV6_MODE="${AWG_IPV6_MODE:-legacy}"
@@ -2537,6 +2610,7 @@ initialize_setup() {
         ALLOWED_IPS_MODE=${ALLOWED_IPS_MODE:-"default"}
         ALLOWED_IPS=${ALLOWED_IPS:-""}
         AWG_ENDPOINT=${AWG_ENDPOINT:-""}
+        AWG_MTU=${AWG_MTU:-1280}
         AWG_SERVER_NAME=${AWG_SERVER_NAME:-MyVPN}
         AWG_IPV6_ENABLED=${AWG_IPV6_ENABLED:-0}
         AWG_IPV6_MODE=$(normalize_ipv6_mode_installer "${AWG_IPV6_MODE:-legacy}" 2>/dev/null || echo "legacy")
@@ -2770,6 +2844,7 @@ export DISABLE_IPV6=${DISABLE_IPV6}
 export ALLOWED_IPS_MODE=${ALLOWED_IPS_MODE}
 export ALLOWED_IPS='${ALLOWED_IPS}'
 export AWG_ENDPOINT='${AWG_ENDPOINT}'
+export AWG_MTU=${AWG_MTU:-1280}
 export AWG_SERVER_NAME=${quoted_server_name}
 export AWG_IPV6_ENABLED=${AWG_IPV6_ENABLED}
 export AWG_IPV6_MODE='${AWG_IPV6_MODE}'

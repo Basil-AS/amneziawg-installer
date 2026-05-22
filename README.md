@@ -252,6 +252,7 @@ sudo /root/awg/manage_amneziawg.sh remove CLIENT_NAME
 sudo /root/awg/manage_amneziawg.sh toggle CLIENT_NAME
 sudo /root/awg/manage_amneziawg.sh stats
 sudo /root/awg/manage_amneziawg.sh restart
+sudo /root/awg/manage_amneziawg.sh diagnose
 sudo /root/awg/manage_amneziawg.sh web token list
 sudo /root/awg/manage_amneziawg.sh set-name "My VPN"
 sudo /root/awg/manage_amneziawg.sh voice-check
@@ -285,7 +286,8 @@ sudo /root/awg/manage_amneziawg.sh dns restart
 * **Full Cone NAT попытка:** если доступен `FULLCONENAT`, используется он; если нет — скрипт возвращается к `MASQUERADE`.
 * **Веб-панель:** HTTPS `:8443`, self-signed TLS, bearer token, список клиентов, добавление/удаление, скачивание и копирование `.conf`, QR/vpnuri, статистика, логи, рестарт сервиса, карточка DNS/AdGuard.
 * **AdGuard Home DNS:** опциональная установка без Docker, DNS только на localhost/VPN, клиенты получают `10.9.9.1` и IPv6-адрес сервера при dual-stack.
-* **Новые команды управления:** `p2p list/show/add/remove`, `ipv6 status/upgrade`, `dns status/restart/logs/set-mode`.
+* **Новые команды управления:** `diagnose`, `p2p list/show/add/remove`, `ipv6 status/upgrade`, `dns status/restart/logs/set-mode`.
+* **Selected upstream fixes:** вручную перенесены QR/MTU/public-IP/diagnose/cleanup/ARM build fixes из upstream `5.14.0`-`5.14.3` без full merge и без смены upstream base.
 * **Автогенерация firewall hooks:** `/root/awg/postup.sh`, `/root/awg/postdown.sh`, `/root/awg/p2p_rules.sh`.
 * **Fork patchset:** версия upstream остаётся `5.13.0`, отличия живут как fork delta поверх неё.
 
@@ -756,6 +758,7 @@ sudo bash /root/awg/manage_amneziawg.sh <команда> [аргументы]
 | `backup`  |                        | Создать резервную копию      |       Нет     |
 | `restore` | `[файл]`               | Восстановить из резервной копии |    Нет     |
 | `stats`   | `[--json]`                | Статистика трафика по клиентам       | Нет     |
+| `diagnose` | `[--carrier=NAME]` | Read-only диагностика kernel/sysctl/UFW + fork-секций | Нет |
 | `p2p list` | | Показать P2P-порты всех клиентов | Нет |
 | `p2p show` | `<имя>` | Показать IPv4/IPv6/P2P клиента | Нет |
 | `p2p add` | `<имя> [порт]` | Добавить P2P TCP+UDP порт клиенту | Нет (авто) |

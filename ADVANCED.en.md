@@ -441,6 +441,7 @@ Usage: `sudo bash /root/awg/manage_amneziawg.sh <command>`:
 * **`backup`:** Create a backup (configs + keys + client expiry data + cron).
 * **`restore [file]`:** Restore from a backup (including expiry data and cron job).
 * **`check` / `status`:** Check server status (service, port, AWG 2.0 parameters).
+* **`diagnose [--carrier=NAME]`:** Read-only kernel/sysctl/UFW diagnostics, web/AdGuard/IPv6/P2P/WireSock status, and optional AWG-parameter comparison against a carrier profile.
 * **`show`:** Run `awg show`.
 * **`restart`:** Restart the AmneziaWG service.
 * **`help`:** Show help.
@@ -586,7 +587,7 @@ chmod 700 /root/awg/manage_amneziawg.sh /root/awg/awg_common.sh
 
 <details>
   <summary><strong>Q: How do I change the MTU?</strong></summary>
-  <b>A:</b> Starting with v5.7.4, <code>MTU = 1280</code> is set automatically. To change it: edit the <code>MTU = &lt;value&gt;</code> line in the <code>[Interface]</code> section of <code>/etc/amnezia/amneziawg/awg0.conf</code> and in client <code>.conf</code> files. Restart the service. See <a href="#mtu-mobile-adv">MTU and Mobile Clients</a> for details.
+  <b>A:</b> Starting with v5.7.4, <code>MTU = 1280</code> is set automatically. To change it, edit the <code>MTU = &lt;value&gt;</code> line in the <code>[Interface]</code> section of <code>/etc/amnezia/amneziawg/awg0.conf</code>, restart the service, and run <code>sudo bash /root/awg/manage_amneziawg.sh regen</code> for clients. <code>regen</code> reads MTU from the live server config; if it is absent, it falls back to <code>AWG_MTU</code> in <code>awgsetup_cfg.init</code>, then <code>1280</code>. See <a href="#mtu-mobile-adv">MTU and Mobile Clients</a> for details.
 </details>
 
 <details>
@@ -962,7 +963,7 @@ When a client is created, a `.vpnuri` file is automatically generated with a `vp
 <a id="mtu-mobile-adv"></a>
 ## 📱 MTU and Mobile Clients
 
-Starting with v5.7.4, `MTU = 1280` is set automatically in both server and client configs.
+Starting with v5.7.4, `MTU = 1280` is set automatically in both server and client configs. During client regeneration, the script preserves MTU from the live `/etc/amnezia/amneziawg/awg0.conf`; if no valid MTU is present there, it uses `AWG_MTU` from `awgsetup_cfg.init`, then fallback `1280`.
 
 **Why:** Cellular networks (4G/LTE) often have an effective MTU below the default 1420, causing packet fragmentation or drops. iOS is strict about Path MTU Discovery and may fail to connect. 1280 is the minimum IPv6 MTU (RFC 8200), guaranteed to pass through any network. The speed impact is negligible.
 

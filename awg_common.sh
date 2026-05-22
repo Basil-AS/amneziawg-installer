@@ -66,14 +66,29 @@ get_server_public_ip() {
         return 0
     fi
     local ip="" svc
-    for svc in https://ifconfig.me https://api.ipify.org https://icanhazip.com https://ipinfo.io/ip; do
+    for svc in \
+        https://api.ipify.org \
+        https://checkip.amazonaws.com \
+        https://icanhazip.com \
+        https://ifconfig.io \
+        https://ifconfig.me \
+        https://ipinfo.io/ip
+    do
         ip=$(curl -4 -sf --max-time 5 "$svc" 2>/dev/null | tr -d '[:space:]')
         if [[ -n "$ip" && "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             _CACHED_PUBLIC_IP="$ip"
+            if [[ -n "${LOG_FILE:-}" && -w "$(dirname "${LOG_FILE}")" ]]; then
+                printf '[%s] DEBUG: public IP detected: %s (via %s)\n' \
+                    "$(date +'%F %T')" "$ip" "$svc" >>"$LOG_FILE" 2>/dev/null || true
+            fi
             echo "$ip"
             return 0
         fi
     done
+    if [[ -n "${LOG_FILE:-}" && -w "$(dirname "${LOG_FILE}")" ]]; then
+        printf '[%s] DEBUG: public IP detection failed (all services unreachable or invalid)\n' \
+            "$(date +'%F %T')" >>"$LOG_FILE" 2>/dev/null || true
+    fi
     echo ""
     return 1
 }
@@ -1113,7 +1128,7 @@ safe_load_config() {
             fi
             case "$key" in
                 OS_ID|OS_VERSION|OS_CODENAME|AWG_PORT|AWG_TUNNEL_SUBNET|\
-                DISABLE_IPV6|ALLOWED_IPS_MODE|ALLOWED_IPS|AWG_ENDPOINT|\
+                DISABLE_IPV6|ALLOWED_IPS_MODE|ALLOWED_IPS|AWG_ENDPOINT|AWG_MTU|\
                 AWG_Jc|AWG_Jmin|AWG_Jmax|AWG_S1|AWG_S2|AWG_S3|AWG_S4|\
                 AWG_H1|AWG_H2|AWG_H3|AWG_H4|AWG_I1|AWG_PRESET|NO_TWEAKS|AWG_APPLY_MODE|\
                 AWG_IPV6_ENABLED|AWG_IPV6_MODE|AWG_IPV6_SUBNET|AWG_IPV6_NDP_PROXY|\
@@ -1146,7 +1161,7 @@ load_awg_params_from_server_conf() {
     local _Jc="" _Jmin="" _Jmax=""
     local _S1="" _S2="" _S3="" _S4=""
     local _H1="" _H2="" _H3="" _H4=""
-    local _I1="" _Port=""
+    local _I1="" _Port="" _MTU=""
 
     local in_iface=0 line key value
     while IFS= read -r line || [[ -n "$line" ]]; do
@@ -1175,6 +1190,7 @@ load_awg_params_from_server_conf() {
                 H4)         _H4="$value" ;;
                 I1)         _I1="$value" ;;
                 ListenPort) _Port="$value" ;;
+                MTU)        _MTU="$value" ;;
             esac
         fi
     done < "$conf"
@@ -1190,6 +1206,9 @@ load_awg_params_from_server_conf() {
     export AWG_H1="$_H1" AWG_H2="$_H2" AWG_H3="$_H3" AWG_H4="$_H4"
     [[ -n "$_I1"   ]] && export AWG_I1="$_I1"
     [[ -n "$_Port" ]] && export AWG_PORT="$_Port"
+    if _validate_mtu "${_MTU:-}"; then
+        export AWG_MTU="$_MTU"
+    fi
     return 0
 }
 
@@ -1435,7 +1454,7 @@ render_server_config() {
 # Name = ${server_name}
 PrivateKey = ${server_privkey}
 Address = ${address_line}
-MTU = 1280
+MTU = ${AWG_MTU:-1280}
 ListenPort = ${AWG_PORT}
 PostUp = ${postup}
 PostDown = ${postdown}
@@ -1465,6 +1484,33 @@ EOF
     chmod 600 "$SERVER_CONF_FILE"
     log "Серверный конфиг создан: $SERVER_CONF_FILE"
     return 0
+}
+
+# Допустимый диапазон MTU для AWG / WireGuard.
+_validate_mtu() {
+    local v="$1"
+    [[ "$v" =~ ^[0-9]+$ ]] || return 1
+    (( v >= 576 && v <= 9100 )) || return 1
+    return 0
+}
+
+# Извлечение MTU из секции [Interface] серверного awg0.conf.
+_extract_mtu_from_server_conf() {
+    local conf="${SERVER_CONF_FILE:-/etc/amnezia/amneziawg/awg0.conf}"
+    [[ -r "$conf" ]] || return 1
+    local val
+    val=$(awk '
+        /^\[Interface\]/ {in_iface=1; next}
+        /^\[/ {in_iface=0}
+        in_iface && /^[[:space:]]*MTU[[:space:]]*=/ {
+            gsub(/^[[:space:]]*MTU[[:space:]]*=[[:space:]]*/, "")
+            gsub(/[[:space:]].*$/, "")
+            if ($0 ~ /^[0-9]+$/) { mtu=$0 }
+        }
+        END { if (mtu != "") print mtu }
+    ' "$conf")
+    _validate_mtu "$val" || return 1
+    echo "$val"
 }
 
 # Рендер клиентского конфига AWG 2.0
@@ -1500,6 +1546,15 @@ render_client_config() {
             fi
         fi
     fi
+    local mtu
+    mtu=$(_extract_mtu_from_server_conf) || mtu=""
+    if [[ -z "$mtu" ]]; then
+        if _validate_mtu "${AWG_MTU:-}"; then
+            mtu="$AWG_MTU"
+        else
+            mtu=1280
+        fi
+    fi
 
     local tmpfile
     tmpfile=$(awg_mktemp) || { log_error "Ошибка mktemp"; return 1; }
@@ -1510,7 +1565,7 @@ render_client_config() {
 PrivateKey = ${client_privkey}
 Address = ${address_line}
 DNS = ${dns_servers}
-MTU = 1280
+MTU = ${mtu}
 Jc = ${AWG_Jc}
 Jmin = ${AWG_Jmin}
 Jmax = ${AWG_Jmax}
@@ -2218,7 +2273,7 @@ generate_qr_vpnuri() {
         return 1
     fi
 
-    if ! qrencode -t png -o "$tmp_png" < "$uri_file"; then
+    if ! qrencode -t png -l L -s 6 -m 4 -o "$tmp_png" < "$uri_file"; then
         log_error "Ошибка генерации QR vpn:// для '$name'"
         rm -f "$tmp_png"
         return 1
