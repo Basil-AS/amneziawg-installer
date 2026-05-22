@@ -278,6 +278,7 @@ sudo /root/awg/manage_amneziawg.sh remove CLIENT_NAME
 sudo /root/awg/manage_amneziawg.sh toggle CLIENT_NAME
 sudo /root/awg/manage_amneziawg.sh stats
 sudo /root/awg/manage_amneziawg.sh restart
+sudo /root/awg/manage_amneziawg.sh diagnose
 sudo /root/awg/manage_amneziawg.sh web token list
 sudo /root/awg/manage_amneziawg.sh set-name "My VPN"
 sudo /root/awg/manage_amneziawg.sh voice-check
@@ -311,7 +312,8 @@ This repository is a fork of [bivlked/amneziawg-installer](https://github.com/bi
 * **Full Cone NAT attempt:** `FULLCONENAT` is used when available; otherwise the scripts fall back to `MASQUERADE`.
 * **Web panel:** HTTPS `:8443`, self-signed TLS, bearer token, clients, config/QR/vpnuri, stats, logs, service restart, and a DNS/AdGuard card.
 * **AdGuard Home DNS:** optional no-Docker install, DNS only on localhost/VPN, clients receive `10.9.9.1` and the server IPv6 address when dual-stack is enabled.
-* **New management commands:** `p2p list/show/add/remove`, `ipv6 status/upgrade`, `dns status/restart/logs/set-mode`.
+* **New management commands:** `diagnose`, `p2p list/show/add/remove`, `ipv6 status/upgrade`, `dns status/restart/logs/set-mode`.
+* **Selected upstream fixes:** QR/MTU/public-IP/diagnose/cleanup/ARM build fixes from upstream `5.14.0`-`5.14.3` were manually ported without a full merge and without changing the upstream base.
 * **Generated firewall hooks:** `/root/awg/postup.sh`, `/root/awg/postdown.sh`, `/root/awg/p2p_rules.sh`.
 * **Fork patchset:** upstream version stays `5.13.0`; fork changes are documented as delta on top.
 
@@ -693,6 +695,7 @@ sudo bash /root/awg/manage_amneziawg.sh <command> [arguments]
 | `backup`  |                        | Create a backup                |    No     |
 | `restore` | `[file]`               | Restore from backup            |    No     |
 | `stats`   | `[--json]`                | Per-client traffic statistics    |    No     |
+| `diagnose` | `[--carrier=NAME]` | Read-only kernel/sysctl/UFW diagnostics plus fork sections | No |
 | `p2p list` | | Show P2P ports for all clients | No |
 | `p2p show` | `<name>` | Show client IPv4/IPv6/P2P info | No |
 | `p2p add` | `<name> [port]` | Add a TCP+UDP P2P port | No (auto) |

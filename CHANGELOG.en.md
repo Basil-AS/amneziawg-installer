@@ -12,6 +12,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Selected upstream 5.14.x fixes ported manually
+
+- Manually ported selected upstream `5.14.0`-`5.14.3` fixes on top of upstream base `5.13.0`; this is not a full merge and does not move the fork release line.
+- `vpn://` QR codes now use `qrencode -l L -s 6 -m 4`, improving on-screen scanning while preserving the existing `.vpnuri` / `.vpnuri.png` integration.
+- `regen` no longer hardcodes client `MTU = 1280`: priority is live `/etc/amnezia/amneziawg/awg0.conf`, then `AWG_MTU` from `awgsetup_cfg.init`, then fallback `1280`.
+- `cleanup_system` no longer runs dangerous bare `apt-get autoremove`, temporarily holds critical network packages, and verifies the default route with recovery through `netplan`, `networkctl`, and `dhclient`.
+- `get_server_public_ip` now has six fallback services and still writes only the IP to stdout so `$(get_server_public_ip)` callers are not corrupted.
+- Added read-only `manage diagnose [--carrier=NAME]` with kernel/sysctl/UFW checks plus fork sections for web panel, AdGuard Home, IPv6, P2P, and WireSock hints without printing private keys or tokens.
+- `scripts/build-arm-deb.sh` now has `_resolve_kernel_version`: `KERNEL_VERSION` explicitly disambiguates the target kernel, while multiple `/lib/modules/*/build` candidates without it are an error. Fork xz hardening is preserved.
+
 ---
 
 ## [5.13.0] — 2026-05-12

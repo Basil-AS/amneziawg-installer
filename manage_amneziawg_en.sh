@@ -29,6 +29,7 @@ VERBOSE_LIST=0
 JSON_OUTPUT=0
 EXPIRES_DURATION=""
 ROTATE_PRESET="default"
+CLI_CARRIER=""
 
 # --- Auto-cleanup of temporary files and directories ---
 # _manage_temp_dirs holds mktemp -d paths for backup/restore.
@@ -71,6 +72,7 @@ while [[ $# -gt 0 ]]; do
         --yes)             CLI_YES=1; shift ;;
         --preset=*)        ROTATE_PRESET="${1#*=}"; shift ;;
         --preset)          ROTATE_PRESET="${2:-}"; shift 2 ;;
+        --carrier=*)       CLI_CARRIER="${1#*=}"; shift ;;
         --*)               echo "Unknown option: $1" >&2; COMMAND="help"; break ;;
         *)
             if [[ -z "$COMMAND" ]]; then
@@ -892,6 +894,211 @@ check_server() {
     fi
 }
 
+# ==============================================================================
+# Diagnose: read-only troubleshooting with optional carrier comparison
+# ==============================================================================
+
+_diagnose_carrier_known() {
+    case "$1" in
+        beeline_msk)            echo "3 6 40 89 50 250 random" ;;
+        yota_msk|tele2_msk|tattelecom) echo "3 3 30 50 20 80 random" ;;
+        tele2_krasnoyarsk|megafon_regions) echo "3 3 30 50 20 80 absent" ;;
+        tmobile_us)             echo "6 6 10 10 40 40 binary" ;;
+        *)                       return 1 ;;
+    esac
+}
+
+_diagnose_carrier_list() {
+    echo "beeline_msk yota_msk tele2_msk tele2_krasnoyarsk tattelecom megafon_regions tmobile_us"
+}
+
+_diag_line() {
+    local status="$1" msg="$2"
+    local color_start="" color_end=""
+    if [[ "$NO_COLOR" -eq 0 ]]; then
+        color_end="\033[0m"
+        case "$status" in
+            OK)   color_start="\033[0;32m" ;;
+            WARN) color_start="\033[0;33m" ;;
+            FAIL) color_start="\033[0;31m" ;;
+            INFO) color_start="\033[0;36m" ;;
+        esac
+    fi
+    printf "%b[%-4s]%b %s\n" "$color_start" "$status" "$color_end" "$msg"
+}
+
+diagnose_server() {
+    local carrier="${CLI_CARRIER}"
+    local ok=0 warn=0 fail=0
+
+    log "Diagnosing AmneziaWG 2.0 server..."
+    if [[ -n "$carrier" ]] && ! _diagnose_carrier_known "$carrier" >/dev/null; then
+        log_error "Unknown carrier: '$carrier'"
+        log_error "Supported: $(_diagnose_carrier_list)"
+        return 1
+    fi
+
+    if lsmod 2>/dev/null | awk '$1 == "amneziawg" {f=1} END {exit !f}'; then
+        _diag_line OK "amneziawg kernel module is loaded"; ok=$((ok+1))
+    else
+        _diag_line FAIL "amneziawg kernel module is NOT loaded"
+        echo "        Fix: sudo bash $0 repair-module"
+        fail=$((fail+1))
+    fi
+
+    if systemctl is-active --quiet awg-quick@awg0 2>/dev/null; then
+        _diag_line OK "awg-quick@awg0 service is active"; ok=$((ok+1))
+    else
+        _diag_line FAIL "awg-quick@awg0 service is NOT active"
+        echo "        Fix: sudo systemctl start awg-quick@awg0"
+        fail=$((fail+1))
+    fi
+
+    if ip link show awg0 2>/dev/null | grep -qE "state (UP|UNKNOWN)"; then
+        local awg_ip
+        awg_ip=$(ip -4 -o addr show awg0 2>/dev/null | awk '{print $4; exit}')
+        _diag_line OK "Interface awg0 is UP (${awg_ip:-?})"; ok=$((ok+1))
+    else
+        _diag_line FAIL "Interface awg0 is not UP or does not exist"
+        fail=$((fail+1))
+    fi
+
+    local fwd
+    fwd=$(sysctl -n net.ipv4.ip_forward 2>/dev/null || echo "?")
+    if [[ "$fwd" == "1" ]]; then
+        _diag_line OK "sysctl net.ipv4.ip_forward=1"; ok=$((ok+1))
+    else
+        _diag_line FAIL "sysctl net.ipv4.ip_forward=$fwd (expected 1)"
+        fail=$((fail+1))
+    fi
+
+    local cc
+    cc=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || echo "?")
+    if [[ "$cc" == "bbr" ]]; then
+        _diag_line OK "sysctl tcp_congestion_control=bbr"; ok=$((ok+1))
+    else
+        _diag_line WARN "sysctl tcp_congestion_control=$cc (bbr recommended)"
+        warn=$((warn+1))
+    fi
+
+    safe_load_config "$CONFIG_FILE" 2>/dev/null || true
+    local awg_port="${AWG_PORT:-39743}"
+    if command -v ufw &>/dev/null; then
+        local ufw_st
+        ufw_st=$(ufw status 2>/dev/null | head -1)
+        if [[ "$ufw_st" == "Status: active" ]]; then
+            if ufw status 2>/dev/null | grep -qE "^${awg_port}/udp[[:space:]]+ALLOW"; then
+                _diag_line OK "UFW active, ${awg_port}/udp ALLOW"; ok=$((ok+1))
+            else
+                _diag_line WARN "UFW active, but ${awg_port}/udp is not ALLOW"
+                warn=$((warn+1))
+            fi
+        else
+            _diag_line WARN "UFW is not active ($ufw_st)"; warn=$((warn+1))
+        fi
+    else
+        _diag_line WARN "ufw is not installed"; warn=$((warn+1))
+    fi
+
+    local peer_count
+    peer_count=$(awg show awg0 peers 2>/dev/null | wc -l)
+    _diag_line INFO "Configured peers: $peer_count"
+
+    local jc jmin jmax i1
+    jc=$(awg show awg0 2>/dev/null   | awk '/^[[:space:]]*jc:/   {print $2; exit}')
+    jmin=$(awg show awg0 2>/dev/null | awk '/^[[:space:]]*jmin:/ {print $2; exit}')
+    jmax=$(awg show awg0 2>/dev/null | awk '/^[[:space:]]*jmax:/ {print $2; exit}')
+    i1=$(awg show awg0 2>/dev/null   | awk -F': ' '/^[[:space:]]*i1:/ {print $2; exit}')
+    _diag_line INFO "AWG params: Jc=${jc:-?} Jmin=${jmin:-?} Jmax=${jmax:-?} I1=${i1:-absent}"
+
+    local web_state adg_state p2p_count
+    web_state="inactive"
+    systemctl is-active --quiet awg-web.service 2>/dev/null && web_state="active"
+    _diag_line INFO "Web panel: enabled=${AWG_WEB_ENABLED:-0} bind=${AWG_WEB_BIND:-?} port=${AWG_WEB_PORT:-?} service=$web_state"
+    adg_state="inactive"
+    systemctl is-active --quiet AdGuardHome.service 2>/dev/null && adg_state="active"
+    _diag_line INFO "AdGuard Home: enabled=${AWG_ADGUARD_ENABLED:-0} service=$adg_state dns_mode=${AWG_DNS_MODE:-system}"
+    _diag_line INFO "IPv6: enabled=${AWG_IPV6_ENABLED:-0} mode=${AWG_IPV6_MODE:-legacy} subnet=${AWG_IPV6_SUBNET:-none}"
+    if [[ -f "$SERVER_CONF_FILE" ]]; then
+        p2p_count=$(grep -c '^#_P2P_Ports = ' "$SERVER_CONF_FILE" 2>/dev/null || true)
+    else
+        p2p_count=0
+    fi
+    _diag_line INFO "P2P: enabled=${AWG_P2P_ENABLED:-0} peers_with_ports=$p2p_count"
+    _diag_line INFO "WireSock hints: ${AWG_WIRESOCK_HINTS:-off}"
+
+    if [[ -n "$carrier" ]]; then
+        echo ""
+        log "Comparing against carrier profile '$carrier'..."
+        local row
+        row=$(_diagnose_carrier_known "$carrier")
+        local rc_jc_min rc_jc_max rc_jmin_lo rc_jmin_hi rc_jmax_off_lo rc_jmax_off_hi rc_i1
+        read -r rc_jc_min rc_jc_max rc_jmin_lo rc_jmin_hi rc_jmax_off_lo rc_jmax_off_hi rc_i1 <<<"$row"
+
+        if [[ -n "$jc" && "$jc" =~ ^[0-9]+$ && "$jc" -ge "$rc_jc_min" && "$jc" -le "$rc_jc_max" ]]; then
+            _diag_line OK "Jc=$jc is within [$rc_jc_min..$rc_jc_max] for $carrier"; ok=$((ok+1))
+        else
+            _diag_line WARN "Jc=${jc:-?} is outside recommended [$rc_jc_min..$rc_jc_max] for $carrier"
+            warn=$((warn+1))
+        fi
+
+        if [[ -n "$jmin" && "$jmin" =~ ^[0-9]+$ && "$jmin" -ge "$rc_jmin_lo" && "$jmin" -le "$rc_jmin_hi" ]]; then
+            _diag_line OK "Jmin=$jmin is within [$rc_jmin_lo..$rc_jmin_hi] for $carrier"; ok=$((ok+1))
+        else
+            _diag_line WARN "Jmin=${jmin:-?} is outside recommended [$rc_jmin_lo..$rc_jmin_hi] for $carrier"
+            warn=$((warn+1))
+        fi
+
+        if [[ -n "$jmax" && -n "$jmin" && "$jmax" =~ ^[0-9]+$ && "$jmin" =~ ^[0-9]+$ ]]; then
+            local jmax_off
+            jmax_off=$((jmax - jmin))
+            if [[ "$jmax_off" -ge "$rc_jmax_off_lo" && "$jmax_off" -le "$rc_jmax_off_hi" ]]; then
+                _diag_line OK "Jmax-Jmin=$jmax_off is within [$rc_jmax_off_lo..$rc_jmax_off_hi]"; ok=$((ok+1))
+            else
+                _diag_line WARN "Jmax-Jmin=$jmax_off is outside [$rc_jmax_off_lo..$rc_jmax_off_hi]"
+                warn=$((warn+1))
+            fi
+        else
+            _diag_line WARN "Could not calculate Jmax-Jmin (Jmax=${jmax:-?}, Jmin=${jmin:-?})"
+            warn=$((warn+1))
+        fi
+
+        case "$rc_i1" in
+            absent)
+                if [[ -z "$i1" || "$i1" == "absent" ]]; then
+                    _diag_line OK "I1 is absent as required for $carrier"; ok=$((ok+1))
+                else
+                    _diag_line WARN "I1=$i1, but $carrier expects I1=absent"
+                    warn=$((warn+1))
+                fi
+                ;;
+            random)
+                if [[ -n "$i1" && "$i1" =~ ^\<r\ [0-9]+\>$ ]]; then
+                    _diag_line OK "I1 random ($i1) matches $carrier"; ok=$((ok+1))
+                elif [[ -z "$i1" ]]; then
+                    _diag_line WARN "I1 is absent; $carrier usually works with I1 random (<r N>)"
+                    warn=$((warn+1))
+                else
+                    _diag_line WARN "I1=$i1 has a non-standard format for $carrier"
+                    warn=$((warn+1))
+                fi
+                ;;
+            binary)
+                if [[ -n "$i1" && "$i1" =~ ^\<r\ [0-9]+\>\<b\ 0x[0-9A-Fa-f]+\> ]]; then
+                    _diag_line OK "I1 binary ($i1) matches $carrier"; ok=$((ok+1))
+                else
+                    _diag_line WARN "I1=${i1:-absent}; $carrier expects binary I1 (<r N><b 0xHEX>)"
+                    warn=$((warn+1))
+                fi
+                ;;
+        esac
+    fi
+
+    echo ""
+    log "Summary: OK=$ok WARN=$warn FAIL=$fail"
+    [[ "$fail" -eq 0 ]]
+}
+
 validate_dns_list() {
     local value="$1"
     [[ -n "$value" ]] || return 1
@@ -1622,12 +1829,16 @@ usage() {
     echo "  --apply-mode=MODE     syncconf (default) or restart (bypass kernel panic)"
     echo "  --psk                 (add only) generate a PresharedKey for the new client"
     echo "  --yes                 Skip confirm prompts (equivalent to ENV AWG_YES=1)"
+    echo "  --carrier=NAME        (diagnose only) compare AWG params against carrier profile"
+    echo "                        Available: beeline_msk yota_msk tele2_msk tele2_krasnoyarsk"
+    echo "                                   tattelecom megafon_regions tmobile_us"
     echo ""
     echo "Commands:"
     echo "  add <name> [name2 ...]       Add client(s). --expires applies to all"
     echo "  remove <name> [name2 ...]    Remove client(s)"
     echo "  list [-v]             List clients"
     echo "  stats [--json]        Client traffic statistics"
+    echo "  diagnose [--carrier=N] Diagnose kernel/sysctl/UFW and fork-specific sections"
     echo "  voice-check           UDP/STUN/NAT diagnostics for calls"
     echo "  p2p list              Show P2P ports for all clients"
     echo "  p2p show <name>       Show client P2P information"
@@ -1832,6 +2043,10 @@ case $COMMAND in
 
     stats)
         stats_clients || _cmd_rc=1
+        ;;
+
+    diagnose)
+        diagnose_server || _cmd_rc=1
         ;;
 
     voice-check|udp-check)

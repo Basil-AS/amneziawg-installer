@@ -744,7 +744,7 @@ function renderClients() {
               ${renderMenuItem("copy-config", "copy", "Copy config")}
               ${renderMenuItem("copy-vpnuri", "link", "Copy vpn://")}
               ${renderMenuItem("copy-import-url", "link", "Copy import URL")}
-              ${renderMenuItem("regenerate-config", "refresh", "Regenerate", "text-amber-700")}
+              <button type="button" data-action="regenerate-config" class="client-menu-item text-amber-700">${icon("refresh")}<span>Regenerate</span></button>
               ${renderMenuItem("toggle", "power", client.disabled ? "Enable client" : "Disable client")}
               ${renderMenuItem("toggle-p2p", "shield", "P2P details / toggle", shieldClass)}
               ${renderMenuItem("delete", "trash", "Delete", "text-[var(--danger)]")}

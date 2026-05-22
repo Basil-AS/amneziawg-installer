@@ -40,6 +40,7 @@
         '["web/app.js"]' \
         '["web/awg_i1.js"]' \
         '["web/style.css"]' \
+        '["web/favicon.svg"]' \
         '["web/vendor/tailwindcss.js"]' \
         '["web/vendor/apexcharts.min.js"]'
     do

@@ -437,6 +437,7 @@ PersistentKeepalive = 33
 * **`backup`:** Создать резервную копию (конфиги + ключи + данные истечения клиентов + cron).
 * **`restore [файл]`:** Восстановить из резервной копии (включая данные истечения и cron-задачу).
 * **`check` / `status`:** Проверить состояние сервера (сервис, порт, AWG 2.0 параметры).
+* **`diagnose [--carrier=NAME]`:** Read-only диагностика kernel/sysctl/UFW, статуса web/AdGuard/IPv6/P2P/WireSock и опциональное сравнение AWG-параметров с профилем оператора.
 * **`show`:** Выполнить `awg show`.
 * **`restart`:** Перезапустить сервис AmneziaWG.
 * **`help`:** Показать справку.
@@ -582,7 +583,7 @@ chmod 700 /root/awg/manage_amneziawg.sh /root/awg/awg_common.sh
 
 <details>
   <summary><strong>В: Как изменить MTU?</strong></summary>
-  **О:** Начиная с v5.7.4 `MTU = 1280` устанавливается автоматически. Для изменения: отредактируйте строку `MTU = <значение>` в секции `[Interface]` файла `/etc/amnezia/amneziawg/awg0.conf` и в `.conf` файлах клиентов. Перезапустите сервис. Подробнее — в разделе <a href="#mtu-mobile-adv">MTU и мобильные клиенты</a>.
+  **О:** Начиная с v5.7.4 `MTU = 1280` устанавливается автоматически. Для изменения отредактируйте строку `MTU = <значение>` в секции `[Interface]` файла `/etc/amnezia/amneziawg/awg0.conf`, перезапустите сервис и выполните `sudo bash /root/awg/manage_amneziawg.sh regen` для клиентов. `regen` читает MTU из live server config; если строки MTU нет, используется `AWG_MTU` из `awgsetup_cfg.init`, затем fallback `1280`. Подробнее — в разделе <a href="#mtu-mobile-adv">MTU и мобильные клиенты</a>.
 </details>
 
 <details>
@@ -958,7 +959,7 @@ sudo bash /root/awg/manage_amneziawg.sh add guest --expires=7d
 <a id="mtu-mobile-adv"></a>
 ## 📱 MTU и мобильные клиенты
 
-Начиная с v5.7.4, `MTU = 1280` устанавливается автоматически в серверном и клиентских конфигах.
+Начиная с v5.7.4, `MTU = 1280` устанавливается автоматически в серверном и клиентских конфигах. При перегенерации клиентов скрипт сохраняет MTU из live `/etc/amnezia/amneziawg/awg0.conf`; если там нет валидного MTU, используется `AWG_MTU` из `awgsetup_cfg.init`, затем fallback `1280`.
 
 **Зачем:** Сотовые сети (4G/LTE) часто имеют эффективный MTU ниже стандартных 1420 — пакеты фрагментируются или отбрасываются. iOS строго обрабатывает Path MTU Discovery и может не установить соединение. 1280 — минимальный MTU для IPv6 (RFC 8200), проходит через любую сеть. На скорость влияет незначительно.
 

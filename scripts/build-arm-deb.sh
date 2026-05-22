@@ -15,6 +15,53 @@
 # Output filename: amneziawg-kmod-${KERNEL_ID}_${KERNEL_VERSION}_${ARCH}.deb
 # e.g.            amneziawg-kmod-rpi-bookworm-arm64_6.12.75+rpt-rpi-v8_arm64.deb
 
+# Resolve kernel version from /lib/modules/*/build (or alt root for tests).
+# Honours KERNEL_VERSION env when set (must point at an existing build dir).
+# Otherwise auto-detects: zero candidates -> fail; exactly one -> use it;
+# multiple -> fail explicitly and ask caller to set KERNEL_VERSION.
+_resolve_kernel_version() {
+    local modules_root="${1:-/lib/modules}"
+
+    if [[ -n "${KERNEL_VERSION:-}" ]]; then
+        if [[ ! -d "${modules_root}/${KERNEL_VERSION}/build" ]]; then
+            echo "ERROR: KERNEL_VERSION='${KERNEL_VERSION}' is set but ${modules_root}/${KERNEL_VERSION}/build does not exist" >&2
+            ls -la "$modules_root/" >&2 2>/dev/null || true
+            return 1
+        fi
+        echo "$KERNEL_VERSION"
+        return 0
+    fi
+
+    local _candidates=()
+    local _d
+    for _d in "$modules_root"/*/build; do
+        if [[ -d "$_d" ]]; then
+            _candidates+=("$(basename "$(dirname "$_d")")")
+        fi
+    done
+
+    case "${#_candidates[@]}" in
+        0)
+            echo "ERROR: No kernel build directory found under $modules_root/" >&2
+            ls -la "$modules_root/" >&2 2>/dev/null || true
+            return 1
+            ;;
+        1)
+            echo "${_candidates[0]}"
+            return 0
+            ;;
+        *)
+            echo "ERROR: Multiple kernel build directories found under $modules_root/:" >&2
+            printf '  - %s\n' "${_candidates[@]}" >&2
+            echo "Set KERNEL_VERSION env to disambiguate which one to build against." >&2
+            return 1
+            ;;
+    esac
+}
+
+# When sourced by tests, expose helpers and skip the main build body.
+(return 0 2>/dev/null) && return 0
+
 set -euo pipefail
 
 KERNEL_ID="${KERNEL_ID:?KERNEL_ID must be set}"
@@ -26,19 +73,7 @@ echo "=== amneziawg ARM .deb builder ==="
 echo "KERNEL_ID: $KERNEL_ID"
 echo "Running as: $(uname -a)"
 
-# Resolve kernel version from installed headers (pick first with a build dir)
-KERNEL_VERSION=""
-for _d in /lib/modules/*/build; do
-    if [[ -d "$_d" ]]; then
-        KERNEL_VERSION="$(basename "$(dirname "$_d")")"
-        break
-    fi
-done
-if [[ -z "$KERNEL_VERSION" ]]; then
-    echo "ERROR: No kernel build directory found under /lib/modules/" >&2
-    ls -la /lib/modules/ >&2 2>/dev/null || true
-    exit 1
-fi
+KERNEL_VERSION="$(_resolve_kernel_version /lib/modules)"
 echo "Kernel version: $KERNEL_VERSION"
 
 ARCH="$(dpkg --print-architecture)"
@@ -51,7 +86,11 @@ done
 
 # Clone module source
 WORK_DIR="$(mktemp -d)"
-trap 'rm -rf "$WORK_DIR"' EXIT
+cleanup_build_arm() {
+    rm -rf "$WORK_DIR"
+    [[ -n "${KO_TMP_XZ:-}" ]] && rm -f "$KO_TMP_XZ"
+}
+trap cleanup_build_arm EXIT
 
 echo "--- Cloning amneziawg-linux-kernel-module ---"
 git clone --depth=1 ${MODULE_VERSION:+--branch "$MODULE_VERSION"} \
@@ -116,7 +155,6 @@ KO_FILE="$MODULE_INSTALL_PATH/amneziawg.ko"
 KO_XZ="${KO_FILE}.xz"
 KO_TMP_XZ="${KO_FILE}.tmp.xz"
 rm -f "$KO_TMP_XZ"
-trap 'rm -f "$KO_TMP_XZ"' EXIT
 if xz --check=crc32 --lzma2=dict=1MiB -c "$KO_FILE" > "$KO_TMP_XZ" 2>/dev/null; then
     # Sanity: kernel-compatible streams round-trip through `xz -d` and `xz -t`.
     # Catches preset/filter mismatches at build time instead of in users' dmesg.

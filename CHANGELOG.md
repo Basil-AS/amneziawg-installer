@@ -12,6 +12,16 @@
 
 ## [Unreleased]
 
+### Selected upstream 5.14.x fixes ported manually
+
+- Вручную перенесены выбранные исправления upstream `5.14.0`–`5.14.3` поверх fork-базы upstream `5.13.0`; это не full merge и не смена fork release line.
+- `vpn://` QR-коды теперь генерируются с `qrencode -l L -s 6 -m 4`, что повышает читаемость при сканировании с экрана и сохраняет существующую `.vpnuri` / `.vpnuri.png` интеграцию.
+- `regen` больше не хардкодит клиентский `MTU = 1280`: приоритет — MTU из live `/etc/amnezia/amneziawg/awg0.conf`, затем `AWG_MTU` из `awgsetup_cfg.init`, затем fallback `1280`.
+- `cleanup_system` больше не запускает опасный bare `apt-get autoremove`, временно ставит hold на критичные сетевые пакеты и проверяет default route с попыткой восстановления через `netplan`, `networkctl` и `dhclient`.
+- `get_server_public_ip` расширен до шести fallback-сервисов и по-прежнему пишет в stdout только IP, чтобы не ломать `$(get_server_public_ip)`.
+- Добавлена read-only команда `manage diagnose [--carrier=NAME]` с базовой диагностикой kernel/sysctl/UFW и fork-секциями web panel, AdGuard Home, IPv6, P2P и WireSock hints без вывода приватных ключей или токенов.
+- `scripts/build-arm-deb.sh` получил `_resolve_kernel_version`: `KERNEL_VERSION` теперь явно disambiguates target kernel, а несколько `/lib/modules/*/build` без указания переменной считаются ошибкой. Fork xz-hardening сохранён.
+
 ---
 
 ## [5.13.0] — 2026-05-12
