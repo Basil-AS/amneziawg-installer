@@ -1247,6 +1247,26 @@ ask_port() {
     done
 }
 
+ask_web_port() {
+    local __var_name="$1"
+    local prompt="$2"
+    local default="$3"
+    local value=""
+
+    while true; do
+        read_clean_input value "$prompt"
+        value="${value:-$default}"
+
+        if validate_port_system "$value"; then
+            printf -v "$__var_name" '%s' "$value"
+            return 0
+        fi
+
+        log_warn "Некорректный HTTPS порт Web Panel '$value'. Введите число 1-65535."
+    done
+}
+
+
 ask_yes_no() {
     local __var="$1" prompt="$2" default="$3" value
     while true; do
@@ -1421,7 +1441,7 @@ prompt_web_panel() {
         [[ "$public_confirm" == "YES" ]] || die "Публичная Web Panel не подтверждена."
     fi
     if [[ -z "$CLI_WEB_PORT" && "$ENV_AWG_WEB_PORT_SET" -eq 0 ]]; then
-        ask_port input_port "Введите HTTPS порт Web Panel [${AWG_WEB_PORT:-8443}]: " "${AWG_WEB_PORT:-8443}"
+        ask_web_port input_port "Введите HTTPS порт Web Panel [${AWG_WEB_PORT:-8443}]: " "${AWG_WEB_PORT:-8443}"
         AWG_WEB_PORT="$input_port"
     fi
 }
