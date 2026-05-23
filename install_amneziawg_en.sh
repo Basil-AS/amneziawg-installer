@@ -35,8 +35,8 @@ MANAGE_SCRIPT_PATH="$AWG_DIR/manage_amneziawg.sh"
 # AWG_ALLOW_UNVERIFIED_DOWNLOAD=1 for development.
 declare -A AWG_ASSET_SHA256=(
     ["awg_common_en.sh"]="3902a9cde2cc8204a4f6c102e149a266664faedb991a9a2f27d57309b158d7a2"
-    ["manage_amneziawg_en.sh"]="291e7b49358343e62c60128baa2b3bb1d24dd9124fc85e93a1d328d32d340c96"
-    ["web/server.py"]="ebee2b69aee3b99f4476b136f7251987cd89abebeadd9194faebc52514efa994"
+    ["manage_amneziawg_en.sh"]="2c2ef32d0600d0136eb468aa1294a6a18e217c3152d1f8775d318557114089ac"
+    ["web/server.py"]="008a102c548f5b5aa4370a9504aa9ef1d7cca3ada80fff5b989a41b44143e259"
     ["web/index.html"]="a41e458c832f82d8d834ecc67f2cb35da4eed11bf7b76acd493413d082de0483"
     ["web/app.js"]="35f645c5d3d702ce5f77f7b830a3bcc00d5a2d5441e2f5023c6c32166a594ffb"
     ["web/awg_i1.js"]="d1951b9de2c8ab8170cf78ad320f274fc9dc5da622b8e60b2650871fb7ddf1e4"
@@ -136,6 +136,7 @@ while [[ $# -gt 0 ]]; do
         --adguard-port=*) CLI_ADGUARD_PORT="${1#*=}" ;;
         --dns-mode=*)    CLI_DNS_MODE="${1#*=}" ;;
         --wiresock-hints=*) CLI_WIRESOCK_HINTS="${1#*=}" ;;
+        --disable-wiresock-hints) CLI_WIRESOCK_HINTS="off" ;;
         --wiresock-id=*) CLI_WIRESOCK_ID="${1#*=}" ;;
         --wiresock-ip=*) CLI_WIRESOCK_IP="${1#*=}" ;;
         --wiresock-ib=*) CLI_WIRESOCK_IB="${1#*=}" ;;
@@ -361,7 +362,8 @@ Options:
   --disable-adguard     Do not install AdGuard Home and use system DNS
   --adguard-port=PORT   AdGuard Home HTTP port on localhost/VPN (default 3000)
   --dns-mode=MODE       Client DNS mode: adguard, system, or custom
-  --wiresock-hints=MODE WireSock hints: off, auto, mobile, quic, or dns (default: off)
+  --wiresock-hints=MODE WireSock hints: off, auto, mobile, quic, or dns (default: quic)
+  --disable-wiresock-hints
   --wiresock-id=DOMAIN  Domain for #@ws:Id
   --wiresock-ip=quic|dns Value for #@ws:Ip
   --wiresock-ib=curl|chrome Value for #@ws:Ib
@@ -1199,12 +1201,93 @@ EOF
 
 sanitize_menu_choice() {
     local value="$1"
-    if [[ "$value" == *$'\e'* || "$value" == *[[:cntrl:]]* ]]; then
-        printf ''
-        return 0
-    fi
+    value="$(sanitize_prompt_input "$value")"
     value="${value//[[:space:]]/}"
     printf '%s' "$value"
+}
+
+sanitize_prompt_input() {
+    local value="$1"
+    # Strip common ANSI/control input artifacts from arrow keys, bracketed paste,
+    # backspace/delete, and terminal escape sequences before validation.
+    value="$(printf '%s' "$value" | LC_ALL=C sed -E $'s/\x1B\\[[0-9;?]*[ -/]*[@-~]//g; s/\x1B\\][^\a]*(\a|\x1B\\\\)//g; s/\x1B\\[\\?2004[hl]//g')"
+    value="${value//$'\177'/}"
+    value="${value//$'\b'/}"
+    value="$(printf '%s' "$value" | LC_ALL=C tr -d '\000-\010\013\014\016-\037')"
+    value="${value#"${value%%[![:space:]]*}"}"
+    value="${value%"${value##*[![:space:]]}"}"
+    printf '%s' "$value"
+}
+
+read_clean_input() {
+    local __var="$1" prompt="$2" raw=""
+    read -rp "$prompt" raw < /dev/tty
+    printf -v "$__var" '%s' "$(sanitize_prompt_input "$raw")"
+}
+
+ask_choice() {
+    local __var="$1" prompt="$2" default="$3" allowed="$4" value
+    while true; do
+        read_clean_input value "$prompt"
+        value="${value:-$default}"
+        value="$(sanitize_menu_choice "$value")"
+        if [[ " $allowed " == *" $value "* ]]; then
+            printf -v "$__var" '%s' "$value"
+            return 0
+        fi
+        log_warn "Invalid choice '$value'. Allowed: $allowed"
+    done
+}
+
+ask_port() {
+    local __var="$1" prompt="$2" default="$3" value
+    while true; do
+        read_clean_input value "$prompt"
+        value="${value:-$default}"
+        if [[ "$value" =~ ^[0-9]+$ && "$value" -ge 1024 && "$value" -le 65535 ]]; then
+            printf -v "$__var" '%s' "$value"
+            return 0
+        fi
+        log_warn "Invalid port '$value'. Enter a number from 1024 to 65535."
+    done
+}
+
+ask_yes_no() {
+    local __var="$1" prompt="$2" default="$3" value
+    while true; do
+        read_clean_input value "$prompt"
+        value="${value:-$default}"
+        case "$value" in
+            y|Y|yes|YES) printf -v "$__var" 'yes'; return 0 ;;
+            n|N|no|NO) printf -v "$__var" 'no'; return 0 ;;
+            *) log_warn "Enter y or n." ;;
+        esac
+    done
+}
+
+ask_domain() {
+    local __var="$1" prompt="$2" default="${3:-}" value
+    while true; do
+        read_clean_input value "$prompt"
+        value="${value:-$default}"
+        if [[ "$value" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+$ ]]; then
+            printf -v "$__var" '%s' "$value"
+            return 0
+        fi
+        log_warn "Invalid domain. Use an FQDN without spaces or control characters."
+    done
+}
+
+ask_client_name() {
+    local __var="$1" prompt="$2" value
+    while true; do
+        read_clean_input value "$prompt"
+        if [[ "$value" =~ ^[A-Za-z0-9_-]{1,63}$ ]]; then
+            printf -v "$__var" '%s' "$value"
+            return 0
+        fi
+        log_warn "Invalid client name. Use Latin letters, digits, '_' and '-'."
+    done
 }
 
 apply_web_port_default() {
@@ -1248,32 +1331,32 @@ prompt_web_certificate() {
     echo "  3) Your certificate and key"
     echo "  4) Self-signed certificate"
     echo "     Works immediately, but browsers and WG Tunnel may complain"
-    read -rp "Your choice [1]: " cert_choice < /dev/tty
-    case "${cert_choice:-1}" in
+    ask_choice cert_choice "Your choice [2]: " "2" "1 2 3 4 selfsigned"
+    case "${cert_choice:-2}" in
         1)
             AWG_WEB_CERT_MODE="letsencrypt"
-            read -rp "Enter Web Panel domain [Enter = choose experimental IP domain]: " domain_input < /dev/tty
+            read_clean_input domain_input "Enter Web Panel domain [Enter = choose experimental IP domain]: "
             if [[ -n "$domain_input" ]]; then
-                AWG_WEB_DOMAIN="$domain_input"
+                ask_domain AWG_WEB_DOMAIN "Enter Web Panel domain: " "$domain_input"
             else
                 log_warn "No domain entered; using experimental IP-domain mode."
                 AWG_WEB_CERT_MODE="ip-domain"
                 cert_choice=2
             fi
             if [[ "${AWG_WEB_CERT_MODE:-}" == "letsencrypt" ]]; then
-                read -rp "Email for Let's Encrypt notices, Enter to skip: " email_input < /dev/tty
+                read_clean_input email_input "Email for Let's Encrypt notices, Enter to skip: "
                 [[ -n "$email_input" ]] && AWG_WEB_LE_EMAIL="$email_input"
                 return 0
             fi
             ;&
         2)
             AWG_WEB_CERT_MODE="ip-domain"
+            AWG_CERT_FALLBACK_SELFSIGNED=1
             echo ""
             echo "Pseudo-domain provider:"
             echo "  1) sslip.io - convenient, but best-effort"
             echo "  2) nip.io"
-            read -rp "Your choice [1]: " provider_choice < /dev/tty
-            provider_choice="$(sanitize_menu_choice "$provider_choice")"
+            ask_choice provider_choice "Your choice [1]: " "1" "1 2 sslip.io nip.io"
             case "${provider_choice:-1}" in
                 1|sslip.io) AWG_WEB_CERT_PROVIDER="sslip.io" ;;
                 2|nip.io) AWG_WEB_CERT_PROVIDER="nip.io" ;;
@@ -1284,20 +1367,20 @@ prompt_web_certificate() {
             log "Web Panel domain: $AWG_WEB_DOMAIN"
             log_warn "IP-domain through ${AWG_WEB_CERT_PROVIDER} is best-effort: Let's Encrypt may reject issuance due registered-domain limits for sslip.io/nip.io."
             log_warn "HTTP-01 requires inbound TCP/80 in UFW and the provider firewall/security group."
-            read -rp "Email for Let's Encrypt notices, Enter to skip: " email_input < /dev/tty
+            read_clean_input email_input "Email for Let's Encrypt notices, Enter to skip: "
             [[ -n "$email_input" ]] && AWG_WEB_LE_EMAIL="$email_input"
             ;;
         3)
             AWG_WEB_CERT_MODE="custom"
             while [[ ! -f "${AWG_WEB_CERT_FILE:-}" ]]; do
-                read -rp "Path to fullchain/cert.pem: " cert_input < /dev/tty
+                read_clean_input cert_input "Path to fullchain/cert.pem: "
                 AWG_WEB_CERT_FILE="$cert_input"
             done
             while [[ ! -f "${AWG_WEB_KEY_FILE:-}" ]]; do
-                read -rp "Path to private key: " key_input < /dev/tty
+                read_clean_input key_input "Path to private key: "
                 AWG_WEB_KEY_FILE="$key_input"
             done
-            read -rp "Web Panel domain/Public URL host for the certificate: " domain_input < /dev/tty
+            read_clean_input domain_input "Web Panel domain/Public URL host for the certificate: "
             [[ -n "$domain_input" ]] && AWG_WEB_DOMAIN="$domain_input"
             ;;
         4|selfsigned)
@@ -1313,8 +1396,8 @@ prompt_web_panel() {
     [[ "$CLI_DISABLE_WEB" -eq 0 ]] || return 0
     local web_enable web_choice input_port public_confirm
     if [[ "$ENV_AWG_WEB_ENABLED_SET" -eq 0 ]]; then
-        read -rp "Enable Web Panel? [Y/n]: " web_enable < /dev/tty
-        if [[ "$web_enable" =~ ^[Nn]$ ]]; then
+        ask_yes_no web_enable "Enable Web Panel? [Y/n]: " "y"
+        if [[ "$web_enable" == "no" ]]; then
             AWG_WEB_ENABLED=0
             return 0
         fi
@@ -1327,7 +1410,7 @@ prompt_web_panel() {
         echo "  1) VPN-only, 10.9.9.1 - safe default, port 8443"
         echo "  2) localhost, 127.0.0.1 - SSH tunnel only, port 8443"
         echo "  3) public, 0.0.0.0 - Internet access, domain + HTTPS, port 443"
-        read -rp "Your choice [1]: " web_choice < /dev/tty
+        ask_choice web_choice "Your choice [1]: " "1" "1 2 3"
         case "${web_choice:-1}" in
             1) AWG_WEB_BIND="10.9.9.1" ;;
             2) AWG_WEB_BIND="127.0.0.1" ;;
@@ -1339,20 +1422,20 @@ prompt_web_panel() {
     apply_web_port_default 0
     warn_public_web_bind
     if [[ "$AWG_WEB_BIND" == "0.0.0.0" || "$AWG_WEB_BIND" == "::" ]]; then
-        read -rp "You are exposing Web Panel to the Internet. Continue? type YES: " public_confirm < /dev/tty
+        read_clean_input public_confirm "You are exposing Web Panel to the Internet. Continue? type YES: "
         [[ "$public_confirm" == "YES" ]] || die "Public Web Panel was not confirmed."
     fi
     if [[ -z "$CLI_WEB_PORT" && "$ENV_AWG_WEB_PORT_SET" -eq 0 ]]; then
-        read -rp "Enter HTTPS Web Panel port [${AWG_WEB_PORT:-8443}]: " input_port < /dev/tty
-        [[ -n "$input_port" ]] && AWG_WEB_PORT="$input_port"
+        ask_port input_port "Enter HTTPS Web Panel port [${AWG_WEB_PORT:-8443}]: " "${AWG_WEB_PORT:-8443}"
+        AWG_WEB_PORT="$input_port"
     fi
 }
 
 prompt_adguard() {
     [[ "$AUTO_YES" -eq 0 && "$CLI_ENABLE_ADGUARD" -eq 0 && "$CLI_DISABLE_ADGUARD" -eq 0 && "$ENV_AWG_ADGUARD_ENABLED_SET" -eq 0 ]] || return 0
     local ag_enable input_port
-    read -rp "Install AdGuard Home for DNS? [Y/n]: " ag_enable < /dev/tty
-    if [[ "$ag_enable" =~ ^[Nn]$ ]]; then
+    ask_yes_no ag_enable "Install AdGuard Home for DNS? [Y/n]: " "y"
+    if [[ "$ag_enable" == "no" ]]; then
         AWG_ADGUARD_ENABLED=0
         AWG_DNS_MODE="system"
         return 0
@@ -1360,16 +1443,16 @@ prompt_adguard() {
     AWG_ADGUARD_ENABLED=1
     AWG_DNS_MODE="adguard"
     if [[ -z "$CLI_ADGUARD_PORT" && "$ENV_AWG_ADGUARD_PORT_SET" -eq 0 ]]; then
-        read -rp "Enter AdGuard UI port [${AWG_ADGUARD_PORT:-3000}]: " input_port < /dev/tty
-        [[ -n "$input_port" ]] && AWG_ADGUARD_PORT="$input_port"
+        ask_port input_port "Enter AdGuard UI port [${AWG_ADGUARD_PORT:-3000}]: " "${AWG_ADGUARD_PORT:-3000}"
+        AWG_ADGUARD_PORT="$input_port"
     fi
 }
 
 prompt_p2p() {
     [[ "$AUTO_YES" -eq 0 && -z "$CLI_P2P_BASE_PORT" && -z "$CLI_P2P_PORTS_PER_CLIENT" && "$CLI_FULLCONE_NAT" -eq 0 && "$ENV_AWG_P2P_ENABLED_SET" -eq 0 ]] || return 0
     local p2p_enable input_base input_count fullcone
-    read -rp "Configure P2P ports for clients? [Y/n]: " p2p_enable < /dev/tty
-    if [[ "$p2p_enable" =~ ^[Nn]$ ]]; then
+    ask_yes_no p2p_enable "Configure P2P ports for clients? [Y/n]: " "y"
+    if [[ "$p2p_enable" == "no" ]]; then
         AWG_P2P_ENABLED=0
         AWG_P2P_PORTS_PER_CLIENT=0
         AWG_FULLCONE_NAT=0
@@ -1377,16 +1460,16 @@ prompt_p2p() {
     fi
     AWG_P2P_ENABLED=1
     if [[ "$ENV_AWG_P2P_BASE_PORT_SET" -eq 0 ]]; then
-        read -rp "Enter base P2P port [${AWG_P2P_BASE_PORT:-20000}]: " input_base < /dev/tty
-        [[ -n "$input_base" ]] && AWG_P2P_BASE_PORT="$input_base"
+        ask_port input_base "Enter base P2P port [${AWG_P2P_BASE_PORT:-20000}]: " "${AWG_P2P_BASE_PORT:-20000}"
+        AWG_P2P_BASE_PORT="$input_base"
     fi
     if [[ "$ENV_AWG_P2P_PORTS_PER_CLIENT_SET" -eq 0 ]]; then
-        read -rp "Enter P2P ports per client [${AWG_P2P_PORTS_PER_CLIENT:-3}]: " input_count < /dev/tty
-        [[ -n "$input_count" ]] && AWG_P2P_PORTS_PER_CLIENT="$input_count"
+        ask_choice input_count "Enter P2P ports per client [${AWG_P2P_PORTS_PER_CLIENT:-3}]: " "${AWG_P2P_PORTS_PER_CLIENT:-3}" "0 1 2 3 4 5 6 7 8 9 10"
+        AWG_P2P_PORTS_PER_CLIENT="$input_count"
     fi
     if [[ "$ENV_AWG_FULLCONE_NAT_SET" -eq 0 ]]; then
-        read -rp "Enable fullcone NAT? [y/N]: " fullcone < /dev/tty
-        if [[ "$fullcone" =~ ^[Yy]$ ]]; then AWG_FULLCONE_NAT=1; else AWG_FULLCONE_NAT=0; fi
+        ask_yes_no fullcone "Enable fullcone NAT? [y/N]: " "n"
+        if [[ "$fullcone" == "yes" ]]; then AWG_FULLCONE_NAT=1; else AWG_FULLCONE_NAT=0; fi
     fi
 }
 
@@ -1429,8 +1512,8 @@ validate_wiresock_settings() {
 prompt_wiresock_hints() {
     [[ "$AUTO_YES" -eq 0 && -z "$CLI_WIRESOCK_HINTS" ]] || return 0
     local enable profile custom_id
-    read -rp "Add WireSock compatibility hints to client configs? [y/N]: " enable < /dev/tty
-    if [[ ! "$enable" =~ ^[Yy]$ ]]; then
+    ask_yes_no enable "Add WireSock compatibility hints to client configs? [Y/n]: " "y"
+    if [[ "$enable" == "no" ]]; then
         AWG_WIRESOCK_HINTS="off"
         return 0
     fi
@@ -1438,7 +1521,7 @@ prompt_wiresock_hints() {
     echo "  1) quic/mobile-compatible: ozon.ru, quic, curl"
     echo "  2) mobile: bag.itunes.apple.com, quic, curl"
     echo "  3) dns: yandex.ru, dns, chrome"
-    read -rp "WireSock profile [1]: " profile < /dev/tty
+    ask_choice profile "WireSock profile [1]: " "1" "1 2 3 quic mobile dns"
     case "${profile:-1}" in
         1|quic) AWG_WIRESOCK_HINTS="quic" ;;
         2|mobile) AWG_WIRESOCK_HINTS="mobile" ;;
@@ -1446,7 +1529,7 @@ prompt_wiresock_hints() {
         *) log_warn "Unknown WireSock profile '$profile', using quic."; AWG_WIRESOCK_HINTS="quic" ;;
     esac
     apply_wiresock_profile_defaults
-    read -rp "WireSock Id/domain [${AWG_WIRESOCK_ID}]: " custom_id < /dev/tty
+    read_clean_input custom_id "WireSock Id/domain [${AWG_WIRESOCK_ID}]: "
     [[ -n "$custom_id" ]] && AWG_WIRESOCK_ID="$custom_id"
 }
 
@@ -2597,7 +2680,7 @@ initialize_setup() {
     AWG_ADGUARD_ENABLED=${AWG_ADGUARD_ENABLED:-1}
     AWG_ADGUARD_PORT=${AWG_ADGUARD_PORT:-3000}
     AWG_ADGUARD_DIR="${AWG_ADGUARD_DIR:-/opt/AdGuardHome}"
-    AWG_WIRESOCK_HINTS="${AWG_WIRESOCK_HINTS:-off}"
+    AWG_WIRESOCK_HINTS="${AWG_WIRESOCK_HINTS:-quic}"
     AWG_WIRESOCK_ID="${AWG_WIRESOCK_ID:-}"
     AWG_WIRESOCK_IP="${AWG_WIRESOCK_IP:-}"
     AWG_WIRESOCK_IB="${AWG_WIRESOCK_IB:-}"
@@ -2645,7 +2728,7 @@ initialize_setup() {
         AWG_ADGUARD_ENABLED=${AWG_ADGUARD_ENABLED:-1}
         AWG_ADGUARD_PORT=${AWG_ADGUARD_PORT:-3000}
         AWG_ADGUARD_DIR=${AWG_ADGUARD_DIR:-/opt/AdGuardHome}
-        AWG_WIRESOCK_HINTS=${AWG_WIRESOCK_HINTS:-off}
+        AWG_WIRESOCK_HINTS=${AWG_WIRESOCK_HINTS:-quic}
         AWG_WIRESOCK_ID=${AWG_WIRESOCK_ID:-}
         AWG_WIRESOCK_IP=${AWG_WIRESOCK_IP:-}
         AWG_WIRESOCK_IB=${AWG_WIRESOCK_IB:-}
@@ -4409,7 +4492,7 @@ handle_letsencrypt_failure() {
     echo "  2) Enter another domain"
     echo "  3) Retry certbot"
     echo "  4) Abort installation"
-    read -rp "Your choice [1]: " choice < /dev/tty
+    ask_choice choice "Your choice [1]: " "1" "1 2 3 4"
     case "${choice:-1}" in
         1)
             log_warn "VPN will work. Web Panel will continue with self-signed HTTPS until you configure a trusted cert."
@@ -4419,8 +4502,7 @@ handle_letsencrypt_failure() {
             deploy_web_tls "$web_dir"
             ;;
         2)
-            read -rp "Enter new Web Panel domain: " domain_input < /dev/tty
-            [[ -n "$domain_input" ]] || die "Domain was not entered."
+            ask_domain domain_input "Enter new Web Panel domain: "
             AWG_WEB_CERT_MODE="letsencrypt"
             AWG_WEB_DOMAIN="$domain_input"
             deploy_web_tls "$web_dir"
@@ -4537,6 +4619,36 @@ PY
             AWG_WEB_SUPER_TOKEN_ONCE="$super_token"
         fi
     fi
+    if [[ -z "${AWG_WEB_SUPER_TOKEN_ONCE:-}" ]]; then
+        log_warn "Raw Web super token is unavailable for install summary; running safe reset-super for this fresh/resume install."
+        AWG_WEB_SUPER_TOKEN_ONCE="$(python3 - "$web_dir/tokens.json" <<'PY'
+import hashlib, json, os, re, secrets, sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+data = {}
+if path.exists():
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        data = {}
+users = data.get("users") if isinstance(data, dict) else {}
+if not isinstance(users, dict):
+    users = {}
+clean_users = {}
+for key, value in users.items():
+    if isinstance(key, str) and re.fullmatch(r"[0-9a-f]{64}", key):
+        clean_users[key] = value if isinstance(value, dict) else {"name": "", "clients": value if isinstance(value, list) else []}
+token = secrets.token_urlsafe(32)
+tmp = path.with_name(path.name + f".tmp.{os.getpid()}")
+tmp.write_text(json.dumps({"super_token_hash": hashlib.sha256(token.encode()).hexdigest(), "users": clean_users}, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+os.chmod(tmp, 0o600)
+os.replace(tmp, path)
+os.chmod(path, 0o600)
+print(token)
+PY
+)" || die "Failed to reset Web super token"
+    fi
     if [[ -n "${AWG_WEB_SUPER_TOKEN_ONCE:-}" ]]; then
         python3 - "$web_dir/tokens.json" "$AWG_WEB_SUPER_TOKEN_ONCE" <<'PY' || die "Generated Web super token failed verification"
 import hashlib, hmac, json, sys
@@ -4572,6 +4684,8 @@ Environment=AWG_DIR=${AWG_DIR}
 Environment=SERVER_CONF_FILE=${SERVER_CONF_FILE}
 Environment=AWG_WEB_BIND=${AWG_WEB_BIND}
 Environment=AWG_WEB_PORT=${AWG_WEB_PORT}
+Environment=AWG_WEB_DOMAIN=${AWG_WEB_DOMAIN}
+Environment=AWG_ENDPOINT=${AWG_ENDPOINT}
 ExecStart=/usr/bin/python3 ${web_dir}/server.py
 Restart=on-failure
 RestartSec=3
@@ -4937,10 +5051,28 @@ print_client_files_console() {
     done
 }
 
+print_summary_notice_block() {
+    local path="$AWG_DIR/INSTALL_SUMMARY.txt"
+    if [[ "$NO_COLOR" -eq 0 ]]; then
+        printf '\033[1;33m'
+    fi
+    log "╔════════════════════════════════════════════════════════════╗"
+    log "║  IMPORTANT: ALL ACCESS INFO IS SAVED IN THIS FILE          ║"
+    log "║                                                            ║"
+    log "║  ${path}                            ║"
+    log "║                                                            ║"
+    log "║  Contains: links, Web token, AdGuard password, configs, QR.║"
+    log "║  This file contains secrets. Permissions: 0600.            ║"
+    log "╚════════════════════════════════════════════════════════════╝"
+    if [[ "$NO_COLOR" -eq 0 ]]; then
+        printf '\033[0m'
+    fi
+}
+
 write_install_summary() {
     local summary_path="$AWG_DIR/INSTALL_SUMMARY.txt"
     local tmp_path="$AWG_DIR/.INSTALL_SUMMARY.txt.tmp.$$"
-    local timestamp generated route_label server_v6 web_host trusted_https cert_summary
+    local timestamp generated route_label server_v6 web_host trusted_https cert_summary domain_only_access
     local web_public_url web_vpn_url web_local_url web_warning web_extra_url import_example
     local ag_password_display state_display ag_dns_listen ag_allowed_clients ufw_state firewall_resp
 
@@ -4953,6 +5085,10 @@ write_install_summary() {
     web_host="${AWG_ENDPOINT:-server}"
     trusted_https="$(compute_trusted_https_status)"
     cert_summary="$(compute_cert_summary)"
+    domain_only_access="no"
+    if [[ "${AWG_WEB_ENABLED:-1}" -eq 1 && -n "${AWG_WEB_DOMAIN:-}" && ( "${AWG_WEB_BIND:-}" == "0.0.0.0" || "${AWG_WEB_BIND:-}" == "::" ) ]]; then
+        domain_only_access="yes"
+    fi
     web_public_url="$(compute_web_public_url)"
     web_vpn_url="$(compute_web_vpn_url)"
     web_local_url="$(compute_web_local_url)"
@@ -4996,25 +5132,37 @@ Repository: ${AWG_REPO}
 Permissions: 0600
 ============================================================
 
-[!!! IMPORTANT ACCESS INFO / SECRETS !!!]
-Web Panel Public URL: ${web_public_url}
-Web Panel VPN URL: ${web_vpn_url}
-Web Panel Local URL: ${web_local_url}
-Web Panel Domain: ${AWG_WEB_DOMAIN:-none}
-Web Panel Token file: ${AWG_DIR}/web/tokens.json
-Web Super Token: ${AWG_WEB_SUPER_TOKEN_ONCE:-not available here; reset with sudo bash ${MANAGE_SCRIPT_PATH} web token reset-super}
-AdGuard UI URL: http://${AWG_TUNNEL_SUBNET%/*}:${AWG_ADGUARD_PORT:-3000}
-AdGuard Admin login: ${AG_USERNAME:-admin}
-AdGuard Admin password: ${ag_password_display}
-Trusted HTTPS: ${trusted_https}
-Certificate fallback: ${AWG_WEB_CERT_FALLBACK_USED:-none}
-Certificate failure reason: ${AWG_WEB_CERT_FAILURE_REASON:-none}
-Default client configs:
+============================================================
+IMPORTANT ACCESS INFO / SECRETS
+============================================================
+
+WEB PANEL
+  Public URL: ${web_public_url}
+  VPN URL: ${web_vpn_url}
+  Local URL: ${web_local_url}
+  Domain: ${AWG_WEB_DOMAIN:-none}
+  Domain-only access: ${domain_only_access}
+  IP access: $(if [[ "$domain_only_access" == "yes" ]]; then echo "blocked by Host header validation"; else echo "allowed for configured bind mode"; fi)
+  Super token: ${AWG_WEB_SUPER_TOKEN_ONCE}
+  Token file: ${AWG_DIR}/web/tokens.json
+  Reset command: sudo bash ${MANAGE_SCRIPT_PATH} web token reset-super
+  Trusted HTTPS: ${trusted_https}
+  Certificate fallback: ${AWG_WEB_CERT_FALLBACK_USED:-none}
+  Certificate failure reason: ${AWG_WEB_CERT_FAILURE_REASON:-none}
+
+ADGUARD HOME
+  UI URL: http://${AWG_TUNNEL_SUBNET%/*}:${AWG_ADGUARD_PORT:-3000}
+  Login: ${AG_USERNAME:-admin}
+  Password: ${ag_password_display}
+
+CLIENT CONFIGS
 EOF
     write_client_files_summary "$tmp_path"
     cat >> "$tmp_path" <<EOF
-Summary file: ${summary_path}
-Install log: ${LOG_FILE}
+
+FILES
+  Summary: ${summary_path}
+  Install log: ${LOG_FILE}
 
 [Web Panel]
 Enabled: $(if [[ "${AWG_WEB_ENABLED:-1}" -eq 1 ]]; then echo "yes"; else echo "no"; fi)
@@ -5027,6 +5175,8 @@ Access note: ${web_extra_url}
 Exposure warning: ${web_warning}
 Super token: ${AWG_WEB_SUPER_TOKEN_ONCE:-not available here; reset with manage web token reset-super}
 Token file: ${AWG_DIR}/web/tokens.json
+Domain-only access: ${domain_only_access}
+IP access: $(if [[ "$domain_only_access" == "yes" ]]; then echo "blocked by Host header validation"; else echo "allowed for configured bind mode"; fi)
 TLS cert: ${AWG_DIR}/web/cert.pem
 TLS key: ${AWG_DIR}/web/key.pem
 ${cert_summary}
@@ -5132,7 +5282,7 @@ Install state: ${state_display}
 [Useful commands]
 systemctl status awg-quick@awg0 --no-pager
 systemctl status awg-web --no-pager
-systemctl status AdGuardHome --no-pager
+systemctl status AdGuardHome.service --no-pager
 sudo bash ${MANAGE_SCRIPT_PATH} help
 sudo bash ${MANAGE_SCRIPT_PATH} web token reset-super
 sudo bash ${MANAGE_SCRIPT_PATH} add <client>
@@ -5208,11 +5358,7 @@ step99_finish() {
     log " "
     write_install_summary
     log "IMPORTANT:"
-    log "Main server information, tokens, passwords, panel URLs and file paths were saved to:"
-    log " "
-    log "  $AWG_DIR/INSTALL_SUMMARY.txt"
-    log " "
-    log "This file contains secrets. File permissions: 0600."
+    print_summary_notice_block
     log " "
     cleanup_apt
     log " "

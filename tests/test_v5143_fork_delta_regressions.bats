@@ -40,7 +40,7 @@ bats_require_minimum_version 1.5.0
     grep -qF 'curated_user_rules' "$installer"
     grep -qF 'extract_user_rules(lines)' "$installer"
     grep -qF 'INSTALL_SUMMARY.txt' "$installer"
-    grep -qF '[!!! IMPORTANT ACCESS INFO / SECRETS !!!]' "$installer"
+    grep -qF 'IMPORTANT ACCESS INFO / SECRETS' "$installer"
 }
 
 @test "WireSock hints and local DNS route support remain documented in runtime/tests" {

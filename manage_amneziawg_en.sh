@@ -1345,10 +1345,44 @@ elif action == "reset-super":
     token = secrets.token_urlsafe(32)
     data["super_token_hash"] = digest(token)
     save(data)
+    summary = path.parent.parent / "INSTALL_SUMMARY.txt"
+    if summary.exists():
+        text = summary.read_text(encoding="utf-8", errors="replace")
+        text = re.sub(r"(?m)^(\s*Super token: ).*$", lambda m: m.group(1) + token, text)
+        text = re.sub(r"(?m)^(\s*Web Super Token: ).*$", lambda m: m.group(1) + token, text)
+        summary.write_text(text, encoding="utf-8")
+        os.chmod(summary, 0o600)
     if backup is not None:
         print(f"Backup: {backup}")
-    print("New super token:")
+    print("Web super token reset successfully.")
+    print("Raw super token:")
     print(token)
+    print("")
+    print("Saved to:")
+    print(summary if summary.exists() else "INSTALL_SUMMARY.txt not found")
+    print("")
+    print("Token storage:")
+    print(path)
+    print("Only SHA-256 hash is stored there.")
+elif action == "check":
+    token = name
+    token_digest = digest(token)
+    if hmac_compare := getattr(__import__("hmac"), "compare_digest"):
+        if hmac_compare(token_digest, data.get("super_token_hash", "")) or any(hmac_compare(token_digest, key) for key in data["users"]):
+            print("valid")
+            raise SystemExit(0)
+    print("invalid")
+    raise SystemExit(1)
+elif action == "status":
+    st_mode = "missing"
+    if path.exists():
+        st_mode = oct(path.stat().st_mode & 0o777)
+    aliases = [record.get("name", "") for record in data["users"].values() if isinstance(record, dict) and record.get("name")]
+    print(f"token_file: {path}")
+    print(f"permissions: {st_mode}")
+    print(f"super_hash_present: {'yes' if re.fullmatch(r'[0-9a-f]{64}', data.get('super_token_hash', '')) else 'no'}")
+    print(f"user_tokens: {len(data['users'])}")
+    print("aliases: " + (", ".join(sorted(aliases)) if aliases else "-"))
 else:
     raise SystemExit("unknown action")
 PY
@@ -1864,6 +1898,8 @@ usage() {
     echo "  web token revoke <hash> Revoke a user token"
     echo "  web token rotate <hash> Rotate a user token while preserving access"
     echo "  web token reset-super Regenerate the super token"
+    echo "  web token check <token> Check a token without printing secrets"
+    echo "  web token status Show token store status without secrets"
     echo "  regen <name>          Safely regenerate a client config and rotate keys"
     echo "  regenerate <name>     Alias for regen <name>"
     echo "  client regenerate <name> Same action via the client namespace"
@@ -2263,7 +2299,7 @@ case $COMMAND in
     web)
         _sub="${ARGS[0]:-}"
         if [[ "$_sub" != "token" ]]; then
-            die "Usage: web token list|create [--client NAME] [--name ALIAS]|add [ALIAS]|revoke <hash>|rotate <hash>|reset-super"
+            die "Usage: web token list|create [--client NAME] [--name ALIAS]|add [ALIAS]|revoke <hash>|rotate <hash>|reset-super|check <token>|status"
         fi
         _token_cmd="${ARGS[1]:-list}"
         case "$_token_cmd" in
@@ -2316,6 +2352,13 @@ case $COMMAND in
                 ;;
             reset-super)
                 web_token_py "reset-super" || _cmd_rc=1
+                ;;
+            check)
+                [[ -z "${ARGS[2]:-}" ]] && die "Usage: web token check <token>"
+                web_token_py "check" "${ARGS[2]}" || _cmd_rc=1
+                ;;
+            status)
+                web_token_py "status" || _cmd_rc=1
                 ;;
             *)
                 die "Unknown web token command: $_token_cmd"
