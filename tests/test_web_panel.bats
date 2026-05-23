@@ -67,11 +67,13 @@
     backup_count=$(find "$tmp/awg" -maxdepth 1 -name 'INSTALL_SUMMARY.txt.bak.*' | wc -l)
     [ "$backup_count" -eq 1 ]
     grep -qF 'Public URL: https://64.112.125.125:8443/' "$summary"
-    grep -qF '[!!! IMPORTANT ACCESS INFO / SECRETS !!!]' "$summary"
-    grep -qF 'Web Panel Public URL: https://64.112.125.125:8443/' "$summary"
+    grep -qF 'IMPORTANT ACCESS INFO / SECRETS' "$summary"
+    grep -qF '  Public URL: https://64.112.125.125:8443/' "$summary"
+    grep -qF '  Domain-only access: no' "$summary"
     grep -qF 'Permissions: 0600' "$summary"
     grep -qF 'WARNING: Web Panel is publicly exposed' "$summary"
     grep -qF 'Super token: raw-super-token' "$summary"
+    grep -qF 'not available here' "$summary" && fail "fresh install summary must not contain unavailable token placeholder"
     grep -qF 'Token file:' "$summary"
     grep -qF '[AdGuard Home]' "$summary"
     grep -qF 'Profile: curated' "$summary"
@@ -102,6 +104,7 @@
     grep -qF '    vpnuri qr: not generated' "$summary"
     grep -qF -- '- my_laptop:' "$summary"
     grep -qF '[Useful commands]' "$summary"
+    grep -qF 'systemctl status AdGuardHome.service --no-pager' "$summary"
     grep -qF '[WG Tunnel URL Import]' "$summary"
     grep -qF '/import/my_phone/<token>' "$summary"
     rm -rf "$tmp"
@@ -659,6 +662,46 @@ assert server.require_server_name("My VPN Server-1") == "My VPN Server-1"
 PY
 }
 
+@test "web auth logging and domain-only host validation are present" {
+    local server="$BATS_TEST_DIRNAME/../web/server.py"
+    grep -qF 'allowed_host_header' "$server"
+    grep -qF 'HTTPStatus.MISDIRECTED_REQUEST' "$server"
+    grep -qF 'Rejected Web Panel request with disallowed Host header' "$server"
+    grep -qF 'missing / malformed / invalid / expired / insufficient scope' "$server"
+    grep -qF 'reason={reason}' "$server"
+    grep -qF 'fingerprint=' "$server"
+    grep -qF 'reason=insufficient scope' "$server"
+    if grep -qF 'Authorization="Bearer' "$server"; then
+        fail "raw Authorization header must not be logged"
+    fi
+}
+
+@test "web host allowlist accepts configured domain and rejects public IP in domain mode" {
+    command -v python3 &>/dev/null || skip "python3 not available"
+    REPO_ROOT="$BATS_TEST_DIRNAME/.." python3 - <<'PY'
+import importlib.util
+import os
+from pathlib import Path
+
+spec = importlib.util.spec_from_file_location("panel_server", Path(os.environ["REPO_ROOT"]) / "web" / "server.py")
+server = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(server)
+os.environ["AWG_WEB_DOMAIN"] = "64-112-125-125.sslip.io"
+os.environ["AWG_WEB_BIND"] = "0.0.0.0"
+os.environ["AWG_ENDPOINT"] = "64.112.125.125"
+assert server.allowed_host_header("64-112-125-125.sslip.io", "198.51.100.1")
+assert server.allowed_host_header("64-112-125-125.sslip.io:8443", "198.51.100.1")
+assert not server.allowed_host_header("64.112.125.125", "198.51.100.1")
+assert not server.allowed_host_header("[2001:db8::1]:8443", "198.51.100.1")
+os.environ["AWG_WEB_DOMAIN"] = ""
+os.environ["AWG_WEB_BIND"] = "10.9.9.1"
+assert server.allowed_host_header("10.9.9.1:8443", "10.9.9.2")
+os.environ["AWG_WEB_BIND"] = "127.0.0.1"
+assert server.allowed_host_header("localhost:8443", "127.0.0.1")
+assert not server.allowed_host_header("64.112.125.125", "198.51.100.1")
+PY
+}
+
 @test "client regenerate API validates I1 passes it via env and invalidates import tokens" {
     command -v python3 &>/dev/null || skip "python3 not available"
     local tmp
@@ -980,7 +1023,8 @@ PY
     printf '{"super_token_hash":"%064d","users":{"%s":{"name":"Alice","clients":["phone"]}}}\n' 0 "$hash" > "$token_file"
     out=$(AWG_DIR="$tmp" bash -c "source <(sed -n '/^web_token_py() {$/,/^}$/p' '$BATS_TEST_DIRNAME/../manage_amneziawg.sh'); web_token_py reset-super")
     grep -qF 'Backup:' <<< "$out"
-    grep -qF 'New super token:' <<< "$out"
+    grep -qF 'Raw super token:' <<< "$out"
+    grep -qF 'Only SHA-256 hash is stored there.' <<< "$out"
     [ "$(find "$tmp/web" -maxdepth 1 -name 'tokens.json.bak.*' | wc -l)" -eq 1 ]
     [ "$(stat -c '%a' "$token_file")" = "600" ]
     python3 - "$token_file" <<'PY'
@@ -989,6 +1033,40 @@ data = json.load(open(sys.argv[1]))
 assert re.fullmatch(r"[0-9a-f]{64}", data["super_token_hash"])
 assert next(iter(data["users"].values())) == {"name": "Alice", "clients": ["phone"]}
 PY
+    rm -rf "$tmp"
+}
+
+@test "CLI reset-super updates summary and token check/status do not leak raw tokens" {
+    command -v python3 &>/dev/null || skip "python3 not available"
+    local tmp token_file old_hash out raw
+    tmp=$(mktemp -d)
+    mkdir -p "$tmp/web"
+    token_file="$tmp/web/tokens.json"
+    old_hash=$(printf old-token | sha256sum | awk '{print $1}')
+    printf '{"super_token_hash":"%s","users":{}}\n' "$old_hash" > "$token_file"
+    printf 'WEB PANEL\n  Super token: old-token\n  Token file: %s\n' "$token_file" > "$tmp/INSTALL_SUMMARY.txt"
+    chmod 600 "$tmp/INSTALL_SUMMARY.txt"
+
+    out=$(AWG_DIR="$tmp" bash -c "source <(sed -n '/^web_token_py() {$/,/^}$/p' '$BATS_TEST_DIRNAME/../manage_amneziawg.sh'); web_token_py reset-super")
+    raw=$(awk '/Raw super token:/{getline; print}' <<<"$out")
+    [ -n "$raw" ]
+    grep -qF "$raw" "$tmp/INSTALL_SUMMARY.txt"
+    [ "$(stat -c '%a' "$tmp/INSTALL_SUMMARY.txt")" = "600" ]
+    [ "$(stat -c '%a' "$token_file")" = "600" ]
+
+    run env AWG_DIR="$tmp" bash -c "source <(sed -n '/^web_token_py() {$/,/^}$/p' '$BATS_TEST_DIRNAME/../manage_amneziawg.sh'); web_token_py check '$raw'"
+    [ "$status" -eq 0 ]
+    run env AWG_DIR="$tmp" bash -c "source <(sed -n '/^web_token_py() {$/,/^}$/p' '$BATS_TEST_DIRNAME/../manage_amneziawg.sh'); web_token_py check old-token"
+    [ "$status" -eq 1 ]
+    run env AWG_DIR="$tmp" bash -c "source <(sed -n '/^web_token_py() {$/,/^}$/p' '$BATS_TEST_DIRNAME/../manage_amneziawg.sh'); web_token_py status"
+    [ "$status" -eq 0 ]
+    grep -qF 'super_hash_present: yes' <<<"$output"
+    if grep -qF "$raw" <<<"$output"; then
+        fail "token status leaked raw token"
+    fi
+    if grep -qF "$old_hash" <<<"$output"; then
+        fail "token status leaked full hash"
+    fi
     rm -rf "$tmp"
 }
 

@@ -254,6 +254,8 @@ sudo /root/awg/manage_amneziawg.sh stats
 sudo /root/awg/manage_amneziawg.sh restart
 sudo /root/awg/manage_amneziawg.sh diagnose
 sudo /root/awg/manage_amneziawg.sh web token list
+sudo /root/awg/manage_amneziawg.sh web token status
+sudo /root/awg/manage_amneziawg.sh web token check <token>
 sudo /root/awg/manage_amneziawg.sh set-name "My VPN"
 sudo /root/awg/manage_amneziawg.sh voice-check
 sudo /root/awg/manage_amneziawg.sh udp-check

@@ -281,7 +281,7 @@
 
 @test "pseudo-domain provider prompt sanitizes defaults and control input" {
     local installer="$BATS_TEST_DIRNAME/../install_amneziawg.sh"
-    grep -qF 'provider_choice="$(sanitize_menu_choice "$provider_choice")"' "$installer"
+    grep -qF 'ask_choice provider_choice "Ваш выбор [1]: " "1" "1 2 sslip.io nip.io"' "$installer"
     grep -qF 'case "${provider_choice:-1}" in' "$installer"
     grep -qF '1|sslip.io) AWG_WEB_CERT_PROVIDER="sslip.io"' "$installer"
     grep -qF '2|nip.io) AWG_WEB_CERT_PROVIDER="nip.io"' "$installer"

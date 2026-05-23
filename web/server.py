@@ -9,6 +9,7 @@ import secrets
 import shlex
 import ssl
 import subprocess
+import sys
 import threading
 import time
 from http import HTTPStatus
@@ -50,6 +51,55 @@ IMPORT_TOKENS_LOCK = threading.RLock()
 TRAFFIC_LOCK = threading.Lock()
 SERVER_NAME_RE = re.compile(r"^[\w .,!?\-()]{1,128}$", re.UNICODE)
 DELETED_TRAFFIC_KEY = "_deleted_clients_total"
+
+
+def audit_log(message):
+    print(message, file=sys.stderr, flush=True)
+
+
+def split_host(host):
+    host = (host or "").strip().lower()
+    if not host or any(ch in host for ch in "/\\\r\n\t "):
+        return ""
+    if host.startswith("["):
+        end = host.find("]")
+        return host[1:end] if end > 0 else host
+    if host.count(":") == 1:
+        return host.rsplit(":", 1)[0]
+    return host
+
+
+def host_is_ip(value):
+    try:
+        ipaddress.ip_address(value)
+        return True
+    except ValueError:
+        return False
+
+
+def allowed_host_header(raw_host, remote_addr):
+    domain = (os.environ.get("AWG_WEB_DOMAIN") or "").strip().lower()
+    bind = os.environ.get("AWG_WEB_BIND") or "10.9.9.1"
+    endpoint = (os.environ.get("AWG_ENDPOINT") or "").strip().lower()
+    host = split_host(raw_host)
+    if not host:
+        return False
+    if remote_addr in {"127.0.0.1", "::1"} and host in {"localhost", "127.0.0.1", "::1"}:
+        return True
+    if bind in {"127.0.0.1", "::1"}:
+        return host in {"localhost", "127.0.0.1", "::1"}
+    if not domain:
+        return True
+    allowed = {domain}
+    if bind not in {"0.0.0.0", "::"}:
+        allowed.add(bind.lower())
+    if host in allowed:
+        return True
+    if host_is_ip(host):
+        return False
+    if endpoint and host == endpoint and host != domain:
+        return False
+    return False
 
 
 def run_manage(*args, timeout=60, extra_env=None):
@@ -507,6 +557,19 @@ def authenticate(header):
     return None
 
 
+def auth_reject_reason(header):
+    # Bearer auth audit reason values: missing / malformed / invalid / expired / insufficient scope.
+    # Current bearer tokens do not expire; import tokens use separate one-time/expiry handling.
+    if not header:
+        return "missing", ""
+    if not header.startswith("Bearer "):
+        return "malformed", ""
+    token = header.removeprefix("Bearer ").strip()
+    if not token:
+        return "missing", ""
+    return "invalid", token_hash(token)[:8]
+
+
 def mutate_user_clients(user_hash, client_name=None, remove=False):
     if not user_hash or not client_name:
         return
@@ -802,14 +865,22 @@ class Handler(SimpleHTTPRequestHandler):
         return
 
     def api_auth(self):
+        if not allowed_host_header(self.headers.get("Host", ""), self.client_address[0]):
+            audit_log(f"Rejected Web Panel request with disallowed Host header: {self.headers.get('Host', '')}")
+            self.send_error(HTTPStatus.MISDIRECTED_REQUEST)
+            return None
         if not self.path.startswith("/api/"):
             return {"role": "static"}
         ip = self.client_address[0]
         if not check_rate_limit(ip):
             self.send_error(HTTPStatus.TOO_MANY_REQUESTS)
             return None
-        auth = authenticate(self.headers.get("Authorization", ""))
+        header = self.headers.get("Authorization", "")
+        auth = authenticate(header)
         if not auth:
+            reason, fingerprint = auth_reject_reason(header)
+            suffix = f" fingerprint={fingerprint}" if fingerprint else ""
+            audit_log(f"Rejected bearer token remote={ip} path={self.path} reason={reason}{suffix}")
             self.send_error(HTTPStatus.UNAUTHORIZED)
             return None
         return auth
@@ -820,6 +891,7 @@ class Handler(SimpleHTTPRequestHandler):
 
     def require_super(self, auth):
         if not self.is_super(auth):
+            audit_log(f"Rejected bearer token remote={self.client_address[0]} path={self.path} reason=insufficient scope")
             self.send_error(HTTPStatus.FORBIDDEN)
             return False
         return True
@@ -829,6 +901,7 @@ class Handler(SimpleHTTPRequestHandler):
 
     def require_client_access(self, auth, name):
         if not self.can_access_client(auth, name):
+            audit_log(f"Rejected bearer token remote={self.client_address[0]} path={self.path} reason=insufficient scope")
             self.send_error(HTTPStatus.FORBIDDEN)
             return False
         return True
