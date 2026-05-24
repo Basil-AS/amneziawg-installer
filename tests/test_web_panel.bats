@@ -236,6 +236,12 @@
     grep -qF 'sys_version = ""' "$BATS_TEST_DIRNAME/../web/server.py"
     grep -qF 'class LimitedThreadingHTTPServer' "$BATS_TEST_DIRNAME/../web/server.py"
     grep -qF 'threading.BoundedSemaphore' "$BATS_TEST_DIRNAME/../web/server.py"
+    grep -qF 'def get_request(self):' "$BATS_TEST_DIRNAME/../web/server.py"
+    grep -qF 'request.settimeout(self.request_timeout)' "$BATS_TEST_DIRNAME/../web/server.py"
+    grep -qF 'def handle_one_request(self):' "$BATS_TEST_DIRNAME/../web/server.py"
+    grep -qF 'except (socket.timeout, TimeoutError):' "$BATS_TEST_DIRNAME/../web/server.py"
+    grep -qF 'finally:' "$BATS_TEST_DIRNAME/../web/server.py"
+    grep -qF 'self._sem.release()' "$BATS_TEST_DIRNAME/../web/server.py"
     if grep -qF 'httpd = ThreadingHTTPServer(' "$BATS_TEST_DIRNAME/../web/server.py"; then
         fail "web server must use the bounded threading server"
     fi
@@ -347,11 +353,13 @@ handler = make_handler("POST", "/api/clients/bad%20name/import-link", token=supe
 handler.do_POST()
 assert handler.responses == [400]
 
-handler = make_handler("POST", "/api/clients/phone/import-link", token=user_token, body={"ttl": 3600})
+handler = make_handler("POST", "/api/clients/phone/import-link", token=user_token, body={})
 handler.do_POST()
 assert handler.responses == [200]
 payload = response_json(handler)
 assert "/import/phone/" in payload["url"]
+assert payload["ttl"] == 300
+assert payload["one_time"] is True
 raw_token = urlparse(payload["url"]).path.rsplit("/", 1)[1]
 state = (Path(os.environ["AWG_DIR"]) / "web" / "import_tokens.json").read_text()
 assert raw_token not in state
@@ -367,9 +375,25 @@ assert headers["Cache-Control"] == "no-store"
 assert headers["X-Content-Type-Options"] == "nosniff"
 assert handler.wfile.getvalue().decode().startswith("[Interface]")
 
+handler = make_handler("GET", f"/import/phone/{raw_token}")
+handler.do_GET()
+assert handler.responses == [404]
+
 handler = make_handler("GET", f"/import/laptop/{raw_token}")
 handler.do_GET()
 assert handler.responses == [404]
+
+handler = make_handler("POST", "/api/clients/phone/import-link", token=user_token, body={"ttl": 59})
+handler.do_POST()
+assert handler.responses == [400]
+
+handler = make_handler("POST", "/api/clients/phone/import-link", token=user_token, body={"ttl": 3601})
+handler.do_POST()
+assert handler.responses == [400]
+
+handler = make_handler("POST", "/api/clients/phone/import-link", token=user_token, body={"ttl": True})
+handler.do_POST()
+assert handler.responses == [400]
 
 one_time = "one-time-import-token-abcdefghijklmnopqrstuvwxyz"
 digest = server.token_hash(one_time)
@@ -405,6 +429,11 @@ handler = make_handler("POST", "/api/clients/laptop/import-link", token=super_to
 handler.do_POST()
 assert handler.responses == [200]
 assert response_json(handler)["one_time"] is True
+
+handler = make_handler("POST", "/api/clients/laptop/import-link", token=super_token, body={"one_time": False, "ttl": 300})
+handler.do_POST()
+assert handler.responses == [200]
+assert response_json(handler)["one_time"] is False
 PY
     rm -rf "$tmp"
 }
@@ -438,6 +467,16 @@ PY
     grep -qF 'document.execCommand("copy")' "$app"
     if grep -qE 'console\.log.*(config|token)|localStorage.*config' "$BATS_TEST_DIRNAME/../web/"*; then
         fail "web assets must not log configs/tokens or store config text in localStorage"
+    fi
+    grep -qF 'sessionStorage.getItem("panelToken")' "$app"
+    grep -qF 'sessionStorage.setItem("panelToken", token)' "$app"
+    grep -qF 'sessionStorage.removeItem("panelToken")' "$app"
+    grep -qF 'localStorage.removeItem("panelToken")' "$app"
+    if grep -qF 'localStorage.getItem("panelToken")' "$app"; then
+        fail "panel bearer token must not be read from persistent localStorage"
+    fi
+    if grep -qF 'localStorage.setItem("panelToken", token)' "$app"; then
+        fail "panel bearer token must not be stored in persistent localStorage"
     fi
 }
 

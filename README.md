@@ -156,6 +156,16 @@ sudo bash install_amneziawg.sh \
 
 > Открывать web-panel всему интернету не рекомендуется. Лучше использовать firewall allowlist, VPN, SSH tunnel или reverse proxy с дополнительной авторизацией. Публичный self-signed режим не рекомендуется: браузеры и WG Tunnel URL Import могут отклонять сертификат. Bearer token должен быть длинным и секретным; не публикуйте `tokens.json`, client configs, QR и `vpn://` URI.
 
+Если панель всё же публикуется наружу, Python stdlib HTTP server следует считать лёгкой admin-panel, а не полноценным public edge. Предпочтительные варианты: bind только внутри VPN (`10.9.9.1`), `127.0.0.1` + SSH tunnel, либо nginx/caddy reverse proxy с TLS, timeouts и connection limits. Минимальный nginx-фрагмент:
+
+```nginx
+client_header_timeout 5s;
+client_body_timeout 10s;
+send_timeout 10s;
+limit_conn_zone $binary_remote_addr zone=awgpanel:10m;
+limit_conn awgpanel 10;
+```
+
 Troubleshooting Let's Encrypt:
 
 * `Timeout during connect` / `likely firewall problem`: проверьте, что домен указывает на IP сервера, TCP/80 открыт в UFW, TCP/80 открыт во внешнем firewall/security group, и на сервере нет процесса, который уже слушает `:80`.
@@ -588,8 +598,8 @@ GET    /api/server/logs
 | ОС | Статус | Примечание |
 |----|--------|------------|
 | Ubuntu 24.04 LTS | ✅ Полная поддержка | Рекомендуется |
-| Ubuntu 25.10 | ✅ Поддерживается | PPA `noble` fallback применяется автоматически с v5.13.0 |
-| Ubuntu 26.04 | ✅ Поддерживается | PPA `noble` fallback применяется автоматически с v5.13.0 |
+| Ubuntu 25.10 | ✅ Поддерживается | PPA `noble` fallback требует явного `AWG_ALLOW_PPA_CODENAME_FALLBACK=1` или `--allow-ppa-codename-fallback` |
+| Ubuntu 26.04 | ✅ Поддерживается | PPA `noble` fallback требует явного `AWG_ALLOW_PPA_CODENAME_FALLBACK=1` или `--allow-ppa-codename-fallback` |
 | Debian 12 (bookworm) | ✅ Поддержка | Протестировано. PPA через маппинг codename на focal |
 | Debian 13 (trixie) | ✅ Поддержка | Протестировано. PPA через маппинг codename на noble, DEB822 |
 

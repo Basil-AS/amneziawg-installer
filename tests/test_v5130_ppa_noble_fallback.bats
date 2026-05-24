@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# shellcheck disable=SC2016
+# shellcheck disable=SC2016,SC2317
 # v5.13.0 PPA noble fallback for Ubuntu non-LTS releases.
 #
 # Background: PPA Amnezia (ppa:amnezia/ppa on Launchpad) publishes packages
@@ -7,9 +7,10 @@
 # (questing/plucky/oracular/...) hit a 404 on dists/<codename>/Release.
 # Upstream: amnezia-vpn/amneziawg-linux-kernel-module#118
 #
-# v5.13.0 fix: pre-check PPA availability with `curl -fsI`. On 404 or host
-# unreachable, fall back to 'noble' (LTS) — DKMS builds the module against
-# the running kernel.
+# v5.13.0 fix: pre-check PPA availability with `curl -fsI`.
+# Security hardening: on 404 or host unreachable, fallback to 'noble' (LTS)
+# only when explicitly enabled via AWG_ALLOW_PPA_CODENAME_FALLBACK=1 or
+# --allow-ppa-codename-fallback.
 #
 # Also handles re-run: a previous (≤ v5.12.1) install on questing wrote
 # /etc/apt/sources.list.d/amnezia-ppa.sources with `Suites: questing`. On
@@ -31,9 +32,11 @@
         "$BATS_TEST_DIRNAME/../install_amneziawg.sh"
 }
 
-@test "v5.13.0: RU install falls back ppa_codename to noble on failure" {
+@test "v5.13.0: RU install gates ppa_codename noble fallback behind explicit opt-in" {
     block=$(awk '/Проверка доступности PPA Amnezia для Ubuntu/,/log "PPA Amnezia доступен/' \
         "$BATS_TEST_DIRNAME/../install_amneziawg.sh")
+    [[ "$block" == *'AWG_ALLOW_PPA_CODENAME_FALLBACK'* ]]
+    [[ "$block" == *'--allow-ppa-codename-fallback'* ]]
     [[ "$block" == *'ppa_codename="noble"'* ]]
     [[ "$block" == *'kernel-module/issues/118'* ]]
 }
@@ -147,9 +150,11 @@
         "$BATS_TEST_DIRNAME/../install_amneziawg_en.sh"
 }
 
-@test "v5.13.0: EN install falls back ppa_codename to noble on failure" {
+@test "v5.13.0: EN install gates ppa_codename noble fallback behind explicit opt-in" {
     block=$(awk '/Checking Amnezia PPA availability for Ubuntu/,/log "Amnezia PPA is available/' \
         "$BATS_TEST_DIRNAME/../install_amneziawg_en.sh")
+    [[ "$block" == *'AWG_ALLOW_PPA_CODENAME_FALLBACK'* ]]
+    [[ "$block" == *'--allow-ppa-codename-fallback'* ]]
     [[ "$block" == *'ppa_codename="noble"'* ]]
     [[ "$block" == *'kernel-module/issues/118'* ]]
 }
@@ -210,24 +215,39 @@ run_pre_check() {
             if ! curl -fsI --max-time 15 --retry 2 --retry-delay 5 \
                 "https://ppa.launchpadcontent.net/amnezia/ppa/ubuntu/dists/${ppa_codename}/Release" \
                 >/dev/null 2>&1; then
-                ppa_codename="noble"
+                if [[ "${AWG_ALLOW_PPA_CODENAME_FALLBACK:-0}" == "1" ]]; then
+                    ppa_codename="noble"
+                else
+                    return 64
+                fi
             fi
             ;;
     esac
     echo "$ppa_codename"
 }
 
-@test "v5.13.0: questing + curl 404 -> noble" {
+@test "v5.13.0: questing + curl 404 without opt-in -> fail" {
     curl() { return 22; }   # curl's "HTTP error" exit code
     export -f curl
+    run run_pre_check questing
+    [ "$status" -eq 64 ]
+}
+
+@test "v5.13.0: questing + curl 404 with env opt-in -> noble" {
+    curl() { return 22; }   # curl's "HTTP error" exit code
+    export -f curl
+    AWG_ALLOW_PPA_CODENAME_FALLBACK=1
     result=$(run_pre_check questing)
+    unset AWG_ALLOW_PPA_CODENAME_FALLBACK
     [ "$result" = "noble" ]
 }
 
-@test "v5.13.0: questing + curl timeout/network fail -> noble" {
+@test "v5.13.0: questing + curl timeout/network fail with opt-in -> noble" {
     curl() { return 28; }   # curl's "operation timeout" exit code
     export -f curl
+    AWG_ALLOW_PPA_CODENAME_FALLBACK=1
     result=$(run_pre_check questing)
+    unset AWG_ALLOW_PPA_CODENAME_FALLBACK
     [ "$result" = "noble" ]
 }
 
@@ -259,10 +279,12 @@ run_pre_check() {
     [ "$result" = "focal" ]
 }
 
-@test "v5.13.0: plucky (future non-LTS) + curl 404 -> noble" {
+@test "v5.13.0: plucky (future non-LTS) + curl 404 with opt-in -> noble" {
     curl() { return 22; }
     export -f curl
+    AWG_ALLOW_PPA_CODENAME_FALLBACK=1
     result=$(run_pre_check plucky)
+    unset AWG_ALLOW_PPA_CODENAME_FALLBACK
     [ "$result" = "noble" ]
 }
 

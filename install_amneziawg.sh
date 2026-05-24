@@ -35,10 +35,10 @@ MANAGE_SCRIPT_PATH="$AWG_DIR/manage_amneziawg.sh"
 # при явном AWG_ALLOW_UNVERIFIED_DOWNLOAD=1 для разработки.
 declare -A AWG_ASSET_SHA256=(
     ["awg_common.sh"]="1ed79ca83bb5a9fdd12aba04a1a893c80a63345558274ab6bfde41964ae75f9e"
-    ["manage_amneziawg.sh"]="0da864811cf8bc30e4675333fe243e55c7fa8029ea89bf412340e2459be14f0d"
-    ["web/server.py"]="008a102c548f5b5aa4370a9504aa9ef1d7cca3ada80fff5b989a41b44143e259"
+    ["manage_amneziawg.sh"]="4906b48b40ad461d92dc64f91f8753fc0d7c8aff4768c18485c448ca64af154e"
+    ["web/server.py"]="7b8233df00a8896f6cee717ff7dc083b9b0a89e007bf9ae906f528b3b28cc040"
     ["web/index.html"]="a41e458c832f82d8d834ecc67f2cb35da4eed11bf7b76acd493413d082de0483"
-    ["web/app.js"]="2521c1dfec670e21cb735ee65ca39ef7c883255d92e739c12771faadbeb129db"
+    ["web/app.js"]="d03075bfae2340962b53b122b7dbc8d66e45b0dcef55e5beb37a565809a15ec2"
     ["web/awg_i1.js"]="d1951b9de2c8ab8170cf78ad320f274fc9dc5da622b8e60b2650871fb7ddf1e4"
     ["web/style.css"]="fe373a5258618afbb42455372bbfc4680ab40ed624f67463c3eeceedb105133e"
     ["web/favicon.svg"]="ce339a4b3043c9d531c4a59b46e3ec51b9793a693a76bfabef441f114e7125b0"
@@ -131,6 +131,7 @@ while [[ $# -gt 0 ]]; do
         --web-cert-provider=*) CLI_WEB_CERT_PROVIDER="${1#*=}" ;;
         --web-le-email=*) CLI_WEB_LE_EMAIL="${1#*=}" ;;
         --web-cert-fallback=*) CLI_WEB_CERT_FALLBACK="${1#*=}" ;;
+        --allow-ppa-codename-fallback) AWG_ALLOW_PPA_CODENAME_FALLBACK=1 ;;
         --enable-adguard) CLI_ENABLE_ADGUARD=1 ;;
         --disable-adguard) CLI_DISABLE_ADGUARD=1 ;;
         --adguard-port=*) CLI_ADGUARD_PORT="${1#*=}" ;;
@@ -354,6 +355,8 @@ show_help() {
   --web-le-email=EMAIL  Email для Let's Encrypt уведомлений (опционально)
   --web-cert-fallback=selfsigned|abort
                         Поведение при ошибке Let's Encrypt (default: abort в --yes, prompt в wizard)
+  --allow-ppa-codename-fallback
+                        Явно разрешить fallback Ubuntu non-LTS PPA codename на noble
   --disable-web         Не устанавливать и не запускать веб-панель
   --enable-adguard      Установить AdGuard Home (по умолчанию включено)
   --disable-adguard     Не устанавливать AdGuard Home и использовать системный DNS
@@ -901,6 +904,37 @@ validate_server_name() {
     [[ -n "${name//[[:space:]]/}" ]] || return 1
     [[ "$name" != *$'\n'* && "$name" != *$'\r'* ]] || return 1
     [[ ${#name} -le 128 ]] || return 1
+    [[ "$name" =~ ^[[:alnum:]_.\ ,!\?\(\)-]+$ ]] || return 1
+}
+
+validate_no_control_chars() {
+    local v="$1"
+    [[ "$v" != *$'\n'* && "$v" != *$'\r'* && "$v" != *$'\t'* ]] || return 1
+    [[ "$v" != *[$'\001'-$'\010'$'\013'$'\014'$'\016'-$'\037'$'\177']* ]] || return 1
+}
+
+systemd_escape_value() {
+    local v="$1"
+    validate_no_control_chars "$v" || return 1
+    v="${v//\\/\\\\}"
+    v="${v//\"/\\\"}"
+    printf '%s' "$v"
+}
+
+systemd_env_line() {
+    local key="$1" value="$2" escaped
+    escaped="$(systemd_escape_value "$value")" || return 1
+    printf 'Environment="%s=%s"\n' "$key" "$escaped"
+}
+
+validate_safe_abs_path() {
+    local p="$1"
+    validate_no_control_chars "$p" || return 1
+    [[ "$p" == /* ]] || return 1
+}
+
+print_secret_console_only() {
+    printf '%s\n' "$1" > /dev/tty 2>/dev/null || printf '%s\n' "$1"
 }
 
 configure_ipv6_client_mode() {
@@ -3229,9 +3263,13 @@ step2_install_amnezia() {
                         "https://ppa.launchpadcontent.net/amnezia/ppa/ubuntu/dists/${ppa_codename}/Release" \
                         >/dev/null 2>&1; then
                         log_warn "PPA Amnezia не публикует пакеты для Ubuntu '${ppa_codename}' (HTTP 404 или host недоступен)."
-                        log_warn "Переключаюсь на 'noble' — DKMS соберёт модуль под текущее ядро."
                         log_warn "Контекст: https://github.com/amnezia-vpn/amneziawg-linux-kernel-module/issues/118"
-                        ppa_codename="noble"
+                        if [[ "${AWG_ALLOW_PPA_CODENAME_FALLBACK:-0}" == "1" ]]; then
+                            log_warn "Явно разрешён PPA fallback '${ppa_codename}' -> noble."
+                            ppa_codename="noble"
+                        else
+                            die "PPA для '${ppa_codename}' недоступен. Чтобы явно fallback на noble, перезапустите с AWG_ALLOW_PPA_CODENAME_FALLBACK=1 или --allow-ppa-codename-fallback."
+                        fi
                     else
                         log "PPA Amnezia доступен для '${ppa_codename}'."
                     fi
@@ -4266,14 +4304,13 @@ deploy_adguard_home() {
         AG_PASSWORD="$(openssl rand -base64 24 | tr -dc 'A-Za-z0-9' | head -c 15)"
     fi
     [[ -n "$AG_PASSWORD" ]] || die "AdGuard Home: не удалось сгенерировать пароль администратора"
-    AG_HASH=$(AG_PASSWORD="$AG_PASSWORD" python3 - <<'PY'
-import os
+    AG_HASH="$(printf '%s' "$AG_PASSWORD" | python3 -c '
+import sys
 import bcrypt
 
-password = os.environ["AG_PASSWORD"].encode()
+password = sys.stdin.buffer.read()
 print(bcrypt.hashpw(password, bcrypt.gensalt(rounds=10, prefix=b"2b")).decode())
-PY
-) || die "AdGuard Home: не удалось сгенерировать bcrypt-хеш"
+')" || die "AdGuard Home: не удалось сгенерировать bcrypt-хеш"
     [[ -n "$AG_HASH" ]] || die "AdGuard Home: пустой bcrypt-хеш пароля"
 
     timestamp="$(date '+%Y%m%d-%H%M%S')"
@@ -4290,6 +4327,14 @@ PY
         die "AdGuard Home: не удалось сгенерировать curated YAML"
     chmod 600 "$tmp_conf"
 
+    validate_safe_abs_path "$ag_dir" || die "AdGuard Home: unsafe WorkingDirectory path"
+    validate_safe_abs_path "$ag_bin" || die "AdGuard Home: unsafe ExecStart binary path"
+    validate_safe_abs_path "$ag_yaml" || die "AdGuard Home: unsafe config path"
+    local ag_dir_escaped ag_bin_escaped ag_yaml_escaped
+    ag_dir_escaped="$(systemd_escape_value "$ag_dir")" || die "AdGuard Home: unsafe WorkingDirectory value"
+    ag_bin_escaped="$(systemd_escape_value "$ag_bin")" || die "AdGuard Home: unsafe ExecStart binary value"
+    ag_yaml_escaped="$(systemd_escape_value "$ag_yaml")" || die "AdGuard Home: unsafe config value"
+
     cat > /etc/systemd/system/AdGuardHome.service << EOF
 [Unit]
 Description=AdGuard Home for AmneziaWG clients
@@ -4298,8 +4343,8 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-WorkingDirectory=${ag_dir}
-ExecStart=${ag_bin} -c ${ag_dir}/AdGuardHome.yaml -w ${ag_dir} --no-check-update
+WorkingDirectory="${ag_dir_escaped}"
+ExecStart="${ag_bin_escaped}" -c "${ag_yaml_escaped}" -w "${ag_dir_escaped}" --no-check-update
 Restart=on-failure
 RestartSec=10
 
@@ -4676,7 +4721,22 @@ PY
     chmod 600 "$web_dir/key.pem" "$web_dir/tokens.json" 2>/dev/null || true
     chmod 644 "$web_dir/cert.pem" 2>/dev/null || true
 
-    cat > /etc/systemd/system/awg-web.service << EOF
+    validate_safe_abs_path "$AWG_DIR" || die "Web Panel: unsafe AWG_DIR path"
+    validate_safe_abs_path "$SERVER_CONF_FILE" || die "Web Panel: unsafe SERVER_CONF_FILE path"
+    validate_safe_abs_path "$web_dir" || die "Web Panel: unsafe web directory path"
+    validate_safe_abs_path "$web_dir/server.py" || die "Web Panel: unsafe server.py path"
+    validate_no_control_chars "${AWG_WEB_BIND:-}" || die "Web Panel: unsafe bind value"
+    validate_no_control_chars "${AWG_WEB_PORT:-}" || die "Web Panel: unsafe port value"
+    validate_no_control_chars "${AWG_WEB_DOMAIN:-}" || die "Web Panel: unsafe domain value"
+    validate_no_control_chars "${AWG_ENDPOINT:-}" || die "Web Panel: unsafe endpoint value"
+
+    if [[ "${AWG_WEB_BIND:-}" == "0.0.0.0" || "${AWG_WEB_BIND:-}" == "::" ]]; then
+        log_warn "Web Panel слушает публичный bind ${AWG_WEB_BIND}:${AWG_WEB_PORT:-8443}. Python stdlib HTTP server подходит для лёгкой админ-панели, но слабее nginx/caddy на публичном edge."
+        log_warn "Рекомендуется VPN-only bind 10.9.9.1, localhost+SSH tunnel или reverse proxy с TLS, timeouts и connection limits."
+    fi
+
+    {
+        cat <<EOF
 [Unit]
 Description=VPN Web Panel
 After=network-online.target
@@ -4684,25 +4744,29 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-Environment=AWG_DIR=${AWG_DIR}
-Environment=SERVER_CONF_FILE=${SERVER_CONF_FILE}
-Environment=AWG_WEB_BIND=${AWG_WEB_BIND}
-Environment=AWG_WEB_PORT=${AWG_WEB_PORT}
-Environment=AWG_WEB_DOMAIN=${AWG_WEB_DOMAIN}
-Environment=AWG_ENDPOINT=${AWG_ENDPOINT}
-ExecStart=/usr/bin/python3 ${web_dir}/server.py
+EOF
+        systemd_env_line AWG_DIR "$AWG_DIR"
+        systemd_env_line SERVER_CONF_FILE "$SERVER_CONF_FILE"
+        systemd_env_line AWG_WEB_BIND "${AWG_WEB_BIND:-}"
+        systemd_env_line AWG_WEB_PORT "${AWG_WEB_PORT:-}"
+        systemd_env_line AWG_WEB_DOMAIN "${AWG_WEB_DOMAIN:-}"
+        systemd_env_line AWG_ENDPOINT "${AWG_ENDPOINT:-}"
+        cat <<EOF
+ExecStart=/usr/bin/python3 "$(systemd_escape_value "$web_dir/server.py")"
 Restart=on-failure
 RestartSec=3
 
 [Install]
 WantedBy=multi-user.target
 EOF
+    } > /etc/systemd/system/awg-web.service
     chmod 644 /etc/systemd/system/awg-web.service
     systemctl daemon-reload
     systemctl enable awg-web.service 2>/dev/null || log_warn "Не удалось enable awg-web.service"
     log "Веб-панель развёрнута."
     if [[ -n "${AWG_WEB_SUPER_TOKEN_ONCE:-}" ]]; then
-        log "Web super token: ${AWG_WEB_SUPER_TOKEN_ONCE}"
+        log "Web super token: generated; raw value printed to console and INSTALL_SUMMARY only."
+        print_secret_console_only "Web super token: ${AWG_WEB_SUPER_TOKEN_ONCE}"
     else
         log "Web tokens: $web_dir/tokens.json (для сброса: manage web token reset-super)"
     fi
@@ -5332,7 +5396,8 @@ step99_finish() {
         log "  Trusted HTTPS: ${trusted_https}"
         log "  Web token file: $AWG_DIR/web/tokens.json"
         if [[ -n "${AWG_WEB_SUPER_TOKEN_ONCE:-}" ]]; then
-            log "  Web super token: ${AWG_WEB_SUPER_TOKEN_ONCE}"
+            log "  Web super token: generated; raw value printed to console and INSTALL_SUMMARY only."
+            print_secret_console_only "  Web super token: ${AWG_WEB_SUPER_TOKEN_ONCE}"
         else
             log "  Reset super token:"
             log "    sudo bash $MANAGE_SCRIPT_PATH web token reset-super"
@@ -5342,7 +5407,8 @@ step99_finish() {
         log " "
         log "  AdGuard Home: http://${AWG_TUNNEL_SUBNET%/*}:${AWG_ADGUARD_PORT:-3000}"
         log "  AdGuard login: ${AG_USERNAME:-admin}"
-        log "  AdGuard password: ${AG_PASSWORD}"
+        log "  AdGuard password: generated; raw value printed to console and INSTALL_SUMMARY only."
+        print_secret_console_only "  AdGuard password: ${AG_PASSWORD}"
     fi
     log " "
     log "  VPN endpoint: ${AWG_ENDPOINT:-not set}:${AWG_PORT}"

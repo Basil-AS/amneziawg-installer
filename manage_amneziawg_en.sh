@@ -1116,6 +1116,7 @@ validate_server_name() {
     [[ -n "${name//[[:space:]]/}" ]] || return 1
     [[ "$name" != *$'\n'* && "$name" != *$'\r'* ]] || return 1
     [[ ${#name} -le 128 ]] || return 1
+    [[ "$name" =~ ^[[:alnum:]_.\ ,!\?\(\)-]+$ ]] || return 1
 }
 
 set_config_value() {
