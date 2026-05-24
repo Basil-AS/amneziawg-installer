@@ -1218,7 +1218,17 @@ The minimal working recipe for Debian 13 in a privileged LXC on Proxmox was shar
 
 * **Single AWG protocol version per server.** All clients share the same obfuscation parameters. You cannot have some clients on AWG 1.x and others on 2.0 simultaneously.
 
-* **Ubuntu 25.10 / 26.04 / Debian 13:** The PPA may not have prebuilt packages for the latest non-LTS releases. The installer remaps the PPA codename to `noble` automatically (since v5.13.0) and builds the kernel module from source via DKMS, which takes longer on first install.
+* **Ubuntu 25.10 / 26.04 / Debian 13:** The PPA may not have prebuilt packages for the latest non-LTS releases. Ubuntu non-LTS PPA codename fallback to `noble` now requires explicit `AWG_ALLOW_PPA_CODENAME_FALLBACK=1` or `--allow-ppa-codename-fallback`; after that DKMS builds the module from source, which takes longer on first install. Debian mapping remains explicit (`bookworm` -> `focal`, `trixie` -> `noble`).
+
+* **Public Web Panel:** The Python stdlib HTTP server remains a lightweight admin-panel runtime. For a public edge, prefer VPN-only bind (`10.9.9.1`), localhost plus SSH tunnel, or a reverse proxy with TLS/timeouts/connection limits. Minimal nginx settings:
+
+```nginx
+client_header_timeout 5s;
+client_body_timeout 10s;
+send_timeout 10s;
+limit_conn_zone $binary_remote_addr zone=awgpanel:10m;
+limit_conn awgpanel 10;
+```
 
 ---
 

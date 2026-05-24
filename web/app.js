@@ -1,6 +1,7 @@
 const app = document.querySelector("#app");
 const toastHost = document.querySelector("#toastHost");
-let token = localStorage.getItem("panelToken") || "";
+localStorage.removeItem("panelToken");
+let token = sessionStorage.getItem("panelToken") || "";
 let statusState = null;
 let dnsState = null;
 let trafficState = null;
@@ -248,7 +249,7 @@ function setTheme(next) {
 }
 
 function logout() {
-  localStorage.removeItem("panelToken");
+  sessionStorage.removeItem("panelToken");
   token = "";
   clearInterval(pollTimer);
   renderLogin();
@@ -374,10 +375,10 @@ function renderLogin() {
     token = document.querySelector("#tokenInput").value.trim();
     try {
       statusState = await api("/api/status");
-      localStorage.setItem("panelToken", token);
+      sessionStorage.setItem("panelToken", token);
       await renderPanel();
     } catch {
-      localStorage.removeItem("panelToken");
+      sessionStorage.removeItem("panelToken");
       showToast("Token rejected", "error");
     }
   };
@@ -1141,7 +1142,7 @@ async function copyVpnUri(name) {
 async function copyImportUrl(name) {
   const result = await api(`/api/clients/${encodeURIComponent(name)}/import-link`, {
     method: "POST",
-    body: JSON.stringify({ttl: 3600, one_time: false}),
+    body: JSON.stringify({ttl: 300, one_time: true}),
   });
   await copyText(result.url);
   showToast("Import URL copied");

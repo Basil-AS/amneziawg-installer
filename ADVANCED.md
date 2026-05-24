@@ -1214,7 +1214,17 @@ sudo systemctl status awg-quick@awg0
 
 * **Один протокол AWG на сервере.** Все клиенты используют одинаковые параметры обфускации. Нельзя иметь часть клиентов на AWG 1.x и часть на 2.0 одновременно.
 
-* **Ubuntu 25.10 / 26.04 / Debian 13:** PPA может не содержать готовых пакетов для свежих non-LTS-релизов. Инсталлятор автоматически переключает codename PPA на `noble` (с v5.13.0) и собирает модуль из исходников через DKMS - это занимает больше времени при первой установке.
+* **Ubuntu 25.10 / 26.04 / Debian 13:** PPA может не содержать готовых пакетов для свежих non-LTS-релизов. Для Ubuntu non-LTS fallback codename PPA на `noble` теперь требует явного `AWG_ALLOW_PPA_CODENAME_FALLBACK=1` или `--allow-ppa-codename-fallback`; после этого DKMS соберёт модуль из исходников, что занимает больше времени при первой установке. Debian mapping остаётся явным (`bookworm` -> `focal`, `trixie` -> `noble`).
+
+* **Публичная Web Panel:** Python stdlib HTTP server остаётся лёгким admin-panel runtime. Для public edge предпочтительнее bind внутри VPN (`10.9.9.1`), localhost + SSH tunnel или reverse proxy с TLS/timeouts/connection limits. Минимальные nginx-настройки:
+
+```nginx
+client_header_timeout 5s;
+client_body_timeout 10s;
+send_timeout 10s;
+limit_conn_zone $binary_remote_addr zone=awgpanel:10m;
+limit_conn awgpanel 10;
+```
 
 ---
 

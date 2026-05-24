@@ -7,6 +7,7 @@ import os
 import re
 import secrets
 import shlex
+import socket
 import ssl
 import subprocess
 import sys
@@ -192,10 +193,10 @@ def clear_import_tokens():
 
 def require_import_ttl(value):
     if value is None:
-        return 3600
+        return 300
     if isinstance(value, bool) or not isinstance(value, int):
         raise ValueError("invalid ttl")
-    if value < 60 or value > 604800:
+    if value < 60 or value > 3600:
         raise ValueError("invalid ttl")
     return value
 
@@ -835,15 +836,23 @@ class LimitedThreadingHTTPServer(ThreadingHTTPServer):
     daemon_threads = True
     request_queue_size = 32
 
-    def __init__(self, *args, max_workers=16, **kwargs):
+    def __init__(self, *args, max_workers=16, request_timeout=8, **kwargs):
         super().__init__(*args, **kwargs)
         self._sem = threading.BoundedSemaphore(max_workers)
+        self.request_timeout = request_timeout
         self.socket.settimeout(10)
+
+    def get_request(self):
+        request, client_address = super().get_request()
+        request.settimeout(self.request_timeout)
+        return request, client_address
 
     def process_request(self, request, client_address):
         if not self._sem.acquire(blocking=False):
-            request.close()
-            return
+            try:
+                request.close()
+            finally:
+                return
         try:
             super().process_request(request, client_address)
         except Exception:
@@ -863,6 +872,13 @@ class Handler(SimpleHTTPRequestHandler):
 
     def log_message(self, fmt, *args):
         return
+
+    def handle_one_request(self):
+        try:
+            return super().handle_one_request()
+        except (socket.timeout, TimeoutError):
+            self.close_connection = True
+            return None
 
     def api_auth(self):
         if not allowed_host_header(self.headers.get("Host", ""), self.client_address[0]):
@@ -1033,7 +1049,7 @@ class Handler(SimpleHTTPRequestHandler):
             self.send_json({"error": "client config not found"}, 404)
             return
         ttl = require_import_ttl(body.get("ttl"))
-        one_time = body.get("one_time", False)
+        one_time = body.get("one_time", True)
         if not isinstance(one_time, bool):
             raise ValueError("invalid one_time")
         token = secrets.token_urlsafe(48)

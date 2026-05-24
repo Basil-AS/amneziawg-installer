@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# shellcheck disable=SC2030,SC2031
+# shellcheck disable=SC2016,SC2030,SC2031
 
 load test_helper
 
@@ -207,7 +207,14 @@ CONF
 @test "curated AdGuard renderer preserves generated users and persistent clients" {
     local installer="$BATS_TEST_DIRNAME/../install_amneziawg.sh"
 
-    grep -qF "AG_HASH=\$(AG_PASSWORD=\"\$AG_PASSWORD\" python3 - <<" "$installer"
+    grep -qF "printf '%s' \"\$AG_PASSWORD\" | python3 -c" "$installer"
+    grep -qF "sys.stdin.buffer.read" "$installer"
+    if grep -qF 'os.environ["AG_PASSWORD"]' "$installer"; then
+        fail "AdGuard password must not be passed through environment"
+    fi
+    if grep -qF 'AG_PASSWORD="$AG_PASSWORD" python3' "$installer"; then
+        fail "AdGuard password must not be passed through environment"
+    fi
     grep -qF 'bcrypt.hashpw(password, bcrypt.gensalt' "$installer"
     grep -qF 'render_users(lines)' "$installer"
     grep -qF 'extract_clients_persistent(lines)' "$installer"

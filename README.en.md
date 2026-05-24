@@ -182,6 +182,16 @@ For a public panel, the interactive wizard recommends trusted HTTPS with your ow
 
 > Exposing the web panel to the whole internet is not recommended. Prefer a firewall allowlist, VPN, SSH tunnel, or a reverse proxy with extra authentication. Public self-signed mode is not recommended: browsers and WG Tunnel URL Import may reject the certificate. Keep the bearer token long and secret; do not publish `tokens.json`, client configs, QR codes, or `vpn://` URIs.
 
+If the panel is still exposed publicly, treat the Python stdlib HTTP server as a lightweight admin panel, not a full public edge. Prefer a VPN-only bind (`10.9.9.1`), `127.0.0.1` plus an SSH tunnel, or an nginx/caddy reverse proxy with TLS, timeouts, and connection limits. Minimal nginx fragment:
+
+```nginx
+client_header_timeout 5s;
+client_body_timeout 10s;
+send_timeout 10s;
+limit_conn_zone $binary_remote_addr zone=awgpanel:10m;
+limit_conn awgpanel 10;
+```
+
 Troubleshooting Let's Encrypt:
 
 * `Timeout during connect` / `likely firewall problem`: verify that the domain resolves to the server IP, TCP/80 is open in UFW, TCP/80 is open in the provider firewall/security group, and no local process is already listening on `:80`.
@@ -525,8 +535,8 @@ Your carrier is not on the list? Try `--preset=mobile`. If that doesn't work —
 | OS | Status | Notes |
 |----|--------|-------|
 | Ubuntu 24.04 LTS | ✅ Fully supported | Recommended |
-| Ubuntu 25.10 | ✅ Supported | PPA `noble` fallback applied automatically since v5.13.0 |
-| Ubuntu 26.04 | ✅ Supported | PPA `noble` fallback applied automatically since v5.13.0 |
+| Ubuntu 25.10 | ✅ Supported | PPA `noble` fallback requires explicit `AWG_ALLOW_PPA_CODENAME_FALLBACK=1` or `--allow-ppa-codename-fallback` |
+| Ubuntu 26.04 | ✅ Supported | PPA `noble` fallback requires explicit `AWG_ALLOW_PPA_CODENAME_FALLBACK=1` or `--allow-ppa-codename-fallback` |
 | Debian 12 (bookworm) | ✅ Supported | Tested. PPA via codename mapping to focal |
 | Debian 13 (trixie) | ✅ Supported | Tested. PPA via codename mapping to noble, DEB822 |
 
