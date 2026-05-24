@@ -156,7 +156,9 @@ function bytes(n) {
 }
 
 function speed(n) {
-  return `${bytes(n)}/s`;
+  const bytesPerSecond = Number(n) || 0;
+  const mbps = bytesPerSecond * 8 / 1000 / 1000;
+  return `${mbps.toFixed(mbps >= 10 ? 1 : 2)} Mbps`;
 }
 
 function trafficText(rx, tx, mode = "traffic") {
