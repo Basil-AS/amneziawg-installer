@@ -35,7 +35,7 @@ STATIC_FILES = {
     "/index.html": ("index.html", "text/html; charset=utf-8"),
     "/style.css": ("style.css", "text/css; charset=utf-8"),
     "/app.js": ("app.js", "application/javascript; charset=utf-8"),
-    "/awg_i1.js": ("awg_i1.js", "application/javascript; charset=utf-8"),
+    "/i1.js": ("awg_i1.js", "application/javascript; charset=utf-8"),
     "/favicon.svg": ("favicon.svg", "image/svg+xml"),
     "/vendor/tailwindcss.js": ("vendor/tailwindcss.js", "application/javascript; charset=utf-8"),
     "/vendor/apexcharts.min.js": ("vendor/apexcharts.min.js", "application/javascript; charset=utf-8"),
@@ -52,6 +52,135 @@ IMPORT_TOKENS_LOCK = threading.RLock()
 TRAFFIC_LOCK = threading.Lock()
 SERVER_NAME_RE = re.compile(r"^[\w .,!?\-()]{1,128}$", re.UNICODE)
 DELETED_TRAFFIC_KEY = "_deleted_clients_total"
+PANEL_TITLE = "AmneziaWG Panel"
+PANEL_SHORT_LABEL = "AW"
+REPOSITORY_URL = "https://github.com/Basil-AS/amneziawg-installer"
+HELP_CLIENT_GROUPS = [
+    {
+        "name": "Windows",
+        "icon": "windows",
+        "subtitle": "Main options: WireSock for split tunneling, AmneziaWG for official compatibility.",
+        "clients": [
+            {
+                "name": "WireSock Secure Connect",
+                "status": "Recommended / Advanced",
+                "trafficSplit": "App split / NDIS / routes",
+                "description": "Advanced Windows client with per-app split tunneling, KillSwitch and custom DPI simulation.",
+                "support": ["supported", {"state": "custom", "text": "◇ AWG 1.5 custom"}, "supported"],
+                "links": [{"label": "Download", "url": "https://www.wiresock.net/wiresock-secure-connect/download/"}],
+                "platforms": "Windows",
+                "setupMethod": ".conf + WireSock simulation settings",
+                "bestFor": "Fine-grained routing by apps, routes and networks on Windows.",
+                "limitation": "Standard AWG 1.5 I1-I5 parameters are not imported directly; WireSock uses custom simulation settings.",
+            },
+            {
+                "name": "AmneziaWG for Windows",
+                "status": "Recommended",
+                "trafficSplit": "Routes only",
+                "description": "Lightweight official AWG client for Windows.",
+                "support": ["supported", "supported", "supported"],
+                "links": [{"label": "GitHub Releases", "url": "https://github.com/amnezia-vpn/amneziawg-windows-client/releases"}],
+                "platforms": "Windows x64, ARM64, x86",
+                "setupMethod": ".conf",
+                "bestFor": "Official compatibility with generated AmneziaWG configs.",
+                "limitation": "Split tunneling is mostly route-based.",
+            },
+        ],
+    },
+    {
+        "name": "Android",
+        "icon": "android",
+        "subtitle": "Main options: WG Tunnel for advanced routing, AmneziaWG for a lightweight official flow.",
+        "clients": [
+            {
+                "name": "WG Tunnel",
+                "status": "Recommended / Advanced",
+                "trafficSplit": "App split / auto tunnel",
+                "description": "Advanced Android client for auto-tunnel, split tunneling, Always-On, lockdown and Android TV.",
+                "support": ["supported", "supported", {"state": "supported", "text": "✅ AWG 2.0 userspace"}],
+                "links": [{"label": "Website", "url": "https://wgtunnel.com/"}, {"label": "GitHub", "url": "https://github.com/wgtunnel/android/releases"}],
+                "platforms": "Android phones, tablets, Android TV",
+                "setupMethod": ".conf, QR, manual import",
+                "bestFor": "App-based routing, auto-connect and Android TV scenarios.",
+                "limitation": "AmneziaWG support requires the Userspace/Go backend.",
+            },
+            {
+                "name": "AmneziaWG Android",
+                "status": "Recommended",
+                "trafficSplit": "App split",
+                "description": "Lightweight official AWG client for Android.",
+                "support": ["supported", "supported", "supported"],
+                "links": [{"label": "Google Play", "url": "https://play.google.com/store/apps/details?id=org.amnezia.awg"}],
+                "platforms": "Android phones, tablets",
+                "setupMethod": ".conf, QR",
+                "bestFor": "Official lightweight client flow.",
+                "limitation": "For advanced auto-tunnel scenarios, WG Tunnel is usually more flexible.",
+            },
+        ],
+    },
+    {
+        "name": "iOS / iPadOS",
+        "icon": "apple",
+        "subtitle": "iOS limits per-app split tunneling for generic VPN clients.",
+        "clients": [
+            {
+                "name": "AmneziaWG",
+                "status": "Recommended",
+                "trafficSplit": "No app split / OS-limited",
+                "description": "Lightweight AWG client for iOS and iPadOS.",
+                "support": ["supported", "supported", "supported"],
+                "links": [{"label": "App Store", "url": "https://apps.apple.com/app/amneziawg/id6478942365"}],
+                "platforms": "iPhone, iPad",
+                "setupMethod": ".conf, QR",
+                "bestFor": "Lightweight AWG connectivity on iOS.",
+                "limitation": "No normal per-app split tunneling due to iOS limitations.",
+            },
+            {
+                "name": "AmneziaVPN",
+                "status": "Full client",
+                "trafficSplit": "No app split / OS-limited",
+                "description": "Full Amnezia client for iOS.",
+                "support": ["supported", "supported", "supported"],
+                "links": [{"label": "Official", "url": "https://amnezia.org/downloads"}],
+                "platforms": "iPhone, iPad",
+                "setupMethod": "vpn:// URI, QR, app flow",
+                "bestFor": "Full Amnezia client flow on iOS.",
+                "limitation": "Availability can depend on App Store region.",
+            },
+        ],
+    },
+    {
+        "name": "macOS / Linux Desktop",
+        "icon": "linux",
+        "subtitle": "GUI clients for desktop systems; proxy clients remain alternatives.",
+        "clients": [
+            {
+                "name": "AmneziaVPN",
+                "status": "Recommended / Full client",
+                "trafficSplit": "Routes / app features",
+                "description": "Full desktop client.",
+                "support": ["supported", "supported", "supported"],
+                "links": [{"label": "Official", "url": "https://amnezia.org/downloads"}, {"label": "GitHub", "url": "https://github.com/amnezia-vpn/amnezia-client/releases"}],
+                "platforms": "macOS, Linux Desktop",
+                "setupMethod": "vpn:// URI, QR, app flow",
+                "bestFor": "Full GUI onboarding and desktop use.",
+                "limitation": "Heavier than lightweight AWG-only clients.",
+            },
+            {
+                "name": "AmneziaWG",
+                "status": "Recommended",
+                "trafficSplit": "Routes only",
+                "description": "Lightweight AWG client for Apple ecosystem.",
+                "support": ["supported", "supported", "supported"],
+                "links": [{"label": "App Store", "url": "https://apps.apple.com/app/amneziawg/id6478942365"}],
+                "platforms": "macOS",
+                "setupMethod": ".conf, QR",
+                "bestFor": "Lightweight AWG-only setup.",
+                "limitation": "Split tunneling is mostly route-based.",
+            },
+        ],
+    },
+]
 
 
 def audit_log(message):
@@ -711,6 +840,17 @@ def dns_status():
     }
 
 
+def resolver_status():
+    status = dns_status()
+    return {
+        "mode": status["mode"],
+        "client_resolver": status["client_dns"],
+        "managed_enabled": status["adguard_enabled"],
+        "managed_service": status["adguard_service"],
+        "managed_port": status["adguard_port"],
+    }
+
+
 def safe_name(name):
     if not NAME_RE.fullmatch(name or ""):
         raise ValueError("invalid client name")
@@ -883,13 +1023,16 @@ class Handler(SimpleHTTPRequestHandler):
     def api_auth(self):
         if not allowed_host_header(self.headers.get("Host", ""), self.client_address[0]):
             audit_log(f"Rejected Web Panel request with disallowed Host header: {self.headers.get('Host', '')}")
-            self.send_error(HTTPStatus.MISDIRECTED_REQUEST)
+            if self.path.startswith("/api/"):
+                self.send_api_error(HTTPStatus.MISDIRECTED_REQUEST, "bad_request")
+            else:
+                self.send_error(HTTPStatus.MISDIRECTED_REQUEST)
             return None
         if not self.path.startswith("/api/"):
             return {"role": "static"}
         ip = self.client_address[0]
         if not check_rate_limit(ip):
-            self.send_error(HTTPStatus.TOO_MANY_REQUESTS)
+            self.send_api_error(HTTPStatus.TOO_MANY_REQUESTS, "rate_limited")
             return None
         header = self.headers.get("Authorization", "")
         auth = authenticate(header)
@@ -897,7 +1040,7 @@ class Handler(SimpleHTTPRequestHandler):
             reason, fingerprint = auth_reject_reason(header)
             suffix = f" fingerprint={fingerprint}" if fingerprint else ""
             audit_log(f"Rejected bearer token remote={ip} path={self.path} reason={reason}{suffix}")
-            self.send_error(HTTPStatus.UNAUTHORIZED)
+            self.send_api_error(HTTPStatus.UNAUTHORIZED, "unauthorized")
             return None
         return auth
 
@@ -908,7 +1051,7 @@ class Handler(SimpleHTTPRequestHandler):
     def require_super(self, auth):
         if not self.is_super(auth):
             audit_log(f"Rejected bearer token remote={self.client_address[0]} path={self.path} reason=insufficient scope")
-            self.send_error(HTTPStatus.FORBIDDEN)
+            self.send_api_error(HTTPStatus.FORBIDDEN, "forbidden")
             return False
         return True
 
@@ -918,7 +1061,7 @@ class Handler(SimpleHTTPRequestHandler):
     def require_client_access(self, auth, name):
         if not self.can_access_client(auth, name):
             audit_log(f"Rejected bearer token remote={self.client_address[0]} path={self.path} reason=insufficient scope")
-            self.send_error(HTTPStatus.FORBIDDEN)
+            self.send_api_error(HTTPStatus.FORBIDDEN, "forbidden")
             return False
         return True
 
@@ -937,6 +1080,9 @@ class Handler(SimpleHTTPRequestHandler):
         self.send_security_headers()
         self.end_headers()
         self.wfile.write(data)
+
+    def send_api_error(self, status, error):
+        self.send_json({"error": error}, status)
 
     def send_security_headers(self):
         self.send_header(
@@ -1095,7 +1241,17 @@ class Handler(SimpleHTTPRequestHandler):
                 "fork": "fork delta/patchset",
                 "role": "super" if self.is_super(auth) else "user",
                 "server_name": cfg["AWG_SERVER_NAME"],
+                "display_name": cfg["AWG_SERVER_NAME"],
+                "title": PANEL_TITLE,
+                "short_label": PANEL_SHORT_LABEL,
+                "repository_url": REPOSITORY_URL,
             })
+            return
+        if u.path == "/api/help/clients":
+            self.send_json({"groups": HELP_CLIENT_GROUPS})
+            return
+        if u.path == "/api/resolver":
+            self.send_json(resolver_status())
             return
         if u.path == "/api/dns":
             self.send_json(dns_status())
@@ -1116,6 +1272,8 @@ class Handler(SimpleHTTPRequestHandler):
                 endpoint = row_stats.get("endpoint", "")
                 item["endpoint"] = "" if endpoint in {"", "-", "(none)", "none"} else endpoint
                 item["status"] = row_stats.get("status", "")
+                item["open_ports"] = item.get("p2p_ports", [])
+                item["ports_enabled"] = item.get("p2p_enabled", True)
                 rows.append(item)
             self.send_json({
                 "role": "super" if self.is_super(auth) else "user",
@@ -1157,7 +1315,7 @@ class Handler(SimpleHTTPRequestHandler):
             self.send_config_download(name)
             return
 
-        m = re.match(r"^/api/clients/([^/]+)/(config|qr|vpnuri|p2p)$", u.path)
+        m = re.match(r"^/api/clients/([^/]+)/(config|qr|vpnuri|uri|p2p|ports)$", u.path)
         if not m:
             self.send_error(404)
             return
@@ -1168,7 +1326,7 @@ class Handler(SimpleHTTPRequestHandler):
             self.send_file(AWG_DIR / f"{name}.conf", "text/plain; charset=utf-8")
         elif kind == "qr":
             self.send_file(AWG_DIR / f"{name}.png", "image/png")
-        elif kind == "vpnuri":
+        elif kind in {"vpnuri", "uri"}:
             self.send_file(AWG_DIR / f"{name}.vpnuri", "text/plain; charset=utf-8")
         else:
             peer = next((p for p in parse_peers() if p["name"] == name), None)
@@ -1197,7 +1355,7 @@ class Handler(SimpleHTTPRequestHandler):
                 if not self.require_super(auth):
                     return
                 p = run_manage("set-name", require_server_name(body.get("name", "")), timeout=180)
-            elif u.path == "/api/server/rotate-profile":
+            elif u.path in {"/api/server/rotate-profile", "/api/profile/rotate"}:
                 if not self.require_super(auth):
                     return
                 if body.get("confirm") != "ROTATE":
@@ -1288,12 +1446,12 @@ class Handler(SimpleHTTPRequestHandler):
                 self.send_json({"super_token": token})
                 return
             else:
-                import_link = re.match(r"^/api/clients/([^/]+)/import-link$", u.path)
+                import_link = re.match(r"^/api/clients/([^/]+)/(import-link|access-link)$", u.path)
                 if import_link:
                     self.create_import_link(auth, unquote(import_link.group(1)), body)
                     return
-                m = re.match(r"^/api/clients/([^/]+)/(p2p|toggle)$", u.path)
-                p2p_toggle = re.match(r"^/api/clients/([^/]+)/p2p/toggle$", u.path)
+                m = re.match(r"^/api/clients/([^/]+)/(p2p|ports|toggle)$", u.path)
+                p2p_toggle = re.match(r"^/api/clients/([^/]+)/(p2p|ports)/toggle$", u.path)
                 if not m and not p2p_toggle:
                     self.send_error(404)
                     return

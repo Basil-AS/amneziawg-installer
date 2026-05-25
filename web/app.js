@@ -3,10 +3,11 @@ const toastHost = document.querySelector("#toastHost");
 localStorage.removeItem("panelToken");
 let token = sessionStorage.getItem("panelToken") || "";
 let statusState = null;
-let dnsState = null;
+let resolverState = null;
 let trafficState = null;
 let latestClients = [];
 let latestTokens = [];
+let helpClientGroups = null;
 let pollTimer = null;
 let topTrafficMode = localStorage.getItem("topTrafficMode") || "30d";
 const previousRx = new Map();
@@ -174,7 +175,7 @@ function compactTrafficText(rx, tx, mode = "traffic") {
     : `↓ ${bytes(rx)} · ↑ ${bytes(tx)}`;
 }
 
-function normalizeP2pPorts(value) {
+function normalizePortList(value) {
   const source = Array.isArray(value) ? value : String(value || "").split(/[,\s]+/);
   const seen = new Set();
   return source
@@ -252,6 +253,7 @@ function logout() {
   sessionStorage.removeItem("panelToken");
   token = "";
   clearInterval(pollTimer);
+  document.title = "Control";
   renderLogin();
 }
 
@@ -349,10 +351,10 @@ function openClientActionMenu(button) {
   openClientMenu = id;
 }
 
-function renderP2pSummary(ports, disabled) {
+function renderPortSummary(ports, disabled) {
   if (!ports.length) return "";
-  const chips = ports.map(port => `<span class="p2p-chip">${esc(port)}</span>`);
-  return `<div class="p2p-summary ${disabled ? "is-off" : ""}" title="${esc(ports.join(", "))}"><span class="p2p-label">P2P</span>${chips.join("")}${disabled ? '<span class="p2p-state">off</span>' : ""}</div>`;
+  const chips = ports.map(port => `<span class="port-chip">${esc(port)}</span>`);
+  return `<div class="port-summary ${disabled ? "is-off" : ""}" title="${esc(ports.join(", "))}"><span class="port-label">Ports</span>${chips.join("")}${disabled ? '<span class="port-state">off</span>' : ""}</div>`;
 }
 
 function renderMenuItem(action, iconName, label, extra = "") {
@@ -360,12 +362,15 @@ function renderMenuItem(action, iconName, label, extra = "") {
 }
 
 function renderLogin() {
+  document.title = "Control";
   app.innerHTML = `
     <section class="min-h-screen grid place-items-center">
       <form id="loginForm" class="w-full max-w-sm rounded-lg border border-[var(--line)] bg-[var(--panel)] p-5 shadow-sm">
-        <label class="sr-only" for="tokenInput">Token</label>
-        <input id="tokenInput" class="h-11 w-full rounded-md border border-[var(--line)] bg-[var(--soft)] px-3 text-[var(--text)] outline-none focus:border-[var(--accent)]" type="password" value="${esc(token)}" placeholder="Token" autocomplete="current-password" autofocus>
-        <button class="${primaryButtonClasses("mt-4 w-full")}" type="submit">Login</button>
+        <h1 class="text-xl font-semibold">Control</h1>
+        <p class="mt-1 text-sm text-[var(--muted)]">Access required</p>
+        <label class="sr-only" for="tokenInput">Access token</label>
+        <input id="tokenInput" class="mt-4 h-11 w-full rounded-md border border-[var(--line)] bg-[var(--soft)] px-3 text-[var(--text)] outline-none focus:border-[var(--accent)]" type="password" value="${esc(token)}" placeholder="Access token" autocomplete="current-password" autofocus>
+        <button class="${primaryButtonClasses("mt-4 w-full")}" type="submit">Continue</button>
       </form>
     </section>
   `;
@@ -379,7 +384,7 @@ function renderLogin() {
       await renderPanel();
     } catch {
       sessionStorage.removeItem("panelToken");
-      showToast("Token rejected", "error");
+      showToast("Access denied", "error");
     }
   };
   document.querySelector("#tokenInput").addEventListener("keydown", event => {
@@ -391,6 +396,7 @@ function renderLogin() {
 
 async function renderPanel() {
   clearInterval(pollTimer);
+  document.title = statusState.title || "Control";
   if (trafficChart) {
     trafficChart.destroy();
     trafficChart = null;
@@ -398,16 +404,16 @@ async function renderPanel() {
   app.innerHTML = `
     <header class="flex flex-col gap-4 py-4 sm:flex-row sm:items-center sm:justify-between">
       <div class="flex items-center gap-3">
-        <div class="grid h-11 w-11 place-items-center rounded-lg bg-[var(--accent)] text-lg font-black text-white">AW</div>
+        <div class="grid h-11 w-11 place-items-center rounded-lg bg-[var(--accent)] text-lg font-black text-white">${esc(statusState.short_label || "C")}</div>
         <div>
-          <h1 class="text-xl font-semibold leading-tight">${esc(statusState.server_name || "AmneziaWG")}</h1>
+          <h1 class="text-xl font-semibold leading-tight">${esc(statusState.display_name || statusState.server_name || "Control")}</h1>
           <p class="text-sm text-[var(--muted)]">v${esc(statusState.version)} · ${esc(statusState.fork)} · ${esc(statusState.role)}</p>
         </div>
       </div>
       <div class="flex flex-wrap items-center gap-2">
         <button id="themeToggle" class="${buttonClasses("w-9 px-0")}" title="Theme">${icon(document.documentElement.dataset.theme === "dark" ? "sun" : "moon")}</button>
         <button id="helpButton" class="${buttonClasses("w-9 px-0")}" title="Help & Clients" aria-label="Help & Clients">${icon("help")}</button>
-        <a href="https://github.com/Basil-AS/amneziawg-installer" target="_blank" rel="noopener" class="${buttonClasses("w-9 px-0")}" title="Repository" aria-label="Repository">${icon("github")}</a>
+        ${statusState.repository_url ? `<a href="${esc(statusState.repository_url)}" target="_blank" rel="noopener" class="${buttonClasses("w-9 px-0")}" title="Repository" aria-label="Repository">${icon("github")}</a>` : ""}
         <button id="addClient" class="${primaryButtonClasses()}">${icon("plus")}<span>Add Client</span></button>
         <button id="logout" class="${buttonClasses()}">${icon("logout")}<span>Logout</span></button>
       </div>
@@ -433,8 +439,8 @@ async function renderPanel() {
         <p id="metricTraffic30dSub" class="mt-1 text-xs text-[var(--muted)]">-</p>
       </div>
       <div class="min-w-0 rounded-lg border border-[var(--line)] bg-[var(--panel)] p-4 sm:col-span-2">
-        <p class="text-xs font-semibold uppercase text-[var(--muted)]">DNS</p>
-        <strong id="metricDns" class="mt-2 flex min-w-0 items-center text-lg sm:text-2xl">-</strong>
+        <p class="text-xs font-semibold uppercase text-[var(--muted)]">Resolver</p>
+        <strong id="metricResolver" class="mt-2 flex min-w-0 items-center text-lg sm:text-2xl">-</strong>
       </div>
     </section>
 
@@ -480,9 +486,9 @@ async function renderPanel() {
       <div class="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h2 class="text-base font-semibold">Advanced</h2>
-          <p class="text-sm text-[var(--muted)]">Disruptive server-side operations.</p>
+        <p class="text-sm text-[var(--muted)]">Disruptive system operations.</p>
         </div>
-        <button id="rotateProfile" class="${buttonClasses("border-amber-600 text-amber-700")}">${icon("refresh")}<span>Rotate AWG profile</span></button>
+        <button id="rotateProfile" class="${buttonClasses("border-amber-600 text-amber-700")}">${icon("refresh")}<span>Rotate profile</span></button>
       </div>
     </section>
 
@@ -494,27 +500,27 @@ async function renderPanel() {
   document.querySelector("#addClient").onclick = addClient;
   document.querySelector("#searchInput").oninput = applySearch;
   if (statusState.role === "super") document.querySelector("#newToken").onclick = newToken;
-  if (statusState.role === "super") document.querySelector("#rotateProfile").onclick = rotateServerProfile;
+  if (statusState.role === "super") document.querySelector("#rotateProfile").onclick = rotateProfile;
   await loadAll();
   pollTimer = setInterval(loadClients, 2000);
 }
 
 async function loadAll() {
-  const [dns] = await Promise.all([api("/api/dns"), loadClients()]);
-  dnsState = dns;
-  renderDnsMetric();
+  const [resolver] = await Promise.all([api("/api/resolver"), loadClients()]);
+  resolverState = resolver;
+  renderResolverMetric();
   if (statusState.role === "super") await loadTokens();
 }
 
-function renderDnsMetric() {
-  const metric = document.querySelector("#metricDns");
-  if (!metric || !dnsState) return;
-  const label = dnsState.client_dns || dnsState.mode || "-";
-  if (dnsState.adguard_enabled) {
-    const url = `http://10.9.9.1:${dnsState.adguard_port || 3000}`;
+function renderResolverMetric() {
+  const metric = document.querySelector("#metricResolver");
+  if (!metric || !resolverState) return;
+  const label = resolverState.client_resolver || resolverState.mode || "-";
+  if (resolverState.managed_enabled) {
+    const url = `http://10.9.9.1:${resolverState.managed_port || 3000}`;
     metric.innerHTML = `
       <span class="min-w-0 flex-1 truncate">${esc(label)}</span>
-      <a class="ml-2 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-[var(--line)] bg-[var(--soft)] text-[var(--accent)] transition hover:border-[var(--accent)]" href="${esc(url)}" target="_blank" rel="noopener" title="Open AdGuard" aria-label="Open AdGuard">${icon("external")}</a>
+      <a class="ml-2 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-[var(--line)] bg-[var(--soft)] text-[var(--accent)] transition hover:border-[var(--accent)]" href="${esc(url)}" target="_blank" rel="noopener" title="Open resolver" aria-label="Open resolver">${icon("external")}</a>
     `;
     metric.classList.add("flex", "items-center");
   } else {
@@ -556,7 +562,7 @@ async function loadClients() {
       traffic_total: client.traffic_total || {rx: 0, tx: 0, total: 0},
       totalBytes: Number(client.traffic_total?.total || 0),
       traffic_30d: client.traffic_30d || {rx: 0, tx: 0, total: 0},
-      p2p_ports: normalizeP2pPorts(client.p2p_ports),
+      open_ports: normalizePortList(client.open_ports),
       avatar: await avatarHtml(client.name),
     });
   }));
@@ -703,11 +709,11 @@ function renderClients() {
     const endpoint = client.endpoint || "-";
     const client30d = client.traffic_30d || {};
     const clientTotal = client.traffic_total || {};
-    const p2pDisabled = (client.p2p_ports || []).length > 0 && client.p2p_enabled === false;
-    const p2pMarkup = renderP2pSummary(client.p2p_ports || [], p2pDisabled);
+    const portsDisabled = (client.open_ports || []).length > 0 && client.ports_enabled === false;
+    const portMarkup = renderPortSummary(client.open_ports || [], portsDisabled);
     const menuId = `client-menu-${String(client.name).replace(/[^A-Za-z0-9_-]/g, "_")}`;
-    const shieldClass = p2pDisabled ? "opacity-60" : "";
-    const search = `${client.name} ${ip} ${endpoint} ${(client.p2p_ports || []).join(" ")}`.toLowerCase();
+    const shieldClass = portsDisabled ? "opacity-60" : "";
+    const search = `${client.name} ${ip} ${endpoint} ${(client.open_ports || []).join(" ")}`.toLowerCase();
     return `
       <article class="client-card bg-[var(--panel)] border-b border-[var(--line)] p-4 relative last:border-b-0" data-name="${esc(client.name)}" data-search="${esc(search)}">
         <div id="chart-${esc(client.name)}" class="client-card-chart-bg"></div>
@@ -730,7 +736,7 @@ function renderClients() {
               </div>
               <p class="mt-1 text-xs text-[var(--muted)]">${active ? "Active recently" : "No recent traffic"} · Last seen ${esc(timeAgo(client.latestHandshakeAt || client.last_handshake))}</p>
               <p class="mt-1 truncate text-xs text-[var(--muted)]">Endpoint: ${esc(endpoint)}</p>
-              ${p2pMarkup ? `<div class="mt-2">${p2pMarkup}</div>` : ""}
+              ${portMarkup ? `<div class="mt-2">${portMarkup}</div>` : ""}
             </div>
           </div>
           <div class="client-traffic relative z-10 min-w-0 text-left sm:min-w-36 sm:text-right">
@@ -741,15 +747,15 @@ function renderClients() {
           <div class="client-actions relative z-20 flex w-full shrink-0 flex-wrap justify-end gap-1 sm:w-auto">
             <button data-action="download-config" title="Download .conf" aria-label="Download .conf" class="${buttonClasses("client-action client-action-primary")}">${icon("download")}<span class="client-action-label">Download</span></button>
             ${actionButton("qr", "Show QR", "qr", "QR", "client-action-primary")}
-            <button data-action="copy-config" title="Copy config" aria-label="Copy config" class="${buttonClasses("client-action client-action-primary")}">${icon("copy")}<span class="client-action-label">Copy</span></button>
+            <button data-action="copy-config" title="Copy profile" aria-label="Copy profile" class="${buttonClasses("client-action client-action-primary")}">${icon("copy")}<span class="client-action-label">Copy</span></button>
             <button type="button" data-menu-toggle="${esc(menuId)}" aria-expanded="false" aria-controls="${esc(menuId)}" title="More actions" aria-label="More actions for ${esc(client.name)}" class="${buttonClasses("client-action w-9 px-0")}">${icon("more")}</button>
             <div id="${esc(menuId)}" class="client-menu hidden" role="menu">
-              ${renderMenuItem("copy-config", "copy", "Copy config")}
-              ${renderMenuItem("copy-vpnuri", "link", "Copy vpn://")}
-              ${renderMenuItem("copy-import-url", "link", "Copy import URL")}
+              ${renderMenuItem("copy-config", "copy", "Copy profile")}
+              ${renderMenuItem("copy-uri", "link", "Copy URI")}
+              ${renderMenuItem("copy-access-link", "link", "Copy access link")}
               <button type="button" data-action="regenerate-config" class="client-menu-item text-amber-700">${icon("refresh")}<span>Regenerate</span></button>
               ${renderMenuItem("toggle", "power", client.disabled ? "Enable client" : "Disable client")}
-              ${renderMenuItem("toggle-p2p", "shield", "P2P details / toggle", shieldClass)}
+              ${renderMenuItem("toggle-ports", "shield", "Port details / toggle", shieldClass)}
               ${renderMenuItem("delete", "trash", "Delete", "text-[var(--danger)]")}
             </div>
           </div>
@@ -815,70 +821,17 @@ function applySearch() {
   });
 }
 
-const helpClientGroups = [
-  {
-    name: "Windows",
-    icon: "windows",
-    subtitle: "Главные варианты: WireSock для split tunneling, AmneziaWG для официальной совместимости.",
-    clients: [
-      {name: "WireSock Secure Connect", status: "Recommended / Advanced", trafficSplit: "App split / NDIS / routes", description: "Продвинутый Windows-клиент с per-app split tunneling, KillSwitch и кастомной DPI-симуляцией.", support: ["supported", {state: "custom", text: "◇ AWG 1.5 custom"}, "supported"], links: [{label: "Download", url: "https://www.wiresock.net/wiresock-secure-connect/download/"}], platforms: "Windows", importMethod: ".conf + WireSock simulation settings", bestFor: "Тонкое разделение трафика по приложениям, маршрутам и сетям на Windows.", limitation: "Standard AWG 1.5 I1-I5 parameters are not imported directly. WireSock uses custom simulation settings instead. Best choice when Windows per-app split tunneling is more important than strict compatibility with official AmneziaWG config syntax."},
-      {name: "AmneziaWG for Windows", status: "Recommended", trafficSplit: "Routes only", description: "Лучший лёгкий официальный AWG-клиент под Windows.", support: ["supported", "supported", "supported"], links: [{label: "GitHub Releases", url: "https://github.com/amnezia-vpn/amneziawg-windows-client/releases"}, {label: "Win7 patch", url: "https://github.com/stunndard/golangwin7patch/releases/latest"}], platforms: "Windows x64, ARM64, x86", importMethod: ".conf", bestFor: "Официальная совместимость с AmneziaWG-конфигами.", limitation: "Split tunneling в основном через AllowedIPs/routes, без удобного per-app split как у WireSock."},
-      {name: "AmneziaVPN", status: "Full client", trafficSplit: "Routes / app features", description: "Полный VPN-клиент Amnezia.", support: ["supported", "supported", "supported"], links: [{label: "Official", url: "https://amnezia.org/downloads"}, {label: "GitHub", url: "https://github.com/amnezia-vpn/amnezia-client/releases"}], platforms: "Windows", importMethod: "vpn:// URI, QR, app flow", bestFor: "Onboarding, управление Amnezia-сервером и полный стек Amnezia.", limitation: "Тяжелее, чем отдельный AmneziaWG-клиент."},
-      {name: "VeilBox", status: "Experimental", trafficSplit: "TUN / proxy rules", description: "Альтернативный клиент с AmneziaWG/VLESS.", support: ["unknown", "unknown", "warning"], links: [{label: "GitHub", url: "https://github.com/artem4150/VeilBox"}], platforms: "Windows", importMethod: "Depends on build", bestFor: "Экспериментальные гибридные сценарии.", limitation: "Не основной AWG-клиент."},
-      {name: "Clash Verge Rev", status: "Experimental", trafficSplit: "Proxy rules", description: "Прокси-комбайн, не основной AWG-клиент.", support: ["warning", "warning", "warning"], links: [{label: "GitHub", url: "https://github.com/clash-verge-rev/clash-verge-rev/releases"}], platforms: "Windows", importMethod: "Proxy profiles", bestFor: "Proxy-rule based routing.", limitation: "Использовать как альтернативный proxy-клиент, не как основной AWG-клиент."},
-    ],
-  },
-  {
-    name: "Android",
-    icon: "android",
-    subtitle: "Главные варианты: WG Tunnel для advanced routing, AmneziaWG для лёгкого official flow.",
-    clients: [
-      {name: "WG Tunnel", status: "Recommended / Advanced", trafficSplit: "App split / auto tunnel", description: "Продвинутый Android-клиент для auto-tunnel, split tunneling, Always-On, lockdown и Android TV.", support: ["supported", "supported", {state: "supported", text: "✅ AWG 2.0 userspace"}], links: [{label: "Website", url: "https://wgtunnel.com/"}, {label: "GitHub", url: "https://github.com/wgtunnel/android/releases"}], platforms: "Android phones, tablets, Android TV", importMethod: ".conf, QR, manual import", bestFor: "Разделение по приложениям, авто-подключение, Android TV и advanced Android-сценарии.", limitation: "AmneziaWG works only through Userspace/Go backend. Kernel mode supports only standard WireGuard, not AmneziaWG."},
-      {name: "AmneziaWG Android", status: "Recommended", trafficSplit: "App split", description: "Лёгкий официальный AWG-клиент под Android.", support: ["supported", "supported", "supported"], links: [{label: "Google Play", url: "https://play.google.com/store/apps/details?id=org.amnezia.awg"}, {label: "GitHub", url: "https://github.com/amnezia-vpn/amneziawg-android/releases"}], platforms: "Android phones, tablets", importMethod: ".conf, QR", bestFor: "Официальный лёгкий клиент без лишней сложности.", limitation: "Для самых продвинутых auto-tunnel сценариев лучше WG Tunnel."},
-      {name: "AmneziaVPN", status: "Full client", trafficSplit: "App split", description: "Полный клиент Amnezia для Android.", support: ["supported", "supported", "supported"], links: [{label: "Official", url: "https://amnezia.org/downloads"}, {label: "GitHub", url: "https://github.com/amnezia-vpn/amnezia-client/releases"}], platforms: "Android phones, tablets", importMethod: "vpn:// URI, QR, app flow", bestFor: "Простой onboarding и полный клиент Amnezia.", limitation: "Тяжелее, чем отдельный AmneziaWG-клиент."},
-    ],
-  },
-  {
-    name: "iOS / iPadOS",
-    icon: "apple",
-    subtitle: "iOS does not provide normal per-app split tunneling for generic VPN clients.",
-    clients: [
-      {name: "AmneziaWG", status: "Recommended", trafficSplit: "No app split / OS-limited", description: "Лучший лёгкий AWG-клиент для iOS/iPadOS.", support: ["supported", "supported", "supported"], links: [{label: "App Store", url: "https://apps.apple.com/app/amneziawg/id6478942365"}], platforms: "iPhone, iPad", importMethod: ".conf, QR", bestFor: "Лёгкое подключение AWG на iOS.", limitation: "No normal per-app split tunneling due to iOS VPN limitations."},
-      {name: "AmneziaVPN", status: "Full client", trafficSplit: "No app split / OS-limited", description: "Полный клиент Amnezia для iOS.", support: ["supported", "supported", "supported"], links: [{label: "App Store", url: "https://apps.apple.com/app/amnezia-vpn/id1600529900"}, {label: "Official", url: "https://amnezia.org/downloads"}], platforms: "iPhone, iPad", importMethod: "vpn:// URI, QR, app flow", bestFor: "Полный клиент Amnezia на iOS.", limitation: "iOS version may be unavailable in RU App Store region. No normal per-app split tunneling due to iOS VPN limitations."},
-      {name: "DefaultVPN", status: "Fallback", trafficSplit: "No app split / OS-limited", description: "Альтернативный iOS-клиент.", support: ["supported", "supported", "warning"], links: [{label: "App Store", url: "https://apps.apple.com/app/defaultvpn/id6744725017"}], platforms: "iPhone, iPad", importMethod: ".conf", bestFor: "Запасной вариант для iOS.", limitation: "AWG 2.0 support should be treated cautiously. No normal per-app split tunneling due to iOS VPN limitations."},
-      {name: "Clash Mi", status: "Experimental", trafficSplit: "Proxy rules", description: "Экспериментальный proxy-клиент, не основной AWG-клиент.", support: ["warning", "warning", "warning"], links: [{label: "App Store", url: "https://apps.apple.com/app/clash-mi/id6744321968"}], platforms: "iPhone, iPad", importMethod: "Proxy profiles", bestFor: "Proxy-rule based scenarios.", limitation: "Не основной AWG-клиент."},
-    ],
-  },
-  {
-    name: "macOS",
-    icon: "apple",
-    subtitle: "Универсальный full-client flow или лёгкий AWG-only путь.",
-    clients: [
-      {name: "AmneziaVPN", status: "Recommended / Full client", trafficSplit: "Routes / app features", description: "Лучший универсальный вариант для macOS.", support: ["supported", "supported", "supported"], links: [{label: "Official", url: "https://amnezia.org/downloads"}, {label: "GitHub", url: "https://github.com/amnezia-vpn/amnezia-client/releases"}], platforms: "macOS", importMethod: "vpn:// URI, QR, app flow", bestFor: "Полный Amnezia-клиент на macOS.", limitation: "Для лёгкого AWG-only сценария можно использовать AmneziaWG."},
-      {name: "AmneziaWG", status: "Recommended", trafficSplit: "Routes only", description: "Лёгкий AWG-клиент для Apple ecosystem.", support: ["supported", "supported", "supported"], links: [{label: "App Store", url: "https://apps.apple.com/app/amneziawg/id6478942365"}], platforms: "macOS", importMethod: ".conf, QR", bestFor: "Лёгкий AWG-only клиент.", limitation: "Split tunneling в основном через маршруты."},
-      {name: "VeilBox", status: "Experimental", trafficSplit: "TUN / proxy rules", description: "Альтернативный клиент.", support: ["unknown", "unknown", "warning"], links: [{label: "GitHub", url: "https://github.com/artem4150/VeilBox"}], platforms: "macOS", importMethod: "Depends on build", bestFor: "Экспериментальные гибридные сценарии.", limitation: "Не основной AWG-клиент."},
-      {name: "Clash Verge Rev", status: "Experimental", trafficSplit: "Proxy rules", description: "Прокси-комбайн, не основной AWG-клиент.", support: ["warning", "warning", "warning"], links: [{label: "GitHub", url: "https://github.com/clash-verge-rev/clash-verge-rev/releases"}], platforms: "macOS", importMethod: "Proxy profiles", bestFor: "Proxy-rule based routing.", limitation: "Не основной AWG-клиент."},
-    ],
-  },
-  {
-    name: "Linux Desktop",
-    icon: "linux",
-    subtitle: "GUI-подключение для desktop Linux; proxy-клиенты остаются альтернативой.",
-    clients: [
-      {name: "AmneziaVPN", status: "Recommended", trafficSplit: "Routes / system rules", description: "Основной GUI-клиент для Linux Desktop.", support: ["supported", "supported", "supported"], links: [{label: "Official", url: "https://amnezia.org/downloads"}, {label: "GitHub", url: "https://github.com/amnezia-vpn/amnezia-client/releases"}], platforms: "Linux Desktop", importMethod: "vpn:// URI, QR, app flow", bestFor: "GUI-подключение на Linux.", limitation: "Для headless/server сценариев используются отдельные tools, но здесь показываются только OS-клиенты."},
-      {name: "Clash Verge Rev", status: "Experimental", trafficSplit: "Proxy rules", description: "Прокси-комбайн, не основной AWG-клиент.", support: ["warning", "warning", "warning"], links: [{label: "GitHub", url: "https://github.com/clash-verge-rev/clash-verge-rev/releases"}], platforms: "Linux Desktop", importMethod: "Proxy profiles", bestFor: "Proxy-rule based routing.", limitation: "Не основной AWG-клиент."},
-    ],
-  },
-  {
-    name: "Routers / Embedded",
-    icon: "router",
-    subtitle: "Отдельный класс сценариев: не desktop/mobile apps, а маршрутизация устройств на уровне сети.",
-    clients: [
-      {name: "Keenetic", status: "Router", trafficSplit: "Routes / device rules", description: "Keenetic сценарий через Entware или прошивку с поддержкой AWG.", supportSummary: "depends on firmware / setup", links: [{label: "Guide", url: "https://gitlab.com/ShidlaSGC/keenetic-entware-awg-go/-/blob/main/README.md"}], platforms: "Keenetic routers", importMethod: "Firmware / Entware setup", bestFor: "Маршрутизация устройств через AWG на уровне роутера.", limitation: "Support depends on firmware and setup."},
-      {name: "OpenWrt", status: "Router", trafficSplit: "Routes / firewall rules", description: "OpenWrt-сценарий для AWG на роутере.", supportSummary: "depends on package / build", links: [{label: "OpenWrt #1", url: "tg://resolve?domain=itdogchat&post=44512&comment=755535"}, {label: "OpenWrt #2", url: "tg://resolve?domain=itdogchat&post=44512&comment=759893"}], platforms: "OpenWrt routers", importMethod: "Package / build-specific setup", bestFor: "Policy routing, маршрутизация устройств и сетей через AWG.", limitation: "Package compatibility depends on OpenWrt version, target, subtarget and kernel ABI."},
-    ],
-  },
-];
+async function loadHelpClientGroups() {
+  if (helpClientGroups) return helpClientGroups;
+  try {
+    const payload = await api("/api/help/clients");
+    helpClientGroups = Array.isArray(payload.groups) ? payload.groups : [];
+  } catch {
+    helpClientGroups = [];
+    showToast("Could not load help", "error");
+  }
+  return helpClientGroups;
+}
 
 const helpSupportMeta = {
   supported: {icon: "✅", classes: "border-green-700/30 bg-green-500/10 text-green-700"},
@@ -916,8 +869,8 @@ function renderHelpLinks(links) {
 
 function renderHelpClientCard(client) {
   const support = client.supportSummary
-    ? `<span class="inline-flex items-center rounded-full border border-violet-700/30 bg-violet-500/10 px-2 py-1 text-[11px] font-medium text-violet-700">◇ AWG ${esc(client.supportSummary)}</span>`
-    : `${renderHelpSupportBadge("AWG 1.x", client.support[0])}${renderHelpSupportBadge("AWG 1.5", client.support[1])}${renderHelpSupportBadge("AWG 2.0", client.support[2])}`;
+    ? `<span class="inline-flex items-center rounded-full border border-violet-700/30 bg-violet-500/10 px-2 py-1 text-[11px] font-medium text-violet-700">◇ ${esc(client.supportSummary)}</span>`
+    : `${renderHelpSupportBadge("Profile 1.x", client.support[0])}${renderHelpSupportBadge("Profile 1.5", client.support[1])}${renderHelpSupportBadge("Profile 2.0", client.support[2])}`;
   return `
     <article class="rounded-lg border border-[var(--line)] bg-[var(--soft)] p-3 transition hover:border-[var(--accent)]">
       <div class="flex flex-wrap items-start justify-between gap-2">
@@ -934,7 +887,7 @@ function renderHelpClientCard(client) {
         <summary class="cursor-pointer font-medium text-[var(--text)]">Details</summary>
         <div class="mt-2 grid gap-1.5">
           <p><span class="font-semibold text-[var(--text)]">Platforms:</span> ${esc(client.platforms)}</p>
-          <p><span class="font-semibold text-[var(--text)]">Import:</span> ${esc(client.importMethod)}</p>
+          <p><span class="font-semibold text-[var(--text)]">Setup:</span> ${esc(client.setupMethod)}</p>
           <p><span class="font-semibold text-[var(--text)]">Traffic split:</span> ${esc(client.trafficSplit)}</p>
           <p><span class="font-semibold text-[var(--text)]">Best for:</span> ${esc(client.bestFor)}</p>
           <p><span class="font-semibold text-[var(--text)]">Limitations / notes:</span> ${esc(client.limitation)}</p>
@@ -961,23 +914,24 @@ function renderHelpGroup(group) {
   `;
 }
 
-function showHelp() {
+async function showHelp() {
+  const groups = await loadHelpClientGroups();
   showModal("Help & Clients", `
     <div class="grid gap-4 text-sm">
       <div class="rounded-lg border border-[var(--danger)] bg-[var(--soft)] px-3 py-3">
-        <p class="font-bold text-[var(--danger)]">⚠️ Standard WireGuard clients WILL NOT WORK with AmneziaWG configs.</p>
-        <p class="mt-1 text-xs text-[var(--muted)]">Если клиент ругается на неизвестные параметры S3, S4, I1 или H1, нужен клиент с полной поддержкой AWG 2.0.</p>
+        <p class="font-bold text-[var(--danger)]">Compatible clients are required for generated profiles.</p>
+        <p class="mt-1 text-xs text-[var(--muted)]">If an app rejects advanced parameters, use one of the compatible options below.</p>
       </div>
       <div class="rounded-lg border border-[var(--line)] bg-[var(--soft)] px-3 py-3 text-xs text-[var(--muted)]">
         <p class="font-semibold text-[var(--text)]">Voice / Calls optimization</p>
-        <p class="mt-1">MTU 1280 · PersistentKeepalive 25 · UDP conntrack timeout tuning · Full Cone NAT: not enabled by default · XUDP: not applicable to AWG.</p>
+        <p class="mt-1">MTU 1280 · PersistentKeepalive 25 · UDP conntrack timeout tuning · Full Cone NAT: not enabled by default.</p>
       </div>
       <div class="rounded-lg border border-[var(--line)] bg-[var(--soft)] px-3 py-3 text-xs text-[var(--muted)]">
-        <p class="font-semibold text-[var(--text)]">WG Tunnel URL Import</p>
-        <p class="mt-1">Copy import URL creates a token-protected HTTPS link that returns raw config text starting with [Interface]. Links expire after 1 hour by default. WG Tunnel requires HTTPS; a self-signed certificate may be rejected by the app. Use a trusted domain/certificate for best results.</p>
+        <p class="font-semibold text-[var(--text)]">Access links</p>
+        <p class="mt-1">Copy access link creates a token-protected HTTPS link that returns raw profile text. Links expire quickly by default. Use a trusted domain/certificate for best results.</p>
       </div>
       <div class="grid gap-4">
-        ${helpClientGroups.map(renderHelpGroup).join("")}
+        ${groups.map(renderHelpGroup).join("")}
       </div>
     </div>
   `);
@@ -1000,20 +954,20 @@ async function clientAction(name, action) {
   try {
     if (action === "config") return showConfig(name);
     if (action === "qr") return showQr(name);
-    if (action === "vpnuri") return showVpnUri(name);
+    if (action === "uri") return showUri(name);
     if (action === "download-config") return downloadConfig(name);
     if (action === "copy-config") return copyConfig(name);
-    if (action === "copy-vpnuri") return copyVpnUri(name);
-    if (action === "copy-import-url") return copyImportUrl(name);
+    if (action === "copy-uri") return copyUri(name);
+    if (action === "copy-access-link") return copyAccessLink(name);
     if (action === "regenerate-config") return regenerateConfig(name);
     if (action === "toggle") {
       await api(`/api/clients/${encodeURIComponent(name)}/toggle`, {method: "POST", body: "{}"});
       showToast("Client toggled");
       return loadClients();
     }
-    if (action === "toggle-p2p") {
-      await api(`/api/clients/${encodeURIComponent(name)}/p2p/toggle`, {method: "POST", body: "{}"});
-      showToast("P2P ports toggled");
+    if (action === "toggle-ports") {
+      await api(`/api/clients/${encodeURIComponent(name)}/ports/toggle`, {method: "POST", body: "{}"});
+      showToast("Ports toggled");
       return loadClients();
     }
     if (action === "delete") {
@@ -1031,23 +985,23 @@ async function clientAction(name, action) {
 
 async function regenerateConfig(name) {
   const ok = await confirmModal(
-    "Regenerate config",
-    `Regenerate config for "${name}"?\nThe old client config will stop working. Traffic history and client name will be preserved.`,
+    "Regenerate profile",
+    `Regenerate profile for "${name}"?\nThe old profile will stop working. Traffic history and client name will be preserved.`,
     "Regenerate",
     false
   );
   if (!ok) return;
   const body = {};
   try {
-    if (typeof window.generateAwgI1 === "function" && typeof window.pickAwgI1Sni === "function" && window.crypto?.subtle) {
-      const sni = window.pickAwgI1Sni();
-      body.i1 = await window.generateAwgI1(sni, 0);
+    if (typeof window.generateI1 === "function" && typeof window.pickI1Sni === "function" && window.crypto?.subtle) {
+      const sni = window.pickI1Sni();
+      body.i1 = await window.generateI1(sni, 0);
       body.i1_sni = sni;
     }
   } catch (error) {
     const fallback = await confirmModal(
-      "Regenerate without browser I1?",
-      "Browser-side AWG I1 generation failed. Continue with server fallback?",
+      "Regenerate with fallback?",
+      "Browser-side profile generation failed. Continue with system fallback?",
       "Continue",
       false
     );
@@ -1055,30 +1009,30 @@ async function regenerateConfig(name) {
   }
   await api(`/api/clients/${encodeURIComponent(name)}/regenerate`, {method: "POST", body: JSON.stringify(body)});
   configTextCache.delete(name);
-  showToast("Config regenerated. Download or copy the new config.");
+  showToast("Profile regenerated. Download or copy the new profile.");
   await loadClients();
 }
 
-async function rotateServerProfile() {
+async function rotateProfile() {
   const preset = await rotateProfileModal();
   if (!preset) return;
   const client_i1 = {};
   try {
-    if (typeof window.generateAwgI1 === "function" && typeof window.pickAwgI1Sni === "function" && window.crypto?.subtle) {
+    if (typeof window.generateI1 === "function" && typeof window.pickI1Sni === "function" && window.crypto?.subtle) {
       for (const client of latestClients) {
-        const sni = window.pickAwgI1Sni();
-        client_i1[client.name] = await window.generateAwgI1(sni, 0);
+        const sni = window.pickI1Sni();
+        client_i1[client.name] = await window.generateI1(sni, 0);
       }
     }
   } catch {
-    showToast("Browser I1 generation failed; using server fallback", "error");
+    showToast("Browser generation failed; using system fallback", "error");
   }
-  await api("/api/server/rotate-profile", {
+  await api("/api/profile/rotate", {
     method: "POST",
     body: JSON.stringify({preset, confirm: "ROTATE", client_i1}),
   });
   configTextCache.clear();
-  showToast("Server profile rotated. Download or import new client configs.");
+  showToast("Profile rotated. Download or copy new profiles.");
   await loadClients();
 }
 
@@ -1088,7 +1042,7 @@ async function showConfig(name) {
     <div class="grid gap-3">
       <div class="flex flex-wrap justify-end gap-2">
         <button id="downloadConfigFromModal" class="${buttonClasses()}">${icon("download")}<span>Download .conf</span></button>
-        <button id="copyConfigFromModal" class="${buttonClasses()}">${icon("copy")}<span>Copy config</span></button>
+        <button id="copyConfigFromModal" class="${buttonClasses()}">${icon("copy")}<span>Copy profile</span></button>
       </div>
       <pre class="max-h-[70vh] overflow-auto whitespace-pre-wrap break-words rounded-md bg-[var(--soft)] p-3 text-xs">${esc(text)}</pre>
     </div>
@@ -1115,37 +1069,37 @@ async function showQr(name) {
   showModal(name, `<img class="mx-auto max-h-[70vh] max-w-full rounded-md bg-white p-2" alt="QR" src="${url}">`);
 }
 
-async function showVpnUri(name) {
-  const blob = await api(`/api/clients/${encodeURIComponent(name)}/vpnuri`);
+async function showUri(name) {
+  const blob = await api(`/api/clients/${encodeURIComponent(name)}/uri`);
   const uri = (await blob.text()).trim();
   showModal(name, `
     <div class="grid gap-3">
       <textarea readonly class="h-32 w-full resize-none rounded-md border border-[var(--line)] bg-[var(--soft)] p-3 font-mono text-xs text-[var(--text)] outline-none">${esc(uri)}</textarea>
       <div class="flex flex-wrap justify-end gap-2">
         <a href="${esc(uri)}" class="${buttonClasses()}">${icon("external")}<span>Open</span></a>
-        <button id="copyVpnUri" class="${buttonClasses()}">${icon("copy")}<span>Copy</span></button>
+        <button id="copyUri" class="${buttonClasses()}">${icon("copy")}<span>Copy</span></button>
       </div>
     </div>
   `);
-  document.querySelector("#copyVpnUri").onclick = async () => {
+  document.querySelector("#copyUri").onclick = async () => {
     await copyText(uri);
     showToast("Copied");
   };
 }
 
-async function copyVpnUri(name) {
-  const blob = await api(`/api/clients/${encodeURIComponent(name)}/vpnuri`);
+async function copyUri(name) {
+  const blob = await api(`/api/clients/${encodeURIComponent(name)}/uri`);
   await copyText((await blob.text()).trim());
   showToast("Copied");
 }
 
-async function copyImportUrl(name) {
-  const result = await api(`/api/clients/${encodeURIComponent(name)}/import-link`, {
+async function copyAccessLink(name) {
+  const result = await api(`/api/clients/${encodeURIComponent(name)}/access-link`, {
     method: "POST",
     body: JSON.stringify({ttl: 300, one_time: true}),
   });
   await copyText(result.url);
-  showToast("Import URL copied");
+  showToast("Access link copied");
 }
 
 async function loadTokens() {
@@ -1365,9 +1319,9 @@ function rotateProfileModal() {
     dialog.className = "w-[min(520px,calc(100vw-32px))] rounded-lg border border-[var(--line)] bg-[var(--panel)] p-0 text-[var(--text)] shadow-xl backdrop:bg-black/55";
     dialog.innerHTML = `
       <form method="dialog" class="p-4">
-        <h2 class="mb-2 text-base font-semibold">Rotate AWG profile</h2>
-        <p class="text-sm text-[var(--muted)]">Refresh server obfuscation parameters and regenerate all client configs. Existing imports stop working until clients download or import fresh configs.</p>
-        <fieldset class="mt-4 grid gap-2" aria-label="AWG profile preset">
+        <h2 class="mb-2 text-base font-semibold">Rotate profile</h2>
+        <p class="text-sm text-[var(--muted)]">Refresh system parameters and regenerate all client profiles. Existing access links stop working until clients download or copy fresh profiles.</p>
+        <fieldset class="mt-4 grid gap-2" aria-label="Profile preset">
           <label class="flex cursor-pointer gap-3 rounded-md border border-[var(--line)] bg-[var(--soft)] p-3">
             <input type="radio" name="rotatePreset" value="mobile" checked class="mt-1 accent-[var(--accent)]">
             <span>
@@ -1383,7 +1337,7 @@ function rotateProfileModal() {
             </span>
           </label>
         </fieldset>
-        <p class="mt-3 rounded-md border border-amber-500/50 bg-amber-500/10 p-3 text-xs text-[var(--text)]">This does not rotate server or client keys, IPs, P2P ports, RBAC, expiry, or traffic history.</p>
+        <p class="mt-3 rounded-md border border-amber-500/50 bg-amber-500/10 p-3 text-xs text-[var(--text)]">This does not rotate keys, IPs, port rules, RBAC, expiry, or traffic history.</p>
         <div class="mt-4 flex flex-wrap justify-end gap-2">
           <button value="cancel" class="${buttonClasses()}">Cancel</button>
           <button value="ok" class="${buttonClasses("border-amber-600 bg-amber-500 text-white")}">Rotate profile</button>

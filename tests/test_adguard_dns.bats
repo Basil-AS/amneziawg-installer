@@ -224,10 +224,11 @@ CONF
     fi
 }
 
-@test "web panel exposes DNS API and card" {
+@test "web panel exposes resolver API and card" {
     grep -q 'api/dns' "$BATS_TEST_DIRNAME/../web/server.py"
-    grep -q 'metricDns' "$BATS_TEST_DIRNAME/../web/app.js"
-    grep -q '/api/dns' "$BATS_TEST_DIRNAME/../web/app.js"
+    grep -q 'api/resolver' "$BATS_TEST_DIRNAME/../web/server.py"
+    grep -q 'metricResolver' "$BATS_TEST_DIRNAME/../web/app.js"
+    grep -q '/api/resolver' "$BATS_TEST_DIRNAME/../web/app.js"
 }
 
 @test "client hosts sync writes and removes names for AdGuard visibility" {

@@ -7,12 +7,31 @@
         grep -qF 'systemd_escape_value()' "$installer"
         grep -qF 'systemd_env_line()' "$installer"
         grep -qF 'validate_safe_abs_path()' "$installer"
+        grep -qF 'systemd_abs_path_value()' "$installer"
         grep -qF 'Environment="%s=%s"\n' "$installer"
         grep -qF 'validate_safe_abs_path "$AWG_DIR"' "$installer"
         grep -qF 'validate_safe_abs_path "$SERVER_CONF_FILE"' "$installer"
         grep -qF 'validate_safe_abs_path "$web_dir/server.py"' "$installer"
-        grep -qF 'WorkingDirectory="${ag_dir_escaped}"' "$installer"
-        grep -qF 'ExecStart="${ag_bin_escaped}" -c "${ag_yaml_escaped}" -w "${ag_dir_escaped}" --no-check-update' "$installer"
+        grep -qF 'WorkingDirectory=${ag_dir_unit}' "$installer"
+        grep -qF 'ExecStart=${ag_bin_unit} -c ${ag_conf_unit} -w ${ag_dir_unit} --no-check-update' "$installer"
+        grep -qF 'ExecStart=/usr/bin/python3 ${web_server_unit}' "$installer"
+        grep -qF 'systemd_env_line AWG_DIR "$AWG_DIR"' "$installer"
+        local quoted_workdir='WorkingDirectory='
+        quoted_workdir+='"'
+        local quoted_exec='ExecStart='
+        quoted_exec+='"'
+        if grep -qF "$quoted_workdir" "$installer"; then
+            fail "quoted WorkingDirectory returned in $installer"
+        fi
+        if grep -qF "$quoted_exec" "$installer"; then
+            fail "quoted ExecStart returned in $installer"
+        fi
+        local quoted_ag='"'
+        quoted_ag+='/opt/AdGuardHome'
+        quoted_ag+='"'
+        if grep -qF "$quoted_ag" "$installer"; then
+            fail "quoted AdGuardHome path returned in $installer"
+        fi
         if grep -qF 'Environment=AWG_DIR=${AWG_DIR}' "$installer"; then
             fail "raw unquoted awg-web Environment line returned in $installer"
         fi
@@ -22,14 +41,27 @@
 @test "systemd validators reject control chars and relative paths" {
     eval "$(awk '/^validate_no_control_chars\(\)/,/^}/' "$BATS_TEST_DIRNAME/../install_amneziawg.sh")"
     eval "$(awk '/^validate_safe_abs_path\(\)/,/^}/' "$BATS_TEST_DIRNAME/../install_amneziawg.sh")"
+    eval "$(awk '/^systemd_abs_path_value\(\)/,/^}/' "$BATS_TEST_DIRNAME/../install_amneziawg.sh")"
 
     validate_no_control_chars "plain-value"
     run validate_no_control_chars $'bad\nvalue'
     [ "$status" -ne 0 ]
     run validate_no_control_chars $'bad\tvalue'
     [ "$status" -ne 0 ]
-    validate_safe_abs_path "/root/awg/web/server.py"
+    local safe_path=/root/awg/web/server.py
+    validate_safe_abs_path "$safe_path"
     run validate_safe_abs_path "relative/path"
+    [ "$status" -ne 0 ]
+    run systemd_abs_path_value "$safe_path"
+    [ "$status" -eq 0 ]
+    [ "$output" = "$safe_path" ]
+    run systemd_abs_path_value "/root/awg/web/server with space.py"
+    [ "$status" -ne 0 ]
+    run systemd_abs_path_value '/root/awg/web/"server.py"'
+    [ "$status" -ne 0 ]
+    run systemd_abs_path_value "/root/awg/web/'server.py'"
+    [ "$status" -ne 0 ]
+    run systemd_abs_path_value $'/root/awg/web/bad\nserver.py'
     [ "$status" -ne 0 ]
 }
 

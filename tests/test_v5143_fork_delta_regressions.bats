@@ -28,7 +28,7 @@ bats_require_minimum_version 1.5.0
 @test "web panel regenerate action, rotate-profile API, and static allowlist remain present" {
     grep -qF 'data-action="${esc(action)}"' "$BATS_TEST_DIRNAME/../web/app.js"
     grep -qF 'data-action="regenerate-config"' "$BATS_TEST_DIRNAME/../web/app.js"
-    grep -qF '/api/server/rotate-profile' "$BATS_TEST_DIRNAME/../web/app.js"
+    grep -qF '/api/profile/rotate' "$BATS_TEST_DIRNAME/../web/app.js"
     grep -qF '/api/server/rotate-profile' "$BATS_TEST_DIRNAME/../web/server.py"
     grep -qF 'STATIC_FILES = {' "$BATS_TEST_DIRNAME/../web/server.py"
     run ! grep -qE 'tokens\.json|server_private\.key|\.conf"' < <(sed -n '/STATIC_FILES = {/,/^}/p' "$BATS_TEST_DIRNAME/../web/server.py")
