@@ -1,6 +1,6 @@
 "use strict";
 
-const AWG_I1_SNI_CANDIDATES = [
+const I1_SNI_CANDIDATES = [
   "mail.ru",
   "vk.com",
   "ozon.ru",
@@ -9,9 +9,9 @@ const AWG_I1_SNI_CANDIDATES = [
   "cloudflare.com"
 ];
 
-function pickAwgI1Sni() {
-  return AWG_I1_SNI_CANDIDATES[
-    Math.floor(Math.random() * AWG_I1_SNI_CANDIDATES.length)
+function pickI1Sni() {
+  return I1_SNI_CANDIDATES[
+    Math.floor(Math.random() * I1_SNI_CANDIDATES.length)
   ];
 }
 
@@ -282,7 +282,7 @@ function quicFixCutSettings(cutSettings, packetLength, packetNumberLength, paylo
   return cutSettings;
 }
 
-function quicToAWG(packet, cutSettings) {
+function quicToProfile(packet, cutSettings) {
   const parts = [`<b 0x${quicToHex(packet)}>`];
   for (const cut of cutSettings) {
     parts.push(`<r ${cut.offset} ${cut.length}>`);
@@ -290,7 +290,7 @@ function quicToAWG(packet, cutSettings) {
   return parts.join("");
 }
 
-async function generateAwgI1(sni, level = 0, padTo = 0) {
+async function generateI1(sni, level = 0, padTo = 0) {
     const dcid = new Uint8Array(1);
     window.crypto.getRandomValues(dcid);
 
@@ -303,9 +303,9 @@ async function generateAwgI1(sni, level = 0, padTo = 0) {
     const packet = await quicInitial(dcid, scid, token, pkn, payload, padTo);
     quicFixCutSettings(cutSettings, packet.byteLength, pkn.byteLength, payload.byteLength);
 
-    return quicToAWG(packet, cutSettings);
+    return quicToProfile(packet, cutSettings);
 }
 
-window.AWG_I1_SNI_CANDIDATES = AWG_I1_SNI_CANDIDATES;
-window.pickAwgI1Sni = pickAwgI1Sni;
-window.generateAwgI1 = generateAwgI1;
+window.I1_SNI_CANDIDATES = I1_SNI_CANDIDATES;
+window.pickI1Sni = pickI1Sni;
+window.generateI1 = generateI1;

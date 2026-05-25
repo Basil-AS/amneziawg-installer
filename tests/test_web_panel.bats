@@ -269,7 +269,7 @@ assert set(server.STATIC_FILES) == {
     "/index.html",
     "/style.css",
     "/app.js",
-    "/awg_i1.js",
+    "/i1.js",
     "/favicon.svg",
     "/vendor/tailwindcss.js",
     "/vendor/apexcharts.min.js",
@@ -455,13 +455,13 @@ PY
     local app="$BATS_TEST_DIRNAME/../web/app.js"
     grep -qF 'data-action="download-config"' "$app"
     grep -qF 'data-action="copy-config"' "$app"
-    grep -qF 'copy-import-url' "$app"
+    grep -qF 'copy-access-link' "$app"
     grep -qF 'regenerate-config' "$app"
-    grep -qF 'copy-vpnuri' "$app"
+    grep -qF 'copy-uri' "$app"
     grep -qF 'Download .conf' "$app"
-    grep -qF 'Copy config' "$app"
+    grep -qF 'Copy profile' "$app"
     grep -qF 'Show QR' "$app"
-    grep -qF 'Copy vpn://' "$app"
+    grep -qF 'Copy URI' "$app"
     grep -qF 'aria-label' "$app"
     grep -qF 'navigator.clipboard?.writeText' "$app"
     grep -qF 'document.execCommand("copy")' "$app"
@@ -849,8 +849,8 @@ PY
 
 @test "web static files and UI expose regenerate action and local I1 generator" {
     local root="$BATS_TEST_DIRNAME/.."
-    grep -qF '<script src="/awg_i1.js"></script>' "$root/web/index.html"
-    grep -qF '"/awg_i1.js": ("awg_i1.js", "application/javascript; charset=utf-8")' "$root/web/server.py"
+    grep -qF '<script src="/i1.js"></script>' "$root/web/index.html"
+    grep -qF '"/i1.js": ("awg_i1.js", "application/javascript; charset=utf-8")' "$root/web/server.py"
     grep -qF 'regenerate-config' "$root/web/app.js"
     grep -qF 'CLIENT_NAME_RE = /^[A-Za-z0-9_-]+$/' "$root/web/app.js"
     grep -qF 'Use only Latin letters, digits, underscore and hyphen' "$root/web/app.js"
@@ -867,14 +867,14 @@ PY
     grep -qF 'window.innerWidth' "$root/web/app.js"
     grep -qF 'spaceBelow < height + gap' "$root/web/app.js"
     grep -qF 'event.key === "Escape"' "$root/web/app.js"
-    grep -qF 'p2p-summary' "$root/web/app.js"
-    grep -qF 'p2p-chip' "$root/web/app.js"
-    grep -qF 'ports.map(port => `<span class="p2p-chip">' "$root/web/app.js"
+    grep -qF 'port-summary' "$root/web/app.js"
+    grep -qF 'port-chip' "$root/web/app.js"
+    grep -qF 'ports.map(port => `<span class="port-chip">' "$root/web/app.js"
     if grep -qF 'ports.slice(0, 2)' "$root/web/app.js"; then
-        fail "P2P ports must not be truncated"
+        fail "port list must not be truncated"
     fi
     if grep -qF '+${ports.length' "$root/web/app.js"; then
-        fail "P2P ports must not render +N overflow chips"
+        fail "port list must not render +N overflow chips"
     fi
     grep -qF 'client-card-chart-bg' "$root/web/app.js"
     grep -qF 'clientCharts' "$root/web/app.js"
@@ -887,14 +887,14 @@ PY
     grep -qF 'grid-template-columns:repeat(4,minmax(0,1fr))' "$root/web/style.css"
     grep -qF 'z-index:200' "$root/web/style.css"
     grep -qF -- '--accent:#b91c1c' "$root/web/style.css"
-    grep -qF '/api/server/rotate-profile' "$root/web/app.js"
+    grep -qF '/api/profile/rotate' "$root/web/app.js"
     grep -qF 'rotateProfileModal' "$root/web/app.js"
     grep -qF 'name="rotatePreset" value="mobile" checked' "$root/web/app.js"
     grep -qF 'name="rotatePreset" value="default"' "$root/web/app.js"
-    grep -qF 'Refresh server obfuscation parameters and regenerate all client configs' "$root/web/app.js"
+    grep -qF 'Refresh system parameters and regenerate all client profiles' "$root/web/app.js"
     grep -qF 'Rotate profile' "$root/web/app.js"
-    grep -qF 'Regenerate config for' "$root/web/app.js"
-    grep -qF 'Config regenerated. Download or copy the new config.' "$root/web/app.js"
+    grep -qF 'Regenerate profile for' "$root/web/app.js"
+    grep -qF 'Profile regenerated. Download or copy the new profile.' "$root/web/app.js"
     grep -qF "default-src 'self'; script-src 'self'" "$root/web/server.py"
     if grep -E "https?://|unpkg" "$root/web/index.html" >/dev/null; then
         fail "index.html must not load external scripts"
@@ -979,7 +979,7 @@ class Headers(dict):
 def make_handler(token, body):
     payload = json.dumps(body).encode()
     h = object.__new__(server.Handler)
-    h.path = "/api/server/rotate-profile"
+    h.path = "/api/profile/rotate"
     h.client_address = ("127.0.0.1", 12345)
     h.rfile = io.BytesIO(payload)
     h.wfile = io.BytesIO()
@@ -1011,11 +1011,11 @@ PY
     rm -rf "$tmp"
 }
 
-@test "browser I1 generator uses realistic ClientHello and public generateAwgI1 path" {
+@test "browser I1 generator uses realistic ClientHello and public generateI1 path" {
     local js="$BATS_TEST_DIRNAME/../web/awg_i1.js"
     [ -f "$js" ]
     grep -qF 'function buildRealisticClientHello' "$js"
-    grep -qF 'async function generateAwgI1' "$js"
+    grep -qF 'async function generateI1' "$js"
     grep -qF '0x13, 0x01' "$js"
     grep -qF '0x13, 0x02' "$js"
     grep -qF '0x13, 0x03' "$js"
@@ -1025,8 +1025,8 @@ PY
     grep -qF '0x0033' "$js"
     grep -qF '0x68, 0x33' "$js"
     grep -qF 'const clientHello = buildRealisticClientHello(sni);' "$js"
-    if awk '/async function generateAwgI1/,/^}/' "$js" | grep -qF 'quicTlsClientHelloSniOnly'; then
-        fail "generateAwgI1 must not use legacy SNI-only ClientHello"
+    if awk '/async function generateI1/,/^}/' "$js" | grep -qF 'quicTlsClientHelloSniOnly'; then
+        fail "generateI1 must not use legacy SNI-only ClientHello"
     fi
 }
 

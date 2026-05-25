@@ -36,12 +36,12 @@ MANAGE_SCRIPT_PATH="$AWG_DIR/manage_amneziawg.sh"
 declare -A AWG_ASSET_SHA256=(
     ["awg_common.sh"]="1ed79ca83bb5a9fdd12aba04a1a893c80a63345558274ab6bfde41964ae75f9e"
     ["manage_amneziawg.sh"]="4906b48b40ad461d92dc64f91f8753fc0d7c8aff4768c18485c448ca64af154e"
-    ["web/server.py"]="7b8233df00a8896f6cee717ff7dc083b9b0a89e007bf9ae906f528b3b28cc040"
-    ["web/index.html"]="a41e458c832f82d8d834ecc67f2cb35da4eed11bf7b76acd493413d082de0483"
-    ["web/app.js"]="d03075bfae2340962b53b122b7dbc8d66e45b0dcef55e5beb37a565809a15ec2"
-    ["web/awg_i1.js"]="d1951b9de2c8ab8170cf78ad320f274fc9dc5da622b8e60b2650871fb7ddf1e4"
-    ["web/style.css"]="fe373a5258618afbb42455372bbfc4680ab40ed624f67463c3eeceedb105133e"
-    ["web/favicon.svg"]="ce339a4b3043c9d531c4a59b46e3ec51b9793a693a76bfabef441f114e7125b0"
+    ["web/server.py"]="7e7c6a88888cd87358ffe1454c12c0a53510eb6325a81034b16160e9224bb503"
+    ["web/index.html"]="7c07ed1d1991e08c0f9fc31e86ed8eb2bba5fa96387088f1f18918396cf7e662"
+    ["web/app.js"]="35cde4f9f15c9eef3d36b325ad3f00284e6c01aef1af5e5dcd568a058d646c39"
+    ["web/awg_i1.js"]="c97a6ac6c4e4bd7ab24c37c45f451e364414f276441f8da1c0805d26013aaa03"
+    ["web/style.css"]="a9cd64caa1a1e0d7c0f103c827b59020a4a19e6670020b9028ee28cb112bb619"
+    ["web/favicon.svg"]="ae700ecb12dbf01403d0ed25247bac6b70f11201b094ee6c14b774b7fa533859"
     ["web/vendor/tailwindcss.js"]="176e894661aa9cdc9a5cba6c720044cbbf7b8bd80d1c9a142a7c24b1b6c50d15"
     ["web/vendor/apexcharts.min.js"]="a7400cd48b40b4f39d1c15137ae0cc8cbec31dc2b55a606640f1cd11912416dd"
 )
@@ -931,6 +931,14 @@ validate_safe_abs_path() {
     local p="$1"
     validate_no_control_chars "$p" || return 1
     [[ "$p" == /* ]] || return 1
+}
+
+systemd_abs_path_value() {
+    local p="$1"
+    validate_safe_abs_path "$p" || return 1
+    # Do not shell-quote systemd path directives. Reject unsafe values instead.
+    [[ "$p" != *" "* && "$p" != *$'\t'* && "$p" != *\"* && "$p" != *\'* ]] || return 1
+    printf '%s' "$p"
 }
 
 print_secret_console_only() {
@@ -4327,13 +4335,10 @@ print(bcrypt.hashpw(password, bcrypt.gensalt(rounds=10, prefix=b"2b")).decode())
         die "AdGuard Home: не удалось сгенерировать curated YAML"
     chmod 600 "$tmp_conf"
 
-    validate_safe_abs_path "$ag_dir" || die "AdGuard Home: unsafe WorkingDirectory path"
-    validate_safe_abs_path "$ag_bin" || die "AdGuard Home: unsafe ExecStart binary path"
-    validate_safe_abs_path "$ag_yaml" || die "AdGuard Home: unsafe config path"
-    local ag_dir_escaped ag_bin_escaped ag_yaml_escaped
-    ag_dir_escaped="$(systemd_escape_value "$ag_dir")" || die "AdGuard Home: unsafe WorkingDirectory value"
-    ag_bin_escaped="$(systemd_escape_value "$ag_bin")" || die "AdGuard Home: unsafe ExecStart binary value"
-    ag_yaml_escaped="$(systemd_escape_value "$ag_yaml")" || die "AdGuard Home: unsafe config value"
+    local ag_dir_unit ag_bin_unit ag_conf_unit
+    ag_dir_unit="$(systemd_abs_path_value "$ag_dir")" || die "Некорректный AdGuardHome dir"
+    ag_bin_unit="$(systemd_abs_path_value "$ag_bin")" || die "Некорректный AdGuardHome binary path"
+    ag_conf_unit="$(systemd_abs_path_value "$ag_yaml")" || die "Некорректный AdGuardHome config path"
 
     cat > /etc/systemd/system/AdGuardHome.service << EOF
 [Unit]
@@ -4343,8 +4348,8 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-WorkingDirectory="${ag_dir_escaped}"
-ExecStart="${ag_bin_escaped}" -c "${ag_yaml_escaped}" -w "${ag_dir_escaped}" --no-check-update
+WorkingDirectory=${ag_dir_unit}
+ExecStart=${ag_bin_unit} -c ${ag_conf_unit} -w ${ag_dir_unit} --no-check-update
 Restart=on-failure
 RestartSec=10
 
@@ -4729,6 +4734,8 @@ PY
     validate_no_control_chars "${AWG_WEB_PORT:-}" || die "Web Panel: unsafe port value"
     validate_no_control_chars "${AWG_WEB_DOMAIN:-}" || die "Web Panel: unsafe domain value"
     validate_no_control_chars "${AWG_ENDPOINT:-}" || die "Web Panel: unsafe endpoint value"
+    local web_server_unit
+    web_server_unit="$(systemd_abs_path_value "$web_dir/server.py")" || die "Некорректный web/server.py path"
 
     if [[ "${AWG_WEB_BIND:-}" == "0.0.0.0" || "${AWG_WEB_BIND:-}" == "::" ]]; then
         log_warn "Web Panel слушает публичный bind ${AWG_WEB_BIND}:${AWG_WEB_PORT:-8443}. Python stdlib HTTP server подходит для лёгкой админ-панели, но слабее nginx/caddy на публичном edge."
@@ -4752,7 +4759,7 @@ EOF
         systemd_env_line AWG_WEB_DOMAIN "${AWG_WEB_DOMAIN:-}"
         systemd_env_line AWG_ENDPOINT "${AWG_ENDPOINT:-}"
         cat <<EOF
-ExecStart=/usr/bin/python3 "$(systemd_escape_value "$web_dir/server.py")"
+ExecStart=/usr/bin/python3 ${web_server_unit}
 Restart=on-failure
 RestartSec=3
 
