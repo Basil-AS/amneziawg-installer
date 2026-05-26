@@ -76,7 +76,7 @@ sudo bash ./install_amneziawg.sh --yes --route-all --server-name="my-vpn"
 sudo bash ./install_amneziawg.sh
 ```
 
-The wizard asks for the important deployment choices before installation starts: server name, endpoint/public IP or auto-detect, route mode, `default|mobile` preset, IPv6 mode `routed|ndp|nat66`, IPv6 subnet for `routed`, web-panel exposure (`VPN-only`, `localhost`, `public`), web-panel HTTPS port, AdGuard Home, and P2P ports. Pressing Enter at the Web Panel access step keeps the safe VPN-only default `https://10.9.9.1:8443`; choose `public` for a public domain, where domain modes (`ip-domain`, `letsencrypt`, `custom`) default to `443`. For trusted HTTPS, use your own domain + Let's Encrypt; `sslip.io`/`nip.io` are convenient but best-effort because they share Let's Encrypt rate limits. It prints a final summary before installation; selected values are saved to `/root/awg/awgsetup_cfg.init` so reboot resume does not fall back to default preset/bind.
+The wizard asks for the important deployment choices before installation starts: server name, endpoint/public IP or auto-detect, route mode, `default|mobile` preset, IPv6 mode `auto|routed|ndp|nat66`, IPv6 subnet for `routed`, web-panel exposure (`VPN-only`, `localhost`, `public`), web-panel HTTPS port, AdGuard Home, and P2P ports. Pressing Enter at the Web Panel access step keeps the safe VPN-only default `https://10.9.9.1:8443`; choose `public` for a public domain, where domain modes (`ip-domain`, `letsencrypt`, `custom`) default to `443`. For trusted HTTPS, use your own domain + Let's Encrypt; `sslip.io`/`nip.io` are convenient but best-effort because they share Let's Encrypt rate limits. It prints a final summary before installation; selected values are saved to `/root/awg/awgsetup_cfg.init` so reboot resume does not fall back to default preset/bind.
 
 ### Non-interactive install with flags
 
@@ -235,8 +235,9 @@ IPv6 modes:
 
 | Mode | When to use it |
 | --- | --- |
-| `routed` | Your provider gives you an additional routed IPv6 prefix (`/64`, `/56`, `/48`) for VPN clients |
-| `ndp` | The server already has an existing public `/64` on its interface; client IPv6 addresses are announced through NDP proxy |
+| `auto` | Auto-select: `routed` only when a dedicated provider-routed prefix is explicitly provided, otherwise `ndp` when the current public `/64` exists on the external interface, otherwise `nat66` |
+| `routed` | Your provider gives you a separate routed IPv6 prefix (`/64`, `/56`, `/48`) specifically for VPN clients |
+| `ndp` | The server already has the current public `/64` on `eth0`/the external interface; client IPv6 addresses are announced through NDP proxy |
 | `nat66` | Fallback via NAT66 when routed/NDP is not suitable |
 
 P2P/DNAT is configured after installation:
@@ -257,7 +258,7 @@ sudo /root/awg/manage_amneziawg.sh p2p toggle CLIENT_NAME
 | `--disable-web` | Do not deploy the web panel | `--disable-web` |
 | `--enable-native-ipv6` | Compatibility alias for enabling client IPv6 | `--enable-native-ipv6` |
 | `--disallow-ipv6` | Force-disable IPv6 | `--disallow-ipv6` |
-| `--ipv6-mode=MODE` | IPv6 mode: `routed`, `ndp`, `nat66` | `--ipv6-mode=ndp` |
+| `--ipv6-mode=MODE` | IPv6 mode: `auto`, `routed`, `ndp`, `nat66` | `--ipv6-mode=auto` |
 | `--ipv6-subnet=CIDR` | Client IPv6 prefix | `--ipv6-subnet=2001:db8:1::/64` |
 | `--upgrade-ipv6` | Add IPv6/P2P metadata to existing clients | `--upgrade-ipv6` |
 | `--p2p-base-port=PORT` | Base P2P port range | `--p2p-base-port=20000` |
@@ -617,7 +618,7 @@ This installation method handles interactive prompts and colored output correctl
 
     AWG 2.0 parameters (Jc, S1-S4, H1-H4, I1) are generated **automatically** — no action required.
 
-6.  **Reboots:** **TWO** reboots are required. The script will ask for confirmation `[y/N]`. Type `y` and press Enter.
+6.  **Reboots:** **TWO** reboots are required. The script will ask for confirmation `[Y/n]`; Enter means yes.
 
 7.  **Resume:** After each reboot, **run the script again** with the same command:
     ```bash

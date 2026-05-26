@@ -21,8 +21,11 @@
     grep -qF 'AWG_WEB_PORT=443' "$installer"
     grep -qF 'Введите HTTPS порт Web Panel' "$installer"
     grep -qF 'Выберите IPv6 mode:' "$installer"
+    grep -qF '1) auto — автоопределение:' "$installer"
+    run grep -qE 'Ваш выбор \[(auto)\]:' "$installer"
+    [ "$status" -ne 0 ]
     grep -qF 'отдельный routed IPv6 prefix' "$installer"
-    grep -qF 'текущая публичная /64 на eth0' "$installer"
+    grep -qF 'текущую публичную /64 на eth0' "$installer"
     grep -qF 'Введите IPv6 subnet для клиентов' "$installer"
     grep -qF 'Установить AdGuard Home для DNS?' "$installer"
     grep -qF 'Настроить P2P ports для клиентов?' "$installer"
@@ -61,6 +64,9 @@
     grep -qF "export AWG_ENDPOINT='\${AWG_ENDPOINT}'" "$installer"
     grep -qF 'export AWG_SERVER_NAME=${quoted_server_name}' "$installer"
     grep -qF "export AWG_IPV6_MODE='\${AWG_IPV6_MODE}'" "$installer"
+    grep -qF "export AWG_IPV6_MODE_REQUESTED='\${AWG_IPV6_MODE_REQUESTED}'" "$installer"
+    grep -qF "export AWG_IPV6_MODE_EFFECTIVE='\${AWG_IPV6_MODE_EFFECTIVE:-\${AWG_IPV6_MODE}}'" "$installer"
+    grep -qF "export AWG_IPV6_MODE_REASON='\${AWG_IPV6_MODE_REASON}'" "$installer"
     grep -qF "export AWG_IPV6_SUBNET='\${AWG_IPV6_SUBNET}'" "$installer"
     grep -qF "export AWG_WEB_BIND='\${AWG_WEB_BIND}'" "$installer"
     grep -qF 'export AWG_WEB_PORT=${AWG_WEB_PORT}' "$installer"
@@ -85,6 +91,7 @@
     grep -qF 'log "Используются настройки из $CONFIG_FILE."' "$installer"
     grep -qF 'safe_load_config "$CONFIG_FILE"' "$installer"
     grep -qF 'AWG_PRESET=${AWG_PRESET:-default}' "$installer"
+    grep -qF 'AWG_IPV6_MODE_REQUESTED=$(normalize_ipv6_mode_installer "${AWG_IPV6_MODE_REQUESTED:-${AWG_IPV6_MODE}}"' "$installer"
 }
 
 @test "EN installer mirrors interactive wizard persistence and public warning" {
@@ -107,13 +114,102 @@
     grep -qF 'AWG_WEB_PORT=443' "$installer"
     grep -qF 'Enter HTTPS Web Panel port' "$installer"
     grep -qF 'Choose IPv6 mode:' "$installer"
-    grep -qF 'additional routed IPv6 prefix' "$installer"
-    grep -qF 'existing public /64 already assigned to the server interface' "$installer"
+    grep -qF '1) auto - auto-detect:' "$installer"
+    run grep -qE 'Your choice \[(auto)\]:' "$installer"
+    [ "$status" -ne 0 ]
+    grep -qF 'dedicated routed IPv6 prefix' "$installer"
+    grep -qF 'current public /64 on eth0' "$installer"
     grep -qF 'Enter IPv6 subnet for clients' "$installer"
     grep -qF 'Install AdGuard Home for DNS?' "$installer"
     grep -qF 'Configure P2P ports for clients?' "$installer"
     grep -qF 'WARNING: Web Panel will be reachable from the Internet' "$installer"
     grep -qF 'export AWG_SERVER_NAME=${quoted_server_name}' "$installer"
+}
+
+@test "IPv6 wizard exposes real auto mode and no longer uses bracket-only auto default" {
+    local ru="$BATS_TEST_DIRNAME/../install_amneziawg.sh"
+    local en="$BATS_TEST_DIRNAME/../install_amneziawg_en.sh"
+
+    grep -qF 'Ваш выбор [1]:' "$ru"
+    grep -qF 'Your choice [1]:' "$en"
+    grep -qF 'AWG_IPV6_MODE_REQUESTED=$(resolve_ipv6_mode_choice "$ipv6_choice")' "$ru"
+    grep -qF 'AWG_IPV6_MODE_REQUESTED=$(resolve_ipv6_mode_choice "$ipv6_choice")' "$en"
+    grep -qF 'Выберите 1, 2, 3 или 4' "$ru"
+    grep -qF 'Choose 1, 2, 3 or 4' "$en"
+    grep -qF 'IPv6: $(ipv6_summary_line)' "$ru"
+    grep -qF 'IPv6: $(ipv6_summary_line)' "$en"
+    grep -qF 'requested auto, effective' "$ru"
+    grep -qF 'requested auto, effective' "$en"
+    grep -qF 'IPv6 requested mode: ${AWG_IPV6_MODE_REQUESTED:-${AWG_IPV6_MODE:-legacy}}' "$ru"
+    grep -qF 'IPv6 effective mode: ${AWG_IPV6_MODE_EFFECTIVE:-${AWG_IPV6_MODE:-legacy}}' "$en"
+    grep -qF 'IPv6 selection reason: ${AWG_IPV6_MODE_REASON:-none}' "$ru"
+}
+
+@test "IPv6 choice helper maps empty input and numbered choices" {
+    local installer="$BATS_TEST_DIRNAME/../install_amneziawg.sh"
+
+    run bash -c '
+        source <(awk "/^resolve_ipv6_mode_choice\\(\\) \\{/{flag=1} flag{print} /^}/{if(flag) exit}" "$1")
+        [ "$(resolve_ipv6_mode_choice "")" = "auto" ]
+        [ "$(resolve_ipv6_mode_choice 1)" = "auto" ]
+        [ "$(resolve_ipv6_mode_choice 2)" = "routed" ]
+        [ "$(resolve_ipv6_mode_choice 3)" = "ndp" ]
+        [ "$(resolve_ipv6_mode_choice 4)" = "nat66" ]
+        if resolve_ipv6_mode_choice bad; then exit 1; fi
+    ' _ "$installer"
+    [ "$status" -eq 0 ]
+}
+
+@test "IPv6 auto effective mode selection follows routed ndp nat66 rules" {
+    local installer="$BATS_TEST_DIRNAME/../install_amneziawg.sh"
+
+    run bash -c '
+        source <(awk "/^select_effective_ipv6_mode\\(\\) \\{/{flag=1} flag{print} /^}/{if(flag) exit}" "$1")
+        detect_ipv6_64_subnet(){ printf "%s\n" "2001:db8:1::/64"; }
+        generate_ula_subnet(){ printf "%s\n" "fd12:3456:789a:1::/64"; }
+
+        select_effective_ipv6_mode auto ""
+        [ "$AWG_IPV6_MODE" = "ndp" ]
+        [ "$AWG_IPV6_MODE_EFFECTIVE" = "ndp" ]
+        [ "$AWG_IPV6_SUBNET" = "2001:db8:1::/64" ]
+
+        select_effective_ipv6_mode auto "2001:db8:9::/64"
+        [ "$AWG_IPV6_MODE" = "routed" ]
+
+        select_effective_ipv6_mode auto "fd12:3456:789a:2::/64"
+        [ "$AWG_IPV6_MODE" = "nat66" ]
+
+        unset -f detect_ipv6_64_subnet
+        detect_ipv6_64_subnet(){ return 1; }
+        select_effective_ipv6_mode auto ""
+        [ "$AWG_IPV6_MODE" = "nat66" ]
+        [ "$AWG_IPV6_SUBNET" = "fd12:3456:789a:1::/64" ]
+
+        if select_effective_ipv6_mode routed ""; then exit 1; fi
+    ' _ "$installer"
+    [ "$status" -eq 0 ]
+}
+
+@test "reboot prompt defaults to yes and parses explicit no" {
+    local ru="$BATS_TEST_DIRNAME/../install_amneziawg.sh"
+    local en="$BATS_TEST_DIRNAME/../install_amneziawg_en.sh"
+
+    grep -qF 'Перезагрузить сейчас? [Y/n]:' "$ru"
+    grep -qF 'Reboot now? [Y/n]:' "$en"
+
+    run bash -c '
+        source <(awk "/^parse_reboot_choice\\(\\) \\{/{flag=1} flag{print} /^}/{if(flag) exit}" "$1")
+        parse_reboot_choice ""
+        parse_reboot_choice y
+        parse_reboot_choice yes
+        parse_reboot_choice n
+        [ "$?" -eq 1 ]
+        parse_reboot_choice no
+        [ "$?" -eq 1 ]
+        parse_reboot_choice maybe
+        [ "$?" -eq 2 ]
+    ' _ "$ru"
+    [ "$status" -eq 0 ]
 }
 
 @test "web certificate wizard defaults and persistence cover trusted public HTTPS" {
@@ -312,10 +408,12 @@
 }
 
 @test "README documents clarified IPv6 routed and NDP modes" {
+    grep -qF '`auto` | Автовыбор' "$BATS_TEST_DIRNAME/../README.md"
     grep -qF 'отдельный routed IPv6 prefix' "$BATS_TEST_DIRNAME/../README.md"
-    grep -qF 'NDP proxy' "$BATS_TEST_DIRNAME/../README.md"
-    grep -qF 'additional routed IPv6 prefix' "$BATS_TEST_DIRNAME/../README.en.md"
-    grep -qF 'existing public `/64`' "$BATS_TEST_DIRNAME/../README.en.md"
+    grep -qF 'текущая публичная `/64` на `eth0`/внешнем интерфейсе' "$BATS_TEST_DIRNAME/../README.md"
+    grep -qF '`auto` | Auto-select' "$BATS_TEST_DIRNAME/../README.en.md"
+    grep -qF 'separate routed IPv6 prefix' "$BATS_TEST_DIRNAME/../README.en.md"
+    grep -qF 'current public `/64` on `eth0`/the external interface' "$BATS_TEST_DIRNAME/../README.en.md"
 }
 
 @test "README documents Web Panel access defaults for Enter, public domains, and port 443 URLs" {

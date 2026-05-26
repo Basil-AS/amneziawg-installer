@@ -34,7 +34,7 @@ MANAGE_SCRIPT_PATH="$AWG_DIR/manage_amneziawg.sh"
 # используются первыми; remote download разрешён только с pinned SHA256 либо
 # при явном AWG_ALLOW_UNVERIFIED_DOWNLOAD=1 для разработки.
 declare -A AWG_ASSET_SHA256=(
-    ["awg_common.sh"]="1ed79ca83bb5a9fdd12aba04a1a893c80a63345558274ab6bfde41964ae75f9e"
+    ["awg_common.sh"]="1879bcd5352d4c077761f81558aa74b49a86dc4e689a0b4197bee38599a3cb2f"
     ["manage_amneziawg.sh"]="4906b48b40ad461d92dc64f91f8753fc0d7c8aff4768c18485c448ca64af154e"
     ["web/server.py"]="7e7c6a88888cd87358ffe1454c12c0a53510eb6325a81034b16160e9224bb503"
     ["web/index.html"]="7c07ed1d1991e08c0f9fc31e86ed8eb2bba5fa96387088f1f18918396cf7e662"
@@ -337,7 +337,7 @@ show_help() {
   --allow-ipv6          Оставить IPv6 включенным неинтерактивно
   --disallow-ipv6       Принудительно отключить IPv6 неинтерактивно
   --enable-native-ipv6  Совместимый алиас: включить IPv6 для клиентов
-  --ipv6-mode=MODE      IPv6 режим клиентов: routed, ndp или nat66
+  --ipv6-mode=MODE      IPv6 режим клиентов: auto, routed, ndp или nat66
   --ipv6-subnet=CIDR    Задать IPv6 /48../64 для клиентов (например 2001:db8:1::/64)
   --upgrade-ipv6        Мигрировать существующих клиентов на IPv6/P2P metadata
   --p2p-base-port=PORT  Базовый P2P порт (умолч. 20000; диапазон base+1..base+1024)
@@ -439,13 +439,24 @@ request_reboot() {
     log_warn "!!! sudo bash $0 [с теми же параметрами, если были]       !!!"
     log_warn "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
     echo "" >> "$LOG_FILE"
-    local confirm="y"
+    local confirm="y" reboot_choice_rc=0
     if [[ "$AUTO_YES" -eq 0 ]]; then
-        read -rp "Перезагрузить сейчас? [y/N]: " confirm < /dev/tty
+        while true; do
+            if ! read -rp "Перезагрузить сейчас? [Y/n]: " confirm < /dev/tty; then
+                log_warn "Нет интерактивного TTY для подтверждения reboot. Перезагрузитесь вручную и запустите скрипт снова."
+                exit 1
+            fi
+            parse_reboot_choice "$confirm"
+            reboot_choice_rc=$?
+            case "$reboot_choice_rc" in
+                0|1) break ;;
+                *) log_warn "Введите y/yes или n/no." ;;
+            esac
+        done
     else
         log "Автоматическое подтверждение перезагрузки (--yes)."
     fi
-    if [[ "$confirm" =~ ^[Yy]$ ]]; then
+    if [[ "$AUTO_YES" -eq 1 || "$reboot_choice_rc" -eq 0 ]]; then
         log "Инициирована перезагрузка..."
         sleep 5
         if ! reboot; then die "Команда reboot не удалась."; fi
@@ -454,6 +465,14 @@ request_reboot() {
         log "Перезагрузка отменена. Перезагрузитесь вручную и запустите скрипт снова."
         exit 1
     fi
+}
+
+parse_reboot_choice() {
+    case "${1:-y}" in
+        y|Y|yes|YES|Yes) return 0 ;;
+        n|N|no|NO|No) return 1 ;;
+        *) return 2 ;;
+    esac
 }
 
 check_os_version() {
@@ -667,7 +686,7 @@ safe_load_config() {
                 DISABLE_IPV6|ALLOWED_IPS_MODE|ALLOWED_IPS|AWG_ENDPOINT|AWG_MTU|\
                 AWG_Jc|AWG_Jmin|AWG_Jmax|AWG_S1|AWG_S2|AWG_S3|AWG_S4|\
                 AWG_H1|AWG_H2|AWG_H3|AWG_H4|AWG_I1|AWG_PRESET|NO_TWEAKS|AWG_APPLY_MODE|\
-                AWG_IPV6_ENABLED|AWG_IPV6_MODE|AWG_IPV6_SUBNET|AWG_IPV6_NDP_PROXY|\
+                AWG_IPV6_ENABLED|AWG_IPV6_MODE|AWG_IPV6_MODE_REQUESTED|AWG_IPV6_MODE_EFFECTIVE|AWG_IPV6_MODE_REASON|AWG_IPV6_SUBNET|AWG_IPV6_NDP_PROXY|\
                 AWG_P2P_ENABLED|AWG_P2P_BASE_PORT|AWG_P2P_PORTS_PER_CLIENT|AWG_FULLCONE_NAT|AWG_DISABLE_UFW|\
                 AWG_WEB_ENABLED|AWG_WEB_PORT|AWG_WEB_BIND|AWG_WEB_CERT_MODE|AWG_WEB_DOMAIN|AWG_WEB_CERT_FILE|AWG_WEB_KEY_FILE|AWG_WEB_CERT_PROVIDER|AWG_WEB_LE_EMAIL|AWG_WEB_PUBLIC_URL|AWG_WEB_CERT_FALLBACK|AWG_WEB_CERT_ATTEMPTED_MODE|AWG_WEB_CERT_FAILURE_REASON|AWG_WEB_CERT_FALLBACK_USED|\
                 AWG_DNS_MODE|AWG_CUSTOM_DNS|AWG_ADGUARD_ENABLED|AWG_ADGUARD_PORT|AWG_ADGUARD_DIR|\
@@ -891,12 +910,77 @@ generate_ula_subnet() {
 
 normalize_ipv6_mode_installer() {
     case "${1:-legacy}" in
-        routed|ndp|nat66|legacy) echo "${1:-legacy}" ;;
+        auto|routed|ndp|nat66|legacy) echo "${1:-legacy}" ;;
         native) echo "ndp" ;;
         ula) echo "nat66" ;;
         disabled|off|0) echo "legacy" ;;
         *) return 1 ;;
     esac
+}
+
+resolve_ipv6_mode_choice() {
+    case "${1:-1}" in
+        1|auto) echo "auto" ;;
+        2|routed) echo "routed" ;;
+        3|ndp) echo "ndp" ;;
+        4|nat66) echo "nat66" ;;
+        *) return 1 ;;
+    esac
+}
+
+select_effective_ipv6_mode() {
+    local requested="$1" subnet="${2:-}" detected=""
+    AWG_IPV6_MODE_REASON=""
+    case "$requested" in
+        routed)
+            [[ -n "$subnet" ]] || return 1
+            AWG_IPV6_MODE="routed"
+            AWG_IPV6_SUBNET="$subnet"
+            AWG_IPV6_MODE_REASON="selected routed because user provided dedicated prefix"
+            ;;
+        ndp)
+            if [[ -z "$subnet" ]]; then
+                detected="$(detect_ipv6_64_subnet)" || return 1
+                subnet="$detected"
+                AWG_IPV6_MODE_REASON="selected ndp because public /64 was detected on external interface"
+            else
+                AWG_IPV6_MODE_REASON="selected ndp because public prefix was provided"
+            fi
+            AWG_IPV6_MODE="ndp"
+            AWG_IPV6_SUBNET="$subnet"
+            ;;
+        nat66)
+            if [[ -z "$subnet" ]]; then
+                subnet="$(generate_ula_subnet)"
+            fi
+            AWG_IPV6_MODE="nat66"
+            AWG_IPV6_SUBNET="$subnet"
+            AWG_IPV6_MODE_REASON="selected nat66 because user selected NAT66 fallback"
+            ;;
+        auto)
+            if [[ -n "$subnet" ]]; then
+                if [[ "$subnet" == fd* || "$subnet" == FD* ]]; then
+                    AWG_IPV6_MODE="nat66"
+                    AWG_IPV6_SUBNET="$subnet"
+                    AWG_IPV6_MODE_REASON="selected nat66 because ULA prefix was provided"
+                else
+                    AWG_IPV6_MODE="routed"
+                    AWG_IPV6_SUBNET="$subnet"
+                    AWG_IPV6_MODE_REASON="selected routed because user provided dedicated prefix"
+                fi
+            elif detected="$(detect_ipv6_64_subnet)"; then
+                AWG_IPV6_MODE="ndp"
+                AWG_IPV6_SUBNET="$detected"
+                AWG_IPV6_MODE_REASON="selected ndp because public /64 was detected on external interface"
+            else
+                AWG_IPV6_MODE="nat66"
+                AWG_IPV6_SUBNET="$(generate_ula_subnet)"
+                AWG_IPV6_MODE_REASON="selected nat66 because no suitable public prefix was detected"
+            fi
+            ;;
+        *) return 1 ;;
+    esac
+    AWG_IPV6_MODE_EFFECTIVE="$AWG_IPV6_MODE"
 }
 
 validate_server_name() {
@@ -948,23 +1032,31 @@ print_secret_console_only() {
 configure_ipv6_client_mode() {
     AWG_IPV6_ENABLED=${AWG_IPV6_ENABLED:-0}
     AWG_IPV6_MODE=${AWG_IPV6_MODE:-legacy}
+    AWG_IPV6_MODE_REQUESTED=${AWG_IPV6_MODE_REQUESTED:-${AWG_IPV6_MODE}}
+    AWG_IPV6_MODE_EFFECTIVE=${AWG_IPV6_MODE_EFFECTIVE:-${AWG_IPV6_MODE}}
+    AWG_IPV6_MODE_REASON=${AWG_IPV6_MODE_REASON:-}
     AWG_IPV6_SUBNET=${AWG_IPV6_SUBNET:-}
     AWG_IPV6_NDP_PROXY=${AWG_IPV6_NDP_PROXY:-0}
     local requested_mode=""
 
     if [[ "${DISABLE_IPV6:-1}" -eq 1 ]]; then
         AWG_IPV6_ENABLED=0
+        AWG_IPV6_MODE_REQUESTED=legacy
         AWG_IPV6_MODE=legacy
+        AWG_IPV6_MODE_EFFECTIVE=legacy
+        AWG_IPV6_MODE_REASON="disabled"
         AWG_IPV6_SUBNET=""
         AWG_IPV6_NDP_PROXY=0
+        export AWG_IPV6_ENABLED AWG_IPV6_MODE_REQUESTED AWG_IPV6_MODE AWG_IPV6_MODE_EFFECTIVE AWG_IPV6_MODE_REASON AWG_IPV6_SUBNET AWG_IPV6_NDP_PROXY
         return 0
     fi
 
     if [[ -n "$CLI_IPV6_MODE" ]]; then
         requested_mode=$(normalize_ipv6_mode_installer "$CLI_IPV6_MODE") || \
-            die "Некорректный --ipv6-mode: '$CLI_IPV6_MODE' (ожидается routed, ndp или nat66)."
+            die "Некорректный --ipv6-mode: '$CLI_IPV6_MODE' (ожидается auto, routed, ndp или nat66)."
+    else
+        requested_mode=$(normalize_ipv6_mode_installer "${AWG_IPV6_MODE_REQUESTED:-${AWG_IPV6_MODE:-legacy}}" 2>/dev/null || echo "legacy")
     fi
-    AWG_IPV6_MODE=$(normalize_ipv6_mode_installer "$AWG_IPV6_MODE" 2>/dev/null || echo "legacy")
 
     AWG_IPV6_ENABLED=1
     if [[ -n "$CLI_IPV6_SUBNET" ]]; then
@@ -972,44 +1064,43 @@ configure_ipv6_client_mode() {
         AWG_IPV6_SUBNET=$(normalize_ipv6_subnet_installer "$CLI_IPV6_SUBNET")
     fi
 
-    if [[ -n "$requested_mode" && "$requested_mode" != "legacy" ]]; then
-        AWG_IPV6_MODE="$requested_mode"
-        if [[ "$AWG_IPV6_MODE" == "nat66" ]]; then
-            if [[ -z "$AWG_IPV6_SUBNET" ]]; then
-                AWG_IPV6_SUBNET=$(generate_ula_subnet)
-            elif [[ "$AWG_IPV6_SUBNET" != fd* && "$AWG_IPV6_SUBNET" != FD* ]]; then
-                log_warn "NAT66 обычно использует ULA fd../64; заданная подсеть сохранена как есть: $AWG_IPV6_SUBNET"
-            fi
-        elif [[ -z "$AWG_IPV6_SUBNET" ]]; then
-            AWG_IPV6_SUBNET=$(detect_ipv6_64_subnet) || \
-                die "Для --ipv6-mode=${AWG_IPV6_MODE} нужен публичный IPv6 /48../64. Укажите --ipv6-subnet=... или используйте --ipv6-mode=nat66."
+    if [[ "$requested_mode" == "legacy" && -n "$AWG_IPV6_SUBNET" ]]; then
+        if [[ "$AWG_IPV6_SUBNET" == fd* || "$AWG_IPV6_SUBNET" == FD* ]]; then
+            requested_mode=nat66
+        else
+            requested_mode=ndp
+        fi
+    elif [[ "$requested_mode" == "legacy" && ( "$CLI_ENABLE_NATIVE_IPV6" -eq 1 || "$CLI_UPGRADE_IPV6" -eq 1 || "$DISABLE_IPV6" -eq 0 ) ]]; then
+        requested_mode=auto
+    fi
+
+    AWG_IPV6_MODE_REQUESTED="$requested_mode"
+    if [[ "$requested_mode" != "legacy" ]]; then
+        if ! select_effective_ipv6_mode "$requested_mode" "$AWG_IPV6_SUBNET"; then
+            case "$requested_mode" in
+                routed) die "Для IPv6 mode routed нужен отдельный routed IPv6 prefix. Укажите --ipv6-subnet=... или выберите auto/ndp/nat66." ;;
+                ndp) die "Для IPv6 mode ndp нужен публичный IPv6 /64. Укажите --ipv6-subnet=... или выберите auto/nat66." ;;
+                *) die "Не удалось выбрать IPv6 mode '$requested_mode'." ;;
+            esac
+        fi
+        if [[ "$AWG_IPV6_MODE" == "nat66" && -n "$AWG_IPV6_SUBNET" && "$AWG_IPV6_SUBNET" != fd* && "$AWG_IPV6_SUBNET" != FD* ]]; then
+            log_warn "NAT66 обычно использует ULA fd../64; заданная подсеть сохранена как есть: $AWG_IPV6_SUBNET"
+        fi
+        if [[ "$requested_mode" == "auto" ]]; then
+            log "IPv6 auto: ${AWG_IPV6_MODE_REASON}; effective=${AWG_IPV6_MODE}, subnet=${AWG_IPV6_SUBNET}"
         fi
     elif [[ -n "$AWG_IPV6_SUBNET" ]]; then
-        if [[ "$AWG_IPV6_MODE" == "legacy" ]]; then
-            if [[ "$AWG_IPV6_SUBNET" == fd* || "$AWG_IPV6_SUBNET" == FD* ]]; then
-                AWG_IPV6_MODE=nat66
-            else
-                AWG_IPV6_MODE=ndp
-            fi
-        fi
-    elif [[ "$CLI_ENABLE_NATIVE_IPV6" -eq 1 || "$CLI_UPGRADE_IPV6" -eq 1 || "$DISABLE_IPV6" -eq 0 ]]; then
-        if AWG_IPV6_SUBNET=$(detect_ipv6_64_subnet); then
-            AWG_IPV6_MODE=ndp
-            log "Автоопределён публичный IPv6 /64 для клиентов: $AWG_IPV6_SUBNET (режим ndp)."
-        else
-            AWG_IPV6_SUBNET=$(generate_ula_subnet)
-            AWG_IPV6_MODE=nat66
-            log_warn "Публичный IPv6 /64 не найден. Включён NAT66/ULA fallback: $AWG_IPV6_SUBNET."
-        fi
+        AWG_IPV6_MODE_EFFECTIVE="$AWG_IPV6_MODE"
     fi
 
     case "$AWG_IPV6_MODE" in
         routed) AWG_IPV6_NDP_PROXY=0 ;;
         ndp) AWG_IPV6_NDP_PROXY=1 ;;
         nat66) AWG_IPV6_NDP_PROXY=0 ;;
-        *) AWG_IPV6_ENABLED=0; AWG_IPV6_MODE=legacy; AWG_IPV6_SUBNET=""; AWG_IPV6_NDP_PROXY=0 ;;
+        *) AWG_IPV6_ENABLED=0; AWG_IPV6_MODE_REQUESTED=legacy; AWG_IPV6_MODE=legacy; AWG_IPV6_MODE_EFFECTIVE=legacy; AWG_IPV6_MODE_REASON="disabled"; AWG_IPV6_SUBNET=""; AWG_IPV6_NDP_PROXY=0 ;;
     esac
-    export AWG_IPV6_ENABLED AWG_IPV6_MODE AWG_IPV6_SUBNET AWG_IPV6_NDP_PROXY
+    AWG_IPV6_MODE_EFFECTIVE="$AWG_IPV6_MODE"
+    export AWG_IPV6_ENABLED AWG_IPV6_MODE_REQUESTED AWG_IPV6_MODE AWG_IPV6_MODE_EFFECTIVE AWG_IPV6_MODE_REASON AWG_IPV6_SUBNET AWG_IPV6_NDP_PROXY
 }
 
 configure_routing_mode() {
@@ -1120,13 +1211,23 @@ prompt_ipv6_mode() {
     local ipv6_choice input_subnet
     echo ""
     echo "Выберите IPv6 mode:"
-    echo "  1) routed — если провайдер выдал отдельный routed IPv6 prefix (/64, /56, /48) именно под VPN"
-    echo "  2) ndp — если используется текущая публичная /64 на eth0; клиентские IPv6 будут анонсироваться через NDP proxy"
-    echo "  3) nat66 — fallback через NAT66, если routed prefix/NDP не подходят"
-    read -rp "Ваш выбор [auto]: " ipv6_choice < /dev/tty
-    case "${ipv6_choice:-auto}" in
-        1|routed)
-            AWG_IPV6_MODE="routed"
+    echo "  1) auto — автоопределение:"
+    echo "     - routed, если задан отдельный routed IPv6 prefix для VPN;"
+    echo "     - ndp, если используется публичная /64 на внешнем интерфейсе;"
+    echo "     - nat66, если публичный prefix не найден или NDP/routed не подходят."
+    echo "  2) routed — отдельный routed IPv6 prefix (/64, /56, /48), выданный провайдером именно под VPN"
+    echo "  3) ndp — использовать текущую публичную /64 на eth0 через NDP proxy"
+    echo "  4) nat66 — fallback через NAT66"
+    while true; do
+        read -rp "Ваш выбор [1]: " ipv6_choice < /dev/tty
+        if AWG_IPV6_MODE_REQUESTED=$(resolve_ipv6_mode_choice "$ipv6_choice"); then
+            break
+        fi
+        log_warn "Неизвестный IPv6 mode '$ipv6_choice'. Выберите 1, 2, 3 или 4."
+    done
+    AWG_IPV6_MODE="$AWG_IPV6_MODE_REQUESTED"
+    case "$AWG_IPV6_MODE_REQUESTED" in
+        routed)
             while true; do
                 read -rp "Введите IPv6 subnet для клиентов, например 2a13:...::/64: " input_subnet < /dev/tty
                 validate_ipv6_subnet "$input_subnet" || { log_warn "Некорректный IPv6 subnet. Нужен IPv6 /48../64."; continue; }
@@ -1134,10 +1235,6 @@ prompt_ipv6_mode() {
                 break
             done
             ;;
-        2|ndp) AWG_IPV6_MODE="ndp" ;;
-        3|nat66) AWG_IPV6_MODE="nat66" ;;
-        ""|auto) AWG_IPV6_MODE="${AWG_IPV6_MODE:-legacy}" ;;
-        *) log_warn "Неизвестный IPv6 mode '$ipv6_choice', будет использован auto."; AWG_IPV6_MODE="${AWG_IPV6_MODE:-legacy}" ;;
     esac
 }
 
@@ -1602,6 +1699,20 @@ web_exposure_label() {
     fi
 }
 
+ipv6_summary_line() {
+    if [[ "${AWG_IPV6_ENABLED:-0}" -ne 1 ]]; then
+        echo "disabled"
+        return
+    fi
+    local requested="${AWG_IPV6_MODE_REQUESTED:-${AWG_IPV6_MODE:-legacy}}"
+    local effective="${AWG_IPV6_MODE_EFFECTIVE:-${AWG_IPV6_MODE:-legacy}}"
+    if [[ "$requested" == "auto" ]]; then
+        echo "enabled, requested auto, effective ${effective}, ${AWG_IPV6_SUBNET:-auto}"
+    else
+        echo "enabled, ${effective}, ${AWG_IPV6_SUBNET:-auto}"
+    fi
+}
+
 print_install_choice_summary() {
     echo ""
     echo "Итоговые параметры:"
@@ -1610,7 +1721,7 @@ print_install_choice_summary() {
     echo "VPN port: ${AWG_PORT}"
     echo "Route mode: $(route_mode_label)"
     echo "Preset: ${AWG_PRESET:-default}"
-    echo "IPv6: $(if [[ "${AWG_IPV6_ENABLED:-0}" -eq 1 ]]; then echo "enabled, ${AWG_IPV6_MODE:-legacy}, ${AWG_IPV6_SUBNET:-auto}"; else echo "disabled"; fi)"
+    echo "IPv6: $(ipv6_summary_line)"
     echo "Web: $(if [[ "${AWG_WEB_ENABLED:-1}" -eq 1 ]]; then echo "enabled, ${AWG_WEB_BIND:-none}, ${AWG_WEB_PORT:-8443}, $(web_exposure_label)"; else echo "disabled"; fi)"
     echo "AdGuard: $(if [[ "${AWG_ADGUARD_ENABLED:-0}" -eq 1 ]]; then echo "enabled, port ${AWG_ADGUARD_PORT:-3000}"; else echo "disabled"; fi)"
     echo "P2P: base ${AWG_P2P_BASE_PORT:-20000}, ports/client ${AWG_P2P_PORTS_PER_CLIENT:-0}, fullcone ${AWG_FULLCONE_NAT:-0}"
@@ -2711,6 +2822,9 @@ initialize_setup() {
     AWG_SERVER_NAME="${AWG_SERVER_NAME:-MyVPN}"
     AWG_IPV6_ENABLED=${AWG_IPV6_ENABLED:-0}
     AWG_IPV6_MODE="${AWG_IPV6_MODE:-legacy}"
+    AWG_IPV6_MODE_REQUESTED="${AWG_IPV6_MODE_REQUESTED:-${AWG_IPV6_MODE}}"
+    AWG_IPV6_MODE_EFFECTIVE="${AWG_IPV6_MODE_EFFECTIVE:-${AWG_IPV6_MODE}}"
+    AWG_IPV6_MODE_REASON="${AWG_IPV6_MODE_REASON:-}"
     AWG_IPV6_SUBNET="${AWG_IPV6_SUBNET:-}"
     AWG_IPV6_NDP_PROXY=${AWG_IPV6_NDP_PROXY:-0}
     AWG_P2P_ENABLED=${AWG_P2P_ENABLED:-1}
@@ -2759,6 +2873,9 @@ initialize_setup() {
         AWG_SERVER_NAME=${AWG_SERVER_NAME:-MyVPN}
         AWG_IPV6_ENABLED=${AWG_IPV6_ENABLED:-0}
         AWG_IPV6_MODE=$(normalize_ipv6_mode_installer "${AWG_IPV6_MODE:-legacy}" 2>/dev/null || echo "legacy")
+        AWG_IPV6_MODE_REQUESTED=$(normalize_ipv6_mode_installer "${AWG_IPV6_MODE_REQUESTED:-${AWG_IPV6_MODE}}" 2>/dev/null || echo "${AWG_IPV6_MODE:-legacy}")
+        AWG_IPV6_MODE_EFFECTIVE=$(normalize_ipv6_mode_installer "${AWG_IPV6_MODE_EFFECTIVE:-${AWG_IPV6_MODE}}" 2>/dev/null || echo "${AWG_IPV6_MODE:-legacy}")
+        AWG_IPV6_MODE_REASON=${AWG_IPV6_MODE_REASON:-}
         AWG_IPV6_SUBNET=${AWG_IPV6_SUBNET:-}
         AWG_IPV6_NDP_PROXY=${AWG_IPV6_NDP_PROXY:-0}
         AWG_P2P_ENABLED=${AWG_P2P_ENABLED:-1}
@@ -2993,6 +3110,9 @@ export AWG_MTU=${AWG_MTU:-1280}
 export AWG_SERVER_NAME=${quoted_server_name}
 export AWG_IPV6_ENABLED=${AWG_IPV6_ENABLED}
 export AWG_IPV6_MODE='${AWG_IPV6_MODE}'
+export AWG_IPV6_MODE_REQUESTED='${AWG_IPV6_MODE_REQUESTED}'
+export AWG_IPV6_MODE_EFFECTIVE='${AWG_IPV6_MODE_EFFECTIVE:-${AWG_IPV6_MODE}}'
+export AWG_IPV6_MODE_REASON='${AWG_IPV6_MODE_REASON}'
 export AWG_IPV6_SUBNET='${AWG_IPV6_SUBNET}'
 export AWG_IPV6_NDP_PROXY=${AWG_IPV6_NDP_PROXY}
 export AWG_P2P_ENABLED=${AWG_P2P_ENABLED}
@@ -3047,7 +3167,7 @@ EOF
     chmod 600 "$CONFIG_FILE" || log_warn "Ошибка chmod $CONFIG_FILE"
     log "Настройки сохранены."
     export AWG_PORT AWG_TUNNEL_SUBNET DISABLE_IPV6 ALLOWED_IPS_MODE ALLOWED_IPS AWG_ENDPOINT AWG_SERVER_NAME
-    export AWG_IPV6_ENABLED AWG_IPV6_MODE AWG_IPV6_SUBNET AWG_IPV6_NDP_PROXY
+    export AWG_IPV6_ENABLED AWG_IPV6_MODE_REQUESTED AWG_IPV6_MODE AWG_IPV6_MODE_EFFECTIVE AWG_IPV6_MODE_REASON AWG_IPV6_SUBNET AWG_IPV6_NDP_PROXY
     export AWG_P2P_ENABLED AWG_P2P_BASE_PORT AWG_P2P_PORTS_PER_CLIENT AWG_FULLCONE_NAT
     export AWG_WEB_ENABLED AWG_WEB_PORT AWG_WEB_BIND AWG_DISABLE_UFW
     export AWG_WEB_CERT_MODE AWG_WEB_DOMAIN AWG_WEB_CERT_FILE AWG_WEB_KEY_FILE AWG_WEB_CERT_PROVIDER AWG_WEB_LE_EMAIL AWG_WEB_PUBLIC_URL
@@ -3057,7 +3177,7 @@ EOF
     log "Порт: ${AWG_PORT}/udp"
     log "Подсеть: ${AWG_TUNNEL_SUBNET}"
     log "Откл. IPv6: $DISABLE_IPV6"
-    log "IPv6 клиентов: ${AWG_IPV6_ENABLED} (${AWG_IPV6_MODE:-legacy} ${AWG_IPV6_SUBNET:-})"
+    log "IPv6 клиентов: ${AWG_IPV6_ENABLED} (requested=${AWG_IPV6_MODE_REQUESTED:-legacy}, effective=${AWG_IPV6_MODE_EFFECTIVE:-${AWG_IPV6_MODE:-legacy}} ${AWG_IPV6_SUBNET:-})"
     log "P2P: base=${AWG_P2P_BASE_PORT}, ports/client=${AWG_P2P_PORTS_PER_CLIENT}, fullcone=${AWG_FULLCONE_NAT}"
     log "Web: enabled=${AWG_WEB_ENABLED}, bind=${AWG_WEB_BIND}:${AWG_WEB_PORT}"
     log "DNS: mode=${AWG_DNS_MODE}, adguard=${AWG_ADGUARD_ENABLED}, port=${AWG_ADGUARD_PORT}"
@@ -5300,6 +5420,9 @@ Firewall responsibility: ${firewall_resp}
 [IPv6]
 IPv6 enabled: $(if [[ "${AWG_IPV6_ENABLED:-0}" -eq 1 ]]; then echo "yes"; else echo "no"; fi)
 IPv6 mode: ${AWG_IPV6_MODE:-legacy}
+IPv6 requested mode: ${AWG_IPV6_MODE_REQUESTED:-${AWG_IPV6_MODE:-legacy}}
+IPv6 effective mode: ${AWG_IPV6_MODE_EFFECTIVE:-${AWG_IPV6_MODE:-legacy}}
+IPv6 selection reason: ${AWG_IPV6_MODE_REASON:-none}
 IPv6 client subnet: ${AWG_IPV6_SUBNET:-none}
 Server tunnel IPv6: ${server_v6:-none}
 
