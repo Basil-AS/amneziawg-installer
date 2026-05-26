@@ -79,6 +79,9 @@ EOF
     cat > "$CONFIG_FILE" <<'EOF'
 export AWG_IPV6_ENABLED=1
 export AWG_IPV6_MODE='ula'
+export AWG_IPV6_MODE_REQUESTED='auto'
+export AWG_IPV6_MODE_EFFECTIVE='nat66'
+export AWG_IPV6_MODE_REASON='selected nat66 because no suitable public prefix was detected'
 export AWG_IPV6_SUBNET='fd12:3456:789a:1::/64'
 export AWG_IPV6_NDP_PROXY=0
 export AWG_P2P_ENABLED=1
@@ -96,6 +99,9 @@ EOF
     safe_load_config "$CONFIG_FILE"
     [ "$AWG_IPV6_ENABLED" = "1" ]
     [ "$AWG_IPV6_MODE" = "ula" ]
+    [ "$AWG_IPV6_MODE_REQUESTED" = "auto" ]
+    [ "$AWG_IPV6_MODE_EFFECTIVE" = "nat66" ]
+    [ "$AWG_IPV6_MODE_REASON" = "selected nat66 because no suitable public prefix was detected" ]
     [ "$AWG_P2P_BASE_PORT" = "20000" ]
     [ "$AWG_WEB_PORT" = "8443" ]
     [ "$AWG_WEB_CERT_FALLBACK" = "selfsigned" ]
