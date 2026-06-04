@@ -1334,6 +1334,7 @@ function renderWebAccessPolicy() {
   const policy = webAccessPolicyState.policy || {};
   const current = webAccessPolicyState.current || {};
   const rejected = webAccessPolicyState.recent_rejected_hosts || [];
+  const mode = policy.bind_mode || "public";
   host.innerHTML = `
     <div class="grid gap-3 lg:grid-cols-2">
       <label class="block text-sm">
@@ -1344,14 +1345,15 @@ function renderWebAccessPolicy() {
             ["v" + "pn_" + "only", "V" + "P" + "N only"],
             ["localhost_only", "Localhost only"],
             ["custom", "Custom"],
-          ].map(([value, label]) => `<option value="${value}" ${policy.bind_mode === value ? "selected" : ""}>${label}</option>`).join("")}
+          ].map(([value, label]) => `<option value="${value}" ${mode === value ? "selected" : ""}>${label}</option>`).join("")}
         </select>
       </label>
       <label class="block text-sm">
         <span class="mb-1 block text-[var(--muted)]">Bind host</span>
-        <input id="webAccessBindHost" class="h-10 w-full rounded-md border border-[var(--line)] bg-[var(--soft)] px-3 font-mono text-xs text-[var(--text)] outline-none focus:border-[var(--accent)]" value="${esc(policy.bind_host || "")}">
+        <input id="webAccessBindHost" class="h-10 w-full rounded-md border border-[var(--line)] bg-[var(--soft)] px-3 font-mono text-xs text-[var(--text)] outline-none focus:border-[var(--accent)]" value="${esc(policy.bind_host || "")}" ${mode === "custom" ? "" : "readonly"}>
       </label>
     </div>
+    <p id="webAccessDraftStatus" class="mt-2 hidden rounded-md border border-amber-500/50 bg-amber-500/10 px-3 py-2 text-xs text-[var(--text)]"></p>
     <div class="mt-3 grid gap-3 lg:grid-cols-2">
       <label class="flex items-center gap-2 rounded-md border border-[var(--line)] bg-[var(--soft)] px-3 py-2 text-sm">
         <input id="webAccessHostCheck" type="checkbox" class="accent-[var(--accent)]" ${policy.host_check_enabled ? "checked" : ""}>
@@ -1380,6 +1382,7 @@ function renderWebAccessPolicy() {
       <p class="mt-1"><span class="font-semibold text-[var(--text)]">Remote IP:</span> ${esc(current.remote_ip || "-")}</p>
       <p class="mt-1"><span class="font-semibold text-[var(--text)]">Current request:</span> ${current.allowed ? "allowed" : "blocked"}</p>
       <p class="mt-1"><span class="font-semibold text-[var(--text)]">Restart:</span> ${webAccessPolicyState.requires_restart ? "required for bind changes" : "not required for current bind"}</p>
+      <p id="webAccessModeHint" class="mt-1 text-amber-700"></p>
     </div>
     <details class="mt-3 rounded-md border border-[var(--line)] bg-[var(--soft)] px-3 py-2 text-xs text-[var(--muted)]">
       <summary class="cursor-pointer font-medium text-[var(--text)]">Recent rejected hosts</summary>
@@ -1394,7 +1397,76 @@ function renderWebAccessPolicy() {
     const rows = textarea.value.split(/\r?\n/).map(row => row.trim()).filter(Boolean);
     if (currentHost && !rows.includes(currentHost)) rows.push(currentHost);
     textarea.value = rows.join("\n");
+    markWebAccessChanged();
   };
+  host.querySelector("#webAccessBindMode").onchange = () => applyWebAccessModeProfile(true);
+  ["#webAccessBindHost", "#webAccessHostCheck", "#webAccessSourceCheck", "#webAccessHosts", "#webAccessCidrs"].forEach(selector => {
+    const field = host.querySelector(selector);
+    if (field) field.oninput = markWebAccessChanged;
+    if (field) field.onchange = markWebAccessChanged;
+  });
+  applyWebAccessModeProfile(false);
+}
+
+function webAccessRequiredHosts() {
+  return ["194-180-189-244.sslip.io", "194.180.189.244", "localhost", "127.0.0.1"];
+}
+
+function textareaRows(selector) {
+  return (document.querySelector(selector)?.value || "").split(/\r?\n/).map(row => row.trim()).filter(Boolean);
+}
+
+function setTextareaRows(selector, rows) {
+  const node = document.querySelector(selector);
+  if (!node) return;
+  const out = [];
+  const seen = new Set();
+  rows.forEach(row => {
+    if (!row || seen.has(row)) return;
+    out.push(row);
+    seen.add(row);
+  });
+  node.value = out.join("\n");
+}
+
+function ensureTextareaRows(selector, rows) {
+  setTextareaRows(selector, textareaRows(selector).concat(rows));
+}
+
+function markWebAccessChanged(message = "Unsaved changes") {
+  const status = document.querySelector("#webAccessDraftStatus");
+  if (!status) return;
+  status.textContent = message;
+  status.classList.remove("hidden");
+}
+
+function applyWebAccessModeProfile(changed) {
+  const mode = document.querySelector("#webAccessBindMode")?.value || "public";
+  const bindHost = document.querySelector("#webAccessBindHost");
+  const sourceCheck = document.querySelector("#webAccessSourceCheck");
+  const hint = document.querySelector("#webAccessModeHint");
+  if (!bindHost || !sourceCheck) return;
+  bindHost.readOnly = mode !== "custom";
+  hint.textContent = "";
+  if (mode === "public") {
+    bindHost.value = "0.0.0.0";
+    sourceCheck.checked = false;
+    ensureTextareaRows("#webAccessHosts", webAccessRequiredHosts());
+    setTextareaRows("#webAccessCidrs", ["0.0.0.0/0", "::/0"]);
+  } else if (mode === "v" + "pn_" + "only") {
+    bindHost.value = "0.0.0.0";
+    sourceCheck.checked = true;
+    ensureTextareaRows("#webAccessHosts", webAccessRequiredHosts());
+    setTextareaRows("#webAccessCidrs", ["10.0.0.0/8", "127.0.0.0/8"]);
+    hint.textContent = "V" + "P" + "N only may require restart and can lock out public access.";
+  } else if (mode === "localhost_only") {
+    bindHost.value = "127.0.0.1";
+    sourceCheck.checked = true;
+    ensureTextareaRows("#webAccessHosts", ["localhost", "127.0.0.1"]);
+    setTextareaRows("#webAccessCidrs", ["127.0.0.0/8", "::1/128"]);
+    hint.textContent = "Localhost only requires restart and blocks non-local access.";
+  }
+  if (changed) markWebAccessChanged(`${document.querySelector("#webAccessBindMode").selectedOptions[0]?.textContent || "Mode"} profile selected; test before saving.`);
 }
 
 function readWebAccessPolicyForm() {
@@ -1403,7 +1475,7 @@ function readWebAccessPolicyForm() {
   let bindHost = host.querySelector("#webAccessBindHost").value.trim();
   if (mode === "public") bindHost = "0.0.0.0";
   if (mode === "localhost_only") bindHost = "127.0.0.1";
-  if (mode === "v" + "pn_" + "only" && !bindHost) bindHost = "10.9.9.1";
+  if (mode === "v" + "pn_" + "only" && !bindHost) bindHost = "0.0.0.0";
   return {
     bind_mode: mode,
     bind_host: bindHost,
@@ -1431,7 +1503,7 @@ async function submitWebAccessPolicy(action) {
       showToast("Web panel restart scheduled");
     }
   } catch (error) {
-    showToast("Policy rejected", "error");
+    showToast("Policy rejected: it may lock out current access", "error");
   }
 }
 

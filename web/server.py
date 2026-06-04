@@ -285,6 +285,16 @@ def clean_allowed_hosts(value):
     return out
 
 
+def ensure_items(values, required):
+    out = list(values)
+    seen = set(out)
+    for item in required:
+        if item and item not in seen:
+            out.append(item)
+            seen.add(item)
+    return out
+
+
 def clean_cidr_list(value, field="allowed_source_cidrs"):
     out, seen = [], set()
     for item in clean_policy_string_list(value, field):
@@ -319,13 +329,23 @@ def clean_access_policy(value):
     elif mode == "localhost_only":
         bind_host = "127.0.0.1"
     elif mode == "vpn_only":
-        bind_host = clean_bind_host(data.get("bind_host") or "10.9.9.1")
+        bind_host = clean_bind_host(data.get("bind_host") or "0.0.0.0")
     else:
         bind_host = clean_bind_host(data.get("bind_host"))
     host_check_enabled = bool(data.get("host_check_enabled", defaults["host_check_enabled"]))
     source_check_enabled = bool(data.get("source_check_enabled", defaults["source_check_enabled"]))
     allowed_hosts = clean_allowed_hosts(data.get("allowed_hosts", defaults["allowed_hosts"]))
     allowed_source_cidrs = clean_cidr_list(data.get("allowed_source_cidrs", defaults["allowed_source_cidrs"]))
+    if mode == "public":
+        source_check_enabled = False
+        allowed_hosts = ensure_items(allowed_hosts, ["194-180-189-244.sslip.io", "194.180.189.244", "localhost", "127.0.0.1"])
+    elif mode == "vpn_only":
+        source_check_enabled = True
+        if not allowed_source_cidrs or any(cidr in {"0.0.0.0/0", "::/0"} for cidr in allowed_source_cidrs):
+            allowed_source_cidrs = ["10.0.0.0/8", "127.0.0.0/8"]
+    elif mode == "localhost_only":
+        source_check_enabled = True
+        allowed_source_cidrs = ["127.0.0.0/8", "::1/128"]
     if host_check_enabled and not allowed_hosts:
         raise ValueError("allowed_hosts cannot be empty when host check is enabled")
     if source_check_enabled and not allowed_source_cidrs:

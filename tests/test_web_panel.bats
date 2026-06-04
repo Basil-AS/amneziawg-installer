@@ -231,7 +231,7 @@
 import server
 
 policy = server.clean_access_policy({
-    "bind_mode": "public",
+    "bind_mode": "custom",
     "bind_host": "0.0.0.0",
     "allowed_hosts": ["194-180-189-244.sslip.io", "194.180.189.244"],
     "allowed_source_cidrs": ["10.66.66.0/24"],
@@ -249,7 +249,7 @@ assert not server.request_allowed_by_policy("194-180-189-244.sslip.io:443", "10.
 assert server.clean_allowed_host("[::1]:443") == "::1"
 try:
     server.clean_access_policy({
-        "bind_mode": "public",
+        "bind_mode": "custom",
         "bind_host": "0.0.0.0",
         "allowed_hosts": [],
         "allowed_source_cidrs": ["0.0.0.0/0"],
@@ -261,6 +261,28 @@ except ValueError:
 else:
     raise AssertionError("empty allowed_hosts with host check must fail")
 assert not server.bind_allows_current_remote("127.0.0.1", "203.0.113.9")
+vpn_policy = server.clean_access_policy({
+    "bind_mode": "vpn_only",
+    "bind_host": "0.0.0.0",
+    "allowed_hosts": ["194-180-189-244.sslip.io", "localhost", "127.0.0.1"],
+    "allowed_source_cidrs": ["0.0.0.0/0", "::/0"],
+    "host_check_enabled": True,
+    "source_check_enabled": False,
+})
+assert vpn_policy["bind_mode"] == "vpn_only"
+assert vpn_policy["source_check_enabled"] is True
+assert vpn_policy["allowed_source_cidrs"] == ["10.0.0.0/8", "127.0.0.0/8"]
+local_policy = server.clean_access_policy({
+    "bind_mode": "localhost_only",
+    "bind_host": "0.0.0.0",
+    "allowed_hosts": ["localhost"],
+    "allowed_source_cidrs": ["0.0.0.0/0"],
+    "host_check_enabled": True,
+    "source_check_enabled": False,
+})
+assert local_policy["bind_host"] == "127.0.0.1"
+assert local_policy["source_check_enabled"] is True
+assert local_policy["allowed_source_cidrs"] == ["127.0.0.0/8", "::1/128"]
 PY
 }
 
@@ -277,6 +299,9 @@ PY
     grep -qF 'Allow current host' "$BATS_TEST_DIRNAME/../web/app.js"
     grep -qF 'Enable Host header check' "$BATS_TEST_DIRNAME/../web/app.js"
     grep -qF 'Enable source IP check' "$BATS_TEST_DIRNAME/../web/app.js"
+    grep -qF 'applyWebAccessModeProfile' "$BATS_TEST_DIRNAME/../web/app.js"
+    grep -qF 'Unsaved changes' "$BATS_TEST_DIRNAME/../web/app.js"
+    grep -qF 'profile selected; test before saving' "$BATS_TEST_DIRNAME/../web/app.js"
 }
 
 @test "web server hardening keeps bounded rate, body, logs, and token storage" {
