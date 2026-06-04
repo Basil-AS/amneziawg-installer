@@ -390,6 +390,7 @@ Options:
   --route-amnezia       Mode: Amnezia List + DNS (default)
   --route-custom=NETS   Mode: Only specified networks
   --endpoint=IP         Specify external IP (for servers behind NAT)
+  --ssh-port=PORT       SSH port for the UFW rule (auto-detected; comma-separated list)
   --preset=TYPE         Obfuscation parameter preset: default, mobile
                         mobile: Jc=3, narrow Jmax — for mobile carriers (Tele2, Yota, Megafon)
   --jc=N                Set Jc manually (1-128, overrides preset)

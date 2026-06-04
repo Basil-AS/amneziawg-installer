@@ -2,7 +2,7 @@
 
 This repository is a fork of `bivlked/amneziawg-installer`.
 
-Current upstream base marker remains `5.13.0`. Selected upstream `5.14.0`-`5.14.3` fixes are manually ported on top of the fork; this file is the fork-delta map for future sync work.
+Current upstream sync marker is `5.15.3` (`upstream/main` short hash `13203c6`) with selected upstream fixes manually ported on top of the fork; this file is the fork-delta map for future sync work.
 
 ## Runtime Fork Delta
 
@@ -25,6 +25,29 @@ Current upstream base marker remains `5.13.0`. Selected upstream `5.14.0`-`5.14.
 - `5.14.2`: high-density `vpn://` QR generation via `qrencode -t png -l L -s 6 -m 4`.
 - `5.14.2`: ARM build `_resolve_kernel_version`, preserving fork atomic xz hardening.
 - `5.14.3`: `cleanup_system` network safety: no cleanup autoremove, network package holds, default route check and recovery.
+- `5.14.5`: `detect_ssh_ports` and UFW SSH lockout guard, adapted to keep fork Web/AdGuard firewall rules. The fork also includes the current `SSH_CONNECTION` server port as a safety source when available.
+
+## Upstream Sync Notes
+
+### 2026-06-04 sync from upstream `13203c6` (`v5.15.3`)
+
+- Strategy: selective/manual port. A full merge would remove fork-only `web/` panel files and many fork-specific tests, so it was intentionally not used.
+- Upstream base before sync: merge-base `edf4f7b`; fork HEAD before sync: `460b9c9`.
+- Accepted upstream changes:
+  - `e016bb6` / v5.14.5 SSH lockout fix: added `detect_ssh_ports`, `--ssh-port=PORT[,PORT]`, and UFW loops over detected SSH ports in both RU and EN installers.
+  - Added regression coverage in `tests/test_ssh_port_detect.bats` for CLI overrides, `sshd -T`, `ss`, current `SSH_CONNECTION`, UFW inactive/active branches, RU/EN parity, and `sshd_config.d/*.conf` structural support.
+- Already preserved from earlier fork sync work:
+  - Ubuntu 25.10 / 26.04 support and docs.
+  - `--force` / `AWG_FORCE_REINSTALL=1` reinstall safety guard.
+  - PPA `noble` fallback logic for Ubuntu non-LTS releases, intentionally gated behind `AWG_ALLOW_PPA_CODENAME_FALLBACK=1` / `--allow-ppa-codename-fallback` in this fork.
+  - v5.14.0-v5.14.3 public IP, diagnose, MTU, QR, ARM, and cleanup/network safety fixes listed above.
+- Preserved fork delta:
+  - Python stdlib Web Panel, HTTPS, bearer/RBAC/user self-service, Web Access Policy, AdGuard, IPv6 modes, P2P/DNAT hooks, metadata comments, `vpn://`, QR, WireSock hints, and voice UDP optimizations.
+- Conflicts/resolution:
+  - No Git merge conflicts because this was a manual port.
+  - `setup_improved_firewall` was not replaced from upstream; only SSH detection was integrated so fork-specific Web/AdGuard firewall behavior remains intact.
+- Tests run:
+  - See final sync commit/report for the exact command list and results.
 
 ## Tests Protecting Fork Delta
 
@@ -41,6 +64,7 @@ Current upstream base marker remains `5.13.0`. Selected upstream `5.14.0`-`5.14.
 - `tests/test_v5142_build_arm_deb.bats`
 - `tests/test_v5143_cleanup_no_autoremove.bats`
 - `tests/test_v5143_fork_delta_regressions.bats`
+- `tests/test_ssh_port_detect.bats`
 
 ## Sync Rule
 

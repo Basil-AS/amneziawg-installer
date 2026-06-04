@@ -243,6 +243,7 @@ sudo /root/awg/manage_amneziawg.sh p2p toggle CLIENT_NAME
 | `--dns-mode=MODE` | DNS mode: `adguard`, `system`, `custom` | `--dns-mode=adguard` |
 | `--route-all` | Весь трафик через VPN | `--route-all` |
 | `--route-amnezia` | Маршрутизация по Amnezia list | `--route-amnezia` |
+| `--ssh-port=PORT[,PORT]` | SSH-порт(ы), которые нужно открыть в UFW; обычно определяется автоматически | `--ssh-port=2222` |
 | `--endpoint=IP` | Внешний IP сервера за NAT | `--endpoint=203.0.113.10` |
 | `--preset=TYPE` | Preset обфускации: `default` или `mobile` | `--preset=mobile` |
 | `--no-tweaks` | Пропустить hardening/оптимизацию | `--no-tweaks` |
@@ -614,7 +615,7 @@ GET    /api/server/logs
 
 > На ARM установщик загружает готовые модули ядра при наличии, и автоматически переключается на DKMS-сборку если нужно.
 
-> ⚠️ **Нестандартный порт SSH:** Если SSH работает не на порту 22, выполните `sudo ufw allow ВАШ_ПОРТ/tcp` **до** запуска установки, иначе вы потеряете доступ к серверу.
+> ⚠️ **Нестандартный порт SSH:** установщик обычно определяет SSH-порт автоматически. Если SSH работает на нестандартном порту или автодетект недоступен, запускайте с `--ssh-port=ВАШ_ПОРТ` (несколько портов — через запятую). Как дополнительная консервативная страховка можно заранее выполнить `sudo ufw allow ВАШ_ПОРТ/tcp` **до** запуска установки.
 
 **Клиенты:**
 * **Все платформы:** [Amnezia VPN](https://github.com/amnezia-vpn/amnezia-client/releases) **>= 4.8.12.7** — полнофункциональный VPN-клиент с AWG 2.0. Импорт через `vpn://` URI

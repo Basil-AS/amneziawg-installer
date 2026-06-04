@@ -50,7 +50,7 @@ declare -A AWG_ASSET_SHA256=(
 UNINSTALL=0; HELP=0; DIAGNOSTIC=0; VERBOSE=0; NO_COLOR=0; AUTO_YES=0; NO_TWEAKS=0
 FORCE_REINSTALL=0
 _APT_UPDATED=0
-CLI_PORT=""; CLI_SUBNET=""; CLI_DISABLE_IPV6="default"
+CLI_PORT=""; CLI_SUBNET=""; CLI_DISABLE_IPV6="default"; CLI_SSH_PORT=""
 CLI_ROUTING_MODE="default"; CLI_CUSTOM_ROUTES=""; CLI_ENDPOINT=""; CLI_NO_TWEAKS=0; CLI_DISABLE_UFW=0
 CLI_ENABLE_NATIVE_IPV6=0; CLI_IPV6_MODE=""; CLI_IPV6_SUBNET=""; CLI_UPGRADE_IPV6=0
 CLI_P2P_BASE_PORT=""; CLI_P2P_PORTS_PER_CLIENT=""
@@ -111,6 +111,7 @@ while [[ $# -gt 0 ]]; do
         --verbose|-v)    VERBOSE=1 ;;
         --no-color)      NO_COLOR=1 ;;
         --port=*)        CLI_PORT="${1#*=}" ;;
+        --ssh-port=*)    CLI_SSH_PORT="${1#*=}" ;;
         --subnet=*)      CLI_SUBNET="${1#*=}" ;;
         --allow-ipv6)    CLI_DISABLE_IPV6=0 ;;
         --disallow-ipv6) CLI_DISABLE_IPV6=1 ;;
@@ -375,6 +376,8 @@ Options:
   --route-amnezia       Use 'Amnezia' mode non-interactively
   --route-custom=NETS   Use 'Custom' mode non-interactively
   --endpoint=IP         Specify external server IP (for servers behind NAT)
+  --ssh-port=PORT[,PORT]
+                        Explicitly open SSH port(s) in UFW; otherwise autodetect
   -y, --yes             Auto-confirm (reboots, UFW, etc.)
   -f, --force           Force reinstall on top of an already-running AmneziaWG
                         (by default a run on a configured server aborts;
@@ -2308,6 +2311,53 @@ EOF
 # Firewall and security
 # ==============================================================================
 
+detect_ssh_ports() {
+    local ports="" p pp valid=""
+    local awk_ports='tolower($1)=="port"&&$2~/^[0-9]+$/{print $2} tolower($1)=="listenaddress"{v=$2; if(v~/\]:[0-9]+$/){sub(/.*\]:/,"",v); print v} else if(v~/^[0-9.]+:[0-9]+$/){sub(/.*:/,"",v); print v}}'
+
+    if [[ -n "$CLI_SSH_PORT" ]]; then
+        ports="${CLI_SSH_PORT//,/ }"
+    else
+        if command -v sshd &>/dev/null; then
+            ports+=" $(sshd -T 2>/dev/null | awk "$awk_ports" | tr '\n' ' ')"
+        fi
+        if command -v ss &>/dev/null; then
+            ports+=" $(ss -H -tlnp 2>/dev/null | awk '/"sshd"/{n=split($4,a,":"); print a[n]}' | tr '\n' ' ')"
+        fi
+        if [[ -n "${SSH_CONNECTION:-}" ]]; then
+            ports+=" $(awk '{print $4}' <<<"$SSH_CONNECTION")"
+        fi
+        if [[ -z "${ports// }" ]]; then
+            local cfgs=() d
+            [[ -f /etc/ssh/sshd_config ]] && cfgs+=(/etc/ssh/sshd_config)
+            for d in /etc/ssh/sshd_config.d/*.conf; do
+                [[ -f "$d" ]] && cfgs+=("$d")
+            done
+            if [[ "${#cfgs[@]}" -gt 0 ]]; then
+                ports+=" $(awk "$awk_ports" "${cfgs[@]}" 2>/dev/null | tr '\n' ' ')"
+            fi
+        fi
+    fi
+
+    for p in $ports; do
+        if [[ "$p" =~ ^[0-9]+$ ]]; then
+            pp=$((10#$p))
+            if (( pp >= 1 && pp <= 65535 )); then
+                case " $valid " in
+                    *" $pp "*) ;;
+                    *) valid+="${valid:+ }$pp" ;;
+                esac
+            fi
+        fi
+    done
+
+    if [[ -z "$valid" ]]; then
+        [[ -n "$CLI_SSH_PORT" ]] && log_warn "--ssh-port has no valid ports, falling back to 22."
+        valid="22"
+    fi
+    printf '%s' "$valid"
+}
+
 setup_improved_firewall() {
     if [[ "${AWG_DISABLE_UFW:-0}" == "1" ]]; then
         log_warn "UFW disabled by user (--disable-ufw/AWG_DISABLE_UFW=1)."
@@ -2323,6 +2373,10 @@ setup_improved_firewall() {
     if [[ -z "$main_nic" ]]; then
         log_warn "Could not detect network interface for UFW route."
     fi
+
+    local ssh_ports _sp
+    ssh_ports=$(detect_ssh_ports)
+    log "SSH port(s) for the UFW rule: ${ssh_ports}"
 
     local ufw_errors=0
     allow_web_panel_ufw() {
@@ -2340,7 +2394,9 @@ setup_improved_firewall() {
         log "UFW is inactive. Configuring..."
         ufw default deny incoming  || { log_warn "UFW: failed to set default deny incoming"; ufw_errors=1; }
         ufw default allow outgoing || { log_warn "UFW: failed to set default allow outgoing"; ufw_errors=1; }
-        ufw limit 22/tcp comment "SSH Rate Limit" || { log_warn "UFW: failed to limit SSH"; ufw_errors=1; }
+        for _sp in $ssh_ports; do
+            ufw limit "${_sp}/tcp" comment "SSH Rate Limit" || { log_warn "UFW: failed to limit SSH (port ${_sp})"; ufw_errors=1; }
+        done
         ufw allow "${AWG_PORT}/udp" comment "AmneziaWG VPN" || { log_warn "UFW: failed to allow VPN port"; ufw_errors=1; }
         allow_web_panel_ufw
         if [[ "${AWG_ADGUARD_ENABLED:-0}" -eq 1 ]]; then
@@ -2359,7 +2415,7 @@ setup_improved_firewall() {
         fi
         log "UFW rules added."
         log_warn "--- ENABLING UFW ---"
-        log_warn "Verify SSH access!"
+        log_warn "UFW will allow SSH only on port(s): ${ssh_ports}. Verify SSH access!"
         local confirm_ufw="y"
         if [[ "$AUTO_YES" -eq 0 ]]; then
             sleep 5
@@ -2383,7 +2439,9 @@ setup_improved_firewall() {
             log_warn "Failed to create UFW marker — uninstall will not disable UFW automatically."
     else
         log "UFW is active. Updating rules..."
-        ufw limit 22/tcp comment "SSH Rate Limit" || { log_warn "UFW: failed to limit SSH"; ufw_errors=1; }
+        for _sp in $ssh_ports; do
+            ufw limit "${_sp}/tcp" comment "SSH Rate Limit" || { log_warn "UFW: failed to limit SSH (port ${_sp})"; ufw_errors=1; }
+        done
         ufw allow "${AWG_PORT}/udp" comment "AmneziaWG VPN" || { log_warn "UFW: failed to allow VPN port"; ufw_errors=1; }
         allow_web_panel_ufw
         if [[ "${AWG_ADGUARD_ENABLED:-0}" -eq 1 ]]; then

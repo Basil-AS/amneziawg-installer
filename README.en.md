@@ -269,6 +269,7 @@ sudo /root/awg/manage_amneziawg.sh p2p toggle CLIENT_NAME
 | `--dns-mode=MODE` | DNS mode: `adguard`, `system`, `custom` | `--dns-mode=adguard` |
 | `--route-all` | Route all traffic through the VPN | `--route-all` |
 | `--route-amnezia` | Use the Amnezia route list | `--route-amnezia` |
+| `--ssh-port=PORT[,PORT]` | SSH port(s) to open in UFW; usually autodetected | `--ssh-port=2222` |
 | `--endpoint=IP` | External server IP when the VPS is behind NAT | `--endpoint=203.0.113.10` |
 | `--preset=TYPE` | Obfuscation preset: `default` or `mobile` | `--preset=mobile` |
 | `--no-tweaks` | Skip hardening/optimization | `--no-tweaks` |
@@ -551,7 +552,7 @@ Your carrier is not on the list? Try `--preset=mobile`. If that doesn't work —
 
 > On ARM, the installer downloads prebuilt kernel modules when available and falls back to DKMS compilation automatically.
 
-> ⚠️ **Non-standard SSH port:** If SSH is not on port 22, run `sudo ufw allow YOUR_PORT/tcp` **before** starting the installer, otherwise you will lose access to the server.
+> ⚠️ **Non-standard SSH port:** the installer usually detects the SSH port automatically. If SSH runs on a non-standard port or autodetection is unavailable, run with `--ssh-port=YOUR_PORT` (comma-separated for several ports). As an extra conservative safeguard you can run `sudo ufw allow YOUR_PORT/tcp` **before** starting the installer.
 
 **Clients:**
 * **All platforms:** [Amnezia VPN](https://github.com/amnezia-vpn/amnezia-client/releases) **>= 4.8.12.7** — full-featured VPN client with AWG 2.0. Import via `vpn://` URI

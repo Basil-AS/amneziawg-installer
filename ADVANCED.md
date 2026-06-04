@@ -386,6 +386,7 @@ PersistentKeepalive = 33
   --route-amnezia       Режим: Список Amnezia+DNS (умолч.)
   --route-custom=СЕТИ   Режим: Только указанные сети
   --endpoint=IP         Указать внешний IP (для серверов за NAT)
+  --ssh-port=ПОРТ       SSH-порт для правила UFW (автодетект; список через запятую)
   --preset=ТИП          Набор параметров обфускации: default, mobile
                         mobile: Jc=3, узкий Jmax — для мобильных операторов (Tele2, Yota, Мегафон)
   --jc=N                Задать Jc вручную (1-128, поверх preset)
