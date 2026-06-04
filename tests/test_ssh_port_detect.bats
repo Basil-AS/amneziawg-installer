@@ -7,7 +7,8 @@ RU_SCRIPT="$BATS_TEST_DIRNAME/../install_amneziawg.sh"
 EN_SCRIPT="$BATS_TEST_DIRNAME/../install_amneziawg_en.sh"
 
 _load_function() {
-    local script="$1" name="$2" out="$BATS_TEST_TMPDIR/${name}.bash"
+    local script="$1" name="$2"
+    local out="$BATS_TEST_TMPDIR/${name}.bash"
     awk "/^${name}\\(\\) \\{/,/^\\}/" "$script" > "$out"
     # shellcheck disable=SC1090
     source "$out"
@@ -25,6 +26,10 @@ setup() {
     log_warn() { :; }
     log_error() { :; }
     log_debug() { :; }
+    log ""
+    log_warn ""
+    log_error ""
+    log_debug ""
     export -f log log_warn log_error log_debug
     unset CLI_SSH_PORT SSH_CONNECTION
 }
@@ -52,22 +57,35 @@ setup() {
 
 @test "RU detect_ssh_ports reads sshd -T ports and listenaddress ports" {
     _load_function "$RU_SCRIPT" detect_ssh_ports
-    command() { return 0; }
-    sshd() { printf 'port 22\nlistenaddress 0.0.0.0:2222\nlistenaddress [::]:2200\n'; }
-    ss() { :; }
-    export -f command sshd ss
-    run detect_ssh_ports
+    mkdir -p "$BATS_TEST_TMPDIR/bin"
+    cat > "$BATS_TEST_TMPDIR/bin/sshd" <<'EOF'
+#!/usr/bin/env bash
+printf 'port 22\nlistenaddress 0.0.0.0:2222\nlistenaddress [::]:2200\n'
+EOF
+    cat > "$BATS_TEST_TMPDIR/bin/ss" <<'EOF'
+#!/usr/bin/env bash
+:
+EOF
+    chmod +x "$BATS_TEST_TMPDIR/bin/sshd" "$BATS_TEST_TMPDIR/bin/ss"
+    export -f detect_ssh_ports
+    run env PATH="$BATS_TEST_TMPDIR/bin:$PATH" bash -c detect_ssh_ports
     [ "$output" = "22 2222 2200" ]
 }
 
 @test "RU detect_ssh_ports merges ss socket and current SSH session port" {
     _load_function "$RU_SCRIPT" detect_ssh_ports
-    command() { return 0; }
-    sshd() { printf 'port 22\n'; }
-    ss() { printf 'LISTEN 0 128 0.0.0.0:2222 0.0.0.0:* users:(("sshd",pid=1,fd=3))\n'; }
-    export -f command sshd ss
-    SSH_CONNECTION="198.51.100.10 50000 203.0.113.20 2022"
-    run detect_ssh_ports
+    mkdir -p "$BATS_TEST_TMPDIR/bin"
+    cat > "$BATS_TEST_TMPDIR/bin/sshd" <<'EOF'
+#!/usr/bin/env bash
+printf 'port 22\n'
+EOF
+    cat > "$BATS_TEST_TMPDIR/bin/ss" <<'EOF'
+#!/usr/bin/env bash
+printf 'LISTEN 0 128 0.0.0.0:2222 0.0.0.0:* users:(("sshd",pid=1,fd=3))\n'
+EOF
+    chmod +x "$BATS_TEST_TMPDIR/bin/sshd" "$BATS_TEST_TMPDIR/bin/ss"
+    export -f detect_ssh_ports
+    run env PATH="$BATS_TEST_TMPDIR/bin:$PATH" SSH_CONNECTION="198.51.100.10 50000 203.0.113.20 2022" bash -c detect_ssh_ports
     [ "$output" = "22 2222 2022" ]
 }
 
@@ -147,8 +165,8 @@ _firewall_mocks() {
 @test "structural: both installers expose --ssh-port help and parser" {
     grep -q -- '--ssh-port=' "$RU_SCRIPT"
     grep -q -- '--ssh-port=' "$EN_SCRIPT"
-    grep -qF 'CLI_SSH_PORT="${1#*=}"' "$RU_SCRIPT"
-    grep -qF 'CLI_SSH_PORT="${1#*=}"' "$EN_SCRIPT"
+    grep -qF "CLI_SSH_PORT=\"\${1#*=}\"" "$RU_SCRIPT"
+    grep -qF "CLI_SSH_PORT=\"\${1#*=}\"" "$EN_SCRIPT"
 }
 
 @test "structural: both installers inspect sshd_config.d drop-ins" {
@@ -164,6 +182,6 @@ _firewall_mocks() {
 }
 
 @test "structural: both installers loop ufw limit over detected ports" {
-    grep -q 'ufw limit "${_sp}/tcp"' "$RU_SCRIPT"
-    grep -q 'ufw limit "${_sp}/tcp"' "$EN_SCRIPT"
+    grep -q "ufw limit \"\${_sp}/tcp\"" "$RU_SCRIPT"
+    grep -q "ufw limit \"\${_sp}/tcp\"" "$EN_SCRIPT"
 }
