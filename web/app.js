@@ -714,6 +714,7 @@ function renderClients() {
     const menuId = `client-menu-${String(client.name).replace(/[^A-Za-z0-9_-]/g, "_")}`;
     const shieldClass = portsDisabled ? "opacity-60" : "";
     const search = `${client.name} ${ip} ${endpoint} ${(client.open_ports || []).join(" ")}`.toLowerCase();
+    const deleteLabel = statusState.role === "super" ? "Delete client" : "Remove from my access";
     return `
       <article class="client-card bg-[var(--panel)] border-b border-[var(--line)] p-4 relative last:border-b-0" data-name="${esc(client.name)}" data-search="${esc(search)}">
         <div id="chart-${esc(client.name)}" class="client-card-chart-bg"></div>
@@ -756,7 +757,7 @@ function renderClients() {
               <button type="button" data-action="regenerate-config" class="client-menu-item text-amber-700">${icon("refresh")}<span>Regenerate</span></button>
               ${renderMenuItem("toggle", "power", client.disabled ? "Enable client" : "Disable client")}
               ${renderMenuItem("toggle-ports", "shield", "Port details / toggle", shieldClass)}
-              ${renderMenuItem("delete", "trash", "Delete", "text-[var(--danger)]")}
+              ${renderMenuItem("delete", "trash", deleteLabel, "text-[var(--danger)]")}
             </div>
           </div>
         </div>
@@ -971,10 +972,16 @@ async function clientAction(name, action) {
       return loadClients();
     }
     if (action === "delete") {
-      const ok = await confirmModal("Delete Client", `Delete ${name}?`, "Delete", true);
+      const isAdmin = statusState.role === "super";
+      const ok = await confirmModal(
+        isAdmin ? "Delete Client" : "Remove Access",
+        isAdmin ? `Delete ${name}?` : `Remove ${name} from your access list?`,
+        isAdmin ? "Delete" : "Remove",
+        true
+      );
       if (!ok) return;
       await api(`/api/clients/${encodeURIComponent(name)}`, {method: "DELETE"});
-      showToast("Client deleted");
+      showToast(isAdmin ? "Client deleted" : "Access removed");
       await loadClients();
       if (statusState.role === "super") await loadTokens();
     }
@@ -1136,6 +1143,7 @@ function renderTokenList() {
       </div>
       <div class="flex flex-wrap gap-2">
         <button data-edit-name="${esc(row.hash)}" title="Edit Name" class="${buttonClasses("w-9 px-0")}">${icon("pencil")}</button>
+        <button data-edit-clients="${esc(row.hash)}" class="${buttonClasses()}">${icon("shield")}<span>Clients</span></button>
         <button data-rotate="${esc(row.hash)}" title="Rotate user token" class="${buttonClasses()}">${icon("key")}<span>Rotate Token</span></button>
         <button data-revoke="${esc(row.hash)}" class="${buttonClasses("text-[var(--danger)]")}">${icon("trash")}<span>Revoke</span></button>
       </div>
@@ -1158,6 +1166,9 @@ function renderTokenList() {
         showToast("Could not update token name", "error");
       }
     };
+  });
+  panel.querySelectorAll("[data-edit-clients]").forEach(btn => {
+    btn.onclick = async () => editTokenClients(btn.dataset.editClients);
   });
   panel.querySelectorAll("[data-rotate]").forEach(btn => {
     btn.onclick = async () => {
@@ -1190,13 +1201,64 @@ function renderTokenList() {
   });
 }
 
-async function newToken() {
-  const body = latestClients.map(client => `
+function tokenClientCheckboxes(selectedClients) {
+  const selected = new Set(selectedClients || []);
+  return latestClients.map(client => `
     <label class="flex items-center gap-2 rounded-md border border-[var(--line)] bg-[var(--soft)] px-3 py-2 text-sm">
-      <input class="client-token-check" type="checkbox" value="${esc(client.name)}">
-      <span>${esc(client.name)}</span>
+      <input class="client-token-check accent-[var(--accent)]" type="checkbox" value="${esc(client.name)}" ${selected.has(client.name) ? "checked" : ""}>
+      <span class="min-w-0 flex-1 truncate">${esc(client.name)}</span>
     </label>
-  `).join("") || `<p class="text-sm text-[var(--muted)]">Create clients first or issue an empty token.</p>`;
+  `).join("") || `<p class="text-sm text-[var(--muted)]">No clients exist yet.</p>`;
+}
+
+function editTokenClients(hash) {
+  const row = latestTokens.find(item => item.hash === hash);
+  if (!row) return;
+  const label = row.name || "Unnamed token";
+  const dialog = document.createElement("dialog");
+  dialog.className = "w-[min(680px,calc(100vw-32px))] rounded-lg border border-[var(--line)] bg-[var(--panel)] p-0 text-[var(--text)] shadow-xl backdrop:bg-black/55";
+  dialog.innerHTML = `
+    <form method="dialog" class="p-4">
+      <div class="mb-4 flex items-center justify-between gap-3">
+        <div class="min-w-0">
+          <h2 class="truncate text-base font-semibold">Client Access</h2>
+          <p class="mt-1 truncate text-xs text-[var(--muted)]">${esc(label)}</p>
+        </div>
+        <button value="cancel" class="${buttonClasses("w-9 px-0")}">x</button>
+      </div>
+      <div class="grid max-h-[60vh] gap-2 overflow-auto">${tokenClientCheckboxes(row.clients)}</div>
+      <div class="mt-4 flex flex-wrap justify-end gap-2">
+        <button value="cancel" class="${buttonClasses()}">Cancel</button>
+        <button id="saveTokenClients" value="ok" class="${primaryButtonClasses()}">${icon("shield")}<span>Save</span></button>
+      </div>
+    </form>
+  `;
+  document.body.appendChild(dialog);
+  dialog.addEventListener("click", event => {
+    if (event.target === dialog) dialog.close("cancel");
+  });
+  dialog.querySelector("#saveTokenClients").onclick = async event => {
+    event.preventDefault();
+    const clients = Array.from(dialog.querySelectorAll(".client-token-check:checked")).map(input => input.value);
+    try {
+      await api(`/api/tokens/${encodeURIComponent(hash)}/clients`, {
+        method: "PUT",
+        body: JSON.stringify({clients}),
+      });
+      dialog.close("ok");
+      showToast("Client access updated");
+      await loadTokens();
+    } catch {
+      showToast("Could not update client access", "error");
+    }
+  };
+  dialog.addEventListener("close", () => dialog.remove(), {once: true});
+  confirmDialogOnEnter(dialog, () => dialog.querySelector("#saveTokenClients").click());
+  dialog.showModal();
+}
+
+async function newToken() {
+  const body = tokenClientCheckboxes([]);
   const ok = await showModal("Generate Token", `
     <label class="mb-3 block text-sm">
       <span class="mb-1 block text-[var(--muted)]">Token name / alias (optional)</span>

@@ -559,6 +559,14 @@ def clean_client_list(value):
     return out
 
 
+def require_existing_clients(value):
+    clients = clean_client_list(value)
+    existing = {peer["name"] for peer in parse_peers()}
+    if any(name not in existing for name in clients):
+        raise ValueError("unknown client")
+    return clients
+
+
 def clean_token_name(value):
     if not isinstance(value, str):
         return ""
@@ -1340,13 +1348,13 @@ class Handler(SimpleHTTPRequestHandler):
         try:
             body = self.json_body()
             if u.path == "/api/clients":
-                if not self.require_super(auth):
-                    return
                 name = safe_name(body.get("name", ""))
                 args = []
                 if body.get("expires"):
                     args.append(f"--expires={require_expires(body['expires'])}")
                 p = run_manage(*args, "add", name)
+                if p.returncode == 0 and not self.is_super(auth):
+                    mutate_user_clients(auth["hash"], name)
             elif u.path == "/api/server/restart":
                 if not self.require_super(auth):
                     return
@@ -1419,7 +1427,7 @@ class Handler(SimpleHTTPRequestHandler):
             elif u.path == "/api/tokens":
                 if not self.require_super(auth):
                     return
-                clients = clean_client_list(body.get("clients", []))
+                clients = require_existing_clients(body.get("clients", []))
                 name = clean_token_name(body.get("name", ""))
                 token = secrets.token_urlsafe(32)
                 digest = token_hash(token)
@@ -1480,7 +1488,9 @@ class Handler(SimpleHTTPRequestHandler):
             return
         u = urlparse(self.path)
         try:
-            m = re.match(r"^/api/tokens/([^/]+)/name$", u.path)
+            name_update = re.match(r"^/api/tokens/([^/]+)/name$", u.path)
+            clients_update = re.match(r"^/api/tokens/([^/]+)/clients$", u.path)
+            m = name_update or clients_update
             if not m:
                 self.send_error(404)
                 return
@@ -1488,17 +1498,19 @@ class Handler(SimpleHTTPRequestHandler):
                 return
             digest = safe_token_hash(m.group(1))
             body = self.json_body()
-            name = clean_token_name(body.get("name", ""))
             with TOKENS_LOCK:
                 data = load_tokens()
                 if digest not in data.get("users", {}):
                     self.send_json({"error": "token not found"}, 404)
                     return
                 record = clean_user_record(data["users"][digest])
-                record["name"] = name
+                if name_update:
+                    record["name"] = clean_token_name(body.get("name", ""))
+                else:
+                    record["clients"] = require_existing_clients(body.get("clients", []))
                 data["users"][digest] = record
                 write_tokens(data)
-            self.send_json({"ok": True, "hash": digest, "name": name, "clients": record["clients"]})
+            self.send_json({"ok": True, "hash": digest, "name": record["name"], "clients": record["clients"]})
         except ValueError as exc:
             if str(exc) == "payload too large":
                 return
@@ -1515,12 +1527,15 @@ class Handler(SimpleHTTPRequestHandler):
                 name = safe_name(m.group(1))
                 if not self.require_client_access(auth, name):
                     return
-                p = run_manage("remove", name)
-                if p.returncode == 0:
-                    if self.is_super(auth):
+                if self.is_super(auth):
+                    p = run_manage("remove", name)
+                    if p.returncode == 0:
                         remove_client_from_all_tokens(name)
-                    else:
-                        mutate_user_clients(auth["hash"], name, remove=True)
+                    self.send_json({"ok": p.returncode == 0, "stdout": p.stdout, "stderr": p.stderr}, 200 if p.returncode == 0 else 400)
+                    return
+                mutate_user_clients(auth["hash"], name, remove=True)
+                self.send_json({"ok": True, "removed_access": True, "client": name})
+                return
             else:
                 m = re.match(r"^/api/clients/([^/]+)/p2p$", u.path)
                 if m:

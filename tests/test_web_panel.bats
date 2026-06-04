@@ -219,8 +219,10 @@
     grep -qF 'clean_token_name(body.get("name", ""))' "$BATS_TEST_DIRNAME/../web/server.py"
     grep -qF 'Token name / alias (optional)' "$BATS_TEST_DIRNAME/../web/app.js"
     grep -qF 'super_token_hash' "$BATS_TEST_DIRNAME/../web/server.py"
-    grep -A4 -qF 'if u.path == "/api/clients":' "$BATS_TEST_DIRNAME/../web/server.py"
-    grep -A4 'if u.path == "/api/clients":' "$BATS_TEST_DIRNAME/../web/server.py" | grep -qF 'require_super'
+    grep -qF 'mutate_user_clients(auth["hash"], name)' "$BATS_TEST_DIRNAME/../web/server.py"
+    grep -qF '/api/tokens/([^/]+)/clients' "$BATS_TEST_DIRNAME/../web/server.py"
+    grep -qF 'Remove from my access' "$BATS_TEST_DIRNAME/../web/app.js"
+    grep -qF 'data-edit-clients' "$BATS_TEST_DIRNAME/../web/app.js"
 }
 
 @test "web server hardening keeps bounded rate, body, logs, and token storage" {
