@@ -150,7 +150,7 @@
 @test "web panel defaults to VPN gateway instead of public bind" {
     grep -qF 'AWG_WEB_BIND="10.9.9.1"' "$BATS_TEST_DIRNAME/../install_amneziawg.sh"
     grep -qF 'AWG_WEB_BIND="10.9.9.1"' "$BATS_TEST_DIRNAME/../install_amneziawg_en.sh"
-    grep -qF '10.9.9.1", int(os.environ.get("AWG_WEB_PORT", "8443"))' "$BATS_TEST_DIRNAME/../web/server.py"
+    grep -qF 'bind_host = policy.get("bind_host") or os.environ.get("AWG_WEB_BIND") or "10.9.9.1"' "$BATS_TEST_DIRNAME/../web/server.py"
     if sed -n '/# Инициализация переменных/,/# Загрузка конфига/p' "$BATS_TEST_DIRNAME/../install_amneziawg.sh" | grep -qF 'AWG_WEB_BIND="0.0.0.0"'; then
         fail "web panel must not default to public bind"
     fi
@@ -223,6 +223,60 @@
     grep -qF '/api/tokens/([^/]+)/clients' "$BATS_TEST_DIRNAME/../web/server.py"
     grep -qF 'Remove from my access' "$BATS_TEST_DIRNAME/../web/app.js"
     grep -qF 'data-edit-clients' "$BATS_TEST_DIRNAME/../web/app.js"
+}
+
+@test "web access policy validates hosts sources and lockout guard" {
+    command -v python3 &>/dev/null || skip "python3 not available"
+    PYTHONPATH="$BATS_TEST_DIRNAME/../web" python3 - <<'PY'
+import server
+
+policy = server.clean_access_policy({
+    "bind_mode": "public",
+    "bind_host": "0.0.0.0",
+    "allowed_hosts": ["194-180-189-244.sslip.io", "194.180.189.244"],
+    "allowed_source_cidrs": ["10.66.66.0/24"],
+    "host_check_enabled": True,
+    "source_check_enabled": True,
+})
+assert server.host_allowed("194-180-189-244.sslip.io", "10.66.66.2", policy)
+assert server.host_allowed("194-180-189-244.sslip.io:443", "10.66.66.2", policy)
+assert server.host_allowed("194.180.189.244:443", "10.66.66.2", policy)
+assert not server.host_allowed("example.invalid", "10.66.66.2", policy)
+assert server.source_allowed("10.66.66.42", policy)
+assert not server.source_allowed("10.66.67.42", policy)
+assert server.request_allowed_by_policy("194-180-189-244.sslip.io:443", "10.66.66.42", policy)
+assert not server.request_allowed_by_policy("194-180-189-244.sslip.io:443", "10.66.67.42", policy)
+assert server.clean_allowed_host("[::1]:443") == "::1"
+try:
+    server.clean_access_policy({
+        "bind_mode": "public",
+        "bind_host": "0.0.0.0",
+        "allowed_hosts": [],
+        "allowed_source_cidrs": ["0.0.0.0/0"],
+        "host_check_enabled": True,
+        "source_check_enabled": False,
+    })
+except ValueError:
+    pass
+else:
+    raise AssertionError("empty allowed_hosts with host check must fail")
+assert not server.bind_allows_current_remote("127.0.0.1", "203.0.113.9")
+PY
+}
+
+@test "web access policy API and UI are super-admin only and lockout-safe" {
+    grep -qF 'ACCESS_POLICY_FILE = WEB_DIR / "access_policy.json"' "$BATS_TEST_DIRNAME/../web/server.py"
+    grep -qF '/api/web-access-policy' "$BATS_TEST_DIRNAME/../web/server.py"
+    grep -qF '/api/web-access-policy/test' "$BATS_TEST_DIRNAME/../web/server.py"
+    grep -qF '/api/web-access-policy/restart' "$BATS_TEST_DIRNAME/../web/server.py"
+    grep -qF 'if not self.require_super(auth):' "$BATS_TEST_DIRNAME/../web/server.py"
+    grep -qF 'policy would block the current request' "$BATS_TEST_DIRNAME/../web/server.py"
+    grep -qF 'bind mode would block the current connection after restart' "$BATS_TEST_DIRNAME/../web/server.py"
+    grep -qF '194-180-189-244.sslip.io' "$BATS_TEST_DIRNAME/../web/server.py"
+    grep -qF 'Web Access' "$BATS_TEST_DIRNAME/../web/app.js"
+    grep -qF 'Allow current host' "$BATS_TEST_DIRNAME/../web/app.js"
+    grep -qF 'Enable Host header check' "$BATS_TEST_DIRNAME/../web/app.js"
+    grep -qF 'Enable source IP check' "$BATS_TEST_DIRNAME/../web/app.js"
 }
 
 @test "web server hardening keeps bounded rate, body, logs, and token storage" {
@@ -707,7 +761,7 @@ PY
     local server="$BATS_TEST_DIRNAME/../web/server.py"
     grep -qF 'allowed_host_header' "$server"
     grep -qF 'HTTPStatus.MISDIRECTED_REQUEST' "$server"
-    grep -qF 'Rejected Web Panel request with disallowed Host header' "$server"
+    grep -qF 'reason=access policy' "$server"
     grep -qF 'missing / malformed / invalid / expired / insufficient scope' "$server"
     grep -qF 'reason={reason}' "$server"
     grep -qF 'fingerprint=' "$server"
@@ -717,7 +771,7 @@ PY
     fi
 }
 
-@test "web host allowlist accepts configured domain and rejects public IP in domain mode" {
+@test "web host allowlist accepts configured domain and managed public IP" {
     command -v python3 &>/dev/null || skip "python3 not available"
     REPO_ROOT="$BATS_TEST_DIRNAME/.." python3 - <<'PY'
 import importlib.util
@@ -730,16 +784,20 @@ spec.loader.exec_module(server)
 os.environ["AWG_WEB_DOMAIN"] = "64-112-125-125.sslip.io"
 os.environ["AWG_WEB_BIND"] = "0.0.0.0"
 os.environ["AWG_ENDPOINT"] = "64.112.125.125"
-assert server.allowed_host_header("64-112-125-125.sslip.io", "198.51.100.1")
-assert server.allowed_host_header("64-112-125-125.sslip.io:8443", "198.51.100.1")
-assert not server.allowed_host_header("64.112.125.125", "198.51.100.1")
-assert not server.allowed_host_header("[2001:db8::1]:8443", "198.51.100.1")
-os.environ["AWG_WEB_DOMAIN"] = ""
-os.environ["AWG_WEB_BIND"] = "10.9.9.1"
-assert server.allowed_host_header("10.9.9.1:8443", "10.9.9.2")
-os.environ["AWG_WEB_BIND"] = "127.0.0.1"
-assert server.allowed_host_header("localhost:8443", "127.0.0.1")
-assert not server.allowed_host_header("64.112.125.125", "198.51.100.1")
+policy = server.clean_access_policy({
+    "bind_mode": "public",
+    "bind_host": "0.0.0.0",
+    "allowed_hosts": ["64-112-125-125.sslip.io", "64.112.125.125", "10.9.9.1", "localhost"],
+    "allowed_source_cidrs": ["0.0.0.0/0"],
+    "host_check_enabled": True,
+    "source_check_enabled": False,
+})
+assert server.host_allowed("64-112-125-125.sslip.io", "198.51.100.1", policy)
+assert server.host_allowed("64-112-125-125.sslip.io:8443", "198.51.100.1", policy)
+assert server.host_allowed("64.112.125.125:443", "198.51.100.1", policy)
+assert not server.host_allowed("[2001:db8::1]:8443", "198.51.100.1", policy)
+assert server.host_allowed("10.9.9.1:8443", "10.9.9.2", policy)
+assert server.host_allowed("panel.example:8443", "127.0.0.1", policy)
 PY
 }
 

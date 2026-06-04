@@ -13,6 +13,7 @@ import subprocess
 import sys
 import threading
 import time
+from collections import deque
 from http import HTTPStatus
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -24,6 +25,7 @@ MANAGE = AWG_DIR / "manage_amneziawg.sh"
 SERVER_CONF = Path(os.environ.get("SERVER_CONF_FILE", "/etc/amnezia/amneziawg/awg0.conf"))
 TOKEN_FILE = WEB_DIR / "tokens.json"
 IMPORT_TOKEN_FILE = WEB_DIR / "import_tokens.json"
+ACCESS_POLICY_FILE = WEB_DIR / "access_policy.json"
 TRAFFIC_FILE = WEB_DIR / "traffic_history.json"
 LEGACY_TOKEN_FILE = WEB_DIR / "auth_token"
 NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
@@ -49,7 +51,10 @@ RATE_LAST_CLEANUP = 0
 MAX_JSON_BODY = 64 * 1024
 TOKENS_LOCK = threading.RLock()
 IMPORT_TOKENS_LOCK = threading.RLock()
+ACCESS_POLICY_LOCK = threading.RLock()
 TRAFFIC_LOCK = threading.Lock()
+REJECTED_HOST_LOCK = threading.Lock()
+RECENT_REJECTED_HOSTS = deque(maxlen=25)
 SERVER_NAME_RE = re.compile(r"^[\w .,!?\-()]{1,128}$", re.UNICODE)
 DELETED_TRAFFIC_KEY = "_deleted_clients_total"
 PANEL_TITLE = "AmneziaWG Panel"
@@ -207,29 +212,236 @@ def host_is_ip(value):
         return False
 
 
-def allowed_host_header(raw_host, remote_addr):
+def default_allowed_hosts():
     domain = (os.environ.get("AWG_WEB_DOMAIN") or "").strip().lower()
     bind = os.environ.get("AWG_WEB_BIND") or "10.9.9.1"
     endpoint = (os.environ.get("AWG_ENDPOINT") or "").strip().lower()
+    hosts = ["localhost", "127.0.0.1", "194-180-189-244.sslip.io", "194.180.189.244"]
+    for value in (domain, endpoint, bind):
+        host = split_host(value)
+        if host and host not in {"0.0.0.0", "::", "mastus.online"} and host not in hosts:
+            hosts.append(host)
+    return hosts
+
+
+def default_access_policy():
+    bind = os.environ.get("AWG_WEB_BIND") or "10.9.9.1"
+    if bind in {"0.0.0.0", "::"}:
+        mode = "public"
+        source_cidrs = ["0.0.0.0/0", "::/0"]
+    elif bind in {"127.0.0.1", "::1"}:
+        mode = "localhost_only"
+        bind = "127.0.0.1"
+        source_cidrs = ["127.0.0.0/8", "::1/128"]
+    elif bind == "10.9.9.1":
+        mode = "vpn_only"
+        source_cidrs = ["10.0.0.0/8", "127.0.0.0/8"]
+    else:
+        mode = "custom"
+        source_cidrs = ["0.0.0.0/0", "::/0"]
+    return {
+        "bind_mode": mode,
+        "bind_host": bind,
+        "allowed_hosts": default_allowed_hosts(),
+        "allowed_source_cidrs": source_cidrs,
+        "host_check_enabled": True,
+        "source_check_enabled": False,
+    }
+
+
+def clean_policy_string_list(value, field):
+    if isinstance(value, str):
+        items = [line.strip() for line in value.splitlines()]
+    elif isinstance(value, list):
+        items = [str(item).strip() for item in value]
+    else:
+        raise ValueError(f"invalid {field}")
+    out, seen = [], set()
+    for item in items:
+        if not item:
+            continue
+        if any(ord(ch) < 32 or ord(ch) == 127 for ch in item):
+            raise ValueError(f"invalid {field}")
+        if item not in seen:
+            out.append(item)
+            seen.add(item)
+    return out
+
+
+def clean_allowed_host(value):
+    host = split_host(value)
+    if not host or any(ch in host for ch in "/\\\r\n\t "):
+        raise ValueError("invalid allowed host")
+    return host
+
+
+def clean_allowed_hosts(value):
+    out, seen = [], set()
+    for item in clean_policy_string_list(value, "allowed_hosts"):
+        host = clean_allowed_host(item)
+        if host not in seen:
+            out.append(host)
+            seen.add(host)
+    return out
+
+
+def clean_cidr_list(value, field="allowed_source_cidrs"):
+    out, seen = [], set()
+    for item in clean_policy_string_list(value, field):
+        try:
+            cidr = str(ipaddress.ip_network(item, strict=False))
+        except ValueError as exc:
+            raise ValueError(f"invalid {field}") from exc
+        if cidr not in seen:
+            out.append(cidr)
+            seen.add(cidr)
+    return out
+
+
+def clean_bind_host(value):
+    value = str(value or "").strip().lower()
+    if value == "localhost":
+        return "127.0.0.1"
+    try:
+        return str(ipaddress.ip_address(value))
+    except ValueError as exc:
+        raise ValueError("invalid bind_host") from exc
+
+
+def clean_access_policy(value):
+    defaults = default_access_policy()
+    data = value if isinstance(value, dict) else {}
+    mode = data.get("bind_mode", defaults["bind_mode"])
+    if mode not in {"public", "vpn_only", "localhost_only", "custom"}:
+        raise ValueError("invalid bind_mode")
+    if mode == "public":
+        bind_host = "0.0.0.0"
+    elif mode == "localhost_only":
+        bind_host = "127.0.0.1"
+    elif mode == "vpn_only":
+        bind_host = clean_bind_host(data.get("bind_host") or "10.9.9.1")
+    else:
+        bind_host = clean_bind_host(data.get("bind_host"))
+    host_check_enabled = bool(data.get("host_check_enabled", defaults["host_check_enabled"]))
+    source_check_enabled = bool(data.get("source_check_enabled", defaults["source_check_enabled"]))
+    allowed_hosts = clean_allowed_hosts(data.get("allowed_hosts", defaults["allowed_hosts"]))
+    allowed_source_cidrs = clean_cidr_list(data.get("allowed_source_cidrs", defaults["allowed_source_cidrs"]))
+    if host_check_enabled and not allowed_hosts:
+        raise ValueError("allowed_hosts cannot be empty when host check is enabled")
+    if source_check_enabled and not allowed_source_cidrs:
+        raise ValueError("allowed_source_cidrs cannot be empty when source check is enabled")
+    return {
+        "bind_mode": mode,
+        "bind_host": bind_host,
+        "allowed_hosts": allowed_hosts,
+        "allowed_source_cidrs": allowed_source_cidrs,
+        "host_check_enabled": host_check_enabled,
+        "source_check_enabled": source_check_enabled,
+    }
+
+
+def load_access_policy():
+    with ACCESS_POLICY_LOCK:
+        data = {}
+        if ACCESS_POLICY_FILE.exists():
+            try:
+                data = json.loads(ACCESS_POLICY_FILE.read_text(encoding="utf-8"))
+            except Exception:
+                data = {}
+        try:
+            clean = clean_access_policy(data)
+        except ValueError:
+            clean = default_access_policy()
+        if clean != data or not ACCESS_POLICY_FILE.exists():
+            write_access_policy(clean)
+        return clean
+
+
+def write_access_policy(data):
+    with ACCESS_POLICY_LOCK:
+        WEB_DIR.mkdir(parents=True, exist_ok=True)
+        clean = clean_access_policy(data)
+        tmp = ACCESS_POLICY_FILE.with_name(f"{ACCESS_POLICY_FILE.name}.tmp.{os.getpid()}")
+        tmp.write_text(json.dumps(clean, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, ACCESS_POLICY_FILE)
+        os.chmod(ACCESS_POLICY_FILE, 0o600)
+
+
+def source_allowed(remote_addr, policy):
+    if not policy.get("source_check_enabled"):
+        return True
+    try:
+        remote_ip = ipaddress.ip_address(remote_addr)
+    except ValueError:
+        return False
+    for cidr in policy.get("allowed_source_cidrs", []):
+        try:
+            if remote_ip in ipaddress.ip_network(cidr, strict=False):
+                return True
+        except ValueError:
+            continue
+    return False
+
+
+def host_allowed(raw_host, remote_addr, policy):
     host = split_host(raw_host)
     if not host:
         return False
-    if remote_addr in {"127.0.0.1", "::1"} and host in {"localhost", "127.0.0.1", "::1"}:
+    if not policy.get("host_check_enabled"):
         return True
-    if bind in {"127.0.0.1", "::1"}:
+    if remote_addr in {"127.0.0.1", "::1"}:
+        return True
+    if policy.get("bind_host") in {"127.0.0.1", "::1"}:
         return host in {"localhost", "127.0.0.1", "::1"}
-    if not domain:
-        return True
-    allowed = {domain}
-    if bind not in {"0.0.0.0", "::"}:
-        allowed.add(bind.lower())
-    if host in allowed:
-        return True
-    if host_is_ip(host):
+    return host in set(policy.get("allowed_hosts") or [])
+
+
+def request_allowed_by_policy(raw_host, remote_addr, policy):
+    return host_allowed(raw_host, remote_addr, policy) and source_allowed(remote_addr, policy)
+
+
+def bind_allows_current_remote(bind_host, remote_addr):
+    try:
+        bind_ip = ipaddress.ip_address(bind_host)
+        remote_ip = ipaddress.ip_address(remote_addr)
+    except ValueError:
         return False
-    if endpoint and host == endpoint and host != domain:
+    if bind_ip.is_unspecified:
+        return True
+    if bind_ip.is_loopback:
+        return remote_ip.is_loopback
+    if remote_ip.is_loopback:
+        return True
+    if bind_ip.is_private and not remote_ip.is_private:
         return False
-    return False
+    return True
+
+
+def allowed_host_header(raw_host, remote_addr):
+    return host_allowed(raw_host, remote_addr, load_access_policy())
+
+
+def record_rejected_host(raw_host, remote_addr, path):
+    with REJECTED_HOST_LOCK:
+        RECENT_REJECTED_HOSTS.appendleft({
+            "time": int(time.time()),
+            "host": str(raw_host or "")[:200],
+            "remote": str(remote_addr or "")[:80],
+            "path": str(path or "")[:200],
+        })
+
+
+def recent_rejected_hosts():
+    with REJECTED_HOST_LOCK:
+        return list(RECENT_REJECTED_HOSTS)
+
+
+def restart_web_panel_later():
+    def _restart():
+        time.sleep(0.5)
+        subprocess.Popen(["systemctl", "restart", "awg-web.service"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    threading.Thread(target=_restart, daemon=True).start()
 
 
 def run_manage(*args, timeout=60, extra_env=None):
@@ -1029,8 +1241,12 @@ class Handler(SimpleHTTPRequestHandler):
             return None
 
     def api_auth(self):
-        if not allowed_host_header(self.headers.get("Host", ""), self.client_address[0]):
-            audit_log(f"Rejected Web Panel request with disallowed Host header: {self.headers.get('Host', '')}")
+        policy = load_access_policy()
+        raw_host = self.headers.get("Host", "")
+        remote_addr = self.client_address[0]
+        if not request_allowed_by_policy(raw_host, remote_addr, policy):
+            record_rejected_host(raw_host, remote_addr, self.path)
+            audit_log(f"Rejected Web Panel request remote={remote_addr} path={self.path} host={raw_host!r} reason=access policy")
             if self.path.startswith("/api/"):
                 self.send_api_error(HTTPStatus.MISDIRECTED_REQUEST, "bad_request")
             else:
@@ -1194,6 +1410,32 @@ class Handler(SimpleHTTPRequestHandler):
             host = f"10.9.9.1:{os.environ.get('AWG_WEB_PORT', '8443')}"
         return f"https://{host}"
 
+    def web_access_policy_payload(self, policy=None):
+        policy = policy or load_access_policy()
+        raw_host = self.headers.get("Host", "")
+        remote_addr = self.client_address[0]
+        return {
+            "policy": policy,
+            "current": {
+                "host": raw_host,
+                "normalized_host": split_host(raw_host),
+                "remote_ip": remote_addr,
+                "allowed": request_allowed_by_policy(raw_host, remote_addr, policy),
+            },
+            "recent_rejected_hosts": recent_rejected_hosts(),
+            "requires_restart": policy.get("bind_host") != (os.environ.get("AWG_WEB_BIND") or ""),
+        }
+
+    def validate_policy_for_current_request(self, body):
+        policy = clean_access_policy(body.get("policy", body))
+        raw_host = self.headers.get("Host", "")
+        remote_addr = self.client_address[0]
+        if not request_allowed_by_policy(raw_host, remote_addr, policy):
+            raise ValueError("policy would block the current request")
+        if not bind_allows_current_remote(policy.get("bind_host", ""), remote_addr):
+            raise ValueError("bind mode would block the current connection after restart")
+        return policy
+
     def create_import_link(self, auth, name, body):
         name = safe_name(name)
         if not self.require_client_access(auth, name):
@@ -1305,6 +1547,11 @@ class Handler(SimpleHTTPRequestHandler):
             data = load_tokens()
             users = [{"hash": key, "name": value["name"], "clients": value["clients"]} for key, value in sorted(data.get("users", {}).items())]
             self.send_json({"users": users})
+            return
+        if u.path == "/api/web-access-policy":
+            if not self.require_super(auth):
+                return
+            self.send_json(self.web_access_policy_payload())
             return
         if u.path == "/api/server/logs":
             if not self.require_super(auth):
@@ -1453,6 +1700,18 @@ class Handler(SimpleHTTPRequestHandler):
                 write_tokens({"super_token_hash": token_hash(token), "users": {}})
                 self.send_json({"super_token": token})
                 return
+            elif u.path == "/api/web-access-policy/test":
+                if not self.require_super(auth):
+                    return
+                policy = self.validate_policy_for_current_request(body)
+                self.send_json({"ok": True, **self.web_access_policy_payload(policy)})
+                return
+            elif u.path == "/api/web-access-policy/restart":
+                if not self.require_super(auth):
+                    return
+                restart_web_panel_later()
+                self.send_json({"ok": True, "message": "web panel restart scheduled"})
+                return
             else:
                 import_link = re.match(r"^/api/clients/([^/]+)/(import-link|access-link)$", u.path)
                 if import_link:
@@ -1488,6 +1747,14 @@ class Handler(SimpleHTTPRequestHandler):
             return
         u = urlparse(self.path)
         try:
+            if u.path == "/api/web-access-policy":
+                if not self.require_super(auth):
+                    return
+                body = self.json_body()
+                policy = self.validate_policy_for_current_request(body)
+                write_access_policy(policy)
+                self.send_json({"ok": True, **self.web_access_policy_payload(policy)})
+                return
             name_update = re.match(r"^/api/tokens/([^/]+)/name$", u.path)
             clients_update = re.match(r"^/api/tokens/([^/]+)/clients$", u.path)
             m = name_update or clients_update
@@ -1573,8 +1840,10 @@ class Handler(SimpleHTTPRequestHandler):
 
 def main():
     load_tokens()
+    policy = load_access_policy()
     os.chdir(WEB_DIR)
-    httpd = LimitedThreadingHTTPServer((os.environ.get("AWG_WEB_BIND") or "10.9.9.1", int(os.environ.get("AWG_WEB_PORT", "8443"))), Handler)
+    bind_host = policy.get("bind_host") or os.environ.get("AWG_WEB_BIND") or "10.9.9.1"
+    httpd = LimitedThreadingHTTPServer((bind_host, int(os.environ.get("AWG_WEB_PORT", "8443"))), Handler)
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     ctx.load_cert_chain(WEB_DIR / "cert.pem", WEB_DIR / "key.pem")
     httpd.socket = ctx.wrap_socket(httpd.socket, server_side=True)

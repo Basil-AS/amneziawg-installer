@@ -5,6 +5,7 @@ let token = sessionStorage.getItem("panelToken") || "";
 let statusState = null;
 let resolverState = null;
 let trafficState = null;
+let webAccessPolicyState = null;
 let latestClients = [];
 let latestTokens = [];
 let helpClientGroups = null;
@@ -482,6 +483,21 @@ async function renderPanel() {
       <div id="tokenList" class="mt-4 grid gap-2"></div>
     </section>
 
+    <section id="webAccessPanel" class="mt-3 rounded-lg border border-[var(--line)] bg-[var(--panel)] p-4 ${statusState.role === "super" ? "" : "hidden"}">
+      <div class="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h2 class="text-base font-semibold">Web Access</h2>
+          <p class="text-sm text-[var(--muted)]">Host and source policy for this panel.</p>
+        </div>
+        <div class="flex flex-wrap gap-2">
+          <button id="testWebAccessPolicy" class="${buttonClasses()}">${icon("shield")}<span>Test policy</span></button>
+          <button id="saveWebAccessPolicy" class="${primaryButtonClasses()}">${icon("download")}<span>Save</span></button>
+          <button id="saveRestartWebAccessPolicy" class="${buttonClasses("border-amber-600 text-amber-700")}">${icon("refresh")}<span>Save and restart</span></button>
+        </div>
+      </div>
+      <div id="webAccessPolicyForm" class="mt-4"></div>
+    </section>
+
     <section id="advancedPanel" class="mt-3 rounded-lg border border-[var(--line)] bg-[var(--panel)] p-4 ${statusState.role === "super" ? "" : "hidden"}">
       <div class="flex flex-wrap items-center justify-between gap-3">
         <div>
@@ -501,6 +517,11 @@ async function renderPanel() {
   document.querySelector("#searchInput").oninput = applySearch;
   if (statusState.role === "super") document.querySelector("#newToken").onclick = newToken;
   if (statusState.role === "super") document.querySelector("#rotateProfile").onclick = rotateProfile;
+  if (statusState.role === "super") {
+    document.querySelector("#testWebAccessPolicy").onclick = () => submitWebAccessPolicy("test");
+    document.querySelector("#saveWebAccessPolicy").onclick = () => submitWebAccessPolicy("save");
+    document.querySelector("#saveRestartWebAccessPolicy").onclick = () => submitWebAccessPolicy("save-restart");
+  }
   await loadAll();
   pollTimer = setInterval(loadClients, 2000);
 }
@@ -509,7 +530,9 @@ async function loadAll() {
   const [resolver] = await Promise.all([api("/api/resolver"), loadClients()]);
   resolverState = resolver;
   renderResolverMetric();
-  if (statusState.role === "super") await loadTokens();
+  if (statusState.role === "super") {
+    await Promise.all([loadTokens(), loadWebAccessPolicy()]);
+  }
 }
 
 function renderResolverMetric() {
@@ -1294,6 +1317,122 @@ async function createTokenFromModal(dialog) {
     showToast("Token copied");
   };
   await loadTokens();
+}
+
+async function loadWebAccessPolicy() {
+  try {
+    webAccessPolicyState = await api("/api/web-access-policy");
+    renderWebAccessPolicy();
+  } catch {
+    showToast("Could not load web access policy", "error");
+  }
+}
+
+function renderWebAccessPolicy() {
+  const host = document.querySelector("#webAccessPolicyForm");
+  if (!host || !webAccessPolicyState) return;
+  const policy = webAccessPolicyState.policy || {};
+  const current = webAccessPolicyState.current || {};
+  const rejected = webAccessPolicyState.recent_rejected_hosts || [];
+  host.innerHTML = `
+    <div class="grid gap-3 lg:grid-cols-2">
+      <label class="block text-sm">
+        <span class="mb-1 block text-[var(--muted)]">Mode</span>
+        <select id="webAccessBindMode" class="h-10 w-full rounded-md border border-[var(--line)] bg-[var(--soft)] px-3 text-[var(--text)] outline-none focus:border-[var(--accent)]">
+          ${[
+            ["public", "Public"],
+            ["v" + "pn_" + "only", "V" + "P" + "N only"],
+            ["localhost_only", "Localhost only"],
+            ["custom", "Custom"],
+          ].map(([value, label]) => `<option value="${value}" ${policy.bind_mode === value ? "selected" : ""}>${label}</option>`).join("")}
+        </select>
+      </label>
+      <label class="block text-sm">
+        <span class="mb-1 block text-[var(--muted)]">Bind host</span>
+        <input id="webAccessBindHost" class="h-10 w-full rounded-md border border-[var(--line)] bg-[var(--soft)] px-3 font-mono text-xs text-[var(--text)] outline-none focus:border-[var(--accent)]" value="${esc(policy.bind_host || "")}">
+      </label>
+    </div>
+    <div class="mt-3 grid gap-3 lg:grid-cols-2">
+      <label class="flex items-center gap-2 rounded-md border border-[var(--line)] bg-[var(--soft)] px-3 py-2 text-sm">
+        <input id="webAccessHostCheck" type="checkbox" class="accent-[var(--accent)]" ${policy.host_check_enabled ? "checked" : ""}>
+        <span>Enable Host header check</span>
+      </label>
+      <label class="flex items-center gap-2 rounded-md border border-[var(--line)] bg-[var(--soft)] px-3 py-2 text-sm">
+        <input id="webAccessSourceCheck" type="checkbox" class="accent-[var(--accent)]" ${policy.source_check_enabled ? "checked" : ""}>
+        <span>Enable source IP check</span>
+      </label>
+    </div>
+    <div class="mt-3 grid gap-3 lg:grid-cols-2">
+      <label class="block text-sm">
+        <span class="mb-1 block text-[var(--muted)]">Allowed hosts</span>
+        <textarea id="webAccessHosts" class="h-36 w-full resize-y rounded-md border border-[var(--line)] bg-[var(--soft)] p-3 font-mono text-xs text-[var(--text)] outline-none focus:border-[var(--accent)]">${esc((policy.allowed_hosts || []).join("\n"))}</textarea>
+      </label>
+      <label class="block text-sm">
+        <span class="mb-1 block text-[var(--muted)]">Allowed source CIDRs</span>
+        <textarea id="webAccessCidrs" class="h-36 w-full resize-y rounded-md border border-[var(--line)] bg-[var(--soft)] p-3 font-mono text-xs text-[var(--text)] outline-none focus:border-[var(--accent)]">${esc((policy.allowed_source_cidrs || []).join("\n"))}</textarea>
+      </label>
+    </div>
+    <div class="mt-3 rounded-md border border-[var(--line)] bg-[var(--soft)] p-3 text-xs text-[var(--muted)]">
+      <div class="flex flex-wrap items-center justify-between gap-2">
+        <p><span class="font-semibold text-[var(--text)]">Current Host:</span> ${esc(current.host || "-")}</p>
+        <button id="allowCurrentHost" class="${buttonClasses("h-8 px-2 text-xs")}">${icon("plus")}<span>Allow current host</span></button>
+      </div>
+      <p class="mt-1"><span class="font-semibold text-[var(--text)]">Remote IP:</span> ${esc(current.remote_ip || "-")}</p>
+      <p class="mt-1"><span class="font-semibold text-[var(--text)]">Current request:</span> ${current.allowed ? "allowed" : "blocked"}</p>
+      <p class="mt-1"><span class="font-semibold text-[var(--text)]">Restart:</span> ${webAccessPolicyState.requires_restart ? "required for bind changes" : "not required for current bind"}</p>
+    </div>
+    <details class="mt-3 rounded-md border border-[var(--line)] bg-[var(--soft)] px-3 py-2 text-xs text-[var(--muted)]">
+      <summary class="cursor-pointer font-medium text-[var(--text)]">Recent rejected hosts</summary>
+      <div class="mt-2 grid gap-1">
+        ${rejected.length ? rejected.map(item => `<p class="truncate font-mono">${esc(item.host || "-")} · ${esc(item.remote || "-")} · ${esc(item.path || "-")}</p>`).join("") : `<p>No recent rejected hosts in this process.</p>`}
+      </div>
+    </details>
+  `;
+  host.querySelector("#allowCurrentHost").onclick = () => {
+    const currentHost = current.normalized_host || current.host || "";
+    const textarea = host.querySelector("#webAccessHosts");
+    const rows = textarea.value.split(/\r?\n/).map(row => row.trim()).filter(Boolean);
+    if (currentHost && !rows.includes(currentHost)) rows.push(currentHost);
+    textarea.value = rows.join("\n");
+  };
+}
+
+function readWebAccessPolicyForm() {
+  const host = document.querySelector("#webAccessPolicyForm");
+  const mode = host.querySelector("#webAccessBindMode").value;
+  let bindHost = host.querySelector("#webAccessBindHost").value.trim();
+  if (mode === "public") bindHost = "0.0.0.0";
+  if (mode === "localhost_only") bindHost = "127.0.0.1";
+  if (mode === "v" + "pn_" + "only" && !bindHost) bindHost = "10.9.9.1";
+  return {
+    bind_mode: mode,
+    bind_host: bindHost,
+    host_check_enabled: host.querySelector("#webAccessHostCheck").checked,
+    source_check_enabled: host.querySelector("#webAccessSourceCheck").checked,
+    allowed_hosts: host.querySelector("#webAccessHosts").value.split(/\r?\n/).map(row => row.trim()).filter(Boolean),
+    allowed_source_cidrs: host.querySelector("#webAccessCidrs").value.split(/\r?\n/).map(row => row.trim()).filter(Boolean),
+  };
+}
+
+async function submitWebAccessPolicy(action) {
+  const policy = readWebAccessPolicyForm();
+  try {
+    if (action === "test") {
+      webAccessPolicyState = await api("/api/web-access-policy/test", {method: "POST", body: JSON.stringify({policy})});
+      renderWebAccessPolicy();
+      showToast("Policy allows current request");
+      return;
+    }
+    webAccessPolicyState = await api("/api/web-access-policy", {method: "PUT", body: JSON.stringify({policy})});
+    renderWebAccessPolicy();
+    showToast("Web access policy saved");
+    if (action === "save-restart") {
+      await api("/api/web-access-policy/restart", {method: "POST", body: "{}"});
+      showToast("Web panel restart scheduled");
+    }
+  } catch (error) {
+    showToast("Policy rejected", "error");
+  }
 }
 
 function confirmDialogOnEnter(dialog, onConfirm) {
