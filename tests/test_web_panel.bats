@@ -225,6 +225,105 @@
     grep -qF 'data-edit-clients' "$BATS_TEST_DIRNAME/../web/app.js"
 }
 
+@test "web clients disambiguate duplicate display names and expose token assignments" {
+    command -v python3 &>/dev/null || skip "python3 not available"
+    local tmp
+    tmp=$(mktemp -d)
+    mkdir -p "$tmp/web"
+    cat > "$tmp/awg0.conf" <<'CONF'
+[Peer]
+#_Name = phone
+PublicKey = OLD
+AllowedIPs = 10.9.9.2/32
+CONF
+    AWG_DIR="$tmp" SERVER_CONF_FILE="$tmp/awg0.conf" REPO_ROOT="$BATS_TEST_DIRNAME/.." python3 - <<'PY'
+import importlib.util
+import io
+import json
+import os
+from pathlib import Path
+
+spec = importlib.util.spec_from_file_location("panel_server", Path(os.environ["REPO_ROOT"]) / "web" / "server.py")
+server = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(server)
+
+super_token = "super-token"
+user_token = "user-token"
+user_hash = server.token_hash(user_token)
+server.write_tokens({
+    "super_token_hash": server.token_hash(super_token),
+    "users": {user_hash: {"name": "phone-token", "clients": []}},
+})
+server.secrets.token_hex = lambda _n: "a7f3"
+
+calls = []
+def fake_run_manage(*args, timeout=60, extra_env=None):
+    calls.append(args)
+    if args == ("add", "phone-a7f3"):
+        with open(os.environ["SERVER_CONF_FILE"], "a", encoding="utf-8") as fh:
+            fh.write("\n[Peer]\n#_Name = phone-a7f3\nPublicKey = NEW\nAllowedIPs = 10.9.9.3/32\n")
+    class Result:
+        returncode = 0
+        stdout = "ok"
+        stderr = ""
+    return Result()
+server.run_manage = fake_run_manage
+
+class Headers(dict):
+    def get(self, key, default=None):
+        return super().get(key, default)
+
+def make_handler(method, path, token=None, body=None):
+    payload = b"" if body is None else json.dumps(body).encode()
+    h = object.__new__(server.Handler)
+    h.path = path
+    h.client_address = ("127.0.0.1", 12345)
+    h.rfile = io.BytesIO(payload)
+    h.wfile = io.BytesIO()
+    h.responses = []
+    h.headers_sent = []
+    headers = Headers({"Host": "127.0.0.1", "Content-Length": str(len(payload))})
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    h.headers = headers
+    h.send_response = lambda code: h.responses.append(code)
+    h.send_error = lambda code, *args, **kwargs: h.responses.append(code)
+    h.send_header = lambda key, value: h.headers_sent.append((key, value))
+    h.end_headers = lambda: None
+    return h
+
+server.RATE.clear()
+handler = make_handler("POST", "/api/clients", token=user_token, body={"name": "phone"})
+handler.do_POST()
+assert handler.responses == [200]
+payload = json.loads(handler.wfile.getvalue().decode())
+assert payload["display_name"] == "phone"
+assert payload["config_name"] == "phone-a7f3"
+assert payload["is_duplicate_display_name"] is True
+assert calls[-1] == ("add", "phone-a7f3")
+assert server.load_tokens()["users"][user_hash]["clients"] == ["phone-a7f3"]
+assert server.load_client_metadata()["clients"]["phone-a7f3"] == {"display_name": "phone"}
+
+handler = make_handler("GET", "/api/clients", token=user_token)
+handler.do_GET()
+assert handler.responses == [200]
+payload = json.loads(handler.wfile.getvalue().decode())
+assert [row["config_name"] for row in payload["clients"]] == ["phone-a7f3"]
+
+handler = make_handler("GET", "/api/clients", token=super_token)
+handler.do_GET()
+assert handler.responses == [200]
+payload = json.loads(handler.wfile.getvalue().decode())
+rows = {row["config_name"]: row for row in payload["clients"]}
+assert rows["phone"]["display_name"] == "phone"
+assert rows["phone"]["is_unassigned"] is True
+assert rows["phone-a7f3"]["display_name"] == "phone"
+assert rows["phone-a7f3"]["is_duplicate_display_name"] is True
+assert rows["phone-a7f3"]["assigned_tokens"] == [{"alias": "phone-token", "fingerprint": user_hash[:6], "role": "user"}]
+PY
+    rm -rf "$tmp"
+}
+
 @test "web access policy validates hosts sources and lockout guard" {
     command -v python3 &>/dev/null || skip "python3 not available"
     PYTHONPATH="$BATS_TEST_DIRNAME/../web" python3 - <<'PY'

@@ -358,6 +358,28 @@ function renderPortSummary(ports, disabled) {
   return `<div class="port-summary ${disabled ? "is-off" : ""}" title="${esc(ports.join(", "))}"><span class="port-label">Ports</span>${chips.join("")}${disabled ? '<span class="port-state">off</span>' : ""}</div>`;
 }
 
+function clientKey(client) {
+  return client.config_name || client.id || client.name;
+}
+
+function clientDisplayLabel(client) {
+  const display = client.display_name || client.name;
+  const config = clientKey(client);
+  if (client.is_duplicate_display_name && display !== config) return `${display} · ${config}`;
+  return display;
+}
+
+function renderAssignedTokenBadges(client) {
+  if (statusState.role !== "super") return "";
+  const assigned = Array.isArray(client.assigned_tokens) ? client.assigned_tokens : [];
+  if (!assigned.length) {
+    return `<span class="rounded-full border border-[var(--line)] bg-[var(--soft)] px-2 py-0.5 text-[11px] font-medium text-[var(--muted)]">unassigned</span>`;
+  }
+  return assigned.map(item => `
+    <span class="rounded-full border border-[var(--accent)]/30 bg-[var(--accent)]/10 px-2 py-0.5 text-[11px] font-medium text-[var(--accent)]">${esc(item.alias || ("token: " + (item.fingerprint || "")))}</span>
+  `).join("");
+}
+
 function renderMenuItem(action, iconName, label, extra = "") {
   return `<button type="button" data-action="${esc(action)}" class="client-menu-item ${extra}">${icon(iconName)}<span>${esc(label)}</span></button>`;
 }
@@ -724,6 +746,8 @@ function renderClients() {
     return;
   }
   host.innerHTML = latestClients.map(client => {
+    const key = clientKey(client);
+    const label = clientDisplayLabel(client);
     const online = isOnline(client);
     const active = recentlyActive(client);
     const ipv4 = client.ipv4 || client.ip || "-";
@@ -734,13 +758,13 @@ function renderClients() {
     const clientTotal = client.traffic_total || {};
     const portsDisabled = (client.open_ports || []).length > 0 && client.ports_enabled === false;
     const portMarkup = renderPortSummary(client.open_ports || [], portsDisabled);
-    const menuId = `client-menu-${String(client.name).replace(/[^A-Za-z0-9_-]/g, "_")}`;
+    const menuId = `client-menu-${String(key).replace(/[^A-Za-z0-9_-]/g, "_")}`;
     const shieldClass = portsDisabled ? "opacity-60" : "";
-    const search = `${client.name} ${ip} ${endpoint} ${(client.open_ports || []).join(" ")}`.toLowerCase();
+    const search = `${label} ${key} ${ip} ${endpoint} ${(client.open_ports || []).join(" ")}`.toLowerCase();
     const deleteLabel = statusState.role === "super" ? "Delete client" : "Remove from my access";
     return `
-      <article class="client-card bg-[var(--panel)] border-b border-[var(--line)] p-4 relative last:border-b-0" data-name="${esc(client.name)}" data-search="${esc(search)}">
-        <div id="chart-${esc(client.name)}" class="client-card-chart-bg"></div>
+      <article class="client-card bg-[var(--panel)] border-b border-[var(--line)] p-4 relative last:border-b-0" data-name="${esc(key)}" data-search="${esc(search)}">
+        <div id="chart-${esc(key)}" class="client-card-chart-bg"></div>
         <div class="client-card-content">
           <div class="client-header-row">
             <div class="client-avatar relative z-10 shrink-0 self-start sm:self-auto">
@@ -751,9 +775,10 @@ function renderClients() {
             </div>
             <div class="client-main relative z-10 min-w-0 flex-1">
               <div class="flex min-w-0 flex-wrap items-center gap-2">
-                <h3 class="min-w-0 truncate text-base font-semibold" title="${esc(client.name)}">${esc(client.name)}</h3>
+                <h3 class="min-w-0 truncate text-base font-semibold" title="${esc(label)}">${esc(label)}</h3>
                 ${client.disabled ? '<span class="rounded-full border border-[var(--danger)] px-2 py-0.5 text-xs font-semibold text-[var(--danger)]">disabled</span>' : ""}
               </div>
+              <div class="mt-1 flex flex-wrap gap-1.5">${renderAssignedTokenBadges(client)}</div>
               <div class="mt-1 flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 text-sm text-[var(--muted)]">
                 <span class="shrink-0 font-mono text-xs text-[var(--text)]" title="${esc(ipv4)}">${esc(ipv4)}</span>
                 ${ipv6 ? `<span class="min-w-0 max-w-full truncate font-mono text-xs" title="${esc(ipv6)}">${esc(ipv6)}</span>` : ""}
@@ -772,7 +797,7 @@ function renderClients() {
             <button data-action="download-config" title="Download .conf" aria-label="Download .conf" class="${buttonClasses("client-action client-action-primary")}">${icon("download")}<span class="client-action-label">Download</span></button>
             ${actionButton("qr", "Show QR", "qr", "QR", "client-action-primary")}
             <button data-action="copy-config" title="Copy profile" aria-label="Copy profile" class="${buttonClasses("client-action client-action-primary")}">${icon("copy")}<span class="client-action-label">Copy</span></button>
-            <button type="button" data-menu-toggle="${esc(menuId)}" aria-expanded="false" aria-controls="${esc(menuId)}" title="More actions" aria-label="More actions for ${esc(client.name)}" class="${buttonClasses("client-action w-9 px-0")}">${icon("more")}</button>
+            <button type="button" data-menu-toggle="${esc(menuId)}" aria-expanded="false" aria-controls="${esc(menuId)}" title="More actions" aria-label="More actions for ${esc(label)}" class="${buttonClasses("client-action w-9 px-0")}">${icon("more")}</button>
             <div id="${esc(menuId)}" class="client-menu hidden" role="menu">
               ${renderMenuItem("copy-config", "copy", "Copy profile")}
               ${renderMenuItem("copy-uri", "link", "Copy URI")}
@@ -820,11 +845,12 @@ function renderClients() {
 function drawCharts() {
   if (!window.ApexCharts) return;
   latestClients.forEach(client => {
-    const el = document.getElementById(`chart-${client.name}`);
+    const key = clientKey(client);
+    const el = document.getElementById(`chart-${key}`);
     if (!el) return;
     const chart = new ApexCharts(el, {
       chart: {type: "area", height: "100%", sparkline: {enabled: true}, animations: {enabled: false}, toolbar: {show: false}, background: "transparent"},
-      series: [{data: speedHistory.get(client.name) || []}],
+      series: [{data: speedHistory.get(key) || []}],
       stroke: {curve: "smooth", width: 2, colors: ["var(--accent)"]},
       fill: {type: "gradient", colors: ["var(--accent)"], gradient: {shadeIntensity: 0.2, opacityFrom: 0.5, opacityTo: 0.05, stops: [0, 90, 100]}},
       tooltip: {enabled: false},
@@ -834,7 +860,7 @@ function drawCharts() {
       yaxis: {show: false},
     });
     chart.render();
-    clientCharts.set(client.name, chart);
+    clientCharts.set(key, chart);
   });
 }
 
@@ -1141,7 +1167,7 @@ async function loadTokens() {
 function tokenTraffic(clients) {
   const allowed = new Set(clients || []);
   return latestClients.reduce((total, client) => {
-    if (!allowed.has(client.name)) return total;
+    if (!allowed.has(clientKey(client))) return total;
     const item = client.traffic_total || {};
     total.rx += Number(item.rx || 0);
     total.tx += Number(item.tx || 0);
@@ -1228,8 +1254,8 @@ function tokenClientCheckboxes(selectedClients) {
   const selected = new Set(selectedClients || []);
   return latestClients.map(client => `
     <label class="flex items-center gap-2 rounded-md border border-[var(--line)] bg-[var(--soft)] px-3 py-2 text-sm">
-      <input class="client-token-check accent-[var(--accent)]" type="checkbox" value="${esc(client.name)}" ${selected.has(client.name) ? "checked" : ""}>
-      <span class="min-w-0 flex-1 truncate">${esc(client.name)}</span>
+      <input class="client-token-check accent-[var(--accent)]" type="checkbox" value="${esc(clientKey(client))}" ${selected.has(clientKey(client)) ? "checked" : ""}>
+      <span class="min-w-0 flex-1 truncate">${esc(clientDisplayLabel(client))}</span>
     </label>
   `).join("") || `<p class="text-sm text-[var(--muted)]">No clients exist yet.</p>`;
 }

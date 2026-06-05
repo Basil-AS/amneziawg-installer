@@ -27,6 +27,7 @@ TOKEN_FILE = WEB_DIR / "tokens.json"
 IMPORT_TOKEN_FILE = WEB_DIR / "import_tokens.json"
 ACCESS_POLICY_FILE = WEB_DIR / "access_policy.json"
 TRAFFIC_FILE = WEB_DIR / "traffic_history.json"
+CLIENT_METADATA_FILE = WEB_DIR / "client_metadata.json"
 LEGACY_TOKEN_FILE = WEB_DIR / "auth_token"
 NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 TOKEN_HASH_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -582,6 +583,96 @@ def write_tokens(data):
         os.chmod(TOKEN_FILE, 0o600)
 
 
+def clean_client_metadata_record(value):
+    if not isinstance(value, dict):
+        return {}
+    display_name = value.get("display_name")
+    if not isinstance(display_name, str) or not NAME_RE.fullmatch(display_name):
+        return {}
+    return {"display_name": display_name}
+
+
+def load_client_metadata():
+    if not CLIENT_METADATA_FILE.exists():
+        return {"clients": {}}
+    try:
+        data = json.loads(CLIENT_METADATA_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return {"clients": {}}
+    if not isinstance(data, dict) or not isinstance(data.get("clients"), dict):
+        return {"clients": {}}
+    clients = {}
+    for config_name, record in data.get("clients", {}).items():
+        if isinstance(config_name, str) and NAME_RE.fullmatch(config_name):
+            clean = clean_client_metadata_record(record)
+            if clean:
+                clients[config_name] = clean
+    return {"clients": clients}
+
+
+def write_client_metadata(data):
+    WEB_DIR.mkdir(parents=True, exist_ok=True)
+    clean = load_client_metadata() if not isinstance(data, dict) else {"clients": {}}
+    if isinstance(data, dict) and isinstance(data.get("clients"), dict):
+        for config_name, record in data.get("clients", {}).items():
+            if isinstance(config_name, str) and NAME_RE.fullmatch(config_name):
+                record = clean_client_metadata_record(record)
+                if record:
+                    clean["clients"][config_name] = record
+    tmp = CLIENT_METADATA_FILE.with_name(f"{CLIENT_METADATA_FILE.name}.tmp.{os.getpid()}")
+    tmp.write_text(json.dumps(clean, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, CLIENT_METADATA_FILE)
+    os.chmod(CLIENT_METADATA_FILE, 0o600)
+
+
+def set_client_display_name(config_name, display_name):
+    config_name = safe_name(config_name)
+    display_name = safe_name(display_name)
+    data = load_client_metadata()
+    data.setdefault("clients", {})[config_name] = {"display_name": display_name}
+    write_client_metadata(data)
+
+
+def remove_client_metadata(config_name):
+    config_name = safe_name(config_name)
+    data = load_client_metadata()
+    if data.get("clients", {}).pop(config_name, None) is not None:
+        write_client_metadata(data)
+
+
+def client_identity_map(peers=None):
+    peers = peers if peers is not None else parse_peers()
+    return {peer["name"]: peer.get("display_name") or peer["name"] for peer in peers}
+
+
+def unique_client_config_name(display_name, peers=None):
+    display_name = safe_name(display_name)
+    peers = peers if peers is not None else parse_peers()
+    existing_names = {peer["name"] for peer in peers}
+    existing_names.update(path.stem for path in AWG_DIR.glob("*.conf") if NAME_RE.fullmatch(path.stem))
+    display_names = set(client_identity_map(peers).values())
+    if display_name not in existing_names and display_name not in display_names:
+        return display_name, False
+    for _ in range(40):
+        candidate = f"{display_name}-{secrets.token_hex(2)}"
+        if candidate not in existing_names:
+            return candidate, True
+    raise ValueError("could not allocate unique client name")
+
+
+def token_assignments_for_clients():
+    data = load_tokens()
+    assignments = {}
+    for digest, value in sorted(data.get("users", {}).items()):
+        record = clean_user_record(value)
+        label = record.get("name") or f"token: {digest[:6]}"
+        item = {"alias": label, "fingerprint": digest[:6], "role": "user"}
+        for client_name in record.get("clients", []):
+            assignments.setdefault(client_name, []).append(dict(item))
+    return assignments
+
+
 def load_traffic_history():
     if not TRAFFIC_FILE.exists():
         return {"last": {}, "days": {}, "totals": {DELETED_TRAFFIC_KEY: {"rx": 0, "tx": 0}}}
@@ -1051,7 +1142,19 @@ def parse_peers():
                 cur["ipv6"] = m6.group(1)
     if cur:
         peers.append(cur)
-    return [p for p in peers if p.get("name")]
+    metadata = load_client_metadata().get("clients", {})
+    rows = []
+    for peer in peers:
+        if not peer.get("name"):
+            continue
+        config_name = peer["name"]
+        display_name = metadata.get(config_name, {}).get("display_name") or config_name
+        peer["id"] = config_name
+        peer["name"] = config_name
+        peer["config_name"] = config_name
+        peer["display_name"] = display_name
+        rows.append(peer)
+    return rows
 
 
 def dns_status():
@@ -1214,18 +1317,34 @@ def client_stats_map():
 
 class LimitedThreadingHTTPServer(ThreadingHTTPServer):
     daemon_threads = True
-    request_queue_size = 32
+    request_queue_size = 128
 
-    def __init__(self, *args, max_workers=16, request_timeout=8, **kwargs):
+    def __init__(self, *args, max_workers=32, request_timeout=8, **kwargs):
         super().__init__(*args, **kwargs)
         self._sem = threading.BoundedSemaphore(max_workers)
         self.request_timeout = request_timeout
-        self.socket.settimeout(10)
+        self.handshake_timeout = min(request_timeout, 5)
+        self.ssl_context = None
 
     def get_request(self):
-        request, client_address = super().get_request()
-        request.settimeout(self.request_timeout)
-        return request, client_address
+        raw_request, client_address = super().get_request()
+        raw_request.settimeout(self.handshake_timeout)
+        if not self.ssl_context:
+            raw_request.settimeout(self.request_timeout)
+            return raw_request, client_address
+        try:
+            request = self.ssl_context.wrap_socket(
+                raw_request,
+                server_side=True,
+                do_handshake_on_connect=False,
+            )
+            request.settimeout(self.handshake_timeout)
+            request.do_handshake()
+            request.settimeout(self.request_timeout)
+            return request, client_address
+        except (OSError, ssl.SSLError):
+            raw_request.close()
+            raise
 
     def process_request(self, request, client_address):
         if not self._sem.acquire(blocking=False):
@@ -1530,10 +1649,21 @@ class Handler(SimpleHTTPRequestHandler):
             stats = client_stats_map()
             history = load_traffic_history()
             visible = self.visible_peers(auth)
+            all_peers = parse_peers()
+            display_counts = {}
+            for peer in all_peers:
+                display_counts[peer.get("display_name") or peer["name"]] = display_counts.get(peer.get("display_name") or peer["name"], 0) + 1
+            assignments = token_assignments_for_clients() if self.is_super(auth) else {}
             rows = []
             for peer in visible:
                 item = dict(peer)
                 row_stats = stats.get(peer["name"], {})
+                item["id"] = peer["name"]
+                item["config_name"] = peer["name"]
+                item["display_name"] = peer.get("display_name") or peer["name"]
+                item["assigned_tokens"] = assignments.get(peer["name"], []) if self.is_super(auth) else []
+                item["is_unassigned"] = self.is_super(auth) and not item["assigned_tokens"]
+                item["is_duplicate_display_name"] = display_counts.get(item["display_name"], 0) > 1
                 item["rx"] = row_stats.get("rx", 0)
                 item["tx"] = row_stats.get("tx", 0)
                 item["traffic_30d"] = client_traffic_30d(peer["name"], history)
@@ -1615,13 +1745,33 @@ class Handler(SimpleHTTPRequestHandler):
         try:
             body = self.json_body()
             if u.path == "/api/clients":
-                name = safe_name(body.get("name", ""))
+                display_name = safe_name(body.get("name", ""))
+                name, collision = unique_client_config_name(display_name)
                 args = []
                 if body.get("expires"):
                     args.append(f"--expires={require_expires(body['expires'])}")
                 p = run_manage(*args, "add", name)
-                if p.returncode == 0 and not self.is_super(auth):
-                    mutate_user_clients(auth["hash"], name)
+                if p.returncode == 0:
+                    set_client_display_name(name, display_name)
+                    if collision:
+                        audit_log(
+                            "Client display name collision: "
+                            f"requested={display_name} created_config={name} "
+                            f"actor_role={auth.get('role')} actor_token_fp={(auth.get('hash') or '')[:8]}"
+                        )
+                    if not self.is_super(auth):
+                        mutate_user_clients(auth["hash"], name)
+                    self.send_json({
+                        "ok": True,
+                        "stdout": p.stdout,
+                        "stderr": p.stderr,
+                        "id": name,
+                        "name": name,
+                        "config_name": name,
+                        "display_name": display_name,
+                        "is_duplicate_display_name": collision,
+                    })
+                    return
             elif u.path == "/api/server/restart":
                 if not self.require_super(auth):
                     return
@@ -1818,6 +1968,7 @@ class Handler(SimpleHTTPRequestHandler):
                     p = run_manage("remove", name)
                     if p.returncode == 0:
                         remove_client_from_all_tokens(name)
+                        remove_client_metadata(name)
                     self.send_json({"ok": p.returncode == 0, "stdout": p.stdout, "stderr": p.stderr}, 200 if p.returncode == 0 else 400)
                     return
                 mutate_user_clients(auth["hash"], name, remove=True)
@@ -1866,7 +2017,7 @@ def main():
     httpd = LimitedThreadingHTTPServer((bind_host, int(os.environ.get("AWG_WEB_PORT", "8443"))), Handler)
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     ctx.load_cert_chain(WEB_DIR / "cert.pem", WEB_DIR / "key.pem")
-    httpd.socket = ctx.wrap_socket(httpd.socket, server_side=True)
+    httpd.ssl_context = ctx
     httpd.serve_forever()
 
 
