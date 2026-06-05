@@ -8,6 +8,7 @@ let trafficState = null;
 let webAccessPolicyState = null;
 let latestClients = [];
 let latestTokens = [];
+let ownerFilter = {mode: "all", tokens: []};
 let helpClientGroups = null;
 let pollTimer = null;
 let topTrafficMode = localStorage.getItem("topTrafficMode") || "30d";
@@ -370,14 +371,114 @@ function clientDisplayLabel(client) {
 }
 
 function renderAssignedTokenBadges(client) {
-  if (statusState.role !== "super") return "";
+  if (!canManageClientAssignments()) return "";
   const assigned = Array.isArray(client.assigned_tokens) ? client.assigned_tokens : [];
   if (!assigned.length) {
     return `<span class="rounded-full border border-[var(--line)] bg-[var(--soft)] px-2 py-0.5 text-[11px] font-medium text-[var(--muted)]">unassigned</span>`;
   }
-  return assigned.map(item => `
+  const visible = assigned.slice(0, 3);
+  const extra = Math.max(0, assigned.length - visible.length);
+  return visible.map(item => `
     <span class="rounded-full border border-[var(--accent)]/30 bg-[var(--accent)]/10 px-2 py-0.5 text-[11px] font-medium text-[var(--accent)]">${esc(item.alias || ("token: " + (item.fingerprint || "")))}</span>
-  `).join("");
+  `).join("") + (extra ? `<span class="rounded-full border border-[var(--line)] bg-[var(--soft)] px-2 py-0.5 text-[11px] font-medium text-[var(--muted)]">+${extra}</span>` : "");
+}
+
+function canManageClientAssignments() {
+  return statusState && ["super", "admin"].includes(statusState.role);
+}
+
+function assignedUserTokens(client) {
+  return (Array.isArray(client.assigned_tokens) ? client.assigned_tokens : []).filter(item => item.role === "user");
+}
+
+function ownerTokenKey(item) {
+  return String(item?.fingerprint || item?.alias || "").trim();
+}
+
+function ownerTokenLabel(item) {
+  return item?.alias || (item?.fingerprint ? `token: ${item.fingerprint}` : "token");
+}
+
+function clientMatchesOwnerFilter(client, filter = ownerFilter) {
+  const assigned = assignedUserTokens(client);
+  if (!filter || filter.mode === "all") return true;
+  if (filter.mode === "unassigned") return assigned.length === 0;
+  if (filter.mode === "assigned") return assigned.length > 0;
+  if (filter.mode === "token") {
+    const selected = new Set(filter.tokens || []);
+    return assigned.some(item => selected.has(ownerTokenKey(item)));
+  }
+  return true;
+}
+
+function ownerFilterOptions() {
+  const tokens = new Map();
+  let assigned = 0;
+  let unassigned = 0;
+  latestClients.forEach(client => {
+    const items = assignedUserTokens(client);
+    if (items.length) assigned += 1;
+    else unassigned += 1;
+    items.forEach(item => {
+      const key = ownerTokenKey(item);
+      if (!key) return;
+      const existing = tokens.get(key) || {
+        key,
+        label: ownerTokenLabel(item),
+        fingerprint: item.fingerprint || "",
+        count: 0,
+      };
+      existing.count += 1;
+      tokens.set(key, existing);
+    });
+  });
+  return {
+    all: latestClients.length,
+    assigned,
+    unassigned,
+    tokens: Array.from(tokens.values()).sort((a, b) => a.label.localeCompare(b.label)),
+  };
+}
+
+function normalizeOwnerFilter(options) {
+  if (!ownerFilter || !["all", "unassigned", "assigned", "token"].includes(ownerFilter.mode)) {
+    ownerFilter = {mode: "all", tokens: []};
+  }
+  if (ownerFilter.mode !== "token") return;
+  const available = new Set(options.tokens.map(item => item.key));
+  const selected = (ownerFilter.tokens || []).filter(key => available.has(key));
+  ownerFilter = selected.length ? {mode: "token", tokens: selected} : {mode: "all", tokens: []};
+}
+
+function renderOwnerFilter() {
+  const host = document.querySelector("#ownerFilter");
+  if (!host || !canManageClientAssignments()) return;
+  const options = ownerFilterOptions();
+  normalizeOwnerFilter(options);
+  const active = (mode, tokenKey = "") => ownerFilter.mode === mode && (mode !== "token" || (ownerFilter.tokens || []).includes(tokenKey));
+  const filterButton = (mode, label, count, tokenKey = "") => {
+    const isActive = active(mode, tokenKey);
+    return `<button type="button" data-owner-filter="${esc(mode)}" ${tokenKey ? `data-owner-token="${esc(tokenKey)}"` : ""} class="h-8 rounded-md border px-2.5 text-xs font-semibold transition ${isActive ? "border-[var(--accent)] bg-[var(--accent)] text-white" : "border-[var(--line)] bg-[var(--soft)] text-[var(--muted)] hover:border-[var(--accent)] hover:text-[var(--text)]"}">${esc(label)} <span class="${isActive ? "text-white/80" : "text-[var(--muted)]"}">(${count})</span></button>`;
+  };
+  host.innerHTML = `
+    <div class="flex flex-wrap items-center gap-2">
+      <span class="text-xs font-semibold uppercase text-[var(--muted)]">Owner filter</span>
+      ${filterButton("all", "All", options.all)}
+      ${filterButton("unassigned", "Unassigned", options.unassigned)}
+      ${filterButton("assigned", "Assigned", options.assigned)}
+      ${options.tokens.map(item => filterButton("token", item.label, item.count, item.key)).join("")}
+    </div>
+  `;
+  host.querySelectorAll("[data-owner-filter]").forEach(btn => {
+    btn.onclick = () => {
+      const mode = btn.dataset.ownerFilter;
+      ownerFilter = mode === "token"
+        ? {mode: "token", tokens: [btn.dataset.ownerToken]}
+        : {mode, tokens: []};
+      closeClientMenus();
+      renderClients();
+    };
+  });
 }
 
 function renderMenuItem(action, iconName, label, extra = "") {
@@ -472,6 +573,7 @@ async function renderPanel() {
         <span class="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--muted)]">${icon("search")}</span>
         <input id="searchInput" class="h-11 w-full rounded-md border border-[var(--line)] bg-[var(--soft)] pl-10 pr-3 text-[var(--text)] outline-none focus:border-[var(--accent)]" placeholder="Search by name or IP" autocomplete="off">
       </div>
+      <div id="ownerFilter" class="mt-3 ${canManageClientAssignments() ? "" : "hidden"}"></div>
     </section>
 
     <section class="mt-3 rounded-lg border border-[var(--line)] bg-[var(--panel)] p-4">
@@ -740,12 +842,19 @@ function renderClients() {
   clientCharts.clear();
   const preservedMenu = openClientMenu;
   const host = document.querySelector("#clientsList");
+  renderOwnerFilter();
   if (!latestClients.length) {
     openClientMenu = null;
     host.innerHTML = `<div class="p-8 text-center text-sm text-[var(--muted)]">No clients yet</div>`;
     return;
   }
-  host.innerHTML = latestClients.map(client => {
+  const visibleClients = latestClients.filter(client => clientMatchesOwnerFilter(client));
+  if (!visibleClients.length) {
+    openClientMenu = null;
+    host.innerHTML = `<div class="p-8 text-center text-sm text-[var(--muted)]">No clients match this owner filter</div>`;
+    return;
+  }
+  host.innerHTML = visibleClients.map(client => {
     const key = clientKey(client);
     const label = clientDisplayLabel(client);
     const online = isOnline(client);
@@ -844,7 +953,7 @@ function renderClients() {
 
 function drawCharts() {
   if (!window.ApexCharts) return;
-  latestClients.forEach(client => {
+  latestClients.filter(client => clientMatchesOwnerFilter(client)).forEach(client => {
     const key = clientKey(client);
     const el = document.getElementById(`chart-${key}`);
     if (!el) return;

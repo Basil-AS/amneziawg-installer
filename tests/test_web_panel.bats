@@ -309,6 +309,8 @@ handler.do_GET()
 assert handler.responses == [200]
 payload = json.loads(handler.wfile.getvalue().decode())
 assert [row["config_name"] for row in payload["clients"]] == ["phone-a7f3"]
+assert payload["clients"][0]["assigned_tokens"] == []
+assert payload["clients"][0]["is_unassigned"] is False
 
 handler = make_handler("GET", "/api/clients", token=super_token)
 handler.do_GET()
@@ -322,6 +324,34 @@ assert rows["phone-a7f3"]["is_duplicate_display_name"] is True
 assert rows["phone-a7f3"]["assigned_tokens"] == [{"alias": "phone-token", "fingerprint": user_hash[:6], "role": "user"}]
 PY
     rm -rf "$tmp"
+}
+
+@test "web app filters admin clients by token assignment owner" {
+    command -v python3 &>/dev/null || skip "python3 not available"
+    REPO_ROOT="$BATS_TEST_DIRNAME/.." python3 - <<'PY'
+from pathlib import Path
+
+source = Path(__import__("os").environ["REPO_ROOT"], "web", "app.js").read_text(encoding="utf-8")
+for needle in [
+    'let ownerFilter = {mode: "all", tokens: []};',
+    'function canManageClientAssignments()',
+    'function assignedUserTokens(client)',
+    'function clientMatchesOwnerFilter(client, filter = ownerFilter)',
+    'function ownerFilterOptions()',
+    'function renderOwnerFilter()',
+    'data-owner-filter',
+    'Owner filter',
+    'No clients match this owner filter',
+]:
+    assert needle in source
+assert '["super", "admin"].includes(statusState.role)' in source
+assert 'if (!filter || filter.mode === "all") return true;' in source
+assert 'if (filter.mode === "unassigned") return assigned.length === 0;' in source
+assert 'if (filter.mode === "assigned") return assigned.length > 0;' in source
+assert 'selected.has(ownerTokenKey(item))' in source
+assert 'latestClients.filter(client => clientMatchesOwnerFilter(client))' in source
+assert 'renderOwnerFilter();' in source
+PY
 }
 
 @test "web access policy validates hosts sources and lockout guard" {
