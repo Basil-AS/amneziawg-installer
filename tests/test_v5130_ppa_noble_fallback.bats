@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# shellcheck disable=SC2016,SC2317
+# shellcheck disable=SC2016,SC2317,SC2329
 # v5.13.0 PPA noble fallback for Ubuntu non-LTS releases.
 #
 # Background: PPA Amnezia (ppa:amnezia/ppa on Launchpad) publishes packages

@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# shellcheck disable=SC1091,SC2317
+# shellcheck disable=SC1091,SC2317,SC2329
 # Tests for --preset and --jc/--jmin/--jmax CLI overrides
 # Tests generate_awg_params() preset logic extracted from install_amneziawg.sh
 # shellcheck disable=SC2034,SC2154  # CLI_* vars consumed by sourced functions; AWG_* set at runtime

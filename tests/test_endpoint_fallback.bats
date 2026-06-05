@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# shellcheck disable=SC2329
 # Tests for _try_local_ip fallback (v5.11.1 Phase B).
 #
 # When curl to external IP services fails (LXC without egress, outbound

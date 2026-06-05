@@ -1,6 +1,6 @@
 #!/usr/bin/env bats
 # Tests for MTU resolution priority in render_client_config.
-# shellcheck disable=SC1091,SC2317
+# shellcheck disable=SC1091,SC2317,SC2329
 
 load test_helper
 

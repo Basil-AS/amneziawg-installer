@@ -1334,7 +1334,7 @@ PY
     out=$(AWG_DIR="$tmp" bash -c "source <(sed -n '/^web_token_py() {$/,/^}$/p' '$BATS_TEST_DIRNAME/../manage_amneziawg.sh'); web_token_py reset-super")
     raw=$(awk '/Raw super token:/{getline; print}' <<<"$out")
     [ -n "$raw" ]
-    grep -qF "$raw" "$tmp/INSTALL_SUMMARY.txt"
+    grep -qF -- "$raw" "$tmp/INSTALL_SUMMARY.txt"
     [ "$(stat -c '%a' "$tmp/INSTALL_SUMMARY.txt")" = "600" ]
     [ "$(stat -c '%a' "$token_file")" = "600" ]
 

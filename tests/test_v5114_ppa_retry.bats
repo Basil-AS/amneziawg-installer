@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# shellcheck disable=SC2030,SC2031,SC2317
+# shellcheck disable=SC2030,SC2031,SC2317,SC2329
 # v5.11.4 apt_wait_for_ppa_package — issue #68 regression test.
 #
 # Bug fixed: a brief ppa.launchpadcontent.net outage at install-time used to

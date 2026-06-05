@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# shellcheck disable=SC2030,SC2031,SC2317
+# shellcheck disable=SC2030,SC2031,SC2317,SC2329
 # v5.12.1 cloud-headers fallback in awg_common._install_kernel_headers().
 #
 # Background: installer's step 2 has smart kernel-headers detection that

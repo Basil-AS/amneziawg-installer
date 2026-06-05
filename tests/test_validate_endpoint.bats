@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# shellcheck disable=SC2317
+# shellcheck disable=SC2317,SC2329
 # Tests for validate_endpoint() in install_amneziawg.sh
 # (audit: prevent injection via --endpoint)
 #

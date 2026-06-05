@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# shellcheck disable=SC2317
+# shellcheck disable=SC2317,SC2329
 # Phase 1 (v5.11.3): --yes flag and AWG_YES env for confirm_action.
 #
 # Extracts confirm_action and is_interactive from manage_amneziawg.sh into

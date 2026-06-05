@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# shellcheck disable=SC1091,SC2030,SC2031,SC2317
+# shellcheck disable=SC1091,SC2030,SC2031,SC2317,SC2329
 
 load test_helper
 

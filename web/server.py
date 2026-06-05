@@ -1379,10 +1379,8 @@ class LimitedThreadingHTTPServer(ThreadingHTTPServer):
 
     def process_request(self, request, client_address):
         if not self._sem.acquire(blocking=False):
-            try:
-                request.close()
-            finally:
-                return
+            request.close()
+            return
         try:
             super().process_request(request, client_address)
         except Exception:

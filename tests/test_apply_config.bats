@@ -24,6 +24,10 @@ setup() {
     log_error() { :; }
     log_debug() { :; }
     export -f log log_warn log_error log_debug
+    log
+    log_warn
+    log_error
+    log_debug
 
     # Mock PATH: create stub commands
     MOCK_BIN="$TEST_DIR/mock_bin"
