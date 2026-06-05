@@ -674,7 +674,20 @@ def clean_client_metadata_record(value):
     display_name = value.get("display_name")
     if not isinstance(display_name, str) or not NAME_RE.fullmatch(display_name):
         return {}
-    return {"display_name": display_name}
+    clean = {"display_name": display_name}
+    for key in ("created_by_fp", "last_unassigned_by_fp"):
+        raw = value.get(key)
+        if isinstance(raw, str) and re.fullmatch(r"[0-9a-f]{6,16}", raw):
+            clean[key] = raw
+    for key in ("created_by_role",):
+        raw = value.get(key)
+        if raw in {"user", "super", "admin"}:
+            clean[key] = raw
+    for key in ("created_at", "last_unassigned_at"):
+        raw = value.get(key)
+        if isinstance(raw, str) and re.fullmatch(r"[0-9T:Z+.-]{10,40}", raw):
+            clean[key] = raw
+    return clean
 
 
 def load_client_metadata():
@@ -711,12 +724,28 @@ def write_client_metadata(data):
     os.chmod(CLIENT_METADATA_FILE, 0o600)
 
 
-def set_client_display_name(config_name, display_name):
+def utc_now_iso():
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def set_client_metadata(config_name, display_name, auth=None):
     config_name = safe_name(config_name)
     display_name = safe_name(display_name)
     data = load_client_metadata()
-    data.setdefault("clients", {})[config_name] = {"display_name": display_name}
+    record = data.setdefault("clients", {}).get(config_name, {})
+    if not isinstance(record, dict):
+        record = {}
+    record["display_name"] = display_name
+    if auth is not None:
+        record["created_by_fp"] = auth_fingerprint(auth)
+        record["created_by_role"] = auth.get("role", "")
+        record["created_at"] = utc_now_iso()
+    data.setdefault("clients", {})[config_name] = record
     write_client_metadata(data)
+
+
+def set_client_display_name(config_name, display_name):
+    set_client_metadata(config_name, display_name)
 
 
 def remove_client_metadata(config_name):
@@ -767,6 +796,80 @@ def token_assignments_for_clients():
         for client_name in record.get("clients", []):
             assignments.setdefault(client_name, []).append(dict(item))
     return assignments
+
+
+def assignment_records_for_client(config_name):
+    config_name = safe_name(config_name)
+    data = load_tokens()
+    out = []
+    for digest, value in sorted(data.get("users", {}).items()):
+        record = clean_user_record(value)
+        if config_name in record.get("clients", []):
+            out.append({"hash": digest, "fingerprint": digest[:6], "alias": record.get("name") or f"token: {digest[:6]}", "role": "user"})
+    return out
+
+
+def client_metadata_record(config_name):
+    return load_client_metadata().get("clients", {}).get(safe_name(config_name), {})
+
+
+def is_client_created_by_token(config_name, token_fp):
+    record = client_metadata_record(config_name)
+    return record.get("created_by_role") == "user" and record.get("created_by_fp") == token_fp
+
+
+def can_user_delete_client(config_name, auth):
+    if not auth or auth.get("role") == "super":
+        return False, "not_user"
+    config_name = safe_name(config_name)
+    actor_fp = auth_fingerprint(auth)
+    if not is_client_created_by_token(config_name, actor_fp):
+        return False, "missing_metadata"
+    assignments = assignment_records_for_client(config_name)
+    if len(assignments) != 1:
+        return False, "shared" if assignments else "unassigned"
+    if assignments[0].get("hash") != auth.get("hash"):
+        return False, "not_owner"
+    return True, "ok"
+
+
+def mark_client_unassigned(config_name, auth):
+    config_name = safe_name(config_name)
+    data = load_client_metadata()
+    record = data.setdefault("clients", {}).get(config_name)
+    if not isinstance(record, dict):
+        record = {"display_name": config_name}
+    record["last_unassigned_by_fp"] = auth_fingerprint(auth)
+    record["last_unassigned_at"] = utc_now_iso()
+    data.setdefault("clients", {})[config_name] = record
+    write_client_metadata(data)
+
+
+def remove_client_from_token(config_name, auth):
+    config_name = safe_name(config_name)
+    removed = mutate_user_clients(auth.get("hash"), config_name, remove=True)
+    mark_client_unassigned(config_name, auth)
+    remaining = len(assignment_records_for_client(config_name))
+    audit_log(
+        "User removed client access "
+        f"config_name={config_name} actor_fp={auth_fingerprint(auth)} "
+        f"remaining_user_assignments={remaining} deleted=false"
+    )
+    return removed, remaining
+
+
+def delete_client_global(config_name, actor):
+    config_name = safe_name(config_name)
+    p = run_manage("remove", config_name)
+    if p.returncode == 0:
+        remove_client_from_all_tokens(config_name)
+        remove_client_metadata(config_name)
+        remove_import_tokens_for_client(config_name)
+        audit_log(
+            "Deleted web client "
+            f"config_name={config_name} actor_role={actor.get('role')} actor_fp={auth_fingerprint(actor)}"
+        )
+    return p
 
 
 def load_traffic_history():
@@ -1912,6 +2015,14 @@ class Handler(SimpleHTTPRequestHandler):
                 item["assigned_tokens"] = assignments.get(peer["name"], []) if self.is_super(auth) else []
                 item["is_unassigned"] = self.is_super(auth) and not item["assigned_tokens"]
                 item["is_duplicate_display_name"] = display_counts.get(item["display_name"], 0) > 1
+                item["created_by_current_token"] = False
+                item["can_remove_from_my_access"] = False
+                item["can_delete_self_created"] = False
+                if not self.is_super(auth):
+                    can_delete, _reason = can_user_delete_client(peer["name"], auth)
+                    item["created_by_current_token"] = is_client_created_by_token(peer["name"], auth_fingerprint(auth))
+                    item["can_remove_from_my_access"] = peer["name"] in set(auth.get("clients") or [])
+                    item["can_delete_self_created"] = can_delete
                 item["rx"] = row_stats.get("rx", 0)
                 item["tx"] = row_stats.get("tx", 0)
                 item["traffic_30d"] = client_traffic_30d(peer["name"], history)
@@ -2000,7 +2111,7 @@ class Handler(SimpleHTTPRequestHandler):
                     args.append(f"--expires={require_expires(body['expires'])}")
                 p = run_manage(*args, "add", name)
                 if p.returncode == 0:
-                    set_client_display_name(name, display_name)
+                    set_client_metadata(name, display_name, auth)
                     assigned_to_current_token = False
                     if collision:
                         audit_log(
@@ -2231,14 +2342,26 @@ class Handler(SimpleHTTPRequestHandler):
                 if not self.require_client_access(auth, name):
                     return
                 if self.is_super(auth):
-                    p = run_manage("remove", name)
-                    if p.returncode == 0:
-                        remove_client_from_all_tokens(name)
-                        remove_client_metadata(name)
+                    p = delete_client_global(name, auth)
                     self.send_json({"ok": p.returncode == 0, "stdout": p.stdout, "stderr": p.stderr}, 200 if p.returncode == 0 else 400)
                     return
-                mutate_user_clients(auth["hash"], name, remove=True)
-                self.send_json({"ok": True, "removed_access": True, "client": name})
+                action = (parse_qs(u.query).get("action") or ["remove_access"])[0]
+                if action in {"remove_access", ""}:
+                    _removed, remaining = remove_client_from_token(name, auth)
+                    self.send_json({"ok": True, "removed_access": True, "deleted": False, "client": name, "remaining_user_assignments": remaining})
+                    return
+                if action == "delete_owned":
+                    allowed, reason = can_user_delete_client(name, auth)
+                    if not allowed:
+                        audit_log(f"Denied user-owned delete config_name={name} actor_fp={auth_fingerprint(auth)} reason={reason}")
+                        self.send_json({"error": "delete not allowed", "reason": reason}, 403)
+                        return
+                    p = delete_client_global(name, auth)
+                    if p.returncode == 0:
+                        audit_log(f"User deleted own client config_name={name} actor_fp={auth_fingerprint(auth)} deleted=true")
+                    self.send_json({"ok": p.returncode == 0, "deleted": p.returncode == 0, "removed_access": False, "stdout": p.stdout, "stderr": p.stderr}, 200 if p.returncode == 0 else 400)
+                    return
+                raise ValueError("invalid delete action")
                 return
             else:
                 m = re.match(r"^/api/clients/([^/]+)/p2p$", u.path)

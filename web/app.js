@@ -908,7 +908,14 @@ function renderClients() {
     const menuId = `client-menu-${String(key).replace(/[^A-Za-z0-9_-]/g, "_")}`;
     const shieldClass = portsDisabled ? "opacity-60" : "";
     const search = `${label} ${key} ${ip} ${endpoint} ${(client.open_ports || []).join(" ")}`.toLowerCase();
-    const deleteLabel = statusState.role === "super" ? "Delete client" : "Remove from my access";
+    const isAdmin = statusState.role === "super";
+    const removeAccessItem = !isAdmin && client.can_remove_from_my_access
+      ? renderMenuItem("remove-access", "trash", "Remove from my access", "text-[var(--danger)]")
+      : "";
+    const deleteOwnedItem = !isAdmin && client.can_delete_self_created
+      ? '<div class="border-t border-[var(--line)]"></div>' + renderMenuItem("delete-owned", "trash", "Delete my config", "text-[var(--danger)]")
+      : "";
+    const adminDeleteItem = isAdmin ? renderMenuItem("delete", "trash", "Delete client", "text-[var(--danger)]") : "";
     return `
       <article class="client-card bg-[var(--panel)] border-b border-[var(--line)] p-4 relative last:border-b-0" data-name="${esc(key)}" data-search="${esc(search)}">
         <div id="chart-${esc(key)}" class="client-card-chart-bg"></div>
@@ -952,7 +959,9 @@ function renderClients() {
               <button type="button" data-action="regenerate-config" class="client-menu-item text-amber-700">${icon("refresh")}<span>Regenerate</span></button>
               ${renderMenuItem("toggle", "power", client.disabled ? "Enable client" : "Disable client")}
               ${renderMenuItem("toggle-ports", "shield", "Port details / toggle", shieldClass)}
-              ${renderMenuItem("delete", "trash", deleteLabel, "text-[var(--danger)]")}
+              ${adminDeleteItem}
+              ${removeAccessItem}
+              ${deleteOwnedItem}
             </div>
           </div>
         </div>
@@ -1167,17 +1176,26 @@ async function clientAction(name, action) {
       showToast("Ports toggled");
       return loadClients();
     }
-    if (action === "delete") {
-      const isAdmin = statusState.role === "super";
+    if (action === "delete" || action === "remove-access" || action === "delete-owned") {
+      const isAdminDelete = action === "delete" && statusState.role === "super";
+      const isOwnedDelete = action === "delete-owned";
+      const title = isAdminDelete ? "Delete Client" : (isOwnedDelete ? "Delete My Config" : "Remove Access");
+      const message = isAdminDelete
+        ? `Delete ${name}?`
+        : (isOwnedDelete
+          ? `Delete ${name}? The peer/config will be removed from the server.`
+          : `Remove ${name} from your access list? The config will remain on the server.`);
+      const label = isAdminDelete || isOwnedDelete ? "Delete" : "Remove";
       const ok = await confirmModal(
-        isAdmin ? "Delete Client" : "Remove Access",
-        isAdmin ? `Delete ${name}?` : `Remove ${name} from your access list?`,
-        isAdmin ? "Delete" : "Remove",
+        title,
+        message,
+        label,
         true
       );
       if (!ok) return;
-      await api(`/api/clients/${encodeURIComponent(name)}`, {method: "DELETE"});
-      showToast(isAdmin ? "Client deleted" : "Access removed");
+      const suffix = isOwnedDelete ? "?action=delete_owned" : (action === "remove-access" ? "?action=remove_access" : "");
+      const result = await api(`/api/clients/${encodeURIComponent(name)}${suffix}`, {method: "DELETE"});
+      showToast(result.deleted ? "Client deleted" : "Access removed");
       await loadClients();
       if (statusState.role === "super") await loadTokens();
     }

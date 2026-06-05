@@ -224,6 +224,10 @@
     grep -qF 'client assignment failed' "$BATS_TEST_DIRNAME/../web/server.py"
     grep -qF '/api/tokens/([^/]+)/clients' "$BATS_TEST_DIRNAME/../web/server.py"
     grep -qF 'Remove from my access' "$BATS_TEST_DIRNAME/../web/app.js"
+    grep -qF 'Delete my config' "$BATS_TEST_DIRNAME/../web/app.js"
+    grep -qF 'Delete client' "$BATS_TEST_DIRNAME/../web/app.js"
+    grep -qF '?action=delete_owned' "$BATS_TEST_DIRNAME/../web/app.js"
+    grep -qF '?action=remove_access' "$BATS_TEST_DIRNAME/../web/app.js"
     grep -qF 'data-edit-clients' "$BATS_TEST_DIRNAME/../web/app.js"
 }
 
@@ -305,7 +309,10 @@ assert payload["is_duplicate_display_name"] is True
 assert payload["assigned_to_current_token"] is True
 assert calls[-1] == ("add", "phone-a7f3")
 assert server.load_tokens()["users"][user_hash]["clients"] == ["phone-a7f3"]
-assert server.load_client_metadata()["clients"]["phone-a7f3"] == {"display_name": "phone"}
+metadata = server.load_client_metadata()["clients"]["phone-a7f3"]
+assert metadata["display_name"] == "phone"
+assert metadata["created_by_fp"] == user_hash[:8]
+assert metadata["created_by_role"] == "user"
 
 handler = make_handler("GET", "/api/clients", token=user_token)
 handler.do_GET()
@@ -391,6 +398,157 @@ PY
     grep -qF 'run_manage("--json", "stats", timeout=8)' "$BATS_TEST_DIRNAME/../web/server.py"
     grep -qF 'Stats cache stale served while refresh in-flight' "$BATS_TEST_DIRNAME/../web/server.py"
     grep -qF 'if stats is None:' "$BATS_TEST_DIRNAME/../web/server.py"
+}
+
+@test "web user delete separates access removal from owned client deletion" {
+    command -v python3 &>/dev/null || skip "python3 not available"
+    local tmp
+    tmp=$(mktemp -d)
+    mkdir -p "$tmp/web"
+    cat > "$tmp/awg0.conf" <<'CONF'
+[Peer]
+#_Name = owned
+PublicKey = OWNED
+AllowedIPs = 10.9.9.2/32
+[Peer]
+#_Name = shared
+PublicKey = SHARED
+AllowedIPs = 10.9.9.3/32
+[Peer]
+#_Name = legacy
+PublicKey = LEGACY
+AllowedIPs = 10.9.9.4/32
+CONF
+    AWG_DIR="$tmp" SERVER_CONF_FILE="$tmp/awg0.conf" REPO_ROOT="$BATS_TEST_DIRNAME/.." python3 - <<'PY'
+import importlib.util
+import io
+import json
+import os
+from pathlib import Path
+
+spec = importlib.util.spec_from_file_location("panel_server", Path(os.environ["REPO_ROOT"]) / "web" / "server.py")
+server = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(server)
+
+super_token = "super-token"
+user_token = "user-token"
+other_token = "other-token"
+user_hash = server.token_hash(user_token)
+other_hash = server.token_hash(other_token)
+auth = {"role": "user", "hash": user_hash, "clients": ["owned", "shared", "legacy"]}
+server.write_tokens({
+    "super_token_hash": server.token_hash(super_token),
+    "users": {
+        user_hash: {"name": "owner", "clients": ["owned", "shared", "legacy"]},
+        other_hash: {"name": "other", "clients": ["shared"]},
+    },
+})
+server.set_client_metadata("owned", "owned", auth)
+server.set_client_metadata("shared", "shared", auth)
+server.set_client_display_name("legacy", "legacy")
+
+assert server.can_user_delete_client("owned", auth) == (True, "ok")
+assert server.can_user_delete_client("shared", auth) == (False, "shared")
+assert server.can_user_delete_client("legacy", auth) == (False, "missing_metadata")
+
+removed, remaining = server.remove_client_from_token("legacy", auth)
+assert removed is True
+assert remaining == 0
+assert "legacy" not in server.load_tokens()["users"][user_hash]["clients"]
+assert "last_unassigned_by_fp" in server.load_client_metadata()["clients"]["legacy"]
+
+calls = []
+def fake_run_manage(*args, timeout=60, extra_env=None):
+    calls.append(args)
+    class Result:
+        returncode = 0
+        stdout = "removed"
+        stderr = ""
+    return Result()
+server.run_manage = fake_run_manage
+
+class Headers(dict):
+    def get(self, key, default=None):
+        return super().get(key, default)
+
+def make_handler(path, token):
+    h = object.__new__(server.Handler)
+    h.path = path
+    h.client_address = ("127.0.0.1", 12345)
+    h.rfile = io.BytesIO()
+    h.wfile = io.BytesIO()
+    h.responses = []
+    h.headers_sent = []
+    h.headers = Headers({"Host": "127.0.0.1", "Authorization": f"Bearer {token}"})
+    h.send_response = lambda code: h.responses.append(code)
+    h.send_error = lambda code, *args, **kwargs: h.responses.append(code)
+    h.send_header = lambda key, value: h.headers_sent.append((key, value))
+    h.end_headers = lambda: None
+    return h
+
+handler = make_handler("/api/clients/shared?action=delete_owned", user_token)
+handler.do_DELETE()
+assert handler.responses == [403]
+assert calls == []
+
+handler = make_handler("/api/clients/owned?action=delete_owned", user_token)
+handler.do_DELETE()
+assert handler.responses == [200]
+payload = json.loads(handler.wfile.getvalue().decode())
+assert payload["deleted"] is True
+assert calls == [("remove", "owned")]
+assert "owned" not in server.load_tokens()["users"][user_hash]["clients"]
+assert "owned" not in server.load_client_metadata()["clients"]
+PY
+    rm -rf "$tmp"
+}
+
+@test "web stats cache reuses fresh value and serves clients on stats failure" {
+    command -v python3 &>/dev/null || skip "python3 not available"
+    local tmp
+    tmp=$(mktemp -d)
+    mkdir -p "$tmp/web"
+    AWG_DIR="$tmp" SERVER_CONF_FILE="$tmp/awg0.conf" REPO_ROOT="$BATS_TEST_DIRNAME/.." python3 - <<'PY'
+import importlib.util
+import os
+from pathlib import Path
+
+spec = importlib.util.spec_from_file_location("panel_server", Path(os.environ["REPO_ROOT"]) / "web" / "server.py")
+server = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(server)
+
+calls = []
+class Result:
+    returncode = 0
+    stdout = '[{"name":"phone","rx":7,"tx":9,"last_handshake":123}]'
+    stderr = ""
+
+def fake_run_manage(*args, timeout=60, extra_env=None):
+    calls.append(args)
+    return Result()
+
+server.run_manage = fake_run_manage
+server.STATS_CACHE_VALUE = None
+server.STATS_CACHE_TS = 0.0
+server.STATS_CACHE_INFLIGHT = False
+
+first = server.client_stats_map()
+second = server.client_stats_map()
+assert first["phone"]["rx"] == 7
+assert second["phone"]["tx"] == 9
+assert calls == [("--json", "stats")]
+
+class Failed:
+    returncode = 1
+    stdout = ""
+    stderr = "failed"
+server.run_manage = lambda *args, **kwargs: Failed()
+server.STATS_CACHE_VALUE = None
+server.STATS_CACHE_TS = 0.0
+server.STATS_CACHE_INFLIGHT = False
+assert server.client_stats_map(force=True) == {}
+PY
+    rm -rf "$tmp"
 }
 
 @test "web access policy validates hosts sources and lockout guard" {
