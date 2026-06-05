@@ -168,16 +168,37 @@ function speed(n) {
   return `${mbps.toFixed(mbps >= 10 ? 1 : 2)} Mbps`;
 }
 
-function trafficText(rx, tx, mode = "traffic") {
-  return mode === "now"
-    ? `↓ ${speed(rx)} · ↑ ${speed(tx)}`
-    : `Down ${bytes(rx)} · Up ${bytes(tx)}`;
+function clientTraffic(data = {}) {
+  const serverRx = Number(data.server_rx ?? data.rx ?? 0);
+  const serverTx = Number(data.server_tx ?? data.tx ?? 0);
+  const download = Number(data.client_download ?? serverTx);
+  const upload = Number(data.client_upload ?? serverRx);
+  return {download, upload, total: Number(data.total ?? download + upload), serverRx, serverTx};
 }
 
-function compactTrafficText(rx, tx, mode = "traffic") {
+function clientTrafficFromSpeeds(client) {
+  return {
+    download: Number(client.clientDownloadSpeedBps ?? client.txSpeedBps ?? 0),
+    upload: Number(client.clientUploadSpeedBps ?? client.rxSpeedBps ?? 0),
+  };
+}
+
+function trafficText(data = {}, mode = "traffic") {
+  const stats = data.download === undefined || data.upload === undefined ? clientTraffic(data) : data;
   return mode === "now"
-    ? `↓ ${speed(rx)} · ↑ ${speed(tx)}`
-    : `↓ ${bytes(rx)} · ↑ ${bytes(tx)}`;
+    ? `↓ ${speed(stats.download)} · ↑ ${speed(stats.upload)}`
+    : `Download ${bytes(stats.download)} · Upload ${bytes(stats.upload)}`;
+}
+
+function trafficMetricRow(label, data = {}) {
+  const stats = clientTraffic(data);
+  return `
+    <div class="traffic-metric-row" title="Download: traffic sent to this client. Upload: traffic received from this client.">
+      <span class="traffic-metric-label">${esc(label)}</span>
+      <span><span class="traffic-metric-name">Download</span> ${esc(bytes(stats.download))}</span>
+      <span><span class="traffic-metric-name">Upload</span> ${esc(bytes(stats.upload))}</span>
+    </div>
+  `;
 }
 
 function normalizePortList(value) {
@@ -717,6 +738,8 @@ async function loadClients() {
       return Object.assign({}, client, {
         rxSpeedBps: rxSpeed,
         txSpeedBps: txSpeed,
+        clientUploadSpeedBps: rxSpeed,
+        clientDownloadSpeedBps: txSpeed,
         speedBps,
         traffic_total: client.traffic_total || {rx: 0, tx: 0, total: 0},
         totalBytes: Number(client.traffic_total?.total || 0),
@@ -769,9 +792,9 @@ function renderTraffic() {
   const last30Metric = document.querySelector("#metricTraffic30d");
   const last30Sub = document.querySelector("#metricTraffic30dSub");
   if (totalMetric) totalMetric.textContent = bytes(total.total || 0);
-  if (totalSub) totalSub.textContent = trafficText(total.rx || 0, total.tx || 0);
+  if (totalSub) totalSub.textContent = trafficText(total);
   if (last30Metric) last30Metric.textContent = bytes(last30.total || 0);
-  if (last30Sub) last30Sub.textContent = trafficText(last30.rx || 0, last30.tx || 0);
+  if (last30Sub) last30Sub.textContent = trafficText(last30);
 
   const updated = document.querySelector("#trafficUpdated");
   if (updated) updated.textContent = `${(trafficState.days || []).length || 30} day window`;
@@ -801,14 +824,11 @@ function renderTraffic() {
 
 function topClientStats(client, mode) {
   if (mode === "now") {
-    const rx = Number(client.rxSpeedBps || 0);
-    const tx = Number(client.txSpeedBps || 0);
-    return {rx, tx, total: rx + tx};
+    const stats = clientTrafficFromSpeeds(client);
+    return {...stats, total: stats.download + stats.upload};
   }
   const data = mode === "total" ? (client.traffic_total || {}) : (client.traffic_30d || {});
-  const rx = Number(data.rx || 0);
-  const tx = Number(data.tx || 0);
-  return {rx, tx, total: Number(data.total || rx + tx)};
+  return clientTraffic(data);
 }
 
 function renderTopClients() {
@@ -835,8 +855,8 @@ function renderTopClients() {
   const max = Math.max(...rows.map(row => row.stats.total), 1);
   host.innerHTML = rows.map(({client, stats}, index) => {
     const totalPct = Math.max(2, Math.min(100, (stats.total / max) * 100));
-    const rxPct = stats.total > 0 ? Math.max(0, Math.min(100, (stats.rx / stats.total) * 100)) : 0;
-    const txPct = Math.max(0, 100 - rxPct);
+    const downloadPct = stats.total > 0 ? Math.max(0, Math.min(100, (stats.download / stats.total) * 100)) : 0;
+    const uploadPct = Math.max(0, 100 - downloadPct);
     const amount = topTrafficMode === "now" ? speed(stats.total) : bytes(stats.total);
     return `
       <button data-jump-client="${esc(client.name)}" class="w-full rounded-md border border-[var(--line)] bg-[var(--soft)] px-3 py-2 text-left transition hover:border-[var(--accent)]">
@@ -849,11 +869,11 @@ function renderTopClients() {
         </div>
         <div class="mt-2 h-2 overflow-hidden rounded-full bg-[var(--panel)]">
           <div class="flex h-full overflow-hidden rounded-full" style="width:${totalPct}%">
-            <span class="h-full bg-[var(--accent)]" style="width:${rxPct}%"></span>
-            <span class="h-full bg-[var(--muted)]" style="width:${txPct}%"></span>
+            <span class="h-full bg-[var(--accent)]" style="width:${downloadPct}%"></span>
+            <span class="h-full bg-[var(--muted)]" style="width:${uploadPct}%"></span>
           </div>
         </div>
-        <p class="mt-1 text-xs text-[var(--muted)]">${esc(trafficText(stats.rx, stats.tx, topTrafficMode))}</p>
+        <p class="mt-1 text-xs text-[var(--muted)]">${esc(trafficText(stats, topTrafficMode))}</p>
       </button>
     `;
   }).join("");
@@ -943,9 +963,15 @@ function renderClients() {
             </div>
           </div>
           <div class="client-traffic relative z-10 min-w-0 text-left sm:min-w-36 sm:text-right">
-            <p class="flex flex-wrap gap-x-3 gap-y-1 text-sm font-semibold sm:justify-end"><span>↓ ${esc(speed(client.rxSpeedBps))}</span><span>↑ ${esc(speed(client.txSpeedBps))}</span></p>
-            <p class="mt-1 text-xs text-[var(--muted)]" title="${esc(trafficText(clientTotal.rx || 0, clientTotal.tx || 0))}">Total ${esc(compactTrafficText(clientTotal.rx || 0, clientTotal.tx || 0))}</p>
-            <p class="mt-1 text-xs text-[var(--muted)]" title="${esc(trafficText(client30d.rx || 0, client30d.tx || 0))}">30d ${esc(compactTrafficText(client30d.rx || 0, client30d.tx || 0))}</p>
+            <div class="traffic-speed-row">
+              <span class="traffic-metric-label">Speed</span>
+              <span>↓ ${esc(speed(client.clientDownloadSpeedBps))}</span>
+              <span>↑ ${esc(speed(client.clientUploadSpeedBps))}</span>
+            </div>
+            <div class="traffic-metric-table mt-2">
+              ${trafficMetricRow("Total", clientTotal)}
+              ${trafficMetricRow("30 days", client30d)}
+            </div>
           </div>
           <div class="client-actions relative z-20 flex w-full shrink-0 flex-wrap justify-end gap-1 sm:w-auto">
             <button data-action="download-config" title="Download .conf" aria-label="Download .conf" class="${buttonClasses("client-action client-action-primary")}">${icon("download")}<span class="client-action-label">Download</span></button>
@@ -1333,12 +1359,14 @@ function tokenTraffic(clients) {
   const allowed = new Set(clients || []);
   return latestClients.reduce((total, client) => {
     if (!allowed.has(clientKey(client))) return total;
-    const item = client.traffic_total || {};
-    total.rx += Number(item.rx || 0);
-    total.tx += Number(item.tx || 0);
-    total.total += Number(item.total || Number(item.rx || 0) + Number(item.tx || 0));
+    const item = clientTraffic(client.traffic_total || {});
+    total.rx += item.serverRx;
+    total.tx += item.serverTx;
+    total.client_download += item.download;
+    total.client_upload += item.upload;
+    total.total += item.total;
     return total;
-  }, {rx: 0, tx: 0, total: 0});
+  }, {rx: 0, tx: 0, client_download: 0, client_upload: 0, total: 0});
 }
 
 function renderTokenList() {
@@ -1353,7 +1381,7 @@ function renderTokenList() {
         <p class="truncate text-sm font-semibold">${esc(label)}</p>
         <p class="truncate font-mono text-xs">${esc(row.hash)}</p>
         <p class="mt-1 text-xs text-[var(--muted)]">${esc((row.clients || []).join(", ") || "no clients")}</p>
-        <p class="mt-1 text-xs text-[var(--muted)]">Traffic: ${esc(bytes(stats.total))} (${esc(trafficText(stats.rx, stats.tx))})</p>
+        <p class="mt-1 text-xs text-[var(--muted)]">Traffic: ${esc(bytes(stats.total))} (${esc(trafficText(stats))})</p>
       </div>
       <div class="flex flex-wrap gap-2">
         <button data-edit-name="${esc(row.hash)}" title="Edit Name" class="${buttonClasses("w-9 px-0")}">${icon("pencil")}</button>

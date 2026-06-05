@@ -1150,10 +1150,29 @@ summary = server.traffic_summary(
     stats={"alpha": {"name": "alpha", "rx": 50, "tx": 25}},
     names=["alpha"],
 )
-assert summary["total"] == {"rx": 250, "tx": 225, "total": 475}
+assert summary["total"]["rx"] == 250
+assert summary["total"]["tx"] == 225
+assert summary["total"]["total"] == 475
+assert summary["total"]["client_upload"] == 250
+assert summary["total"]["client_download"] == 225
+assert summary["total"]["server_rx"] == 250
+assert summary["total"]["server_tx"] == 225
 assert summary["current"] == summary["total"]
-assert summary["current_live"] == {"rx": 50, "tx": 25, "total": 75}
-assert server.client_traffic_total("alpha", history) == {"rx": 250, "tx": 225, "total": 475}
+assert summary["current_live"]["rx"] == 50
+assert summary["current_live"]["tx"] == 25
+assert summary["current_live"]["client_upload"] == 50
+assert summary["current_live"]["client_download"] == 25
+client_total = server.client_traffic_total("alpha", history)
+assert client_total["rx"] == 250
+assert client_total["tx"] == 225
+assert client_total["client_upload"] == 250
+assert client_total["client_download"] == 225
+
+mapped = server.client_perspective_traffic({"rx": 1000, "tx": 2000})
+assert mapped["server_rx"] == 1000
+assert mapped["server_tx"] == 2000
+assert mapped["client_upload"] == 1000
+assert mapped["client_download"] == 2000
 
 server.TRAFFIC_FILE.write_text(json.dumps({"last": {"beta": {"rx": 1000, "tx": 100}}, "days": {}}))
 server.update_traffic_history([{"name": "beta", "rx": 1200, "tx": 120}])

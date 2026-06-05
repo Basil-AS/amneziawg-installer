@@ -1078,6 +1078,35 @@ def _traffic_pair(values):
     }
 
 
+def client_perspective_traffic(values):
+    # WireGuard counters are server-perspective: rx is received from the client,
+    # tx is sent to the client. The web UI reports client-perspective traffic.
+    pair = _traffic_pair(values)
+    return {
+        **pair,
+        "total": pair["rx"] + pair["tx"],
+        "server_rx": pair["rx"],
+        "server_tx": pair["tx"],
+        "client_upload": pair["rx"],
+        "client_download": pair["tx"],
+    }
+
+
+def client_traffic_api(total_pair=None, last_30d_pair=None):
+    total_pair = client_perspective_traffic(total_pair or {})
+    last_30d_pair = client_perspective_traffic(last_30d_pair or {})
+    return {
+        "client_download_total": total_pair["client_download"],
+        "client_upload_total": total_pair["client_upload"],
+        "client_download_30d": last_30d_pair["client_download"],
+        "client_upload_30d": last_30d_pair["client_upload"],
+        "server_rx_total": total_pair["server_rx"],
+        "server_tx_total": total_pair["server_tx"],
+        "server_rx_30d": last_30d_pair["server_rx"],
+        "server_tx_30d": last_30d_pair["server_tx"],
+    }
+
+
 def _sum_days_for_client(days, name):
     rx = tx = 0
     if not isinstance(days, dict):
@@ -1206,13 +1235,13 @@ def traffic_summary(auth, stats=None, names=None):
                 if isinstance(values, dict):
                     rx += max(0, int(values.get("rx") or 0))
                     tx += max(0, int(values.get("tx") or 0))
-        days.append({"date": date, "rx": rx, "tx": tx, "total": rx + tx})
+        days.append({"date": date, **client_perspective_traffic({"rx": rx, "tx": tx})})
     last_30d = {"rx": sum(day["rx"] for day in days), "tx": sum(day["tx"] for day in days)}
     return {
-        "current_live": {**current_live, "total": current_live["rx"] + current_live["tx"]},
-        "current": {**persistent, "total": persistent["rx"] + persistent["tx"]},
-        "total": {**persistent, "total": persistent["rx"] + persistent["tx"]},
-        "last_30d": {**last_30d, "total": last_30d["rx"] + last_30d["tx"]},
+        "current_live": client_perspective_traffic(current_live),
+        "current": client_perspective_traffic(persistent),
+        "total": client_perspective_traffic(persistent),
+        "last_30d": client_perspective_traffic(last_30d),
         "days": days,
     }
 
@@ -1226,7 +1255,7 @@ def client_traffic_30d(name, history=None):
         if isinstance(values, dict):
             rx += max(0, int(values.get("rx") or 0))
             tx += max(0, int(values.get("tx") or 0))
-    return {"rx": rx, "tx": tx, "total": rx + tx}
+    return client_perspective_traffic({"rx": rx, "tx": tx})
 
 
 def client_traffic_total(name, history=None):
@@ -1234,7 +1263,7 @@ def client_traffic_total(name, history=None):
     if name.startswith("_"):
         return {"rx": 0, "tx": 0, "total": 0}
     pair = _traffic_pair(history.get("totals", {}).get(name, {}))
-    return {"rx": pair["rx"], "tx": pair["tx"], "total": pair["rx"] + pair["tx"]}
+    return client_perspective_traffic(pair)
 
 
 def clean_client_list(value):
@@ -2201,8 +2230,13 @@ class Handler(SimpleHTTPRequestHandler):
                     item["can_delete_self_created"] = can_delete
                 item["rx"] = row_stats.get("rx", 0)
                 item["tx"] = row_stats.get("tx", 0)
+                item["server_rx"] = item["rx"]
+                item["server_tx"] = item["tx"]
+                item["client_upload"] = item["rx"]
+                item["client_download"] = item["tx"]
                 item["traffic_30d"] = client_traffic_30d(peer["name"], history)
                 item["traffic_total"] = client_traffic_total(peer["name"], history)
+                item["traffic"] = client_traffic_api(item["traffic_total"], item["traffic_30d"])
                 item["latestHandshakeAt"] = row_stats.get("latestHandshakeAt", row_stats.get("last_handshake", 0))
                 endpoint = row_stats.get("endpoint", "")
                 item["endpoint"] = "" if endpoint in {"", "-", "(none)", "none"} else endpoint
