@@ -268,6 +268,7 @@ def default_access_policy():
         "bind_host": bind,
         "allowed_hosts": default_allowed_hosts(),
         "allowed_source_cidrs": source_cidrs,
+        "trusted_proxy_cidrs": ["127.0.0.0/8", "::1/128"],
         "host_check_enabled": True,
         "source_check_enabled": False,
     }
@@ -360,6 +361,7 @@ def clean_access_policy(value):
     source_check_enabled = bool(data.get("source_check_enabled", defaults["source_check_enabled"]))
     allowed_hosts = clean_allowed_hosts(data.get("allowed_hosts", defaults["allowed_hosts"]))
     allowed_source_cidrs = clean_cidr_list(data.get("allowed_source_cidrs", defaults["allowed_source_cidrs"]))
+    trusted_proxy_cidrs = clean_cidr_list(data.get("trusted_proxy_cidrs", defaults["trusted_proxy_cidrs"]), "trusted_proxy_cidrs")
     if mode == "public":
         source_check_enabled = False
         allowed_hosts = ensure_items(allowed_hosts, ["194-180-189-244.sslip.io", "194.180.189.244", "localhost", "127.0.0.1"])
@@ -379,6 +381,7 @@ def clean_access_policy(value):
         "bind_host": bind_host,
         "allowed_hosts": allowed_hosts,
         "allowed_source_cidrs": allowed_source_cidrs,
+        "trusted_proxy_cidrs": trusted_proxy_cidrs,
         "host_check_enabled": host_check_enabled,
         "source_check_enabled": source_check_enabled,
     }
@@ -428,21 +431,68 @@ def source_allowed(remote_addr, policy):
     return False
 
 
-def host_allowed(raw_host, remote_addr, policy):
+def trusted_proxy_allowed(socket_remote_addr, policy):
+    try:
+        remote_ip = ipaddress.ip_address(socket_remote_addr)
+    except ValueError:
+        return False
+    for cidr in policy.get("trusted_proxy_cidrs", []):
+        try:
+            if remote_ip in ipaddress.ip_network(cidr, strict=False):
+                return True
+        except ValueError:
+            continue
+    return False
+
+
+def first_forwarded_ip(headers):
+    raw_xff = ""
+    if headers:
+        raw_xff = headers.get("X-Forwarded-For", "") if hasattr(headers, "get") else ""
+    for part in str(raw_xff or "").split(","):
+        candidate = part.strip()
+        if not candidate:
+            continue
+        try:
+            return str(ipaddress.ip_address(split_host(candidate)))
+        except ValueError:
+            continue
+    raw_real = headers.get("X-Real-IP", "") if headers and hasattr(headers, "get") else ""
+    try:
+        return str(ipaddress.ip_address(split_host(str(raw_real or "").strip())))
+    except ValueError:
+        return ""
+
+
+def client_ip_context(socket_remote_addr, headers, policy):
+    socket_remote_ip = str(socket_remote_addr or "")
+    trusted = trusted_proxy_allowed(socket_remote_ip, policy)
+    forwarded_ip = first_forwarded_ip(headers) if trusted else ""
+    client_ip = forwarded_ip or socket_remote_ip
+    return {
+        "socket_remote_ip": socket_remote_ip,
+        "client_ip": client_ip,
+        "proxy_ip": socket_remote_ip if trusted and forwarded_ip else "",
+        "trusted_proxy_used": bool(trusted and forwarded_ip),
+    }
+
+
+def host_allowed(raw_host, remote_addr, policy, trusted_proxy_used=False):
     host = split_host(raw_host)
     if not host:
         return False
     if not policy.get("host_check_enabled"):
         return True
-    if remote_addr in {"127.0.0.1", "::1"}:
+    if remote_addr in {"127.0.0.1", "::1"} and not trusted_proxy_used:
         return True
-    if policy.get("bind_host") in {"127.0.0.1", "::1"}:
+    if policy.get("bind_host") in {"127.0.0.1", "::1"} and not trusted_proxy_used:
         return host in {"localhost", "127.0.0.1", "::1"}
     return host in set(policy.get("allowed_hosts") or [])
 
 
-def request_allowed_by_policy(raw_host, remote_addr, policy):
-    return host_allowed(raw_host, remote_addr, policy) and source_allowed(remote_addr, policy)
+def request_allowed_by_policy(raw_host, remote_addr, policy, client_addr=None, trusted_proxy_used=False):
+    source_addr = client_addr or remote_addr
+    return host_allowed(raw_host, remote_addr, policy, trusted_proxy_used) and source_allowed(source_addr, policy)
 
 
 def bind_allows_current_remote(bind_host, remote_addr):
@@ -463,7 +513,8 @@ def bind_allows_current_remote(bind_host, remote_addr):
 
 
 def allowed_host_header(raw_host, remote_addr):
-    return host_allowed(raw_host, remote_addr, load_access_policy())
+    policy = load_access_policy()
+    return host_allowed(raw_host, remote_addr, policy)
 
 
 def record_rejected_host(raw_host, remote_addr, path):
@@ -1447,9 +1498,12 @@ class Handler(SimpleHTTPRequestHandler):
         policy = load_access_policy()
         raw_host = self.headers.get("Host", "")
         remote_addr = self.client_address[0]
-        if not request_allowed_by_policy(raw_host, remote_addr, policy):
-            record_rejected_host(raw_host, remote_addr, self.path)
-            audit_log(f"Rejected Web Panel request remote={remote_addr} path={self.path} host={raw_host!r} reason=access policy")
+        client_ctx = client_ip_context(remote_addr, self.headers, policy)
+        client_ip = client_ctx["client_ip"]
+        if not request_allowed_by_policy(raw_host, remote_addr, policy, client_ip, client_ctx["trusted_proxy_used"]):
+            record_rejected_host(raw_host, client_ip, self.path)
+            proxy_suffix = f" proxy={remote_addr}" if client_ctx["trusted_proxy_used"] else ""
+            audit_log(f"Rejected Web Panel request remote={client_ip}{proxy_suffix} path={self.path} host={raw_host!r} reason=access policy")
             if self.path.startswith("/api/"):
                 self.send_api_error(HTTPStatus.MISDIRECTED_REQUEST, "bad_request")
             else:
@@ -1457,7 +1511,7 @@ class Handler(SimpleHTTPRequestHandler):
             return None
         if not self.path.startswith("/api/"):
             return {"role": "static"}
-        ip = self.client_address[0]
+        ip = client_ip
         if not check_rate_limit(ip):
             self.send_api_error(HTTPStatus.TOO_MANY_REQUESTS, "rate_limited")
             return None
@@ -1638,13 +1692,18 @@ class Handler(SimpleHTTPRequestHandler):
         policy = policy or load_access_policy()
         raw_host = self.headers.get("Host", "")
         remote_addr = self.client_address[0]
+        client_ctx = client_ip_context(remote_addr, self.headers, policy)
         return {
             "policy": policy,
             "current": {
                 "host": raw_host,
                 "normalized_host": split_host(raw_host),
-                "remote_ip": remote_addr,
-                "allowed": request_allowed_by_policy(raw_host, remote_addr, policy),
+                "remote_ip": client_ctx["client_ip"],
+                "client_ip": client_ctx["client_ip"],
+                "socket_remote_ip": client_ctx["socket_remote_ip"],
+                "proxy_ip": client_ctx["proxy_ip"],
+                "trusted_proxy_used": client_ctx["trusted_proxy_used"],
+                "allowed": request_allowed_by_policy(raw_host, remote_addr, policy, client_ctx["client_ip"], client_ctx["trusted_proxy_used"]),
             },
             "recent_rejected_hosts": recent_rejected_hosts(),
             "requires_restart": policy.get("bind_host") != (os.environ.get("AWG_WEB_BIND") or ""),
@@ -1654,7 +1713,8 @@ class Handler(SimpleHTTPRequestHandler):
         policy = clean_access_policy(body.get("policy", body))
         raw_host = self.headers.get("Host", "")
         remote_addr = self.client_address[0]
-        if not request_allowed_by_policy(raw_host, remote_addr, policy):
+        client_ctx = client_ip_context(remote_addr, self.headers, policy)
+        if not request_allowed_by_policy(raw_host, remote_addr, policy, client_ctx["client_ip"], client_ctx["trusted_proxy_used"]):
             raise ValueError("policy would block the current request")
         if not bind_allows_current_remote(policy.get("bind_host", ""), remote_addr):
             raise ValueError("bind mode would block the current connection after restart")

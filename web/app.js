@@ -11,7 +11,10 @@ let latestTokens = [];
 let ownerFilter = {mode: "all", tokens: []};
 let helpClientGroups = null;
 let pollTimer = null;
+let pollInFlight = false;
 let topTrafficMode = localStorage.getItem("topTrafficMode") || "30d";
+const ACTIVE_CLIENT_POLL_MS = 5000;
+const HIDDEN_CLIENT_POLL_MS = 30000;
 const previousRx = new Map();
 const previousTx = new Map();
 const previousSampleAt = new Map();
@@ -254,7 +257,7 @@ function setTheme(next) {
 function logout() {
   sessionStorage.removeItem("panelToken");
   token = "";
-  clearInterval(pollTimer);
+  stopClientPolling();
   document.title = "Control";
   renderLogin();
 }
@@ -519,7 +522,7 @@ function renderLogin() {
 }
 
 async function renderPanel() {
-  clearInterval(pollTimer);
+  stopClientPolling();
   document.title = statusState.title || "Control";
   if (trafficChart) {
     trafficChart.destroy();
@@ -565,13 +568,6 @@ async function renderPanel() {
       <div class="min-w-0 rounded-lg border border-[var(--line)] bg-[var(--panel)] p-4 sm:col-span-2">
         <p class="text-xs font-semibold uppercase text-[var(--muted)]">Resolver</p>
         <strong id="metricResolver" class="mt-2 flex min-w-0 items-center text-lg sm:text-2xl">-</strong>
-      </div>
-    </section>
-
-    <section class="mt-3 rounded-lg border border-[var(--line)] bg-[var(--panel)] p-3">
-      <div class="relative">
-        <span class="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--muted)]">${icon("search")}</span>
-        <input id="searchInput" class="h-11 w-full rounded-md border border-[var(--line)] bg-[var(--soft)] pl-10 pr-3 text-[var(--text)] outline-none focus:border-[var(--accent)]" placeholder="Search by name or IP" autocomplete="off">
       </div>
     </section>
 
@@ -631,8 +627,18 @@ async function renderPanel() {
       </div>
     </section>
 
-    <section id="ownerFilterPanel" class="mt-3 rounded-lg border border-[var(--line)] bg-[var(--panel)] p-3 ${canManageClientAssignments() ? "" : "hidden"}">
-      <div id="ownerFilter"></div>
+    <section id="clientFiltersPanel" class="mt-3 rounded-lg border border-[var(--line)] bg-[var(--panel)] p-3">
+      <div class="flex flex-wrap items-center justify-between gap-2">
+        <h2 class="text-sm font-semibold">Client filters</h2>
+        <p class="text-xs text-[var(--muted)]">Search and owner filters combine.</p>
+      </div>
+      <div class="mt-3 grid gap-3 lg:grid-cols-[minmax(220px,360px),1fr]">
+        <div class="relative">
+          <span class="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--muted)]">${icon("search")}</span>
+          <input id="searchInput" class="h-11 w-full rounded-md border border-[var(--line)] bg-[var(--soft)] pl-10 pr-3 text-[var(--text)] outline-none focus:border-[var(--accent)]" placeholder="Search clients..." autocomplete="off">
+        </div>
+        <div id="ownerFilter" class="${canManageClientAssignments() ? "" : "hidden"}"></div>
+      </div>
     </section>
 
     <section id="clientsList" class="mt-4 overflow-hidden rounded-lg border border-[var(--line)] bg-[var(--panel)]"></section>
@@ -650,7 +656,7 @@ async function renderPanel() {
     document.querySelector("#saveRestartWebAccessPolicy").onclick = () => submitWebAccessPolicy("save-restart");
   }
   await loadAll();
-  pollTimer = setInterval(loadClients, 2000);
+  startClientPolling();
 }
 
 async function loadAll() {
@@ -680,50 +686,79 @@ function renderResolverMetric() {
 }
 
 async function loadClients() {
+  if (!token || pollInFlight) return;
+  pollInFlight = true;
   const now = Date.now();
-  const payload = await api("/api/clients");
-  const rows = Array.isArray(payload) ? payload : (payload.clients || []);
-  trafficState = Array.isArray(payload) ? null : payload.traffic;
-  latestClients = await Promise.all(rows.map(async client => {
-    const rx = Number(client.rx || 0);
-    const tx = Number(client.tx || 0);
-    const prevTime = previousSampleAt.get(client.name);
-    const prevRxBytes = previousRx.get(client.name);
-    const prevTxBytes = previousTx.get(client.name);
-    let rxSpeed = 0;
-    let txSpeed = 0;
-    if (prevTime && now > prevTime) {
-      const elapsed = (now - prevTime) / 1000;
-      if (rx >= Number(prevRxBytes || 0)) rxSpeed = (rx - Number(prevRxBytes || 0)) / elapsed;
-      if (tx >= Number(prevTxBytes || 0)) txSpeed = (tx - Number(prevTxBytes || 0)) / elapsed;
-    }
-    const speedBps = rxSpeed + txSpeed;
-    previousRx.set(client.name, rx);
-    previousTx.set(client.name, tx);
-    previousSampleAt.set(client.name, now);
-    const history = speedHistory.get(client.name) || [];
-    history.push(Math.max(0, Math.round(speedBps)));
-    while (history.length > 30) history.shift();
-    speedHistory.set(client.name, history);
-    return Object.assign({}, client, {
-      rxSpeedBps: rxSpeed,
-      txSpeedBps: txSpeed,
-      speedBps,
-      traffic_total: client.traffic_total || {rx: 0, tx: 0, total: 0},
-      totalBytes: Number(client.traffic_total?.total || 0),
-      traffic_30d: client.traffic_30d || {rx: 0, tx: 0, total: 0},
-      open_ports: normalizePortList(client.open_ports),
-      avatar: await avatarHtml(client.name),
-    });
-  }));
-  renderClients();
-  document.querySelector("#metricClients").textContent = latestClients.length;
-  document.querySelector("#metricActive").textContent = latestClients.filter(isOnline).length;
-  renderTraffic();
-  renderTopClients();
-  if (statusState.role === "super") renderTokenList();
-  applySearch();
+  try {
+    const payload = await api("/api/clients");
+    const rows = Array.isArray(payload) ? payload : (payload.clients || []);
+    trafficState = Array.isArray(payload) ? null : payload.traffic;
+    latestClients = await Promise.all(rows.map(async client => {
+      const rx = Number(client.rx || 0);
+      const tx = Number(client.tx || 0);
+      const prevTime = previousSampleAt.get(client.name);
+      const prevRxBytes = previousRx.get(client.name);
+      const prevTxBytes = previousTx.get(client.name);
+      let rxSpeed = 0;
+      let txSpeed = 0;
+      if (prevTime && now > prevTime) {
+        const elapsed = (now - prevTime) / 1000;
+        if (rx >= Number(prevRxBytes || 0)) rxSpeed = (rx - Number(prevRxBytes || 0)) / elapsed;
+        if (tx >= Number(prevTxBytes || 0)) txSpeed = (tx - Number(prevTxBytes || 0)) / elapsed;
+      }
+      const speedBps = rxSpeed + txSpeed;
+      previousRx.set(client.name, rx);
+      previousTx.set(client.name, tx);
+      previousSampleAt.set(client.name, now);
+      const history = speedHistory.get(client.name) || [];
+      history.push(Math.max(0, Math.round(speedBps)));
+      while (history.length > 30) history.shift();
+      speedHistory.set(client.name, history);
+      return Object.assign({}, client, {
+        rxSpeedBps: rxSpeed,
+        txSpeedBps: txSpeed,
+        speedBps,
+        traffic_total: client.traffic_total || {rx: 0, tx: 0, total: 0},
+        totalBytes: Number(client.traffic_total?.total || 0),
+        traffic_30d: client.traffic_30d || {rx: 0, tx: 0, total: 0},
+        open_ports: normalizePortList(client.open_ports),
+        avatar: await avatarHtml(client.name),
+      });
+    }));
+    renderClients();
+    document.querySelector("#metricClients").textContent = latestClients.length;
+    document.querySelector("#metricActive").textContent = latestClients.filter(isOnline).length;
+    renderTraffic();
+    renderTopClients();
+    if (statusState.role === "super") renderTokenList();
+    applySearch();
+  } finally {
+    pollInFlight = false;
+  }
 }
+
+function nextClientPollDelay() {
+  return document.hidden ? HIDDEN_CLIENT_POLL_MS : ACTIVE_CLIENT_POLL_MS;
+}
+
+function stopClientPolling() {
+  if (pollTimer) clearTimeout(pollTimer);
+  pollTimer = null;
+}
+
+function startClientPolling() {
+  stopClientPolling();
+  if (!token) return;
+  const tick = async () => {
+    await loadClients();
+    pollTimer = setTimeout(tick, nextClientPollDelay());
+  };
+  pollTimer = setTimeout(tick, nextClientPollDelay());
+}
+
+document.addEventListener("visibilitychange", () => {
+  if (token && statusState) startClientPolling();
+});
 
 function renderTraffic() {
   if (!trafficState) return;
@@ -1502,7 +1537,7 @@ function renderWebAccessPolicy() {
         <span>Enable source IP check</span>
       </label>
     </div>
-    <div class="mt-3 grid gap-3 lg:grid-cols-2">
+    <div class="mt-3 grid gap-3 lg:grid-cols-3">
       <label class="block text-sm">
         <span class="mb-1 block text-[var(--muted)]">Allowed hosts</span>
         <textarea id="webAccessHosts" class="h-36 w-full resize-y rounded-md border border-[var(--line)] bg-[var(--soft)] p-3 font-mono text-xs text-[var(--text)] outline-none focus:border-[var(--accent)]">${esc((policy.allowed_hosts || []).join("\n"))}</textarea>
@@ -1511,15 +1546,21 @@ function renderWebAccessPolicy() {
         <span class="mb-1 block text-[var(--muted)]">Allowed source CIDRs</span>
         <textarea id="webAccessCidrs" class="h-36 w-full resize-y rounded-md border border-[var(--line)] bg-[var(--soft)] p-3 font-mono text-xs text-[var(--text)] outline-none focus:border-[var(--accent)]">${esc((policy.allowed_source_cidrs || []).join("\n"))}</textarea>
       </label>
+      <label class="block text-sm">
+        <span class="mb-1 block text-[var(--muted)]">Trusted proxy CIDRs</span>
+        <textarea id="webAccessTrustedProxies" class="h-36 w-full resize-y rounded-md border border-[var(--line)] bg-[var(--soft)] p-3 font-mono text-xs text-[var(--text)] outline-none focus:border-[var(--accent)]">${esc((policy.trusted_proxy_cidrs || []).join("\n"))}</textarea>
+      </label>
     </div>
     <div class="mt-3 rounded-md border border-[var(--line)] bg-[var(--soft)] p-3 text-xs text-[var(--muted)]">
       <div class="flex flex-wrap items-center justify-between gap-2">
         <p><span class="font-semibold text-[var(--text)]">Current Host:</span> ${esc(current.host || "-")}</p>
         <button id="allowCurrentHost" class="${buttonClasses("h-8 px-2 text-xs")}">${icon("plus")}<span>Allow current host</span></button>
       </div>
-      <p class="mt-1"><span class="font-semibold text-[var(--text)]">Remote IP:</span> ${esc(current.remote_ip || "-")}</p>
+      <p class="mt-1"><span class="font-semibold text-[var(--text)]">Client IP:</span> ${esc(current.client_ip || current.remote_ip || "-")}</p>
+      <p class="mt-1"><span class="font-semibold text-[var(--text)]">Proxy:</span> ${current.proxy_ip ? `${esc(current.proxy_ip)} ${current.trusted_proxy_used ? "trusted" : "untrusted"}` : "none"}</p>
       <p class="mt-1"><span class="font-semibold text-[var(--text)]">Current request:</span> ${current.allowed ? "allowed" : "blocked"}</p>
       <p class="mt-1"><span class="font-semibold text-[var(--text)]">Restart:</span> ${webAccessPolicyState.requires_restart ? "required for bind changes" : "not required for current bind"}</p>
+      <p class="mt-1 text-amber-700">When source IP check is enabled, it is evaluated against Client IP.</p>
       <p id="webAccessModeHint" class="mt-1 text-amber-700"></p>
     </div>
     <details class="mt-3 rounded-md border border-[var(--line)] bg-[var(--soft)] px-3 py-2 text-xs text-[var(--muted)]">
@@ -1538,7 +1579,7 @@ function renderWebAccessPolicy() {
     markWebAccessChanged();
   };
   host.querySelector("#webAccessBindMode").onchange = () => applyWebAccessModeProfile(true);
-  ["#webAccessBindHost", "#webAccessHostCheck", "#webAccessSourceCheck", "#webAccessHosts", "#webAccessCidrs"].forEach(selector => {
+  ["#webAccessBindHost", "#webAccessHostCheck", "#webAccessSourceCheck", "#webAccessHosts", "#webAccessCidrs", "#webAccessTrustedProxies"].forEach(selector => {
     const field = host.querySelector(selector);
     if (field) field.oninput = markWebAccessChanged;
     if (field) field.onchange = markWebAccessChanged;
@@ -1548,6 +1589,10 @@ function renderWebAccessPolicy() {
 
 function webAccessRequiredHosts() {
   return ["194-180-189-244.sslip.io", "194.180.189.244", "localhost", "127.0.0.1"];
+}
+
+function webAccessTrustedProxyDefaults() {
+  return ["127.0.0.0/8", "::1/128"];
 }
 
 function textareaRows(selector) {
@@ -1584,6 +1629,7 @@ function applyWebAccessModeProfile(changed) {
   const sourceCheck = document.querySelector("#webAccessSourceCheck");
   const hint = document.querySelector("#webAccessModeHint");
   if (!bindHost || !sourceCheck) return;
+  ensureTextareaRows("#webAccessTrustedProxies", webAccessTrustedProxyDefaults());
   bindHost.readOnly = mode !== "custom";
   hint.textContent = "";
   if (mode === "public") {
@@ -1621,6 +1667,7 @@ function readWebAccessPolicyForm() {
     source_check_enabled: host.querySelector("#webAccessSourceCheck").checked,
     allowed_hosts: host.querySelector("#webAccessHosts").value.split(/\r?\n/).map(row => row.trim()).filter(Boolean),
     allowed_source_cidrs: host.querySelector("#webAccessCidrs").value.split(/\r?\n/).map(row => row.trim()).filter(Boolean),
+    trusted_proxy_cidrs: host.querySelector("#webAccessTrustedProxies").value.split(/\r?\n/).map(row => row.trim()).filter(Boolean),
   };
 }
 

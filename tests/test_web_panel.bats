@@ -351,10 +351,16 @@ assert 'if (filter.mode === "assigned") return assigned.length > 0;' in source
 assert 'selected.has(ownerTokenKey(item))' in source
 assert 'latestClients.filter(client => clientMatchesOwnerFilter(client))' in source
 assert 'renderOwnerFilter();' in source
+assert 'const ACTIVE_CLIENT_POLL_MS = 5000;' in source
+assert 'const HIDDEN_CLIENT_POLL_MS = 30000;' in source
+assert 'pollInFlight' in source
+assert 'document.addEventListener("visibilitychange"' in source
 advanced = source.index('Disruptive system operations.')
-owner = source.index('id="ownerFilterPanel"')
+filters = source.index('id="clientFiltersPanel"')
+search = source.index('id="searchInput"', filters)
+owner = source.index('id="ownerFilter"', filters)
 clients = source.index('id="clientsList"')
-assert advanced < owner < clients
+assert advanced < filters < search < owner < clients
 PY
 }
 
@@ -379,6 +385,26 @@ assert server.source_allowed("10.66.66.42", policy)
 assert not server.source_allowed("10.66.67.42", policy)
 assert server.request_allowed_by_policy("194-180-189-244.sslip.io:443", "10.66.66.42", policy)
 assert not server.request_allowed_by_policy("194-180-189-244.sslip.io:443", "10.66.67.42", policy)
+ctx = server.client_ip_context("127.0.0.1", {"X-Forwarded-For": "46.34.133.234, 10.0.0.2"}, policy)
+assert ctx["client_ip"] == "46.34.133.234"
+assert ctx["socket_remote_ip"] == "127.0.0.1"
+assert ctx["trusted_proxy_used"] is True
+spoofed = server.client_ip_context("198.51.100.9", {"X-Forwarded-For": "46.34.133.234"}, policy)
+assert spoofed["client_ip"] == "198.51.100.9"
+assert spoofed["trusted_proxy_used"] is False
+proxy_policy = server.clean_access_policy({
+    "bind_mode": "custom",
+    "bind_host": "127.0.0.1",
+    "allowed_hosts": ["194-180-189-244.sslip.io", "127.0.0.1"],
+    "allowed_source_cidrs": ["46.34.133.0/24"],
+    "trusted_proxy_cidrs": ["127.0.0.0/8", "::1/128"],
+    "host_check_enabled": True,
+    "source_check_enabled": True,
+})
+ctx = server.client_ip_context("127.0.0.1", {"X-Forwarded-For": "46.34.133.234"}, proxy_policy)
+assert server.request_allowed_by_policy("194-180-189-244.sslip.io", "127.0.0.1", proxy_policy, ctx["client_ip"], ctx["trusted_proxy_used"])
+blocked_ctx = server.client_ip_context("127.0.0.1", {"X-Forwarded-For": "82.197.73.253"}, proxy_policy)
+assert not server.request_allowed_by_policy("194-180-189-244.sslip.io", "127.0.0.1", proxy_policy, blocked_ctx["client_ip"], blocked_ctx["trusted_proxy_used"])
 assert server.clean_allowed_host("[::1]:443") == "::1"
 try:
     server.clean_access_policy({
@@ -432,6 +458,10 @@ PY
     grep -qF 'Allow current host' "$BATS_TEST_DIRNAME/../web/app.js"
     grep -qF 'Enable Host header check' "$BATS_TEST_DIRNAME/../web/app.js"
     grep -qF 'Enable source IP check' "$BATS_TEST_DIRNAME/../web/app.js"
+    grep -qF 'Trusted proxy CIDRs' "$BATS_TEST_DIRNAME/../web/app.js"
+    grep -qF 'Client IP:' "$BATS_TEST_DIRNAME/../web/app.js"
+    grep -qF 'Proxy:' "$BATS_TEST_DIRNAME/../web/app.js"
+    grep -qF 'When source IP check is enabled, it is evaluated against Client IP.' "$BATS_TEST_DIRNAME/../web/app.js"
     grep -qF 'applyWebAccessModeProfile' "$BATS_TEST_DIRNAME/../web/app.js"
     grep -qF 'Unsaved changes' "$BATS_TEST_DIRNAME/../web/app.js"
     grep -qF 'profile selected; test before saving' "$BATS_TEST_DIRNAME/../web/app.js"
