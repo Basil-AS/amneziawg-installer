@@ -219,7 +219,9 @@
     grep -qF 'clean_token_name(body.get("name", ""))' "$BATS_TEST_DIRNAME/../web/server.py"
     grep -qF 'Token name / alias (optional)' "$BATS_TEST_DIRNAME/../web/app.js"
     grep -qF 'super_token_hash' "$BATS_TEST_DIRNAME/../web/server.py"
-    grep -qF 'mutate_user_clients(auth["hash"], name)' "$BATS_TEST_DIRNAME/../web/server.py"
+    grep -qF 'assign_client_to_user_token(auth["hash"], name)' "$BATS_TEST_DIRNAME/../web/server.py"
+    grep -qF 'assigned_to_current_token' "$BATS_TEST_DIRNAME/../web/server.py"
+    grep -qF 'client assignment failed' "$BATS_TEST_DIRNAME/../web/server.py"
     grep -qF '/api/tokens/([^/]+)/clients' "$BATS_TEST_DIRNAME/../web/server.py"
     grep -qF 'Remove from my access' "$BATS_TEST_DIRNAME/../web/app.js"
     grep -qF 'data-edit-clients' "$BATS_TEST_DIRNAME/../web/app.js"
@@ -300,6 +302,7 @@ payload = json.loads(handler.wfile.getvalue().decode())
 assert payload["display_name"] == "phone"
 assert payload["config_name"] == "phone-a7f3"
 assert payload["is_duplicate_display_name"] is True
+assert payload["assigned_to_current_token"] is True
 assert calls[-1] == ("add", "phone-a7f3")
 assert server.load_tokens()["users"][user_hash]["clients"] == ["phone-a7f3"]
 assert server.load_client_metadata()["clients"]["phone-a7f3"] == {"display_name": "phone"}
@@ -342,8 +345,21 @@ for needle in [
     'data-owner-filter',
     'Owner filter',
     'No clients match this owner filter',
+    'client-filter-grid',
+    'client-search-wrap',
+    'client-search-icon',
+    'client-search-input',
 ]:
     assert needle in source
+style = Path(__import__("os").environ["REPO_ROOT"], "web", "style.css").read_text(encoding="utf-8")
+for needle in [
+    '.client-filter-grid{display:grid',
+    '.client-search-wrap{position:relative',
+    '.client-search-icon{position:absolute',
+    '.client-search-input{width:100%;height:2.75rem',
+    '.client-search-input:focus{border-color:var(--accent)}',
+]:
+    assert needle in style
 assert '["super", "admin"].includes(statusState.role)' in source
 assert 'if (!filter || filter.mode === "all") return true;' in source
 assert 'if (filter.mode === "unassigned") return assigned.length === 0;' in source
@@ -362,6 +378,19 @@ owner = source.index('id="ownerFilter"', filters)
 clients = source.index('id="clientsList"')
 assert advanced < filters < search < owner < clients
 PY
+}
+
+@test "web client create assignment and stats cache are hardened" {
+    grep -qF 'def assign_client_to_user_token(user_hash, client_name):' "$BATS_TEST_DIRNAME/../web/server.py"
+    grep -qF 'rollback_created_client(name)' "$BATS_TEST_DIRNAME/../web/server.py"
+    grep -qF 'Created web client ' "$BATS_TEST_DIRNAME/../web/server.py"
+    grep -qF 'requested_display={display_name} config_name={name}' "$BATS_TEST_DIRNAME/../web/server.py"
+    grep -qF 'STATS_CACHE_COND = threading.Condition(STATS_CACHE_LOCK)' "$BATS_TEST_DIRNAME/../web/server.py"
+    grep -qF 'STATS_CACHE_TTL = 3.0' "$BATS_TEST_DIRNAME/../web/server.py"
+    grep -qF 'STATS_CACHE_WAIT_TIMEOUT = 2.0' "$BATS_TEST_DIRNAME/../web/server.py"
+    grep -qF 'run_manage("--json", "stats", timeout=8)' "$BATS_TEST_DIRNAME/../web/server.py"
+    grep -qF 'Stats cache stale served while refresh in-flight' "$BATS_TEST_DIRNAME/../web/server.py"
+    grep -qF 'if stats is None:' "$BATS_TEST_DIRNAME/../web/server.py"
 }
 
 @test "web access policy validates hosts sources and lockout guard" {

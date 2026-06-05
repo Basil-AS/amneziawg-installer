@@ -632,10 +632,10 @@ async function renderPanel() {
         <h2 class="text-sm font-semibold">Client filters</h2>
         <p class="text-xs text-[var(--muted)]">Search and owner filters combine.</p>
       </div>
-      <div class="mt-3 grid gap-3 lg:grid-cols-[minmax(220px,360px),1fr]">
-        <div class="relative">
-          <span class="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--muted)]">${icon("search")}</span>
-          <input id="searchInput" class="h-11 w-full rounded-md border border-[var(--line)] bg-[var(--soft)] pl-10 pr-3 text-[var(--text)] outline-none focus:border-[var(--accent)]" placeholder="Search clients..." autocomplete="off">
+      <div class="client-filter-grid">
+        <div class="client-search-wrap">
+          <span class="client-search-icon">${icon("search")}</span>
+          <input id="searchInput" class="client-search-input" placeholder="Search clients..." autocomplete="off">
         </div>
         <div id="ownerFilter" class="${canManageClientAssignments() ? "" : "hidden"}"></div>
       </div>

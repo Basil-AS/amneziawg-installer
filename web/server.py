@@ -57,6 +57,13 @@ ACCESS_POLICY_LOCK = threading.RLock()
 TRAFFIC_LOCK = threading.Lock()
 REJECTED_HOST_LOCK = threading.Lock()
 RECENT_REJECTED_HOSTS = deque(maxlen=25)
+STATS_CACHE_LOCK = threading.Lock()
+STATS_CACHE_COND = threading.Condition(STATS_CACHE_LOCK)
+STATS_CACHE_VALUE = None
+STATS_CACHE_TS = 0.0
+STATS_CACHE_INFLIGHT = False
+STATS_CACHE_TTL = 3.0
+STATS_CACHE_WAIT_TIMEOUT = 2.0
 SERVER_NAME_RE = re.compile(r"^[\w .,!?\-()]{1,128}$", re.UNICODE)
 DELETED_TRAFFIC_KEY = "_deleted_clients_total"
 PANEL_TITLE = "AmneziaWG Panel"
@@ -194,6 +201,10 @@ def audit_log(message):
     print(message, file=sys.stderr, flush=True)
 
 
+def auth_fingerprint(auth):
+    return (auth.get("hash") or "")[:8] if isinstance(auth, dict) else ""
+
+
 BENIGN_DISCONNECT_ERRNOS = {errno.ECONNRESET, errno.EPIPE, errno.ETIMEDOUT}
 BENIGN_DISCONNECT_TYPES = (
     BrokenPipeError,
@@ -243,7 +254,7 @@ def default_allowed_hosts():
     hosts = ["localhost", "127.0.0.1", "194-180-189-244.sslip.io", "194.180.189.244"]
     for value in (domain, endpoint, bind):
         host = split_host(value)
-        if host and host not in {"0.0.0.0", "::", "mastus.online"} and host not in hosts:
+        if host and host not in {"0.0.0.0", "::"} and host not in hosts:
             hosts.append(host)
     return hosts
 
@@ -715,6 +726,17 @@ def remove_client_metadata(config_name):
         write_client_metadata(data)
 
 
+def rollback_created_client(config_name):
+    config_name = safe_name(config_name)
+    p = run_manage("remove", config_name, timeout=90)
+    if p.returncode == 0:
+        remove_client_metadata(config_name)
+        remove_import_tokens_for_client(config_name)
+        remove_client_from_all_tokens(config_name)
+        return True
+    return False
+
+
 def client_identity_map(peers=None):
     peers = peers if peers is not None else parse_peers()
     return {peer["name"]: peer.get("display_name") or peer["name"] for peer in peers}
@@ -873,7 +895,8 @@ def update_traffic_history(rows):
 
 
 def traffic_summary(auth, stats=None, names=None):
-    stats = stats or client_stats_map()
+    if stats is None:
+        stats = client_stats_map()
     if names is not None:
         allowed = set(names)
     elif auth.get("role") == "super":
@@ -1107,11 +1130,13 @@ def auth_reject_reason(header):
 
 def mutate_user_clients(user_hash, client_name=None, remove=False):
     if not user_hash or not client_name:
-        return
+        return False
     with TOKENS_LOCK:
         data = load_tokens()
         users = data.setdefault("users", {})
-        record = clean_user_record(users.get(user_hash, {}))
+        if user_hash not in users:
+            return False
+        record = clean_user_record(users[user_hash])
         clients = record["clients"]
         if remove:
             clients = [name for name in clients if name != client_name]
@@ -1120,6 +1145,29 @@ def mutate_user_clients(user_hash, client_name=None, remove=False):
         record["clients"] = clients
         users[user_hash] = record
         write_tokens(data)
+        return True
+
+
+def assign_client_to_user_token(user_hash, client_name):
+    user_hash = safe_token_hash(user_hash)
+    client_name = safe_name(client_name)
+    with TOKENS_LOCK:
+        data = load_tokens()
+        users = data.setdefault("users", {})
+        if user_hash not in users:
+            raise ValueError("user token not found")
+        record = clean_user_record(users[user_hash])
+        if client_name not in record["clients"]:
+            record["clients"].append(client_name)
+        users[user_hash] = record
+        write_tokens(data)
+        verified = load_tokens().get("users", {}).get(user_hash)
+        if not isinstance(verified, dict):
+            raise RuntimeError("user token assignment verification failed")
+        verified_clients = clean_user_record(verified).get("clients", [])
+        if client_name not in verified_clients:
+            raise RuntimeError("user token assignment verification failed")
+        return True
 
 
 def remove_client_from_all_tokens(client_name):
@@ -1361,11 +1409,8 @@ def require_dns_list(value):
     return ",".join(out)
 
 
-def client_stats_map():
-    p = run_manage("--json", "stats", timeout=20)
-    if p.returncode != 0:
-        return {}
-    raw_out = p.stdout or ""
+def parse_stats_rows(raw_out):
+    raw_out = raw_out or ""
     rows = []
     for line in raw_out.splitlines():
         candidate = line.strip()
@@ -1385,8 +1430,66 @@ def client_stats_map():
             if "last_handshake" in row:
                 row["latestHandshakeAt"] = row.get("last_handshake")
             out[row["name"]] = row
-    update_traffic_history(out.values())
     return out
+
+
+def refresh_client_stats():
+    started = time.time()
+    try:
+        p = run_manage("--json", "stats", timeout=8)
+    except (OSError, subprocess.SubprocessError) as exc:
+        audit_log(f"Stats cache refresh failed error={exc.__class__.__name__}")
+        return {}
+    elapsed = time.time() - started
+    if elapsed > 2.0:
+        audit_log(f"Stats cache refresh slow seconds={elapsed:.2f}")
+    if p.returncode != 0:
+        audit_log(f"Stats cache refresh failed returncode={p.returncode}")
+        return {}
+    try:
+        out = parse_stats_rows(p.stdout or "")
+        update_traffic_history(out.values())
+    except Exception as exc:
+        audit_log(f"Stats cache refresh failed error={exc.__class__.__name__}")
+        return {}
+    return out
+
+
+def client_stats_map(force=False):
+    global STATS_CACHE_VALUE, STATS_CACHE_TS, STATS_CACHE_INFLIGHT
+    now = time.time()
+    with STATS_CACHE_COND:
+        if not force and STATS_CACHE_VALUE is not None and now - STATS_CACHE_TS <= STATS_CACHE_TTL:
+            return dict(STATS_CACHE_VALUE)
+        if STATS_CACHE_INFLIGHT:
+            deadline = now + STATS_CACHE_WAIT_TIMEOUT
+            while STATS_CACHE_INFLIGHT and time.time() < deadline:
+                STATS_CACHE_COND.wait(max(0.0, deadline - time.time()))
+            now = time.time()
+            if STATS_CACHE_VALUE is not None and now - STATS_CACHE_TS <= STATS_CACHE_TTL:
+                return dict(STATS_CACHE_VALUE)
+            if STATS_CACHE_VALUE is not None:
+                audit_log("Stats cache stale served while refresh in-flight")
+                return dict(STATS_CACHE_VALUE)
+            audit_log("Stats cache empty while refresh in-flight")
+            return {}
+        STATS_CACHE_INFLIGHT = True
+    try:
+        refreshed = refresh_client_stats()
+    except Exception as exc:
+        audit_log(f"Stats cache refresh failed error={exc.__class__.__name__}")
+        refreshed = {}
+    finally:
+        with STATS_CACHE_COND:
+            if "refreshed" in locals() and refreshed:
+                STATS_CACHE_VALUE = dict(refreshed)
+                STATS_CACHE_TS = time.time()
+            elif STATS_CACHE_VALUE is None:
+                STATS_CACHE_VALUE = {}
+                STATS_CACHE_TS = 0.0
+            STATS_CACHE_INFLIGHT = False
+            STATS_CACHE_COND.notify_all()
+    return dict(refreshed) if refreshed else dict(STATS_CACHE_VALUE or {})
 
 
 class LimitedThreadingHTTPServer(ThreadingHTTPServer):
@@ -1898,14 +2001,31 @@ class Handler(SimpleHTTPRequestHandler):
                 p = run_manage(*args, "add", name)
                 if p.returncode == 0:
                     set_client_display_name(name, display_name)
+                    assigned_to_current_token = False
                     if collision:
                         audit_log(
                             "Client display name collision: "
                             f"requested={display_name} created_config={name} "
-                            f"actor_role={auth.get('role')} actor_token_fp={(auth.get('hash') or '')[:8]}"
+                            f"actor_role={auth.get('role')} actor_fp={auth_fingerprint(auth)}"
                         )
                     if not self.is_super(auth):
-                        mutate_user_clients(auth["hash"], name)
+                        try:
+                            assigned_to_current_token = assign_client_to_user_token(auth["hash"], name)
+                        except Exception as exc:
+                            rollback_ok = rollback_created_client(name)
+                            audit_log(
+                                "ERROR User-created client assignment failed "
+                                f"config_name={name} actor_fp={auth_fingerprint(auth)} "
+                                f"rollback={'ok' if rollback_ok else 'failed'} error={exc.__class__.__name__}"
+                            )
+                            self.send_json({"error": "client assignment failed"}, 500)
+                            return
+                    audit_log(
+                        "Created web client "
+                        f"requested_display={display_name} config_name={name} "
+                        f"actor_role={auth.get('role')} actor_fp={auth_fingerprint(auth)} "
+                        f"assigned={'true' if assigned_to_current_token else 'false'}"
+                    )
                     self.send_json({
                         "ok": True,
                         "stdout": p.stdout,
@@ -1915,6 +2035,7 @@ class Handler(SimpleHTTPRequestHandler):
                         "config_name": name,
                         "display_name": display_name,
                         "is_duplicate_display_name": collision,
+                        "assigned_to_current_token": assigned_to_current_token,
                     })
                     return
             elif u.path == "/api/server/restart":
