@@ -1552,23 +1552,33 @@ function renderWebAccessPolicy() {
   if (!host || !webAccessPolicyState) return;
   const policy = webAccessPolicyState.policy || {};
   const current = webAccessPolicyState.current || {};
+  const edge = webAccessPolicyState.edge || {};
   const rejected = webAccessPolicyState.recent_rejected_hosts || [];
-  const mode = policy.bind_mode || "public";
+  const mode = webAccessDisplayMode(policy, edge);
   host.innerHTML = `
+    <div class="rounded-md border border-[var(--line)] bg-[var(--soft)] p-3 text-xs text-[var(--muted)]">
+      <div class="grid gap-2 sm:grid-cols-2">
+        <p><span class="font-semibold text-[var(--text)]">Edge mode:</span> ${esc(edge.label || "legacy direct Python listener")}</p>
+        <p><span class="font-semibold text-[var(--text)]">Public listener:</span> ${esc(edge.public_listener || "-")}</p>
+        <p><span class="font-semibold text-[var(--text)]">Backend app:</span> ${esc(edge.backend_listener || `${policy.bind_host || "-"}:8443`)}</p>
+        <p><span class="font-semibold text-[var(--text)]">Backend protocol:</span> ${esc(edge.backend_protocol || "HTTPS")}</p>
+      </div>
+    </div>
     <div class="grid gap-3 lg:grid-cols-2">
       <label class="block text-sm">
-        <span class="mb-1 block text-[var(--muted)]">Mode</span>
+        <span class="mb-1 block text-[var(--muted)]">Preset</span>
         <select id="webAccessBindMode" class="h-10 w-full rounded-md border border-[var(--line)] bg-[var(--soft)] px-3 text-[var(--text)] outline-none focus:border-[var(--accent)]">
           ${[
-            ["public", "Public"],
-            ["v" + "pn_" + "only", "V" + "P" + "N only"],
-            ["localhost_only", "Localhost only"],
-            ["custom", "Custom"],
+            ["public_nginx", "Public via nginx"],
+            ["restricted_nginx", "Restricted clients via nginx"],
+            ["v" + "pn_only_nginx", "V" + "P" + "N-only panel via nginx"],
+            ["localhost_maintenance", "Localhost maintenance"],
+            ["custom", "Custom / legacy direct"],
           ].map(([value, label]) => `<option value="${value}" ${mode === value ? "selected" : ""}>${label}</option>`).join("")}
         </select>
       </label>
       <label class="block text-sm">
-        <span class="mb-1 block text-[var(--muted)]">Bind host</span>
+        <span class="mb-1 block text-[var(--muted)]">Backend bind host</span>
         <input id="webAccessBindHost" class="h-10 w-full rounded-md border border-[var(--line)] bg-[var(--soft)] px-3 font-mono text-xs text-[var(--text)] outline-none focus:border-[var(--accent)]" value="${esc(policy.bind_host || "")}" ${mode === "custom" ? "" : "readonly"}>
       </label>
     </div>
@@ -1604,9 +1614,12 @@ function renderWebAccessPolicy() {
       </div>
       <p class="mt-1"><span class="font-semibold text-[var(--text)]">Client IP:</span> ${esc(current.client_ip || current.remote_ip || "-")}</p>
       <p class="mt-1"><span class="font-semibold text-[var(--text)]">Proxy:</span> ${current.proxy_ip ? `${esc(current.proxy_ip)} ${current.trusted_proxy_used ? "trusted" : "untrusted"}` : "none"}</p>
+      <p class="mt-1"><span class="font-semibold text-[var(--text)]">nginx:</span> ${edge.nginx_active ? "active reverse proxy mode" : "not detected by this request"}</p>
+      <p class="mt-1"><span class="font-semibold text-[var(--text)]">nginx public listener:</span> ${esc(edge.public_listener || "-")}</p>
+      <p class="mt-1"><span class="font-semibold text-[var(--text)]">Python backend:</span> ${esc(edge.backend_listener || "-")}</p>
       <p class="mt-1"><span class="font-semibold text-[var(--text)]">Current request:</span> ${current.allowed ? "allowed" : "blocked"}</p>
       <p class="mt-1"><span class="font-semibold text-[var(--text)]">Restart:</span> ${webAccessPolicyState.requires_restart ? "required for bind changes" : "not required for current bind"}</p>
-      <p class="mt-1 text-amber-700">When source IP check is enabled, it is evaluated against Client IP.</p>
+      <p class="mt-1 text-amber-700">If source check is enabled, it checks Client IP from trusted proxy headers, not the 127.0.0.1 proxy peer.</p>
       <p id="webAccessModeHint" class="mt-1 text-amber-700"></p>
     </div>
     <details class="mt-3 rounded-md border border-[var(--line)] bg-[var(--soft)] px-3 py-2 text-xs text-[var(--muted)]">
@@ -1641,6 +1654,23 @@ function webAccessTrustedProxyDefaults() {
   return ["127.0.0.0/8", "::1/128"];
 }
 
+function webAccessDisplayMode(policy, edge) {
+  const mode = policy.bind_mode || "public_nginx";
+  if (mode === "custom" && edge?.mode === "nginx_reverse_proxy") {
+    return policy.source_check_enabled ? "restricted_nginx" : "public_nginx";
+  }
+  if (mode === "public" && edge?.mode === "nginx_reverse_proxy") return "public_nginx";
+  if (mode === "v" + "pn_" + "only" && edge?.mode === "nginx_reverse_proxy") return "v" + "pn_only_nginx";
+  if (mode === "localhost_only" && edge?.mode === "nginx_reverse_proxy") return "localhost_maintenance";
+  return mode;
+}
+
+function currentClientCidr() {
+  const ip = webAccessPolicyState?.current?.client_ip || "";
+  if (!ip || ip === "127.0.0.1" || ip === "::1") return "";
+  return ip.includes(":") ? `${ip}/128` : `${ip}/32`;
+}
+
 function textareaRows(selector) {
   return (document.querySelector(selector)?.value || "").split(/\r?\n/).map(row => row.trim()).filter(Boolean);
 }
@@ -1670,7 +1700,7 @@ function markWebAccessChanged(message = "Unsaved changes") {
 }
 
 function applyWebAccessModeProfile(changed) {
-  const mode = document.querySelector("#webAccessBindMode")?.value || "public";
+  const mode = document.querySelector("#webAccessBindMode")?.value || "public_nginx";
   const bindHost = document.querySelector("#webAccessBindHost");
   const sourceCheck = document.querySelector("#webAccessSourceCheck");
   const hint = document.querySelector("#webAccessModeHint");
@@ -1678,23 +1708,33 @@ function applyWebAccessModeProfile(changed) {
   ensureTextareaRows("#webAccessTrustedProxies", webAccessTrustedProxyDefaults());
   bindHost.readOnly = mode !== "custom";
   hint.textContent = "";
-  if (mode === "public") {
-    bindHost.value = "0.0.0.0";
+  if (mode === "public_nginx") {
+    bindHost.value = "127.0.0.1";
     sourceCheck.checked = false;
     ensureTextareaRows("#webAccessHosts", webAccessRequiredHosts());
     setTextareaRows("#webAccessCidrs", ["0.0.0.0/0", "::/0"]);
-  } else if (mode === "v" + "pn_" + "only") {
-    bindHost.value = "0.0.0.0";
+    hint.textContent = "nginx remains the public 443 edge; Python stays on localhost.";
+  } else if (mode === "restricted_nginx") {
+    bindHost.value = "127.0.0.1";
     sourceCheck.checked = true;
     ensureTextareaRows("#webAccessHosts", webAccessRequiredHosts());
-    setTextareaRows("#webAccessCidrs", ["10.0.0.0/8", "127.0.0.0/8"]);
-    hint.textContent = "V" + "P" + "N only may require restart and can lock out public access.";
-  } else if (mode === "localhost_only") {
+    const cidrs = textareaRows("#webAccessCidrs").filter(row => row !== "0.0.0.0/0" && row !== "::/0");
+    const current = currentClientCidr();
+    setTextareaRows("#webAccessCidrs", current ? cidrs.concat([current]) : cidrs);
+    hint.textContent = "nginx stays public; source check is evaluated against real Client IP.";
+  } else if (mode === "v" + "pn_only_nginx") {
+    bindHost.value = "127.0.0.1";
+    sourceCheck.checked = true;
+    ensureTextareaRows("#webAccessHosts", webAccessRequiredHosts());
+    const current = currentClientCidr();
+    setTextareaRows("#webAccessCidrs", ["10.9.9.0/24", "127.0.0.0/8", "::1/128"].concat(current ? [current] : []));
+    hint.textContent = "nginx keeps listening on 443; policy allows selected network CIDR and the current Client IP.";
+  } else if (mode === "localhost_maintenance") {
     bindHost.value = "127.0.0.1";
     sourceCheck.checked = true;
     ensureTextareaRows("#webAccessHosts", ["localhost", "127.0.0.1"]);
     setTextareaRows("#webAccessCidrs", ["127.0.0.0/8", "::1/128"]);
-    hint.textContent = "Localhost only requires restart and blocks non-local access.";
+    hint.textContent = "Maintenance mode is local/proxy only; test prevents saving if it would block this request.";
   }
   if (changed) markWebAccessChanged(`${document.querySelector("#webAccessBindMode").selectedOptions[0]?.textContent || "Mode"} profile selected; test before saving.`);
 }
@@ -1703,9 +1743,7 @@ function readWebAccessPolicyForm() {
   const host = document.querySelector("#webAccessPolicyForm");
   const mode = host.querySelector("#webAccessBindMode").value;
   let bindHost = host.querySelector("#webAccessBindHost").value.trim();
-  if (mode === "public") bindHost = "0.0.0.0";
-  if (mode === "localhost_only") bindHost = "127.0.0.1";
-  if (mode === "v" + "pn_" + "only" && !bindHost) bindHost = "0.0.0.0";
+  if (["public_nginx", "restricted_nginx", "v" + "pn_only_nginx", "localhost_maintenance"].includes(mode)) bindHost = "127.0.0.1";
   return {
     bind_mode: mode,
     bind_host: bindHost,

@@ -265,9 +265,9 @@ def default_access_policy():
         mode = "public"
         source_cidrs = ["0.0.0.0/0", "::/0"]
     elif bind in {"127.0.0.1", "::1"}:
-        mode = "localhost_only"
+        mode = "public_nginx"
         bind = "127.0.0.1"
-        source_cidrs = ["127.0.0.0/8", "::1/128"]
+        source_cidrs = ["0.0.0.0/0", "::/0"]
     elif bind == "10.9.9.1":
         mode = "vpn_only"
         source_cidrs = ["10.0.0.0/8", "127.0.0.0/8"]
@@ -358,11 +358,15 @@ def clean_access_policy(value):
     defaults = default_access_policy()
     data = value if isinstance(value, dict) else {}
     mode = data.get("bind_mode", defaults["bind_mode"])
-    if mode not in {"public", "vpn_only", "localhost_only", "custom"}:
+    modes = {
+        "public", "vpn_only", "localhost_only", "custom",
+        "public_nginx", "restricted_nginx", "vpn_only_nginx", "localhost_maintenance",
+    }
+    if mode not in modes:
         raise ValueError("invalid bind_mode")
     if mode == "public":
         bind_host = "0.0.0.0"
-    elif mode == "localhost_only":
+    elif mode in {"localhost_only", "public_nginx", "restricted_nginx", "vpn_only_nginx", "localhost_maintenance"}:
         bind_host = "127.0.0.1"
     elif mode == "vpn_only":
         bind_host = clean_bind_host(data.get("bind_host") or "0.0.0.0")
@@ -376,6 +380,27 @@ def clean_access_policy(value):
     if mode == "public":
         source_check_enabled = False
         allowed_hosts = ensure_items(allowed_hosts, ["194-180-189-244.sslip.io", "194.180.189.244", "localhost", "127.0.0.1"])
+    elif mode == "public_nginx":
+        source_check_enabled = False
+        allowed_hosts = ensure_items(allowed_hosts, ["194-180-189-244.sslip.io", "194.180.189.244", "localhost", "127.0.0.1"])
+        trusted_proxy_cidrs = ensure_items(trusted_proxy_cidrs, ["127.0.0.0/8", "::1/128"])
+        if not allowed_source_cidrs:
+            allowed_source_cidrs = ["0.0.0.0/0", "::/0"]
+    elif mode == "restricted_nginx":
+        source_check_enabled = True
+        trusted_proxy_cidrs = ensure_items(trusted_proxy_cidrs, ["127.0.0.0/8", "::1/128"])
+        allowed_hosts = ensure_items(allowed_hosts, ["194-180-189-244.sslip.io", "194.180.189.244", "localhost", "127.0.0.1"])
+    elif mode == "vpn_only_nginx":
+        source_check_enabled = True
+        trusted_proxy_cidrs = ensure_items(trusted_proxy_cidrs, ["127.0.0.0/8", "::1/128"])
+        allowed_hosts = ensure_items(allowed_hosts, ["194-180-189-244.sslip.io", "194.180.189.244", "localhost", "127.0.0.1"])
+        if not allowed_source_cidrs or any(cidr in {"0.0.0.0/0", "::/0"} for cidr in allowed_source_cidrs):
+            allowed_source_cidrs = ["10.9.9.0/24", "127.0.0.0/8", "::1/128"]
+    elif mode == "localhost_maintenance":
+        source_check_enabled = True
+        trusted_proxy_cidrs = ensure_items(trusted_proxy_cidrs, ["127.0.0.0/8", "::1/128"])
+        allowed_hosts = ensure_items(allowed_hosts, ["localhost", "127.0.0.1"])
+        allowed_source_cidrs = ["127.0.0.0/8", "::1/128"]
     elif mode == "vpn_only":
         source_check_enabled = True
         if not allowed_source_cidrs or any(cidr in {"0.0.0.0/0", "::/0"} for cidr in allowed_source_cidrs):
@@ -504,6 +529,45 @@ def host_allowed(raw_host, remote_addr, policy, trusted_proxy_used=False):
 def request_allowed_by_policy(raw_host, remote_addr, policy, client_addr=None, trusted_proxy_used=False):
     source_addr = client_addr or remote_addr
     return host_allowed(raw_host, remote_addr, policy, trusted_proxy_used) and source_allowed(source_addr, policy)
+
+
+def policy_uses_local_nginx_proxy(policy, headers=None, trusted_proxy_used=False):
+    bind_host = str(policy.get("bind_host") or "")
+    mode = str(policy.get("bind_mode") or "")
+    if mode in {"public_nginx", "restricted_nginx", "vpn_only_nginx", "localhost_maintenance"}:
+        return True
+    if bind_host not in {"127.0.0.1", "::1"}:
+        return False
+    if trusted_proxy_used:
+        return True
+    if headers and hasattr(headers, "get") and headers.get("X-Forwarded-Proto"):
+        return True
+    return any(cidr in set(policy.get("trusted_proxy_cidrs") or []) for cidr in ("127.0.0.0/8", "::1/128"))
+
+
+def web_access_edge_info(policy, headers=None, trusted_proxy_used=False):
+    port = str(os.environ.get("AWG_WEB_PORT") or "8443")
+    bind = str(os.environ.get("AWG_WEB_BIND") or policy.get("bind_host") or "")
+    nginx_mode = policy_uses_local_nginx_proxy(policy, headers, trusted_proxy_used)
+    if nginx_mode:
+        return {
+            "mode": "nginx_reverse_proxy",
+            "label": "nginx reverse proxy",
+            "nginx_active": True,
+            "public_listener": "0.0.0.0:443",
+            "backend_listener": f"127.0.0.1:{port}",
+            "backend_protocol": "HTTPS",
+            "source_check_target": "client_ip",
+        }
+    return {
+        "mode": "legacy_direct",
+        "label": "legacy direct Python listener",
+        "nginx_active": False,
+        "public_listener": f"{bind}:{port}" if bind else f":{port}",
+        "backend_listener": f"{bind}:{port}" if bind else f":{port}",
+        "backend_protocol": "HTTPS",
+        "source_check_target": "remote_ip",
+    }
 
 
 def bind_allows_current_remote(bind_host, remote_addr):
@@ -2099,8 +2163,13 @@ class Handler(SimpleHTTPRequestHandler):
         raw_host = self.headers.get("Host", "")
         remote_addr = self.client_address[0]
         client_ctx = client_ip_context(remote_addr, self.headers, policy)
+        edge = web_access_edge_info(policy, self.headers, client_ctx["trusted_proxy_used"])
+        restart_required = policy.get("bind_host") != (os.environ.get("AWG_WEB_BIND") or "")
+        if edge.get("mode") == "nginx_reverse_proxy":
+            restart_required = False
         return {
             "policy": policy,
+            "edge": edge,
             "current": {
                 "host": raw_host,
                 "normalized_host": split_host(raw_host),
@@ -2112,7 +2181,7 @@ class Handler(SimpleHTTPRequestHandler):
                 "allowed": request_allowed_by_policy(raw_host, remote_addr, policy, client_ctx["client_ip"], client_ctx["trusted_proxy_used"]),
             },
             "recent_rejected_hosts": recent_rejected_hosts(),
-            "requires_restart": policy.get("bind_host") != (os.environ.get("AWG_WEB_BIND") or ""),
+            "requires_restart": restart_required,
         }
 
     def validate_policy_for_current_request(self, body):

@@ -716,6 +716,57 @@ local_policy = server.clean_access_policy({
 assert local_policy["bind_host"] == "127.0.0.1"
 assert local_policy["source_check_enabled"] is True
 assert local_policy["allowed_source_cidrs"] == ["127.0.0.0/8", "::1/128"]
+nginx_policy = server.clean_access_policy({
+    "bind_mode": "public_nginx",
+    "bind_host": "0.0.0.0",
+    "allowed_hosts": ["194-180-189-244.sslip.io"],
+    "allowed_source_cidrs": ["0.0.0.0/0"],
+    "trusted_proxy_cidrs": ["127.0.0.0/8"],
+    "host_check_enabled": True,
+    "source_check_enabled": True,
+})
+assert nginx_policy["bind_host"] == "127.0.0.1"
+assert nginx_policy["source_check_enabled"] is False
+assert server.web_access_edge_info(nginx_policy)["mode"] == "nginx_reverse_proxy"
+restricted = server.clean_access_policy({
+    "bind_mode": "restricted_nginx",
+    "bind_host": "0.0.0.0",
+    "allowed_hosts": ["194-180-189-244.sslip.io"],
+    "allowed_source_cidrs": ["46.34.133.0/24"],
+    "trusted_proxy_cidrs": ["127.0.0.0/8"],
+    "host_check_enabled": True,
+    "source_check_enabled": False,
+})
+assert restricted["bind_host"] == "127.0.0.1"
+assert restricted["source_check_enabled"] is True
+ctx = server.client_ip_context("127.0.0.1", {"X-Forwarded-For": "46.34.133.234"}, restricted)
+assert server.request_allowed_by_policy("194-180-189-244.sslip.io", "127.0.0.1", restricted, ctx["client_ip"], ctx["trusted_proxy_used"])
+blocked_ctx = server.client_ip_context("127.0.0.1", {"X-Forwarded-For": "203.0.113.9"}, restricted)
+assert not server.request_allowed_by_policy("194-180-189-244.sslip.io", "127.0.0.1", restricted, blocked_ctx["client_ip"], blocked_ctx["trusted_proxy_used"])
+spoofed = server.client_ip_context("198.51.100.7", {"X-Forwarded-For": "46.34.133.234"}, restricted)
+assert spoofed["client_ip"] == "198.51.100.7"
+assert spoofed["trusted_proxy_used"] is False
+safe_tunnel = server.clean_access_policy({
+    "bind_mode": "v" + "pn_only_nginx",
+    "bind_host": "0.0.0.0",
+    "allowed_hosts": ["194-180-189-244.sslip.io"],
+    "allowed_source_cidrs": ["0.0.0.0/0"],
+    "trusted_proxy_cidrs": ["127.0.0.0/8"],
+    "host_check_enabled": True,
+    "source_check_enabled": False,
+})
+assert safe_tunnel["bind_host"] == "127.0.0.1"
+assert safe_tunnel["allowed_source_cidrs"] == ["10.9.9.0/24", "127.0.0.0/8", "::1/128"]
+maintenance = server.clean_access_policy({
+    "bind_mode": "localhost_maintenance",
+    "bind_host": "0.0.0.0",
+    "allowed_hosts": ["localhost"],
+    "allowed_source_cidrs": ["0.0.0.0/0"],
+    "host_check_enabled": True,
+    "source_check_enabled": False,
+})
+assert maintenance["bind_host"] == "127.0.0.1"
+assert maintenance["allowed_source_cidrs"] == ["127.0.0.0/8", "::1/128"]
 PY
 }
 
@@ -735,10 +786,19 @@ PY
     grep -qF 'Trusted proxy CIDRs' "$BATS_TEST_DIRNAME/../web/app.js"
     grep -qF 'Client IP:' "$BATS_TEST_DIRNAME/../web/app.js"
     grep -qF 'Proxy:' "$BATS_TEST_DIRNAME/../web/app.js"
-    grep -qF 'When source IP check is enabled, it is evaluated against Client IP.' "$BATS_TEST_DIRNAME/../web/app.js"
+    grep -qF 'Public via nginx' "$BATS_TEST_DIRNAME/../web/app.js"
+    grep -qF 'Restricted clients via nginx' "$BATS_TEST_DIRNAME/../web/app.js"
+    grep -qF 'Edge mode:' "$BATS_TEST_DIRNAME/../web/app.js"
+    grep -qF 'nginx public listener:' "$BATS_TEST_DIRNAME/../web/app.js"
+    grep -qF 'Python backend:' "$BATS_TEST_DIRNAME/../web/app.js"
+    grep -qF 'not the 127.0.0.1 proxy peer' "$BATS_TEST_DIRNAME/../web/app.js"
+    grep -qF 'webAccessDisplayMode' "$BATS_TEST_DIRNAME/../web/app.js"
     grep -qF 'applyWebAccessModeProfile' "$BATS_TEST_DIRNAME/../web/app.js"
     grep -qF 'Unsaved changes' "$BATS_TEST_DIRNAME/../web/app.js"
     grep -qF 'profile selected; test before saving' "$BATS_TEST_DIRNAME/../web/app.js"
+    if grep -qF 'V'"P"'N only may require restart and can lock out public access.' "$BATS_TEST_DIRNAME/../web/app.js"; then
+        fail "nginx mode UI must not describe Python as a public edge"
+    fi
 }
 
 @test "web server hardening keeps bounded rate, body, logs, and token storage" {
