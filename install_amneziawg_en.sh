@@ -34,9 +34,9 @@ MANAGE_SCRIPT_PATH="$AWG_DIR/manage_amneziawg.sh"
 # are used first; remote download is allowed only with pinned SHA256 or explicit
 # AWG_ALLOW_UNVERIFIED_DOWNLOAD=1 for development.
 declare -A AWG_ASSET_SHA256=(
-    ["awg_common_en.sh"]="2e40f26e5e11c4c860f6afd52e4801e89c0b8f0f656a6b5bbbf46656b30f14dd"
+    ["awg_common_en.sh"]="509c15d0b72c83a30c7497384f3998637bca9a8e5cf8fc464fafdd74c1e298c1"
     ["manage_amneziawg_en.sh"]="3632fa40be5e351d77b220c14d99663244cbdce4446102462784c16f80218d7f"
-    ["web/server.py"]="08d096bbbc09917ecd8715594f5097fff53f968dd58fde57628c5e6c27407447"
+    ["web/server.py"]="e9a6e86dc374f27df291d3fecf27aa3d43912e5a5b2fad2c95b16aca1ae16f92"
     ["web/index.html"]="7c07ed1d1991e08c0f9fc31e86ed8eb2bba5fa96387088f1f18918396cf7e662"
     ["web/app.js"]="1f7f3c6d0abb5b2947caa120c06c0f61232594122b0b06fc629e184d55241de1"
     ["web/awg_i1.js"]="c97a6ac6c4e4bd7ab24c37c45f451e364414f276441f8da1c0805d26013aaa03"

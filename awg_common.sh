@@ -429,11 +429,17 @@ get_peer_p2p_ports() {
 }
 
 _p2p_used_ports_stream() {
-    [[ -f "$SERVER_CONF_FILE" ]] || return 0
-    awk '/^#_P2PPorts(_Disabled)?[[:space:]]*=/ { sub(/^[^=]+=[ \t]*/, ""); print }' "$SERVER_CONF_FILE" \
-        | tr ',' '\n' \
-        | sed 's/[[:space:]]//g' \
-        | grep -E '^[0-9]+$' || true
+    if [[ -f "$SERVER_CONF_FILE" ]]; then
+        awk '/^#_P2PPorts(_Disabled)?[[:space:]]*=/ { sub(/^[^=]+=[ \t]*/, ""); print }' "$SERVER_CONF_FILE" \
+            | tr ',' '\n' \
+            | sed 's/[[:space:]]//g' \
+            | grep -E '^[0-9]+$' || true
+    fi
+    if [[ -f "$AWG_DIR/p2p_rules.sh" ]]; then
+        grep -hoE -- '--dport[[:space:]]+[0-9]+' "$AWG_DIR/p2p_rules.sh" 2>/dev/null \
+            | awk '{print $2}' \
+            | grep -E '^[0-9]+$' || true
+    fi
 }
 
 validate_p2p_port() {
@@ -1672,6 +1678,23 @@ apply_config() {
 # Управление пирами
 # ==============================================================================
 
+reserved_client_ipv4s_stream() {
+    local subnet_base="$1"
+    local escaped_base
+    escaped_base=$(printf '%s' "$subnet_base" | sed 's/\./\\./g')
+
+    if [[ -f "$SERVER_CONF_FILE" ]]; then
+        grep -oP 'AllowedIPs\s*=\s*\K[0-9.]+' "$SERVER_CONF_FILE" 2>/dev/null || true
+    fi
+    if [[ -d "$AWG_DIR" ]]; then
+        grep -hoP 'Address\s*=\s*\K[0-9.]+' "$AWG_DIR"/*.conf 2>/dev/null || true
+        grep -hoE "${escaped_base}\\.[0-9]{1,3}" "$AWG_DIR/postup.sh" "$AWG_DIR/postdown.sh" "$AWG_DIR/p2p_rules.sh" 2>/dev/null || true
+        if [[ -d "$AWG_DIR/adguard" ]]; then
+            grep -RhoE "${escaped_base}\\.[0-9]{1,3}" "$AWG_DIR/adguard" 2>/dev/null || true
+        fi
+    fi
+}
+
 # Получить следующий свободный IP в подсети
 get_next_client_ip() {
     local subnet_base
@@ -1680,11 +1703,9 @@ get_next_client_ip() {
     # Ассоциативный массив для O(1) lookup
     declare -A used_set
     used_set["${subnet_base}.1"]=1
-    if [[ -f "$SERVER_CONF_FILE" ]]; then
-        while IFS= read -r ip; do
-            used_set["$ip"]=1
-        done < <(grep -oP 'AllowedIPs\s*=\s*\K[0-9.]+' "$SERVER_CONF_FILE")
-    fi
+    while IFS= read -r ip; do
+        [[ "$ip" == "${subnet_base}."* ]] && used_set["$ip"]=1
+    done < <(reserved_client_ipv4s_stream "$subnet_base")
 
     local i candidate
     for i in $(seq 2 254); do

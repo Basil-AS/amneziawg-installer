@@ -858,16 +858,187 @@ def remove_client_from_token(config_name, auth):
     return removed, remaining
 
 
+CLIENT_AUDIT_SUFFIXES = (".conf", ".png", ".vpnuri", ".vpnuri.png")
+KEY_AUDIT_SUFFIXES = (".private", ".public")
+
+
+def file_stem_for_suffix(path, suffix):
+    name = path.name
+    if not name.endswith(suffix):
+        return ""
+    stem = name[: -len(suffix)]
+    return stem if NAME_RE.fullmatch(stem) else ""
+
+
+def read_text_safe(path, max_bytes=2 * 1024 * 1024):
+    try:
+        if not path.exists() or path.stat().st_size > max_bytes:
+            return ""
+        return path.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return ""
+
+
+def client_file_refs():
+    refs = {}
+    for suffix in CLIENT_AUDIT_SUFFIXES:
+        for path in AWG_DIR.glob(f"*{suffix}"):
+            name = file_stem_for_suffix(path, suffix)
+            if name:
+                refs.setdefault(name, set()).add(suffix.lstrip(".").replace(".", "_"))
+    keys_dir = AWG_DIR / "keys"
+    if keys_dir.exists():
+        for suffix in KEY_AUDIT_SUFFIXES:
+            for path in keys_dir.glob(f"*{suffix}"):
+                name = file_stem_for_suffix(path, suffix)
+                if name:
+                    refs.setdefault(name, set()).add(f"key_{suffix.lstrip('.')}")
+    return refs
+
+
+def p2p_rule_refs():
+    text = read_text_safe(AWG_DIR / "p2p_rules.sh")
+    refs = {}
+    if not text:
+        return refs
+    for name, ipv4, ports in re.findall(r"# Client: ([A-Za-z0-9_-]+) \((\d+\.\d+\.\d+\.\d+), P2P: ([0-9,]+)\)", text):
+        refs[name] = {
+            "ipv4": ipv4,
+            "ports": [int(port) for port in ports.split(",") if port.isdigit()],
+        }
+    return refs
+
+
+def adguard_refs():
+    root = AWG_DIR / "adguard"
+    refs = {}
+    if not root.exists():
+        return refs
+    for path in root.rglob("*"):
+        if not path.is_file() or path.stat().st_size > 2 * 1024 * 1024:
+            continue
+        text = read_text_safe(path)
+        for name in re.findall(r"\b([A-Za-z0-9_-]{1,64})\b", text):
+            if NAME_RE.fullmatch(name):
+                refs.setdefault(name, set()).add(str(path.relative_to(root)))
+    return refs
+
+
+def traffic_history_refs():
+    data = load_traffic_history()
+    refs = set()
+    def add_history_name(name):
+        if isinstance(name, str) and name != DELETED_TRAFFIC_KEY and NAME_RE.fullmatch(name):
+            refs.add(name)
+    for bucket_name in ("last", "totals"):
+        bucket = data.get(bucket_name, {})
+        if isinstance(bucket, dict):
+            for name in bucket:
+                add_history_name(name)
+    days = data.get("days", {})
+    if isinstance(days, dict):
+        for day in days.values():
+            if isinstance(day, dict):
+                for name in day:
+                    add_history_name(name)
+    return refs
+
+
+def active_client_audit_status(row):
+    status = []
+    if row["server_peer_present"]:
+        status.append("active")
+        if row["is_unassigned"]:
+            status.append("unassigned")
+        missing = [key for key in ("conf", "png", "vpnuri") if key not in row["files"]]
+        if missing:
+            status.append("missing_files")
+    else:
+        if row["metadata_present"]:
+            status.append("orphan_metadata")
+        if row["files"]:
+            status.append("orphan_files")
+        if row["token_assignments"]:
+            status.append("orphan_token_binding")
+        if row["p2p_rules_present"]:
+            status.append("orphan_firewall_rule")
+        if row["adguard_refs"]:
+            status.append("orphan_adguard_ref")
+        if not status and row["traffic_history_present"]:
+            status.append("history_only")
+    return status or ["unknown"]
+
+
+def audit_client_state():
+    peers = {peer["name"]: peer for peer in parse_peers()}
+    metadata = load_client_metadata().get("clients", {})
+    files = client_file_refs()
+    p2p_refs = p2p_rule_refs()
+    dns_refs = adguard_refs()
+    history_refs = traffic_history_refs()
+    token_refs = {}
+    for client_name, records in token_assignments_for_clients().items():
+        token_refs[client_name] = records
+
+    names = set(peers) | set(metadata) | set(files) | set(p2p_refs) | set(dns_refs) | set(history_refs) | set(token_refs)
+    clients = []
+    for name in sorted(names):
+        peer = peers.get(name, {})
+        record = metadata.get(name, {})
+        row = {
+            "config_name": name,
+            "display_name": record.get("display_name") or peer.get("display_name") or name,
+            "server_peer_present": name in peers,
+            "metadata_present": name in metadata,
+            "files": sorted(files.get(name, set())),
+            "client_conf_present": "conf" in files.get(name, set()),
+            "qr_present": "png" in files.get(name, set()),
+            "vpnuri_present": "vpnuri" in files.get(name, set()),
+            "vpnuri_qr_present": "vpnuri_png" in files.get(name, set()),
+            "token_assignments": [
+                {"alias": item.get("alias", ""), "fingerprint": item.get("fingerprint", ""), "role": item.get("role", "user")}
+                for item in token_refs.get(name, [])
+            ],
+            "p2p_rules_present": name in p2p_refs,
+            "p2p_rule_ports": p2p_refs.get(name, {}).get("ports", []),
+            "adguard_refs": sorted(dns_refs.get(name, set())),
+            "traffic_history_present": name in history_refs,
+            "vpn_ip": peer.get("ipv4") or p2p_refs.get(name, {}).get("ipv4", ""),
+            "p2p_ports": peer.get("p2p_ports", []),
+        }
+        row["is_unassigned"] = row["server_peer_present"] and not row["token_assignments"]
+        row["status"] = active_client_audit_status(row)
+        clients.append(row)
+
+    summary = {
+        "total": len(clients),
+        "active": sum(1 for row in clients if "active" in row["status"]),
+        "unassigned": sum(1 for row in clients if "unassigned" in row["status"]),
+        "orphan_metadata": sum(1 for row in clients if "orphan_metadata" in row["status"]),
+        "orphan_files": sum(1 for row in clients if "orphan_files" in row["status"]),
+        "orphan_token_bindings": sum(1 for row in clients if "orphan_token_binding" in row["status"]),
+        "orphan_firewall_rules": sum(1 for row in clients if "orphan_firewall_rule" in row["status"]),
+        "history_only": sum(1 for row in clients if row["status"] == ["history_only"]),
+    }
+    return {"clients": clients, "summary": summary}
+
+
 def delete_client_global(config_name, actor):
     config_name = safe_name(config_name)
+    before = audit_client_state()
     p = run_manage("remove", config_name)
     if p.returncode == 0:
         remove_client_from_all_tokens(config_name)
         remove_client_metadata(config_name)
         remove_import_tokens_for_client(config_name)
+        after = audit_client_state()
+        before_row = next((row for row in before["clients"] if row["config_name"] == config_name), {})
+        after_row = next((row for row in after["clients"] if row["config_name"] == config_name), {})
+        leftovers = [status for status in after_row.get("status", []) if status != "history_only"]
         audit_log(
             "Deleted web client "
-            f"config_name={config_name} actor_role={actor.get('role')} actor_fp={auth_fingerprint(actor)}"
+            f"config_name={config_name} actor_role={actor.get('role')} actor_fp={auth_fingerprint(actor)} "
+            f"files_before={len(before_row.get('files', []))} leftovers={','.join(leftovers) if leftovers else 'none'}"
         )
     return p
 
@@ -1995,6 +2166,11 @@ class Handler(SimpleHTTPRequestHandler):
             return
         if u.path == "/api/dns":
             self.send_json(dns_status())
+            return
+        if u.path == "/api/clients/audit":
+            if not self.require_super(auth):
+                return
+            self.send_json(audit_client_state())
             return
         if u.path == "/api/clients":
             stats = client_stats_map()

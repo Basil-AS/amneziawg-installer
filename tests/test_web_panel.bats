@@ -503,6 +503,93 @@ PY
     rm -rf "$tmp"
 }
 
+@test "web client audit reports active unassigned and orphan runtime refs" {
+    command -v python3 &>/dev/null || skip "python3 not available"
+    local tmp
+    tmp=$(mktemp -d)
+    mkdir -p "$tmp/web" "$tmp/keys"
+    cat > "$tmp/awg0.conf" <<'CONF'
+[Peer]
+#_Name = active
+#_P2PPorts = 20002,20258,20514
+PublicKey = ACTIVE
+AllowedIPs = 10.9.9.2/32
+CONF
+    printf 'Address = 10.9.9.3/32\n' > "$tmp/orphan_file.conf"
+    printf 'png' > "$tmp/orphan_file.png"
+    printf 'priv' > "$tmp/keys/orphan_file.private"
+    cat > "$tmp/p2p_rules.sh" <<'P2P'
+# Client: orphan_hook (10.9.9.4, P2P: 20004,20260,20516)
+iptables -t nat -A PREROUTING -p tcp --dport 20004 -j DNAT --to-destination 10.9.9.4:20004
+P2P
+    AWG_DIR="$tmp" SERVER_CONF_FILE="$tmp/awg0.conf" REPO_ROOT="$BATS_TEST_DIRNAME/.." python3 - <<'PY'
+import importlib.util
+import io
+import json
+import os
+from pathlib import Path
+
+spec = importlib.util.spec_from_file_location("panel_server", Path(os.environ["REPO_ROOT"]) / "web" / "server.py")
+server = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(server)
+
+super_token = "super-token"
+user_token = "user-token"
+super_hash = server.token_hash(super_token)
+user_hash = server.token_hash(user_token)
+server.write_tokens({
+    "super_token_hash": super_hash,
+    "users": {user_hash: {"name": "user-token", "clients": ["active", "orphan_token"]}},
+})
+server.set_client_display_name("active", "active")
+server.set_client_display_name("orphan_meta", "orphan_meta")
+server.write_traffic_history({"last": {"history_only": {"rx": 1, "tx": 2}}, "days": {}, "totals": {}})
+
+payload = server.audit_client_state()
+rows = {row["config_name"]: row for row in payload["clients"]}
+assert rows["active"]["server_peer_present"] is True
+assert "active" in rows["active"]["status"]
+assert rows["active"]["token_assignments"][0]["alias"] == "user-token"
+assert rows["orphan_meta"]["status"] == ["orphan_metadata"]
+assert "orphan_files" in rows["orphan_file"]["status"]
+assert "key_private" in rows["orphan_file"]["files"]
+assert "orphan_token_binding" in rows["orphan_token"]["status"]
+assert "orphan_firewall_rule" in rows["orphan_hook"]["status"]
+assert rows["history_only"]["status"] == ["history_only"]
+assert payload["summary"]["orphan_token_bindings"] == 1
+
+class Headers(dict):
+    def get(self, key, default=None):
+        return super().get(key, default)
+
+def make_handler(token):
+    h = object.__new__(server.Handler)
+    h.path = "/api/clients/audit"
+    h.client_address = ("127.0.0.1", 12345)
+    h.rfile = io.BytesIO()
+    h.wfile = io.BytesIO()
+    h.responses = []
+    h.headers_sent = []
+    h.headers = Headers({"Host": "127.0.0.1", "Authorization": f"Bearer {token}"})
+    h.send_response = lambda code: h.responses.append(code)
+    h.send_error = lambda code, *args, **kwargs: h.responses.append(code)
+    h.send_header = lambda key, value: h.headers_sent.append((key, value))
+    h.end_headers = lambda: None
+    return h
+
+handler = make_handler(user_token)
+handler.do_GET()
+assert handler.responses == [403]
+
+handler = make_handler(super_token)
+handler.do_GET()
+assert handler.responses == [200]
+api_payload = json.loads(handler.wfile.getvalue().decode())
+assert api_payload["summary"]["total"] >= 5
+PY
+    rm -rf "$tmp"
+}
+
 @test "web stats cache reuses fresh value and serves clients on stats failure" {
     command -v python3 &>/dev/null || skip "python3 not available"
     local tmp
