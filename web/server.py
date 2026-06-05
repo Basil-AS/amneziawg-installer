@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import errno
 import hashlib
 import hmac
 import ipaddress
@@ -191,6 +192,28 @@ HELP_CLIENT_GROUPS = [
 
 def audit_log(message):
     print(message, file=sys.stderr, flush=True)
+
+
+BENIGN_DISCONNECT_ERRNOS = {errno.ECONNRESET, errno.EPIPE, errno.ETIMEDOUT}
+BENIGN_DISCONNECT_TYPES = (
+    BrokenPipeError,
+    ConnectionResetError,
+    TimeoutError,
+    socket.timeout,
+    ssl.SSLEOFError,
+    ssl.SSLZeroReturnError,
+    ssl.SSLWantReadError,
+)
+
+
+def is_benign_disconnect_error(exc):
+    while exc is not None:
+        if isinstance(exc, BENIGN_DISCONNECT_TYPES):
+            return True
+        if isinstance(exc, OSError) and exc.errno in BENIGN_DISCONNECT_ERRNOS:
+            return True
+        exc = getattr(exc, "__cause__", None) or getattr(exc, "__context__", None)
+    return False
 
 
 def split_host(host):
@@ -1346,6 +1369,14 @@ class LimitedThreadingHTTPServer(ThreadingHTTPServer):
             raw_request.close()
             raise
 
+    def handle_error(self, request, client_address):
+        exc = sys.exc_info()[1]
+        if is_benign_disconnect_error(exc):
+            remote = client_address[0] if client_address else "-"
+            audit_log(f"Web client disconnected remote={remote} error={exc.__class__.__name__}")
+            return
+        super().handle_error(request, client_address)
+
     def process_request(self, request, client_address):
         if not self._sem.acquire(blocking=False):
             try:
@@ -1375,9 +1406,44 @@ class Handler(SimpleHTTPRequestHandler):
     def handle_one_request(self):
         try:
             return super().handle_one_request()
-        except (socket.timeout, TimeoutError):
+        except (socket.timeout, TimeoutError) as exc:
+            self.log_client_disconnect(exc)
             self.close_connection = True
             return None
+        except (OSError, ssl.SSLError) as exc:
+            if not is_benign_disconnect_error(exc):
+                raise
+            self.log_client_disconnect(exc)
+            self.close_connection = True
+            return None
+
+    def log_client_disconnect(self, exc):
+        remote = self.client_address[0] if getattr(self, "client_address", None) else "-"
+        path = getattr(self, "path", "")
+        suffix = f" path={path}" if isinstance(path, str) and path.startswith("/") else ""
+        audit_log(f"Web client disconnected remote={remote}{suffix} error={exc.__class__.__name__}")
+
+    def write_response_body(self, data):
+        try:
+            self.wfile.write(data)
+            return True
+        except (OSError, ssl.SSLError) as exc:
+            if not is_benign_disconnect_error(exc):
+                raise
+            self.log_client_disconnect(exc)
+            self.close_connection = True
+            return False
+
+    def finish_response_headers(self):
+        try:
+            self.end_headers()
+            return True
+        except (OSError, ssl.SSLError) as exc:
+            if not is_benign_disconnect_error(exc):
+                raise
+            self.log_client_disconnect(exc)
+            self.close_connection = True
+            return False
 
     def api_auth(self):
         policy = load_access_policy()
@@ -1441,8 +1507,9 @@ class Handler(SimpleHTTPRequestHandler):
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(data)))
         self.send_security_headers()
-        self.end_headers()
-        self.wfile.write(data)
+        if not self.finish_response_headers():
+            return
+        self.write_response_body(data)
 
     def send_api_error(self, status, error):
         self.send_json({"error": error}, status)
@@ -1480,8 +1547,9 @@ class Handler(SimpleHTTPRequestHandler):
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(data)))
         self.send_security_headers()
-        self.end_headers()
-        self.wfile.write(data)
+        if not self.finish_response_headers():
+            return
+        self.write_response_body(data)
 
     def send_config_download(self, name):
         path = AWG_DIR / f"{name}.conf"
@@ -1494,8 +1562,9 @@ class Handler(SimpleHTTPRequestHandler):
         self.send_header("Content-Disposition", f'attachment; filename="{name}.conf"')
         self.send_header("Content-Length", str(len(data)))
         self.send_security_headers()
-        self.end_headers()
-        self.wfile.write(data)
+        if not self.finish_response_headers():
+            return
+        self.write_response_body(data)
 
     def send_raw_import_config(self, name, token):
         try:
@@ -1532,8 +1601,26 @@ class Handler(SimpleHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
-        self.end_headers()
-        self.wfile.write(body)
+        if not self.finish_response_headers():
+            return
+        self.write_response_body(body)
+
+    def do_HEAD(self):
+        u = urlparse(self.path)
+        if not u.path.startswith("/api/"):
+            self.send_error(404)
+            return
+        auth = self.api_auth()
+        if auth is None:
+            return
+        if u.path != "/api/status":
+            self.send_error(404)
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", "0")
+        self.send_security_headers()
+        self.finish_response_headers()
 
     def send_static_file(self, url_path):
         static = STATIC_FILES.get(url_path)

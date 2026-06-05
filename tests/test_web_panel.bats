@@ -419,7 +419,8 @@ PY
     grep -qF 'def get_request(self):' "$BATS_TEST_DIRNAME/../web/server.py"
     grep -qF 'request.settimeout(self.request_timeout)' "$BATS_TEST_DIRNAME/../web/server.py"
     grep -qF 'def handle_one_request(self):' "$BATS_TEST_DIRNAME/../web/server.py"
-    grep -qF 'except (socket.timeout, TimeoutError):' "$BATS_TEST_DIRNAME/../web/server.py"
+    grep -qF 'is_benign_disconnect_error' "$BATS_TEST_DIRNAME/../web/server.py"
+    grep -qF 'def handle_error(self, request, client_address):' "$BATS_TEST_DIRNAME/../web/server.py"
     grep -qF 'finally:' "$BATS_TEST_DIRNAME/../web/server.py"
     grep -qF 'self._sem.release()' "$BATS_TEST_DIRNAME/../web/server.py"
     if grep -qF 'httpd = ThreadingHTTPServer(' "$BATS_TEST_DIRNAME/../web/server.py"; then
@@ -428,6 +429,66 @@ PY
     if grep -qF 'f.read_text(errors="ignore").splitlines()[-100:]' "$BATS_TEST_DIRNAME/../web/server.py"; then
         fail "web logs must use bounded tail helper"
     fi
+}
+
+@test "web server suppresses benign disconnect tracebacks only" {
+    command -v python3 &>/dev/null || skip "python3 not available"
+    AWG_DIR="$(mktemp -d)" SERVER_CONF_FILE="/tmp/missing-awg0.conf" REPO_ROOT="$BATS_TEST_DIRNAME/.." python3 - <<'PY'
+import importlib.util
+import os
+from pathlib import Path
+
+spec = importlib.util.spec_from_file_location("panel_server", Path(os.environ["REPO_ROOT"]) / "web" / "server.py")
+server = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(server)
+
+assert server.is_benign_disconnect_error(ConnectionResetError())
+assert server.is_benign_disconnect_error(BrokenPipeError())
+assert server.is_benign_disconnect_error(TimeoutError())
+assert not server.is_benign_disconnect_error(RuntimeError("backend bug"))
+
+class BrokenWriter:
+    def write(self, _data):
+        raise BrokenPipeError()
+
+class HeaderResetHandler:
+    def __call__(self):
+        raise ConnectionResetError()
+
+handler = object.__new__(server.Handler)
+handler.path = "/api/status"
+handler.client_address = ("192.0.2.10", 12345)
+handler.wfile = BrokenWriter()
+handler.responses = []
+handler.headers_sent = []
+handler.close_connection = False
+handler.send_response = lambda code: handler.responses.append(code)
+handler.send_header = lambda key, value: handler.headers_sent.append((key, value))
+handler.end_headers = lambda: None
+
+logs = []
+server.audit_log = logs.append
+handler.send_json({"ok": True})
+assert handler.responses == [200]
+assert handler.close_connection is True
+assert logs == ["Web client disconnected remote=192.0.2.10 path=/api/status error=BrokenPipeError"]
+
+handler.wfile = type("Writer", (), {"write": lambda self, data: None})()
+handler.responses = []
+handler.headers_sent = []
+handler.close_connection = False
+handler.end_headers = HeaderResetHandler()
+logs.clear()
+handler.send_json({"ok": True})
+assert handler.responses == [200]
+assert handler.close_connection is True
+assert logs == ["Web client disconnected remote=192.0.2.10 path=/api/status error=ConnectionResetError"]
+
+source = Path(os.environ["REPO_ROOT"], "web", "server.py").read_text(encoding="utf-8")
+assert "def handle_error(self, request, client_address):" in source
+assert "super().handle_error(request, client_address)" in source
+assert "def do_HEAD(self):" in source
+PY
 }
 
 @test "web static allowlist excludes private panel files" {
