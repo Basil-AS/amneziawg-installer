@@ -1221,14 +1221,39 @@ The minimal working recipe for Debian 13 in a privileged LXC on Proxmox was shar
 
 * **Ubuntu 25.10 / 26.04 / Debian 13:** The PPA may not have prebuilt packages for the latest non-LTS releases. Ubuntu non-LTS PPA codename fallback to `noble` now requires explicit `AWG_ALLOW_PPA_CODENAME_FALLBACK=1` or `--allow-ppa-codename-fallback`; after that DKMS builds the module from source, which takes longer on first install. Debian mapping remains explicit (`bookworm` -> `focal`, `trixie` -> `noble`).
 
-* **Public Web Panel:** The Python stdlib HTTP server remains a lightweight admin-panel runtime. For a public edge, prefer VPN-only bind (`10.9.9.1`), localhost plus SSH tunnel, or a reverse proxy with TLS/timeouts/connection limits. Minimal nginx settings:
+* **Public Web Panel:** The Python stdlib HTTP server remains a lightweight admin-panel runtime. For a public edge, prefer VPN-only bind (`10.9.9.1`), localhost plus SSH tunnel, or a reverse proxy with TLS/timeouts/connection limits. A robust public layout is: nginx listens on `0.0.0.0:443`, while the Web Panel listens only on `127.0.0.1:8443`; if the Web Panel backend stays HTTPS, use `proxy_pass https://127.0.0.1:8443` and `proxy_ssl_verify off`. Always forward the original `Host` so the Host header allowlist keeps protecting the panel:
 
 ```nginx
+limit_conn_zone $binary_remote_addr zone=awg_conn:10m;
+limit_req_zone $binary_remote_addr zone=awg_req:10m rate=5r/s;
+
+server {
+    listen 443 ssl;
+    http2 on;
+    server_name panel.example.com;
+
+    ssl_certificate     /root/awg/web/cert.pem;
+    ssl_certificate_key /root/awg/web/key.pem;
+
+    client_max_body_size 2m;
 client_header_timeout 5s;
 client_body_timeout 10s;
-send_timeout 10s;
-limit_conn_zone $binary_remote_addr zone=awgpanel:10m;
-limit_conn awgpanel 10;
+    proxy_connect_timeout 3s;
+    proxy_send_timeout 30s;
+    proxy_read_timeout 30s;
+    send_timeout 15s;
+    limit_conn awg_conn 20;
+    limit_req zone=awg_req burst=30 nodelay;
+
+    location / {
+        proxy_pass https://127.0.0.1:8443;
+        proxy_ssl_verify off;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+    }
+}
 ```
 
 ---

@@ -573,7 +573,6 @@ async function renderPanel() {
         <span class="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--muted)]">${icon("search")}</span>
         <input id="searchInput" class="h-11 w-full rounded-md border border-[var(--line)] bg-[var(--soft)] pl-10 pr-3 text-[var(--text)] outline-none focus:border-[var(--accent)]" placeholder="Search by name or IP" autocomplete="off">
       </div>
-      <div id="ownerFilter" class="mt-3 ${canManageClientAssignments() ? "" : "hidden"}"></div>
     </section>
 
     <section class="mt-3 rounded-lg border border-[var(--line)] bg-[var(--panel)] p-4">
@@ -630,6 +629,10 @@ async function renderPanel() {
         </div>
         <button id="rotateProfile" class="${buttonClasses("border-amber-600 text-amber-700")}">${icon("refresh")}<span>Rotate profile</span></button>
       </div>
+    </section>
+
+    <section id="ownerFilterPanel" class="mt-3 rounded-lg border border-[var(--line)] bg-[var(--panel)] p-3 ${canManageClientAssignments() ? "" : "hidden"}">
+      <div id="ownerFilter"></div>
     </section>
 
     <section id="clientsList" class="mt-4 overflow-hidden rounded-lg border border-[var(--line)] bg-[var(--panel)]"></section>

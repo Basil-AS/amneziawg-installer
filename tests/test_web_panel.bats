@@ -351,6 +351,10 @@ assert 'if (filter.mode === "assigned") return assigned.length > 0;' in source
 assert 'selected.has(ownerTokenKey(item))' in source
 assert 'latestClients.filter(client => clientMatchesOwnerFilter(client))' in source
 assert 'renderOwnerFilter();' in source
+advanced = source.index('Disruptive system operations.')
+owner = source.index('id="ownerFilterPanel"')
+clients = source.index('id="clientsList"')
+assert advanced < owner < clients
 PY
 }
 
@@ -459,6 +463,18 @@ PY
     if grep -qF 'f.read_text(errors="ignore").splitlines()[-100:]' "$BATS_TEST_DIRNAME/../web/server.py"; then
         fail "web logs must use bounded tail helper"
     fi
+}
+
+@test "advanced docs include nginx reverse proxy edge guidance" {
+    for doc in "$BATS_TEST_DIRNAME/../ADVANCED.md" "$BATS_TEST_DIRNAME/../ADVANCED.en.md"; do
+        grep -qF 'nginx listens' "$doc" || grep -qF 'nginx слушает' "$doc"
+        grep -qF '127.0.0.1:8443' "$doc"
+        grep -qF 'proxy_pass https://127.0.0.1:8443' "$doc"
+        grep -qF 'proxy_ssl_verify off' "$doc"
+        grep -qF 'proxy_set_header Host $host' "$doc"
+        grep -qF 'limit_conn_zone $binary_remote_addr zone=awg_conn:10m' "$doc"
+        grep -qF 'limit_req zone=awg_req burst=30 nodelay' "$doc"
+    done
 }
 
 @test "web server suppresses benign disconnect tracebacks only" {
