@@ -407,6 +407,29 @@ function renderAssignedTokenBadges(client) {
   `).join("") + (extra ? `<span class="rounded-full border border-[var(--line)] bg-[var(--soft)] px-2 py-0.5 text-[11px] font-medium text-[var(--muted)]">+${extra}</span>` : "");
 }
 
+function renderEndpointInfo(client) {
+  const endpoint = client.endpoint || "";
+  if (!endpoint || endpoint === "-") return "";
+  const info = client.endpoint_info || {};
+  const provider = info.provider || info.org || "";
+  const country = info.country || "";
+  const city = info.city || "";
+  const flag = info.flag || "";
+  if (!provider && !country && !city && !flag) {
+    return '<div class="endpoint-info text-xs text-[var(--muted)]">IP info: unknown</div>';
+  }
+  const place = [city, country].filter(Boolean).join(" · ");
+  const title = [place, provider].filter(Boolean).join(" · ");
+  const parts = [];
+  if (flag) parts.push(`<span class="endpoint-flag" title="${esc(country)}">${esc(flag)}</span>`);
+  if (place) parts.push(`<span class="endpoint-place truncate" title="${esc(country || city)}">${esc(place)}</span>`);
+  if (provider) {
+    if (parts.length) parts.push('<span class="endpoint-dot">·</span>');
+    parts.push(`<span class="endpoint-provider truncate" title="${esc(provider)}">${esc(provider)}</span>`);
+  }
+  return `<div class="endpoint-info" title="${esc(title)}">${parts.join("")}</div>`;
+}
+
 function canManageClientAssignments() {
   return statusState && ["super", "admin"].includes(statusState.role);
 }
@@ -959,6 +982,7 @@ function renderClients() {
               </div>
               <p class="mt-1 text-xs text-[var(--muted)]">${active ? "Active recently" : "No recent traffic"} · Last seen ${esc(timeAgo(client.latestHandshakeAt || client.last_handshake))}</p>
               <p class="mt-1 truncate text-xs text-[var(--muted)]">Endpoint: ${esc(endpoint)}</p>
+              ${renderEndpointInfo(client)}
               ${portMarkup ? `<div class="mt-2">${portMarkup}</div>` : ""}
             </div>
           </div>

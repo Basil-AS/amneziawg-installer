@@ -938,6 +938,131 @@ for private_path in {
 PY
 }
 
+@test "endpoint IP info helpers flag cache and private IP behavior" {
+    command -v python3 &>/dev/null || skip "python3 not available"
+    local tmp
+    tmp=$(mktemp -d)
+    AWG_DIR="$tmp" SERVER_CONF_FILE="$tmp/missing.conf" REPO_ROOT="$BATS_TEST_DIRNAME/.." python3 - <<'PY'
+import importlib.util
+import json
+import os
+from pathlib import Path
+
+spec = importlib.util.spec_from_file_location("panel_server", Path(os.environ["REPO_ROOT"]) / "web" / "server.py")
+server = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(server)
+
+assert server.country_code_to_flag("FI") == "🇫🇮"
+assert server.country_code_to_flag("ru") == "🇷🇺"
+assert server.country_code_to_flag("") == ""
+
+calls = []
+def fake_fetch(ip):
+    calls.append(ip)
+    return {
+        "ip": ip,
+        "country": "Finland",
+        "country_code": "FI",
+        "flag": server.country_code_to_flag("FI"),
+        "city": "Helsinki",
+        "asn": "AS719",
+        "org": "Elisa Oyj",
+        "provider": "Elisa Oyj",
+        "source": "provider",
+        "updated_at": "2026-06-06T00:00:00Z",
+    }
+server._fetch_endpoint_ip_info = fake_fetch
+
+private = server.lookup_endpoint_ip_info("10.9.9.2")
+assert private["provider"] == "private"
+assert calls == []
+
+first = server.lookup_endpoint_ip_info("85.89.126.30")
+second = server.lookup_endpoint_ip_info("85.89.126.30")
+assert first["city"] == "Helsinki"
+assert second["source"] == "cache"
+assert calls == ["85.89.126.30"]
+
+cache = json.loads(server.IP_INFO_CACHE_FILE.read_text(encoding="utf-8"))
+cache["85.89.126.30"]["_cache_ts"] = 1
+server.write_ip_info_cache(cache)
+third = server.lookup_endpoint_ip_info("85.89.126.30")
+assert third["provider"] == "Elisa Oyj"
+assert calls == ["85.89.126.30", "85.89.126.30"]
+assert oct(server.IP_INFO_CACHE_FILE.stat().st_mode & 0o777) == "0o600"
+PY
+    rm -rf "$tmp"
+}
+
+@test "api clients include endpoint IP info without breaking endpoint field" {
+    command -v python3 &>/dev/null || skip "python3 not available"
+    local tmp
+    tmp=$(mktemp -d)
+    AWG_DIR="$tmp" SERVER_CONF_FILE="$tmp/awg0.conf" REPO_ROOT="$BATS_TEST_DIRNAME/.." python3 - <<'PY'
+import importlib.util
+import io
+import json
+import os
+from pathlib import Path
+
+spec = importlib.util.spec_from_file_location("panel_server", Path(os.environ["REPO_ROOT"]) / "web" / "server.py")
+server = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(server)
+
+super_token = "super-token"
+server.write_tokens({"super_token_hash": server.token_hash(super_token), "users": {}})
+peer = {"name": "phone", "display_name": "phone", "ipv4": "10.9.9.2", "avatar": "P"}
+server.Handler.visible_peers = lambda self, auth: [peer]
+server.parse_peers = lambda: [peer]
+server.client_stats_map = lambda: {"phone": {"name": "phone", "endpoint": "85.89.126.30:50396", "rx": 0, "tx": 0}}
+server.lookup_endpoint_ip_info = lambda ip, allow_refresh=True: {
+    "ip": ip,
+    "country": "Finland",
+    "country_code": "FI",
+    "flag": "🇫🇮",
+    "city": "Helsinki",
+    "provider": "Elisa Oyj",
+}
+
+class Headers(dict):
+    def get(self, key, default=None):
+        return super().get(key, default)
+
+h = object.__new__(server.Handler)
+h.path = "/api/clients"
+h.client_address = ("127.0.0.1", 12345)
+h.rfile = io.BytesIO()
+h.wfile = io.BytesIO()
+h.responses = []
+h.headers_sent = []
+h.headers = Headers({"Host": "127.0.0.1", "Authorization": f"Bearer {super_token}"})
+h.send_response = lambda code: h.responses.append(code)
+h.send_error = lambda code, *args, **kwargs: h.responses.append(code)
+h.send_header = lambda key, value: h.headers_sent.append((key, value))
+h.end_headers = lambda: None
+
+h.do_GET()
+assert h.responses == [200]
+payload = json.loads(h.wfile.getvalue().decode())
+client = payload["clients"][0]
+assert client["endpoint"] == "85.89.126.30:50396"
+assert client["endpoint_ip"] == "85.89.126.30"
+assert client["endpoint_port"] == 50396
+assert client["endpoint_info"]["city"] == "Helsinki"
+assert client["endpoint_info"]["provider"] == "Elisa Oyj"
+PY
+    rm -rf "$tmp"
+}
+
+@test "web UI renders compact endpoint IP info under endpoint" {
+    grep -qF 'function renderEndpointInfo(client)' "$BATS_TEST_DIRNAME/../web/app.js"
+    grep -qF 'Endpoint: ${esc(endpoint)}</p>' "$BATS_TEST_DIRNAME/../web/app.js"
+    grep -qF '${renderEndpointInfo(client)}' "$BATS_TEST_DIRNAME/../web/app.js"
+    grep -qF 'endpoint-info' "$BATS_TEST_DIRNAME/../web/app.js"
+    grep -qF 'endpoint-provider truncate' "$BATS_TEST_DIRNAME/../web/app.js"
+    grep -qF '.endpoint-provider' "$BATS_TEST_DIRNAME/../web/style.css"
+}
+
 @test "WG Tunnel import links are authenticated, RBAC scoped, hashed, and raw no-store" {
     command -v python3 &>/dev/null || skip "python3 not available"
     local tmp

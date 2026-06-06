@@ -19,6 +19,8 @@ from http import HTTPStatus
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, quote, unquote, urlparse
+from urllib.error import URLError
+from urllib.request import urlopen
 
 AWG_DIR = Path(os.environ.get("AWG_DIR", "/root/awg"))
 WEB_DIR = AWG_DIR / "web"
@@ -29,6 +31,7 @@ IMPORT_TOKEN_FILE = WEB_DIR / "import_tokens.json"
 ACCESS_POLICY_FILE = WEB_DIR / "access_policy.json"
 TRAFFIC_FILE = WEB_DIR / "traffic_history.json"
 CLIENT_METADATA_FILE = WEB_DIR / "client_metadata.json"
+IP_INFO_CACHE_FILE = WEB_DIR / "ip_cache.json"
 LEGACY_TOKEN_FILE = WEB_DIR / "auth_token"
 NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 TOKEN_HASH_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -55,6 +58,7 @@ TOKENS_LOCK = threading.RLock()
 IMPORT_TOKENS_LOCK = threading.RLock()
 ACCESS_POLICY_LOCK = threading.RLock()
 TRAFFIC_LOCK = threading.Lock()
+IP_INFO_CACHE_LOCK = threading.Lock()
 REJECTED_HOST_LOCK = threading.Lock()
 RECENT_REJECTED_HOSTS = deque(maxlen=25)
 STATS_CACHE_LOCK = threading.Lock()
@@ -64,6 +68,9 @@ STATS_CACHE_TS = 0.0
 STATS_CACHE_INFLIGHT = False
 STATS_CACHE_TTL = 3.0
 STATS_CACHE_WAIT_TIMEOUT = 2.0
+IP_INFO_CACHE_TTL = 7 * 24 * 3600
+IP_INFO_NEGATIVE_TTL = 3600
+IP_INFO_LOOKUP_TIMEOUT = 2.0
 SERVER_NAME_RE = re.compile(r"^[\w .,!?\-()]{1,128}$", re.UNICODE)
 DELETED_TRAFFIC_KEY = "_deleted_clients_total"
 PANEL_TITLE = "AmneziaWG Panel"
@@ -1131,6 +1138,160 @@ def write_traffic_history(data):
     os.chmod(tmp, 0o600)
     os.replace(tmp, TRAFFIC_FILE)
     os.chmod(TRAFFIC_FILE, 0o600)
+
+
+def load_ip_info_cache():
+    if not IP_INFO_CACHE_FILE.exists():
+        return {}
+    try:
+        data = json.loads(IP_INFO_CACHE_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def write_ip_info_cache(data):
+    WEB_DIR.mkdir(parents=True, exist_ok=True)
+    tmp = IP_INFO_CACHE_FILE.with_name(f"{IP_INFO_CACHE_FILE.name}.tmp.{os.getpid()}")
+    tmp.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, IP_INFO_CACHE_FILE)
+    os.chmod(IP_INFO_CACHE_FILE, 0o600)
+
+
+def country_code_to_flag(code):
+    code = (code or "").strip().upper()
+    if not re.fullmatch(r"[A-Z]{2}", code):
+        return ""
+    return "".join(chr(0x1F1E6 + ord(char) - ord("A")) for char in code)
+
+
+def _empty_endpoint_info(ip, source="local", provider=""):
+    return {
+        "ip": ip,
+        "country": "",
+        "country_code": "",
+        "flag": "",
+        "city": "",
+        "asn": "",
+        "org": "",
+        "provider": provider,
+        "source": source,
+        "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }
+
+
+def _is_private_endpoint_ip(ip):
+    try:
+        addr = ipaddress.ip_address(ip)
+    except ValueError:
+        return True
+    private_networks = (
+        ipaddress.ip_network("100.64.0.0/10"),
+        ipaddress.ip_network("fc00::/7"),
+        ipaddress.ip_network("fe80::/10"),
+    )
+    if any(addr in network for network in private_networks):
+        return True
+    return (
+        addr.is_private
+        or addr.is_loopback
+        or addr.is_link_local
+        or addr.is_multicast
+        or addr.is_reserved
+        or addr.is_unspecified
+    )
+
+
+def _fetch_endpoint_ip_info(ip):
+    url = f"http://ip-api.com/json/{ip}?fields=status,country,countryCode,city,isp,org,as,query,message"
+    try:
+        with urlopen(url, timeout=IP_INFO_LOOKUP_TIMEOUT) as response:
+            payload = response.read(16384)
+    except (OSError, URLError, TimeoutError, ValueError):
+        return None
+    try:
+        data = json.loads(payload.decode("utf-8"))
+    except Exception:
+        return None
+    if not isinstance(data, dict) or data.get("status") != "success":
+        return None
+    country_code = str(data.get("countryCode") or "").upper()
+    org = str(data.get("org") or "").strip()
+    isp = str(data.get("isp") or "").strip()
+    provider = org or isp
+    return {
+        "ip": ip,
+        "country": str(data.get("country") or "").strip(),
+        "country_code": country_code,
+        "flag": country_code_to_flag(country_code),
+        "city": str(data.get("city") or "").strip(),
+        "asn": str(data.get("as") or "").strip(),
+        "org": org,
+        "provider": provider,
+        "source": "provider",
+        "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }
+
+
+def lookup_endpoint_ip_info(ip, allow_refresh=True):
+    ip = (ip or "").strip()
+    if not ip:
+        return _empty_endpoint_info(ip, source="local")
+    if _is_private_endpoint_ip(ip):
+        return _empty_endpoint_info(ip, source="local", provider="private")
+
+    now = time.time()
+    with IP_INFO_CACHE_LOCK:
+        cache = load_ip_info_cache()
+        cached = cache.get(ip)
+        if isinstance(cached, dict):
+            updated_at = float(cached.get("_cache_ts") or 0)
+            ttl = IP_INFO_NEGATIVE_TTL if cached.get("status") == "negative" else IP_INFO_CACHE_TTL
+            info = dict(cached.get("info") or _empty_endpoint_info(ip, source="cache"))
+            if updated_at and now - updated_at < ttl:
+                info["source"] = "cache"
+                return info
+            if not allow_refresh:
+                info["source"] = "cache"
+                return info
+
+    if not allow_refresh:
+        return _empty_endpoint_info(ip, source="cache")
+
+    info = _fetch_endpoint_ip_info(ip)
+    if info is None:
+        info = _empty_endpoint_info(ip, source="provider")
+        status = "negative"
+    else:
+        status = "ok"
+
+    with IP_INFO_CACHE_LOCK:
+        cache = load_ip_info_cache()
+        cache[ip] = {"status": status, "_cache_ts": now, "info": info}
+        try:
+            write_ip_info_cache(cache)
+        except Exception:
+            pass
+    return info
+
+
+def split_endpoint(endpoint):
+    endpoint = (endpoint or "").strip()
+    if not endpoint or endpoint in {"-", "(none)", "none"}:
+        return "", None
+    host = endpoint
+    port = None
+    if endpoint.startswith("[") and "]" in endpoint:
+        host, rest = endpoint[1:].split("]", 1)
+        if rest.startswith(":") and rest[1:].isdigit():
+            port = int(rest[1:])
+    elif ":" in endpoint and endpoint.count(":") == 1:
+        candidate_host, candidate_port = endpoint.rsplit(":", 1)
+        host = candidate_host
+        if candidate_port.isdigit():
+            port = int(candidate_port)
+    return host.strip(), port
 
 
 def _traffic_pair(values):
@@ -2280,6 +2441,7 @@ class Handler(SimpleHTTPRequestHandler):
                 display_counts[peer.get("display_name") or peer["name"]] = display_counts.get(peer.get("display_name") or peer["name"], 0) + 1
             assignments = token_assignments_for_clients() if self.is_super(auth) else {}
             rows = []
+            endpoint_lookup_budget = 1
             for peer in visible:
                 item = dict(peer)
                 row_stats = stats.get(peer["name"], {})
@@ -2309,6 +2471,15 @@ class Handler(SimpleHTTPRequestHandler):
                 item["latestHandshakeAt"] = row_stats.get("latestHandshakeAt", row_stats.get("last_handshake", 0))
                 endpoint = row_stats.get("endpoint", "")
                 item["endpoint"] = "" if endpoint in {"", "-", "(none)", "none"} else endpoint
+                endpoint_ip, endpoint_port = split_endpoint(item["endpoint"])
+                item["endpoint_ip"] = endpoint_ip
+                item["endpoint_port"] = endpoint_port
+                if endpoint_ip:
+                    item["endpoint_info"] = lookup_endpoint_ip_info(endpoint_ip, allow_refresh=endpoint_lookup_budget > 0)
+                    if item["endpoint_info"].get("source") == "provider":
+                        endpoint_lookup_budget -= 1
+                else:
+                    item["endpoint_info"] = {}
                 item["status"] = row_stats.get("status", "")
                 item["open_ports"] = item.get("p2p_ports", [])
                 item["ports_enabled"] = item.get("p2p_enabled", True)
