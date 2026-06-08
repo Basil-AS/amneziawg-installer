@@ -1995,3 +1995,217 @@ PY
         fi
     done
 }
+
+@test "web server health endpoint is cached and super-only" {
+    command -v python3 &>/dev/null || skip "python3 not available"
+    local tmp
+    tmp=$(mktemp -d)
+    mkdir -p "$tmp/web"
+    AWG_DIR="$tmp" SERVER_CONF_FILE="$tmp/awg0.conf" REPO_ROOT="$BATS_TEST_DIRNAME/.." python3 - <<'PY'
+import importlib.util
+import io
+import json
+import os
+from pathlib import Path
+
+spec = importlib.util.spec_from_file_location("panel_server", Path(os.environ["REPO_ROOT"]) / "web" / "server.py")
+server = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(server)
+super_token = "super-secret"
+user_token = "user-secret"
+server.write_tokens({
+    "super_token_hash": server.token_hash(super_token),
+    "users": {server.token_hash(user_token): {"name": "user", "clients": []}},
+})
+
+class Headers(dict):
+    def get(self, key, default=None):
+        return super().get(key, default)
+
+def make_handler(token):
+    h = object.__new__(server.Handler)
+    h.path = "/api/server-health"
+    h.client_address = ("127.0.0.1", 12345)
+    h.rfile = io.BytesIO()
+    h.wfile = io.BytesIO()
+    h.responses = []
+    h.headers_sent = []
+    h.headers = Headers({"Host": "127.0.0.1", "Authorization": f"Bearer {token}"})
+    h.send_response = lambda code: h.responses.append(code)
+    h.send_error = lambda code, *args, **kwargs: h.responses.append(code)
+    h.send_header = lambda key, value: h.headers_sent.append((key, value))
+    h.end_headers = lambda: None
+    return h
+
+handler = make_handler(user_token)
+handler.do_GET()
+assert handler.responses == [403]
+
+handler = make_handler(super_token)
+handler.do_GET()
+assert handler.responses == [200]
+payload = json.loads(handler.wfile.getvalue().decode())
+assert payload["cache_ttl_seconds"] == 5.0
+assert "cpu" in payload and "memory" in payload and "disk" in payload
+assert "network" in payload and "process" in payload
+assert payload["request"]["client_ip"] == "127.0.0.1"
+PY
+    rm -rf "$tmp"
+}
+
+@test "web health collection uses lightweight proc/sysfs sources" {
+    local server="$BATS_TEST_DIRNAME/../web/server.py"
+    grep -qF 'SERVER_HEALTH_CACHE_TTL = 5.0' "$server"
+    grep -qF '"/proc/loadavg"' "$server"
+    grep -qF '"/proc/stat"' "$server"
+    grep -qF '"/proc/meminfo"' "$server"
+    grep -qF 'os.statvfs' "$server"
+    grep -qF '"/sys/class/net"' "$server"
+    grep -qF '"/proc/sys/net/netfilter/nf_conntrack_count"' "$server"
+}
+
+@test "network tester endpoints require auth and cap payloads" {
+    command -v python3 &>/dev/null || skip "python3 not available"
+    local tmp
+    tmp=$(mktemp -d)
+    mkdir -p "$tmp/web"
+    AWG_DIR="$tmp" SERVER_CONF_FILE="$tmp/awg0.conf" REPO_ROOT="$BATS_TEST_DIRNAME/.." python3 - <<'PY'
+import importlib.util
+import io
+import json
+import os
+from pathlib import Path
+
+spec = importlib.util.spec_from_file_location("panel_server", Path(os.environ["REPO_ROOT"]) / "web" / "server.py")
+server = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(server)
+user_token = "user-secret"
+server.write_tokens({"super_token_hash": server.token_hash("super"), "users": {server.token_hash(user_token): {"name": "net user", "clients": []}}})
+
+class Headers(dict):
+    def get(self, key, default=None):
+        return super().get(key, default)
+
+def make_handler(method, path, token=None, body=b"", headers=None):
+    h = object.__new__(server.Handler)
+    h.path = path
+    h.client_address = ("127.0.0.1", 12345)
+    h.rfile = io.BytesIO(body)
+    h.wfile = io.BytesIO()
+    h.responses = []
+    h.headers_sent = []
+    values = {"Host": "127.0.0.1", "Content-Length": str(len(body))}
+    if token:
+        values["Authorization"] = f"Bearer {token}"
+    if headers:
+        values.update(headers)
+    h.headers = Headers(values)
+    h.send_response = lambda code: h.responses.append(code)
+    h.send_error = lambda code, *args, **kwargs: h.responses.append(code)
+    h.send_header = lambda key, value: h.headers_sent.append((key, value))
+    h.end_headers = lambda: None
+    return h
+
+handler = make_handler("GET", "/api/nettest/ping")
+handler.do_GET()
+assert handler.responses == [401]
+
+handler = make_handler("GET", "/api/nettest/ping?n=abc", token=user_token)
+handler.do_GET()
+assert handler.responses == [200]
+assert json.loads(handler.wfile.getvalue().decode())["nonce"] == "abc"
+
+handler = make_handler("GET", f"/api/nettest/download?size={server.NETTEST_MAX_DOWNLOAD_SIZE * 2}", token=user_token)
+handler.do_GET()
+assert handler.responses == [200]
+assert len(handler.wfile.getvalue()) == server.NETTEST_MAX_DOWNLOAD_SIZE
+
+handler = make_handler("POST", "/api/nettest/upload", token=user_token, body=b"", headers={"Content-Length": str(server.NETTEST_MAX_UPLOAD_SIZE + 1)})
+handler.do_POST()
+assert handler.responses == [413]
+PY
+    rm -rf "$tmp"
+}
+
+@test "network tester stores sanitized reports without raw bearer token" {
+    command -v python3 &>/dev/null || skip "python3 not available"
+    local tmp
+    tmp=$(mktemp -d)
+    mkdir -p "$tmp/web"
+    AWG_DIR="$tmp" AWG_WEB_BIND=127.0.0.1 SERVER_CONF_FILE="$tmp/awg0.conf" REPO_ROOT="$BATS_TEST_DIRNAME/.." python3 - <<'PY'
+import importlib.util
+import io
+import json
+import os
+from pathlib import Path
+
+spec = importlib.util.spec_from_file_location("panel_server", Path(os.environ["REPO_ROOT"]) / "web" / "server.py")
+server = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(server)
+raw_token = "raw-user-token"
+user_hash = server.token_hash(raw_token)
+server.write_tokens({"super_token_hash": server.token_hash("super"), "users": {user_hash: {"name": "Roma", "clients": []}}})
+body = {
+    "network_type": "mobile",
+    "comment": "home LTE",
+    "user_agent": "test-browser",
+    "browser_connection": {"effectiveType": "4g"},
+    "latency": {"samples": 30, "ok": 29, "lost": 1, "loss_percent": 3.3, "avg_ms": 43, "jitter_ms": 7, "stall_events": 1},
+    "download_probe": {"ok": True, "bytes": 262144, "duration_ms": 300, "mbps": 7.0},
+    "upload_probe": {"ok": True, "bytes": 131072, "duration_ms": 250, "mbps": 4.2},
+}
+payload = json.dumps(body).encode()
+
+class Headers(dict):
+    def get(self, key, default=None):
+        return super().get(key, default)
+
+h = object.__new__(server.Handler)
+h.path = "/api/nettest/report"
+h.client_address = ("127.0.0.1", 12345)
+h.rfile = io.BytesIO(payload)
+h.wfile = io.BytesIO()
+h.responses = []
+h.headers_sent = []
+h.headers = Headers({
+    "Host": "127.0.0.1",
+    "Authorization": f"Bearer {raw_token}",
+    "Content-Length": str(len(payload)),
+    "X-Forwarded-For": "46.34.133.234",
+})
+h.send_response = lambda code: h.responses.append(code)
+h.send_error = lambda code, *args, **kwargs: h.responses.append(code)
+h.send_header = lambda key, value: h.headers_sent.append((key, value))
+h.end_headers = lambda: None
+h.do_POST()
+assert h.responses == [200]
+out = json.loads(h.wfile.getvalue().decode())
+assert out["filename"].startswith("nettest_mobile_")
+report_path = Path(os.environ["AWG_DIR"]) / "web" / "nettest_reports" / out["filename"]
+assert report_path.exists()
+assert oct(report_path.parent.stat().st_mode & 0o777) == "0o700"
+text = report_path.read_text()
+assert raw_token not in text
+saved = json.loads(text)
+assert saved["network_type"] == "mobile"
+assert saved["token_fp"] == user_hash[:8]
+assert saved["token_alias"] == "Roma"
+assert saved["client_ip"] == "46.34.133.234"
+assert saved["assessment"]["quality"] == "warning"
+PY
+    rm -rf "$tmp"
+}
+
+@test "web app exposes server health and network tester UI" {
+    local app="$BATS_TEST_DIRNAME/../web/app.js"
+    grep -qF 'Server Health' "$app"
+    grep -qF 'Network Tester' "$app"
+    grep -qF '/api/server-health' "$app"
+    grep -qF '/api/nettest/ping' "$app"
+    grep -qF '/api/nettest/download?size=262144' "$app"
+    grep -qF '/api/nettest/upload' "$app"
+    grep -qF '/api/nettest/report' "$app"
+    grep -qF 'data-nettest-type="mobile"' "$app"
+    grep -qF 'data-nettest-type="home"' "$app"
+    grep -qF 'NETTEST_PING_SAMPLES = 30' "$app"
+}

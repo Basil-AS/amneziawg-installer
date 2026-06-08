@@ -32,6 +32,7 @@ ACCESS_POLICY_FILE = WEB_DIR / "access_policy.json"
 TRAFFIC_FILE = WEB_DIR / "traffic_history.json"
 CLIENT_METADATA_FILE = WEB_DIR / "client_metadata.json"
 IP_INFO_CACHE_FILE = WEB_DIR / "ip_cache.json"
+NETTEST_REPORT_DIR = WEB_DIR / "nettest_reports"
 LEGACY_TOKEN_FILE = WEB_DIR / "auth_token"
 NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 TOKEN_HASH_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -68,6 +69,22 @@ STATS_CACHE_TS = 0.0
 STATS_CACHE_INFLIGHT = False
 STATS_CACHE_TTL = 3.0
 STATS_CACHE_WAIT_TIMEOUT = 2.0
+SERVER_PROCESS_STARTED_AT = time.time()
+SERVER_HEALTH_CACHE_TTL = 5.0
+SERVER_HEALTH_LOCK = threading.Lock()
+SERVER_HEALTH_CACHE = None
+SERVER_HEALTH_CACHE_TS = 0.0
+SERVER_HEALTH_PREV_CPU = None
+SERVER_HEALTH_PREV_NET = {}
+NETTEST_LOCK = threading.Lock()
+NETTEST_LAST_REPORT = {}
+NETTEST_REPORT_TIMES = {}
+NETTEST_REPORT_COOLDOWN = 60.0
+NETTEST_REPORTS_PER_HOUR = 12
+NETTEST_DEFAULT_DOWNLOAD_SIZE = 256 * 1024
+NETTEST_MAX_DOWNLOAD_SIZE = 1024 * 1024
+NETTEST_MAX_UPLOAD_SIZE = 512 * 1024
+NETTEST_MAX_REPORT_JSON = 256 * 1024
 IP_INFO_CACHE_TTL = 7 * 24 * 3600
 IP_INFO_NEGATIVE_TTL = 3600
 IP_INFO_LOOKUP_TIMEOUT = 2.0
@@ -634,6 +651,499 @@ def run_manage(*args, timeout=60, extra_env=None):
         timeout=timeout,
         env=env,
     )
+
+
+def read_text_file(path, default=""):
+    try:
+        return Path(path).read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeDecodeError):
+        return default
+
+
+def read_int_file(path):
+    try:
+        return int(read_text_file(path, ""))
+    except (TypeError, ValueError):
+        return None
+
+
+def status_from_percent(value, warn, critical):
+    if value is None:
+        return "unknown"
+    if value >= critical:
+        return "critical"
+    if value >= warn:
+        return "warn"
+    return "ok"
+
+
+def status_from_available_percent(value, warn_below, critical_below):
+    if value is None:
+        return "unknown"
+    if value <= critical_below:
+        return "critical"
+    if value <= warn_below:
+        return "warn"
+    return "ok"
+
+
+def combine_status(*statuses):
+    order = {"unknown": 0, "ok": 1, "warn": 2, "critical": 3}
+    reverse = {0: "unknown", 1: "ok", 2: "warn", 3: "critical"}
+    return reverse[max(order.get(status, 0) for status in statuses if status)]
+
+
+def read_loadavg():
+    raw = read_text_file("/proc/loadavg")
+    parts = raw.split()
+    try:
+        one, five, fifteen = (float(parts[0]), float(parts[1]), float(parts[2]))
+    except (IndexError, ValueError):
+        one = five = fifteen = 0.0
+    return {
+        "one": one,
+        "five": five,
+        "fifteen": fifteen,
+        "cpu_count": os.cpu_count() or 1,
+    }
+
+
+def read_cpu_times():
+    raw = read_text_file("/proc/stat")
+    first = raw.splitlines()[0].split() if raw else []
+    if not first or first[0] != "cpu":
+        return None
+    values = []
+    for item in first[1:]:
+        try:
+            values.append(int(item))
+        except ValueError:
+            values.append(0)
+    if len(values) < 4:
+        return None
+    idle = values[3] + (values[4] if len(values) > 4 else 0)
+    return {"total": sum(values), "idle": idle}
+
+
+def read_meminfo():
+    data = {}
+    for line in read_text_file("/proc/meminfo").splitlines():
+        if ":" not in line:
+            continue
+        key, rest = line.split(":", 1)
+        parts = rest.strip().split()
+        if not parts:
+            continue
+        try:
+            data[key] = int(parts[0]) * 1024
+        except ValueError:
+            continue
+    total = data.get("MemTotal", 0)
+    available = data.get("MemAvailable", 0)
+    swap_total = data.get("SwapTotal", 0)
+    swap_free = data.get("SwapFree", 0)
+    used_percent = (100.0 * (total - available) / total) if total else None
+    available_percent = (100.0 * available / total) if total else None
+    swap_used_percent = (100.0 * (swap_total - swap_free) / swap_total) if swap_total else 0.0
+    return {
+        "total_bytes": total,
+        "available_bytes": available,
+        "used_percent": used_percent,
+        "swap_total_bytes": swap_total,
+        "swap_free_bytes": swap_free,
+        "swap_used_percent": swap_used_percent,
+        "status": status_from_available_percent(available_percent, 20.0, 10.0),
+    }
+
+
+def disk_health(path="/"):
+    try:
+        stats = os.statvfs(path)
+    except OSError:
+        return {"path": path, "status": "unknown"}
+    total = stats.f_blocks * stats.f_frsize
+    free = stats.f_bavail * stats.f_frsize
+    used_percent = (100.0 * (total - free) / total) if total else None
+    return {
+        "path": path,
+        "total_bytes": total,
+        "free_bytes": free,
+        "used_percent": used_percent,
+        "status": status_from_percent(used_percent, 80.0, 90.0),
+    }
+
+
+def detect_wan_iface():
+    route = read_text_file("/proc/net/route")
+    for line in route.splitlines()[1:]:
+        parts = line.split()
+        if len(parts) >= 2 and parts[1] == "00000000":
+            return parts[0]
+    try:
+        names = sorted(path.name for path in Path("/sys/class/net").iterdir())
+    except OSError:
+        return ""
+    skip_prefixes = ("lo", "awg", "wg", "docker", "br-", "veth")
+    for name in names:
+        if not name.startswith(skip_prefixes):
+            return name
+    return ""
+
+
+def detect_vpn_iface():
+    base = Path("/sys/class/net")
+    for candidate in ("awg0", "wg0"):
+        if (base / candidate).exists():
+            return candidate
+    try:
+        for path in sorted(base.iterdir()):
+            if "awg" in path.name.lower() or "wg" in path.name.lower():
+                return path.name
+    except OSError:
+        pass
+    return ""
+
+
+def read_iface_stats(iface):
+    if not iface:
+        return None
+    stats_dir = Path("/sys/class/net") / iface / "statistics"
+    if not stats_dir.exists():
+        return None
+    keys = ("rx_bytes", "tx_bytes", "rx_dropped", "tx_dropped", "rx_errors", "tx_errors")
+    out = {}
+    for key in keys:
+        value = read_int_file(stats_dir / key)
+        out[key] = 0 if value is None else value
+    out["operstate"] = read_text_file(Path("/sys/class/net") / iface / "operstate", "unknown")
+    return out
+
+
+def iface_delta(name, current):
+    global SERVER_HEALTH_PREV_NET
+    previous = SERVER_HEALTH_PREV_NET.get(name) if current else None
+    SERVER_HEALTH_PREV_NET[name] = dict(current or {})
+    if not current or not previous:
+        return {"drops_delta": 0, "errors_delta": 0}
+    drop_keys = ("rx_dropped", "tx_dropped")
+    error_keys = ("rx_errors", "tx_errors")
+    return {
+        "drops_delta": sum(max(0, int(current.get(k, 0)) - int(previous.get(k, 0))) for k in drop_keys),
+        "errors_delta": sum(max(0, int(current.get(k, 0)) - int(previous.get(k, 0))) for k in error_keys),
+    }
+
+
+def conntrack_health():
+    count = read_int_file("/proc/sys/net/netfilter/nf_conntrack_count")
+    max_count = read_int_file("/proc/sys/net/netfilter/nf_conntrack_max")
+    if count is None or max_count in (None, 0):
+        return {"available": False, "status": "unknown"}
+    used_percent = 100.0 * count / max_count
+    return {
+        "available": True,
+        "count": count,
+        "max": max_count,
+        "used_percent": used_percent,
+        "status": status_from_percent(used_percent, 60.0, 85.0),
+    }
+
+
+def process_health():
+    status = read_text_file("/proc/self/status")
+    values = {}
+    for line in status.splitlines():
+        if ":" not in line:
+            continue
+        key, rest = line.split(":", 1)
+        values[key] = rest.strip()
+    def kb_value(key):
+        raw = values.get(key, "0").split()
+        try:
+            return int(raw[0]) * 1024
+        except (IndexError, ValueError):
+            return 0
+    try:
+        fd_count = len(list(Path("/proc/self/fd").iterdir()))
+    except OSError:
+        fd_count = 0
+    try:
+        threads = int(values.get("Threads", "0").split()[0])
+    except (IndexError, ValueError):
+        threads = 0
+    return {
+        "rss_bytes": kb_value("VmRSS"),
+        "vm_size_bytes": kb_value("VmSize"),
+        "fd_count": fd_count,
+        "threads": threads,
+        "uptime_seconds": max(0, int(time.time() - SERVER_PROCESS_STARTED_AT)),
+        "status": "ok",
+    }
+
+
+def collect_server_health(force=False):
+    global SERVER_HEALTH_CACHE, SERVER_HEALTH_CACHE_TS, SERVER_HEALTH_PREV_CPU
+    now = time.time()
+    with SERVER_HEALTH_LOCK:
+        if not force and SERVER_HEALTH_CACHE and now - SERVER_HEALTH_CACHE_TS < SERVER_HEALTH_CACHE_TTL:
+            return SERVER_HEALTH_CACHE
+
+        load = read_loadavg()
+        cpu_times = read_cpu_times()
+        usage_percent = None
+        if cpu_times and SERVER_HEALTH_PREV_CPU:
+            total_delta = max(0, cpu_times["total"] - SERVER_HEALTH_PREV_CPU["total"])
+            idle_delta = max(0, cpu_times["idle"] - SERVER_HEALTH_PREV_CPU["idle"])
+            if total_delta:
+                usage_percent = max(0.0, min(100.0, 100.0 * (1.0 - idle_delta / total_delta)))
+        if cpu_times:
+            SERVER_HEALTH_PREV_CPU = cpu_times
+
+        memory = read_meminfo()
+        disk = disk_health("/")
+        conntrack = conntrack_health()
+        process = process_health()
+        wan_iface = detect_wan_iface()
+        vpn_iface = detect_vpn_iface()
+        wan_stats = read_iface_stats(wan_iface)
+        vpn_stats = read_iface_stats(vpn_iface)
+        wan_delta = iface_delta(wan_iface or "wan", wan_stats)
+        vpn_delta = iface_delta(vpn_iface or "vpn", vpn_stats)
+        drops_delta = wan_delta["drops_delta"] + vpn_delta["drops_delta"]
+        errors_delta = wan_delta["errors_delta"] + vpn_delta["errors_delta"]
+        network_status = "warn" if drops_delta or errors_delta else "ok"
+        awg_status = "ok" if vpn_stats and vpn_stats.get("operstate") in {"up", "unknown"} else ("unknown" if not vpn_iface else "warn")
+        cpu_status = status_from_percent(usage_percent, 75.0, 90.0) if usage_percent is not None else "ok"
+        load_ratio = load["one"] / max(1, load["cpu_count"])
+        if load_ratio >= 4.0:
+            load_status = "critical"
+        elif load_ratio >= 2.0:
+            load_status = "warn"
+        else:
+            load_status = "ok"
+        overall = combine_status(cpu_status, load_status, memory["status"], disk["status"], conntrack["status"], network_status, awg_status, process["status"])
+        payload = {
+            "ok": overall in {"ok", "unknown"},
+            "timestamp": utc_now_iso(),
+            "cache_ttl_seconds": SERVER_HEALTH_CACHE_TTL,
+            "status": overall,
+            "load": {**load, "status": load_status},
+            "cpu": {"usage_percent": usage_percent, "status": cpu_status},
+            "memory": memory,
+            "disk": disk,
+            "network": {
+                "wan_iface": wan_iface,
+                "vpn_iface": vpn_iface,
+                "wan": wan_stats or {},
+                "vpn": vpn_stats or {},
+                "wan_drops_delta": wan_delta["drops_delta"],
+                "vpn_drops_delta": vpn_delta["drops_delta"],
+                "drops_delta": drops_delta,
+                "errors_delta": errors_delta,
+                "status": network_status,
+            },
+            "conntrack": conntrack,
+            "process": process,
+            "services": {
+                "python_backend": {"status": "ok", "listener": "127.0.0.1:8443"},
+                "nginx_edge": {"status": "unknown", "listener": "0.0.0.0:443"},
+                "vpn_interface": {"status": awg_status, "name": vpn_iface},
+            },
+        }
+        SERVER_HEALTH_CACHE = payload
+        SERVER_HEALTH_CACHE_TS = now
+        return payload
+
+
+def json_body_from_handler(handler, max_size):
+    try:
+        size = int(handler.headers.get("Content-Length", "0") or 0)
+    except (TypeError, ValueError):
+        raise ValueError("invalid content length")
+    if size < 0:
+        raise ValueError("invalid content length")
+    if size > max_size:
+        handler.send_error(HTTPStatus.REQUEST_ENTITY_TOO_LARGE)
+        raise ValueError("payload too large")
+    raw = handler.rfile.read(size) if size else b"{}"
+    try:
+        value = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        raise ValueError("invalid json")
+    if not isinstance(value, dict):
+        raise ValueError("invalid json")
+    return value
+
+
+def token_alias_for_auth(auth):
+    if not isinstance(auth, dict) or auth.get("role") == "super":
+        return "super"
+    try:
+        record = load_tokens().get("users", {}).get(auth.get("hash"), {})
+    except Exception:
+        record = {}
+    if isinstance(record, dict):
+        return clean_token_name(record.get("name", ""))
+    return ""
+
+
+def request_client_context(handler):
+    policy = load_access_policy()
+    remote_addr = handler.client_address[0] if getattr(handler, "client_address", None) else ""
+    return client_ip_context(remote_addr, handler.headers, policy)
+
+
+def clean_network_type(value):
+    value = str(value or "").strip().lower()
+    if value not in {"mobile", "home"}:
+        raise ValueError("invalid network type")
+    return value
+
+
+def clean_report_comment(value):
+    value = str(value or "").strip()
+    value = re.sub(r"[\x00-\x1f\x7f]+", " ", value)
+    return value[:240]
+
+
+def nettest_rate_key(auth, client_ip):
+    fp = auth_fingerprint(auth)
+    return fp or hashlib.sha256(str(client_ip or "unknown").encode("utf-8")).hexdigest()[:8]
+
+
+def check_nettest_report_rate(auth, client_ip, now=None):
+    now = time.time() if now is None else now
+    key = nettest_rate_key(auth, client_ip)
+    with NETTEST_LOCK:
+        recent = [stamp for stamp in NETTEST_REPORT_TIMES.get(key, []) if now - stamp < 3600]
+        last = NETTEST_LAST_REPORT.get(key, 0)
+        if now - last < NETTEST_REPORT_COOLDOWN or len(recent) >= NETTEST_REPORTS_PER_HOUR:
+            NETTEST_REPORT_TIMES[key] = recent
+            return False
+        recent.append(now)
+        NETTEST_LAST_REPORT[key] = now
+        NETTEST_REPORT_TIMES[key] = recent
+        return True
+
+
+def nettest_context_payload():
+    mtu = None
+    keepalive = None
+    try:
+        text = SERVER_CONF.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        text = ""
+    mtu_match = re.search(r"(?im)^\s*MTU\s*=\s*(\d+)\s*$", text)
+    keepalive_match = re.search(r"(?im)^\s*PersistentKeepalive\s*=\s*(\d+)\s*$", text)
+    if mtu_match:
+        mtu = int(mtu_match.group(1))
+    if keepalive_match:
+        keepalive = int(keepalive_match.group(1))
+    return {
+        "preset": "mobile" if mtu == 1280 or keepalive == 25 else "default",
+        "mtu": mtu,
+        "persistent_keepalive": keepalive,
+        "route_mode": "amnezia-routes",
+        "ipv6_mode": "routed",
+        "p2p_ports_per_client": 3,
+    }
+
+
+def nettest_assessment(report):
+    latency = report.get("latency") if isinstance(report.get("latency"), dict) else {}
+    download_probe = report.get("download_probe") if isinstance(report.get("download_probe"), dict) else {}
+    upload_probe = report.get("upload_probe") if isinstance(report.get("upload_probe"), dict) else {}
+    loss = float(latency.get("loss_percent") or 0)
+    jitter = float(latency.get("jitter_ms") or 0)
+    stalls = int(latency.get("stall_events") or 0)
+    quality = "good"
+    summary = "Parameters look OK"
+    recommendations = []
+    if loss > 10 or stalls >= 3:
+        quality = "poor"
+        summary = "Repeated timeout bursts detected"
+    elif loss >= 2 or jitter >= 30 or stalls:
+        quality = "warning"
+        summary = "Burst loss or jitter detected"
+    if download_probe.get("ok") is False and upload_probe.get("ok") is not False:
+        recommendations.append("Download probe is weak while upload is OK; check client receive path and tunnel stability.")
+    if upload_probe.get("ok") is False and download_probe.get("ok") is not False:
+        recommendations.append("Upload probe is weak while download is OK; check client uplink and local network.")
+    if loss > 0 or stalls:
+        recommendations.append("Run ping to VPN server IP and 1.1.1.1 during the same stall window.")
+    if not recommendations:
+        recommendations.append("No obvious browser-side issue detected.")
+    return {"quality": quality, "summary": summary, "recommendations": recommendations[:4]}
+
+
+def save_nettest_report(auth, handler, body):
+    network_type = clean_network_type(body.get("network_type"))
+    client_ctx = request_client_context(handler)
+    client_ip = client_ctx.get("client_ip") or ""
+    if not check_nettest_report_rate(auth, client_ip):
+        raise ValueError("nettest report rate limited")
+    token_fp = auth_fingerprint(auth) or hashlib.sha256(client_ip.encode("utf-8")).hexdigest()[:8]
+    created_at = utc_now_iso()
+    stamp = time.strftime("%Y%m%d-%H%M%S", time.gmtime())
+    NETTEST_REPORT_DIR.mkdir(parents=True, exist_ok=True)
+    os.chmod(NETTEST_REPORT_DIR, 0o700)
+    browser = body.get("browser_connection") if isinstance(body.get("browser_connection"), dict) else {}
+    latency = body.get("latency") if isinstance(body.get("latency"), dict) else {}
+    download_probe = body.get("download_probe") if isinstance(body.get("download_probe"), dict) else {}
+    upload_probe = body.get("upload_probe") if isinstance(body.get("upload_probe"), dict) else {}
+    report = {
+        "version": 1,
+        "created_at": created_at,
+        "network_type": network_type,
+        "comment": clean_report_comment(body.get("comment", "")),
+        "token_fp": token_fp,
+        "token_alias": token_alias_for_auth(auth),
+        "token_role": auth.get("role"),
+        "client_ip": client_ip,
+        "socket_remote_ip": client_ctx.get("socket_remote_ip"),
+        "trusted_proxy_used": bool(client_ctx.get("trusted_proxy_used")),
+        "user_agent": str(body.get("user_agent") or handler.headers.get("User-Agent", ""))[:500],
+        "browser_connection": browser,
+        "latency": latency,
+        "download_probe": download_probe,
+        "upload_probe": upload_probe,
+        "context": nettest_context_payload(),
+    }
+    report["assessment"] = nettest_assessment(report)
+    filename = f"nettest_{network_type}_{stamp}_{token_fp}.json"
+    path = NETTEST_REPORT_DIR / filename
+    tmp = NETTEST_REPORT_DIR / f".{filename}.tmp.{os.getpid()}"
+    tmp.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, path)
+    os.chmod(path, 0o600)
+    audit_log(f"Saved network test report type={network_type} actor_role={auth.get('role')} actor_fp={token_fp} client_ip={client_ip}")
+    return {"ok": True, "filename": filename, "report": report}
+
+
+def list_nettest_reports(limit=30):
+    if not NETTEST_REPORT_DIR.exists():
+        return []
+    rows = []
+    for path in sorted(NETTEST_REPORT_DIR.glob("nettest_*.json"), key=lambda item: item.stat().st_mtime, reverse=True)[:limit]:
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if not isinstance(data, dict):
+            continue
+        rows.append({
+            "filename": path.name,
+            "created_at": data.get("created_at"),
+            "network_type": data.get("network_type"),
+            "token_fp": data.get("token_fp"),
+            "token_alias": data.get("token_alias"),
+            "client_ip": data.get("client_ip"),
+            "assessment": data.get("assessment", {}),
+            "latency": data.get("latency", {}),
+            "download_probe": data.get("download_probe", {}),
+            "upload_probe": data.get("upload_probe", {}),
+        })
+    return rows
 
 
 def token_hash(token):
@@ -2417,6 +2927,51 @@ class Handler(SimpleHTTPRequestHandler):
                 "repository_url": REPOSITORY_URL,
             })
             return
+        if u.path == "/api/server-health":
+            if not self.require_super(auth):
+                return
+            health = json.loads(json.dumps(collect_server_health()))
+            client_ctx = request_client_context(self)
+            health.setdefault("services", {}).setdefault("nginx_edge", {})["status"] = "ok" if client_ctx.get("trusted_proxy_used") else "unknown"
+            health["request"] = {
+                "host": split_host(self.headers.get("Host", "")),
+                "client_ip": client_ctx.get("client_ip"),
+                "socket_remote_ip": client_ctx.get("socket_remote_ip"),
+                "proxy_ip": client_ctx.get("proxy_ip"),
+                "trusted_proxy_used": bool(client_ctx.get("trusted_proxy_used")),
+            }
+            self.send_json(health)
+            return
+        if u.path == "/api/nettest/context":
+            self.send_json(nettest_context_payload())
+            return
+        if u.path == "/api/nettest/ping":
+            query = parse_qs(u.query)
+            nonce = str((query.get("n") or [""])[0])[:64]
+            self.send_json({"ok": True, "server_time": utc_now_iso(), "nonce": nonce})
+            return
+        if u.path == "/api/nettest/download":
+            query = parse_qs(u.query)
+            try:
+                size = int((query.get("size") or [str(NETTEST_DEFAULT_DOWNLOAD_SIZE)])[0])
+            except (TypeError, ValueError):
+                size = NETTEST_DEFAULT_DOWNLOAD_SIZE
+            size = max(1, min(size, NETTEST_MAX_DOWNLOAD_SIZE))
+            pattern = b"amneziawg-nettest-" * 1024
+            data = (pattern * ((size // len(pattern)) + 1))[:size]
+            self.send_response(200)
+            self.send_header("Content-Type", "application/octet-stream")
+            self.send_header("Content-Length", str(len(data)))
+            self.send_security_headers()
+            if not self.finish_response_headers():
+                return
+            self.write_response_body(data)
+            return
+        if u.path == "/api/nettest/reports":
+            if not self.require_super(auth):
+                return
+            self.send_json({"reports": list_nettest_reports()})
+            return
         if u.path == "/api/help/clients":
             self.send_json({"groups": HELP_CLIENT_GROUPS})
             return
@@ -2552,6 +3107,36 @@ class Handler(SimpleHTTPRequestHandler):
             return
         u = urlparse(self.path)
         try:
+            if u.path == "/api/nettest/upload":
+                try:
+                    size = int(self.headers.get("Content-Length", "0") or 0)
+                except (TypeError, ValueError):
+                    raise ValueError("invalid content length")
+                if size < 0:
+                    raise ValueError("invalid content length")
+                if size > NETTEST_MAX_UPLOAD_SIZE:
+                    self.send_error(HTTPStatus.REQUEST_ENTITY_TOO_LARGE)
+                    raise ValueError("payload too large")
+                remaining = size
+                received = 0
+                while remaining > 0:
+                    chunk = self.rfile.read(min(remaining, 65536))
+                    if not chunk:
+                        break
+                    received += len(chunk)
+                    remaining -= len(chunk)
+                self.send_json({"ok": True, "bytes": received, "max_bytes": NETTEST_MAX_UPLOAD_SIZE})
+                return
+            if u.path == "/api/nettest/report":
+                body = json_body_from_handler(self, NETTEST_MAX_REPORT_JSON)
+                try:
+                    self.send_json(save_nettest_report(auth, self, body))
+                except ValueError as exc:
+                    if str(exc) == "nettest report rate limited":
+                        self.send_json({"error": "rate limited"}, HTTPStatus.TOO_MANY_REQUESTS)
+                        return
+                    raise
+                return
             body = self.json_body()
             if u.path == "/api/clients":
                 display_name = safe_name(body.get("name", ""))

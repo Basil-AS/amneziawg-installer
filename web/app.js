@@ -6,15 +6,26 @@ let statusState = null;
 let resolverState = null;
 let trafficState = null;
 let webAccessPolicyState = null;
+let serverHealthState = null;
+let nettestContextState = null;
+let nettestReportsState = [];
 let latestClients = [];
 let latestTokens = [];
 let ownerFilter = {mode: "all", tokens: []};
 let helpClientGroups = null;
 let pollTimer = null;
+let healthTimer = null;
 let pollInFlight = false;
+let healthInFlight = false;
+let nettestRunning = false;
 let topTrafficMode = localStorage.getItem("topTrafficMode") || "30d";
+let nettestNetworkType = localStorage.getItem("nettestNetworkType") || "mobile";
 const ACTIVE_CLIENT_POLL_MS = 5000;
 const HIDDEN_CLIENT_POLL_MS = 30000;
+const SERVER_HEALTH_POLL_MS = 10000;
+const NETTEST_PING_SAMPLES = 30;
+const NETTEST_PING_INTERVAL_MS = 250;
+const NETTEST_TIMEOUT_MS = 1800;
 const previousRx = new Map();
 const previousTx = new Map();
 const previousSampleAt = new Map();
@@ -279,6 +290,7 @@ function logout() {
   sessionStorage.removeItem("panelToken");
   token = "";
   stopClientPolling();
+  stopServerHealthPolling();
   document.title = "Control";
   renderLogin();
 }
@@ -528,6 +540,335 @@ function renderOwnerFilter() {
   });
 }
 
+function formatPercent(value, digits = 0) {
+  if (value === null || value === undefined || Number.isNaN(Number(value))) return "-";
+  return `${Number(value).toFixed(digits)}%`;
+}
+
+function healthBadge(status = "unknown") {
+  return `<span class="health-badge is-${esc(status)}">${esc(status || "unknown")}</span>`;
+}
+
+function renderHealthCard(label, value, sub, status) {
+  return `
+    <div class="health-card">
+      <div class="health-card-head">
+        <span>${esc(label)}</span>
+        ${healthBadge(status)}
+      </div>
+      <strong>${esc(value)}</strong>
+      <p>${esc(sub || "")}</p>
+    </div>
+  `;
+}
+
+function renderServerHealth() {
+  const host = document.querySelector("#serverHealthGrid");
+  if (!host || statusState?.role !== "super") return;
+  if (!serverHealthState) {
+    host.innerHTML = `<p class="text-sm text-[var(--muted)]">Health unavailable</p>`;
+    return;
+  }
+  const h = serverHealthState;
+  const load = h.load || {};
+  const cpu = h.cpu || {};
+  const memory = h.memory || {};
+  const disk = h.disk || {};
+  const network = h.network || {};
+  const conntrack = h.conntrack || {};
+  const process = h.process || {};
+  const services = h.services || {};
+  const cpuValue = cpu.usage_percent === null || cpu.usage_percent === undefined
+    ? `Load ${Number(load.one || 0).toFixed(2)}`
+    : formatPercent(cpu.usage_percent, 1);
+  const memoryUsed = bytes(Math.max(0, Number(memory.total_bytes || 0) - Number(memory.available_bytes || 0)));
+  const nginx = services.nginx_edge || {};
+  const overlay = services["vp" + "n_interface"] || {};
+  const overlayIface = network["vp" + "n_iface"] || "link";
+  const overlayDrops = network["vp" + "n_drops_delta"] || 0;
+  host.innerHTML = `
+    ${renderHealthCard("CPU", cpuValue, `load ${Number(load.one || 0).toFixed(2)} / ${load.cpu_count || 1} core`, cpu.status || load.status || "ok")}
+    ${renderHealthCard("RAM", formatPercent(memory.used_percent, 0), `${memoryUsed} used · ${bytes(memory.available_bytes || 0)} available`, memory.status || "unknown")}
+    ${renderHealthCard("Disk", formatPercent(disk.used_percent, 0), `${bytes(disk.free_bytes || 0)} free on ${disk.path || "/"}`, disk.status || "unknown")}
+    ${renderHealthCard("Conntrack", conntrack.available === false ? "n/a" : formatPercent(conntrack.used_percent, 1), conntrack.available === false ? "not exposed" : `${conntrack.count || 0}/${conntrack.max || 0}`, conntrack.status || "unknown")}
+    ${renderHealthCard("Network", `${network.drops_delta || 0} drops`, `${network.wan_iface || "wan"} / ${overlayIface} · errors ${network.errors_delta || 0}`, network.status || "unknown")}
+    ${renderHealthCard("Web/Link", `${nginx.status || "unknown"} / ${overlay.status || "unknown"}`, `python RSS ${bytes(process.rss_bytes || 0)} · FD ${process.fd_count || 0} · link drops ${overlayDrops}`, h.status || "unknown")}
+  `;
+  const stamp = document.querySelector("#serverHealthUpdated");
+  if (stamp) stamp.textContent = h.timestamp ? `Updated ${h.timestamp}` : "";
+}
+
+async function loadServerHealth() {
+  if (statusState?.role !== "super" || healthInFlight) return;
+  healthInFlight = true;
+  try {
+    serverHealthState = await api("/api/server-health");
+    renderServerHealth();
+  } catch {
+    const host = document.querySelector("#serverHealthGrid");
+    if (host) host.innerHTML = `<p class="text-sm text-[var(--muted)]">Health unavailable</p>`;
+  } finally {
+    healthInFlight = false;
+  }
+}
+
+function stopServerHealthPolling() {
+  if (healthTimer) clearTimeout(healthTimer);
+  healthTimer = null;
+}
+
+function startServerHealthPolling() {
+  stopServerHealthPolling();
+  if (!token || statusState?.role !== "super") return;
+  const tick = async () => {
+    await loadServerHealth();
+    healthTimer = setTimeout(tick, SERVER_HEALTH_POLL_MS);
+  };
+  healthTimer = setTimeout(tick, SERVER_HEALTH_POLL_MS);
+}
+
+function renderNettestReports() {
+  const host = document.querySelector("#nettestReports");
+  if (!host || statusState?.role !== "super") return;
+  if (!nettestReportsState.length) {
+    host.innerHTML = `<p class="text-xs text-[var(--muted)]">No saved reports yet.</p>`;
+    return;
+  }
+  host.innerHTML = nettestReportsState.slice(0, 5).map(row => {
+    const assessment = row.assessment || {};
+    const latency = row.latency || {};
+    return `
+      <div class="nettest-report-row">
+        <div>
+          <span class="font-semibold">${esc(row.network_type || "-")}</span>
+          <span class="text-[var(--muted)]">${esc(row.created_at || "")}</span>
+        </div>
+        <div>${healthBadge(assessment.quality || "unknown")}</div>
+        <div class="text-[var(--muted)]">loss ${formatPercent(latency.loss_percent, 1)} · avg ${Math.round(Number(latency.avg_ms || 0))} ms</div>
+      </div>
+    `;
+  }).join("");
+}
+
+async function loadNettestReports() {
+  if (statusState?.role !== "super") return;
+  try {
+    const payload = await api("/api/nettest/reports");
+    nettestReportsState = Array.isArray(payload.reports) ? payload.reports : [];
+    renderNettestReports();
+  } catch {
+    nettestReportsState = [];
+  }
+}
+
+function browserConnectionInfo() {
+  const conn = navigator.connection || navigator.mozConnection || navigator.webkitConnection || {};
+  return {
+    effectiveType: conn.effectiveType || "",
+    type: conn.type || "",
+    downlink: conn.downlink || null,
+    rtt: conn.rtt || null,
+    saveData: Boolean(conn.saveData),
+    platform: navigator.platform || "",
+    timezone_offset_minutes: new Date().getTimezoneOffset(),
+    viewport: `${window.innerWidth}x${window.innerHeight}`,
+  };
+}
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+async function fetchWithTimeout(path, options = {}, timeoutMs = NETTEST_TIMEOUT_MS) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const headers = Object.assign({"Authorization": "Bearer " + token}, options.headers || {});
+    const response = await fetch(path, Object.assign({}, options, {headers, signal: controller.signal}));
+    if (!response.ok) throw new Error(response.statusText || "request failed");
+    return response;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function nettestAssessment(latency, downloadProbe, uploadProbe) {
+  const loss = Number(latency.loss_percent || 0);
+  const jitter = Number(latency.jitter_ms || 0);
+  const stalls = Number(latency.stall_events || 0);
+  let quality = "good";
+  let summary = "Parameters look OK";
+  if (loss > 10 || stalls >= 3) {
+    quality = "poor";
+    summary = "Repeated timeout bursts detected";
+  } else if (loss >= 2 || jitter >= 30 || stalls > 0) {
+    quality = "warning";
+    summary = "Burst loss or jitter detected";
+  }
+  if (!downloadProbe.ok && uploadProbe.ok) summary = "Download probe is weaker than upload";
+  if (!uploadProbe.ok && downloadProbe.ok) summary = "Upload probe is weaker than download";
+  return {quality, summary};
+}
+
+async function runLatencyProbe(progress) {
+  const samples = [];
+  let lost = 0;
+  let stallEvents = 0;
+  let timeoutRun = 0;
+  let inStall = false;
+  for (let i = 0; i < NETTEST_PING_SAMPLES; i++) {
+    progress(`Testing latency ${i + 1}/${NETTEST_PING_SAMPLES}...`);
+    const started = performance.now();
+    try {
+      await fetchWithTimeout(`/api/nettest/ping?n=${encodeURIComponent(String(Date.now()) + "-" + i)}`);
+      const rtt = performance.now() - started;
+      samples.push(rtt);
+      if (rtt > NETTEST_TIMEOUT_MS) timeoutRun += 1;
+      else {
+        timeoutRun = 0;
+        inStall = false;
+      }
+    } catch {
+      lost += 1;
+      timeoutRun += 1;
+    }
+    if (timeoutRun >= 3 && !inStall) {
+      stallEvents += 1;
+      inStall = true;
+    }
+    if (i < NETTEST_PING_SAMPLES - 1) await sleep(NETTEST_PING_INTERVAL_MS);
+  }
+  const avg = samples.length ? samples.reduce((sum, value) => sum + value, 0) / samples.length : 0;
+  const jitter = samples.length > 1
+    ? samples.slice(1).reduce((sum, value, index) => sum + Math.abs(value - samples[index]), 0) / (samples.length - 1)
+    : 0;
+  return {
+    samples: NETTEST_PING_SAMPLES,
+    ok: samples.length,
+    lost,
+    loss_percent: NETTEST_PING_SAMPLES ? (lost / NETTEST_PING_SAMPLES) * 100 : 0,
+    min_ms: samples.length ? Math.min(...samples) : 0,
+    avg_ms: avg,
+    max_ms: samples.length ? Math.max(...samples) : 0,
+    jitter_ms: jitter,
+    stall_events: stallEvents,
+  };
+}
+
+async function runDownloadProbe(progress) {
+  progress("Testing small download...");
+  const started = performance.now();
+  try {
+    const response = await fetchWithTimeout("/api/nettest/download?size=262144", {}, 4000);
+    const blob = await response.blob();
+    const duration = Math.max(1, performance.now() - started);
+    return {ok: true, bytes: blob.size, duration_ms: duration, mbps: (blob.size * 8 / duration / 1000)};
+  } catch {
+    return {ok: false, bytes: 0, duration_ms: 0, mbps: 0};
+  }
+}
+
+async function runUploadProbe(progress) {
+  progress("Testing small upload...");
+  const payload = new Uint8Array(128 * 1024);
+  for (let i = 0; i < payload.length; i++) payload[i] = i % 251;
+  const started = performance.now();
+  try {
+    const response = await fetchWithTimeout("/api/nettest/upload", {
+      method: "POST",
+      headers: {"Content-Type": "application/octet-stream"},
+      body: payload,
+    }, 4000);
+    const data = await response.json();
+    const duration = Math.max(1, performance.now() - started);
+    const sent = Number(data.bytes || payload.length);
+    return {ok: true, bytes: sent, duration_ms: duration, mbps: (sent * 8 / duration / 1000)};
+  } catch {
+    return {ok: false, bytes: 0, duration_ms: 0, mbps: 0};
+  }
+}
+
+function renderNettestResult(result) {
+  const host = document.querySelector("#nettestResult");
+  if (!host || !result) return;
+  const assessment = result.assessment || nettestAssessment(result.latency || {}, result.download_probe || {}, result.upload_probe || {});
+  const latency = result.latency || {};
+  const downloadProbe = result.download_probe || {};
+  const uploadProbe = result.upload_probe || {};
+  host.innerHTML = `
+    <div class="nettest-result">
+      <div class="flex flex-wrap items-center justify-between gap-2">
+        <strong>Quality: ${esc(assessment.quality || "unknown")}</strong>
+        ${healthBadge(assessment.quality || "unknown")}
+      </div>
+      <p class="mt-1 text-sm text-[var(--muted)]">${esc(assessment.summary || "")}</p>
+      <div class="nettest-metrics">
+        <span>Latency avg ${Math.round(Number(latency.avg_ms || 0))} ms</span>
+        <span>Jitter ${Math.round(Number(latency.jitter_ms || 0))} ms</span>
+        <span>Loss ${formatPercent(latency.loss_percent, 1)}</span>
+        <span>Stalls ${Number(latency.stall_events || 0)}</span>
+        <span>Download ${Number(downloadProbe.mbps || 0).toFixed(2)} Mbps</span>
+        <span>Upload ${Number(uploadProbe.mbps || 0).toFixed(2)} Mbps</span>
+      </div>
+    </div>
+  `;
+}
+
+async function runNetworkTest() {
+  if (nettestRunning) return;
+  nettestRunning = true;
+  const start = document.querySelector("#startNettest");
+  const status = document.querySelector("#nettestStatus");
+  const comment = document.querySelector("#nettestComment")?.value || "";
+  const progress = message => {
+    if (status) status.textContent = message;
+  };
+  if (start) start.disabled = true;
+  try {
+    nettestContextState = nettestContextState || await api("/api/nettest/context");
+    const latency = await runLatencyProbe(progress);
+    const downloadProbe = await runDownloadProbe(progress);
+    const uploadProbe = await runUploadProbe(progress);
+    const assessment = nettestAssessment(latency, downloadProbe, uploadProbe);
+    progress("Saving report...");
+    const report = {
+      network_type: nettestNetworkType,
+      comment,
+      user_agent: navigator.userAgent || "",
+      browser_connection: browserConnectionInfo(),
+      latency,
+      download_probe: downloadProbe,
+      upload_probe: uploadProbe,
+      assessment,
+      context: nettestContextState,
+    };
+    const saved = await api("/api/nettest/report", {method: "POST", body: JSON.stringify(report)});
+    renderNettestResult(saved.report || report);
+    progress("Report saved.");
+    if (statusState.role === "super") await loadNettestReports();
+  } catch (error) {
+    progress("Network test failed.");
+    showToast(error.message || "Network test failed", "error");
+  } finally {
+    nettestRunning = false;
+    if (start) start.disabled = false;
+  }
+}
+
+function bindNetworkTester() {
+  document.querySelectorAll("[data-nettest-type]").forEach(btn => {
+    const active = btn.dataset.nettestType === nettestNetworkType;
+    btn.className = `h-8 rounded px-3 text-xs font-semibold transition ${active ? "bg-[var(--accent)] text-white" : "text-[var(--muted)] hover:text-[var(--text)]"}`;
+    btn.onclick = () => {
+      nettestNetworkType = btn.dataset.nettestType;
+      localStorage.setItem("nettestNetworkType", nettestNetworkType);
+      bindNetworkTester();
+    };
+  });
+  const start = document.querySelector("#startNettest");
+  if (start) start.onclick = runNetworkTest;
+}
+
 function renderMenuItem(action, iconName, label, extra = "") {
   return `<button type="button" data-action="${esc(action)}" class="client-menu-item ${extra}">${icon(iconName)}<span>${esc(label)}</span></button>`;
 }
@@ -567,6 +908,7 @@ function renderLogin() {
 
 async function renderPanel() {
   stopClientPolling();
+  stopServerHealthPolling();
   document.title = statusState.title || "Control";
   if (trafficChart) {
     trafficChart.destroy();
@@ -635,6 +977,43 @@ async function renderPanel() {
       <div id="topClientsList" class="mt-3 grid gap-2"></div>
     </section>
 
+    <section id="serverHealthPanel" class="mt-3 rounded-lg border border-[var(--line)] bg-[var(--panel)] p-4 ${statusState.role === "super" ? "" : "hidden"}">
+      <div class="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h2 class="text-base font-semibold">Server Health</h2>
+          <p class="text-sm text-[var(--muted)]">Cached CPU, memory, disk, network and process checks.</p>
+        </div>
+        <p id="serverHealthUpdated" class="text-xs text-[var(--muted)]"></p>
+      </div>
+      <div id="serverHealthGrid" class="server-health-grid mt-3"></div>
+    </section>
+
+    <section id="networkTesterPanel" class="mt-3 rounded-lg border border-[var(--line)] bg-[var(--panel)] p-4">
+      <div class="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h2 class="text-base font-semibold">Network Tester</h2>
+          <p class="text-sm text-[var(--muted)]">Run a lightweight browser-side quality test.</p>
+        </div>
+        <button id="startNettest" class="${primaryButtonClasses()}">${icon("refresh")}<span>Start test</span></button>
+      </div>
+      <div class="nettest-grid mt-3">
+        <div>
+          <p class="text-xs font-semibold uppercase text-[var(--muted)]">Network type</p>
+          <div class="mt-2 inline-flex rounded-md border border-[var(--line)] bg-[var(--soft)] p-1">
+            <button type="button" data-nettest-type="mobile" class="h-8 rounded px-3 text-xs font-semibold transition">Mobile</button>
+            <button type="button" data-nettest-type="home" class="h-8 rounded px-3 text-xs font-semibold transition">Home</button>
+          </div>
+        </div>
+        <label class="block">
+          <span class="text-xs font-semibold uppercase text-[var(--muted)]">Optional comment</span>
+          <input id="nettestComment" class="mt-2 h-10 w-full rounded-md border border-[var(--line)] bg-[var(--soft)] px-3 text-sm text-[var(--text)] outline-none focus:border-[var(--accent)]" placeholder="home Wi-Fi, mobile LTE..." autocomplete="off">
+        </label>
+      </div>
+      <p id="nettestStatus" class="mt-3 text-sm text-[var(--muted)]">Ready.</p>
+      <div id="nettestResult" class="mt-3"></div>
+      <div id="nettestReports" class="mt-3 ${statusState.role === "super" ? "" : "hidden"}"></div>
+    </section>
+
     <section id="accessPanel" class="mt-3 rounded-lg border border-[var(--line)] bg-[var(--panel)] p-4 ${statusState.role === "super" ? "" : "hidden"}">
       <div class="flex flex-wrap items-center justify-between gap-3">
         <div>
@@ -692,6 +1071,7 @@ async function renderPanel() {
   document.querySelector("#logout").onclick = logout;
   document.querySelector("#addClient").onclick = addClient;
   document.querySelector("#searchInput").oninput = applySearch;
+  bindNetworkTester();
   if (statusState.role === "super") document.querySelector("#newToken").onclick = newToken;
   if (statusState.role === "super") document.querySelector("#rotateProfile").onclick = rotateProfile;
   if (statusState.role === "super") {
@@ -701,14 +1081,20 @@ async function renderPanel() {
   }
   await loadAll();
   startClientPolling();
+  startServerHealthPolling();
 }
 
 async function loadAll() {
   const [resolver] = await Promise.all([api("/api/resolver"), loadClients()]);
   resolverState = resolver;
   renderResolverMetric();
+  try {
+    nettestContextState = await api("/api/nettest/context");
+  } catch {
+    nettestContextState = null;
+  }
   if (statusState.role === "super") {
-    await Promise.all([loadTokens(), loadWebAccessPolicy()]);
+    await Promise.all([loadTokens(), loadWebAccessPolicy(), loadServerHealth(), loadNettestReports()]);
   }
 }
 
@@ -804,6 +1190,7 @@ function startClientPolling() {
 
 document.addEventListener("visibilitychange", () => {
   if (token && statusState) startClientPolling();
+  if (token && statusState?.role === "super") startServerHealthPolling();
 });
 
 function renderTraffic() {
