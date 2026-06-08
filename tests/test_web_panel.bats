@@ -2115,6 +2115,16 @@ handler.do_GET()
 assert handler.responses == [200]
 assert json.loads(handler.wfile.getvalue().decode())["nonce"] == "abc"
 
+handler = make_handler("GET", "/api/nettest/ping?test_id=abc12345", token=user_token)
+handler.do_GET()
+assert handler.responses == [200]
+handler = make_handler("GET", "/api/nettest/ping?test_id=other123", token=user_token)
+handler.do_GET()
+assert handler.responses == [429]
+handler = make_handler("GET", "/api/nettest/ping?test_id=abc12345", token=user_token)
+handler.do_GET()
+assert handler.responses == [200]
+
 handler = make_handler("GET", f"/api/nettest/download?size={server.NETTEST_MAX_DOWNLOAD_SIZE * 2}", token=user_token)
 handler.do_GET()
 assert handler.responses == [200]
@@ -2147,6 +2157,7 @@ user_hash = server.token_hash(raw_token)
 server.write_tokens({"super_token_hash": server.token_hash("super"), "users": {user_hash: {"name": "Roma", "clients": []}}})
 body = {
     "network_type": "mobile",
+    "test_id": "report123",
     "comment": "home LTE",
     "user_agent": "test-browser",
     "browser_connection": {"effectiveType": "4g"},
@@ -2188,6 +2199,7 @@ text = report_path.read_text()
 assert raw_token not in text
 saved = json.loads(text)
 assert saved["network_type"] == "mobile"
+assert saved["test_id"] == "report123"
 assert saved["token_fp"] == user_hash[:8]
 assert saved["token_alias"] == "Roma"
 assert saved["client_ip"] == "46.34.133.234"
@@ -2205,6 +2217,7 @@ PY
     grep -qF '/api/nettest/download?size=262144' "$app"
     grep -qF '/api/nettest/upload' "$app"
     grep -qF '/api/nettest/report' "$app"
+    grep -qF 'X-Nettest-Id' "$app"
     grep -qF 'data-nettest-type="mobile"' "$app"
     grep -qF 'data-nettest-type="home"' "$app"
     grep -qF 'NETTEST_PING_SAMPLES = 30' "$app"

@@ -692,6 +692,11 @@ async function fetchWithTimeout(path, options = {}, timeoutMs = NETTEST_TIMEOUT_
   }
 }
 
+function createNettestId() {
+  const randomPart = Math.random().toString(36).slice(2, 12);
+  return `${Date.now().toString(36)}-${randomPart}`;
+}
+
 function nettestAssessment(latency, downloadProbe, uploadProbe) {
   const loss = Number(latency.loss_percent || 0);
   const jitter = Number(latency.jitter_ms || 0);
@@ -710,7 +715,7 @@ function nettestAssessment(latency, downloadProbe, uploadProbe) {
   return {quality, summary};
 }
 
-async function runLatencyProbe(progress) {
+async function runLatencyProbe(progress, testId) {
   const samples = [];
   let lost = 0;
   let stallEvents = 0;
@@ -720,7 +725,7 @@ async function runLatencyProbe(progress) {
     progress(`Testing latency ${i + 1}/${NETTEST_PING_SAMPLES}...`);
     const started = performance.now();
     try {
-      await fetchWithTimeout(`/api/nettest/ping?n=${encodeURIComponent(String(Date.now()) + "-" + i)}`);
+      await fetchWithTimeout(`/api/nettest/ping?n=${encodeURIComponent(String(Date.now()) + "-" + i)}&test_id=${encodeURIComponent(testId)}`);
       const rtt = performance.now() - started;
       samples.push(rtt);
       if (rtt > NETTEST_TIMEOUT_MS) timeoutRun += 1;
@@ -755,11 +760,11 @@ async function runLatencyProbe(progress) {
   };
 }
 
-async function runDownloadProbe(progress) {
+async function runDownloadProbe(progress, testId) {
   progress("Testing small download...");
   const started = performance.now();
   try {
-    const response = await fetchWithTimeout("/api/nettest/download?size=262144", {}, 4000);
+    const response = await fetchWithTimeout(`/api/nettest/download?size=262144&test_id=${encodeURIComponent(testId)}`, {}, 4000);
     const blob = await response.blob();
     const duration = Math.max(1, performance.now() - started);
     return {ok: true, bytes: blob.size, duration_ms: duration, mbps: (blob.size * 8 / duration / 1000)};
@@ -768,7 +773,7 @@ async function runDownloadProbe(progress) {
   }
 }
 
-async function runUploadProbe(progress) {
+async function runUploadProbe(progress, testId) {
   progress("Testing small upload...");
   const payload = new Uint8Array(128 * 1024);
   for (let i = 0; i < payload.length; i++) payload[i] = i % 251;
@@ -776,7 +781,7 @@ async function runUploadProbe(progress) {
   try {
     const response = await fetchWithTimeout("/api/nettest/upload", {
       method: "POST",
-      headers: {"Content-Type": "application/octet-stream"},
+      headers: {"Content-Type": "application/octet-stream", "X-Nettest-Id": testId},
       body: payload,
     }, 4000);
     const data = await response.json();
@@ -826,13 +831,15 @@ async function runNetworkTest() {
   if (start) start.disabled = true;
   try {
     nettestContextState = nettestContextState || await api("/api/nettest/context");
-    const latency = await runLatencyProbe(progress);
-    const downloadProbe = await runDownloadProbe(progress);
-    const uploadProbe = await runUploadProbe(progress);
+    const testId = createNettestId();
+    const latency = await runLatencyProbe(progress, testId);
+    const downloadProbe = await runDownloadProbe(progress, testId);
+    const uploadProbe = await runUploadProbe(progress, testId);
     const assessment = nettestAssessment(latency, downloadProbe, uploadProbe);
     progress("Saving report...");
     const report = {
       network_type: nettestNetworkType,
+      test_id: testId,
       comment,
       user_agent: navigator.userAgent || "",
       browser_connection: browserConnectionInfo(),

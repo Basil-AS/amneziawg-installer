@@ -77,8 +77,10 @@ SERVER_HEALTH_CACHE_TS = 0.0
 SERVER_HEALTH_PREV_CPU = None
 SERVER_HEALTH_PREV_NET = {}
 NETTEST_LOCK = threading.Lock()
+NETTEST_ACTIVE = {}
 NETTEST_LAST_REPORT = {}
 NETTEST_REPORT_TIMES = {}
+NETTEST_ACTIVE_TTL = 120.0
 NETTEST_REPORT_COOLDOWN = 60.0
 NETTEST_REPORTS_PER_HOUR = 12
 NETTEST_DEFAULT_DOWNLOAD_SIZE = 256 * 1024
@@ -1005,9 +1007,44 @@ def clean_report_comment(value):
     return value[:240]
 
 
+def clean_nettest_id(value):
+    value = str(value or "").strip()
+    if not value:
+        return ""
+    if not re.fullmatch(r"[A-Za-z0-9_-]{8,80}", value):
+        raise ValueError("invalid test id")
+    return value
+
+
 def nettest_rate_key(auth, client_ip):
     fp = auth_fingerprint(auth)
     return fp or hashlib.sha256(str(client_ip or "unknown").encode("utf-8")).hexdigest()[:8]
+
+
+def reserve_nettest_session(auth, client_ip, test_id, now=None):
+    if not test_id:
+        return True
+    now = time.time() if now is None else now
+    key = nettest_rate_key(auth, client_ip)
+    with NETTEST_LOCK:
+        for item_key, item in list(NETTEST_ACTIVE.items()):
+            if float(item.get("expires_at") or 0) <= now:
+                NETTEST_ACTIVE.pop(item_key, None)
+        current = NETTEST_ACTIVE.get(key)
+        if current and current.get("test_id") != test_id and float(current.get("expires_at") or 0) > now:
+            return False
+        NETTEST_ACTIVE[key] = {"test_id": test_id, "expires_at": now + NETTEST_ACTIVE_TTL}
+        return True
+
+
+def clear_nettest_session(auth, client_ip, test_id):
+    if not test_id:
+        return
+    key = nettest_rate_key(auth, client_ip)
+    with NETTEST_LOCK:
+        current = NETTEST_ACTIVE.get(key)
+        if current and current.get("test_id") == test_id:
+            NETTEST_ACTIVE.pop(key, None)
 
 
 def check_nettest_report_rate(auth, client_ip, now=None):
@@ -1077,6 +1114,7 @@ def nettest_assessment(report):
 
 def save_nettest_report(auth, handler, body):
     network_type = clean_network_type(body.get("network_type"))
+    test_id = clean_nettest_id(body.get("test_id", ""))
     client_ctx = request_client_context(handler)
     client_ip = client_ctx.get("client_ip") or ""
     if not check_nettest_report_rate(auth, client_ip):
@@ -1093,6 +1131,7 @@ def save_nettest_report(auth, handler, body):
     report = {
         "version": 1,
         "created_at": created_at,
+        "test_id": test_id,
         "network_type": network_type,
         "comment": clean_report_comment(body.get("comment", "")),
         "token_fp": token_fp,
@@ -1116,6 +1155,7 @@ def save_nettest_report(auth, handler, body):
     os.chmod(tmp, 0o600)
     os.replace(tmp, path)
     os.chmod(path, 0o600)
+    clear_nettest_session(auth, client_ip, test_id)
     audit_log(f"Saved network test report type={network_type} actor_role={auth.get('role')} actor_fp={token_fp} client_ip={client_ip}")
     return {"ok": True, "filename": filename, "report": report}
 
@@ -2948,10 +2988,28 @@ class Handler(SimpleHTTPRequestHandler):
         if u.path == "/api/nettest/ping":
             query = parse_qs(u.query)
             nonce = str((query.get("n") or [""])[0])[:64]
+            try:
+                test_id = clean_nettest_id((query.get("test_id") or [""])[0])
+            except ValueError as exc:
+                self.send_json({"error": str(exc)}, 400)
+                return
+            client_ctx = request_client_context(self)
+            if test_id and not reserve_nettest_session(auth, client_ctx.get("client_ip"), test_id):
+                self.send_json({"error": "nettest already active"}, HTTPStatus.TOO_MANY_REQUESTS)
+                return
             self.send_json({"ok": True, "server_time": utc_now_iso(), "nonce": nonce})
             return
         if u.path == "/api/nettest/download":
             query = parse_qs(u.query)
+            try:
+                test_id = clean_nettest_id((query.get("test_id") or [""])[0])
+            except ValueError as exc:
+                self.send_json({"error": str(exc)}, 400)
+                return
+            client_ctx = request_client_context(self)
+            if test_id and not reserve_nettest_session(auth, client_ctx.get("client_ip"), test_id):
+                self.send_json({"error": "nettest already active"}, HTTPStatus.TOO_MANY_REQUESTS)
+                return
             try:
                 size = int((query.get("size") or [str(NETTEST_DEFAULT_DOWNLOAD_SIZE)])[0])
             except (TypeError, ValueError):
@@ -3108,6 +3166,11 @@ class Handler(SimpleHTTPRequestHandler):
         u = urlparse(self.path)
         try:
             if u.path == "/api/nettest/upload":
+                test_id = clean_nettest_id(self.headers.get("X-Nettest-Id", ""))
+                client_ctx = request_client_context(self)
+                if test_id and not reserve_nettest_session(auth, client_ctx.get("client_ip"), test_id):
+                    self.send_json({"error": "nettest already active"}, HTTPStatus.TOO_MANY_REQUESTS)
+                    return
                 try:
                     size = int(self.headers.get("Content-Length", "0") or 0)
                 except (TypeError, ValueError):
