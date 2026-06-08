@@ -2136,7 +2136,9 @@ assert info["public_ipv4"] == "194.180.189.244"
 assert info["vpn_ipv4"] == "10.9.9.1/24"
 assert info["adguard_url"] == "http://10.9.9.1:3000/"
 assert info["nettest_url"] == "/nettest"
-assert info["nettest_vpn_url_available"] is False
+assert info["nettest_vpn_url_available"] is True
+assert info["nettest_vpn_url"] == "http://10.9.9.1:8088/nettest"
+assert info["dns_resolver"] == "1.1.1.1"
 PY
     rm -rf "$tmp"
 }
@@ -2291,15 +2293,21 @@ PY
     grep -qF '"/nettest": ("index.html"' "$server"
     grep -qF 'Server Health' "$app"
     grep -qF 'Network Tester' "$app"
-    grep -qF 'Server addresses' "$app"
-    grep -qF 'quick-links' "$app"
+    grep -qF 'top-network-strip' "$app"
+    grep -qF 'net-chip' "$app"
+    grep -qF 'NETTEST_DURATIONS' "$app"
+    grep -qF 'data-nettest-dur=' "$app"
+    grep -qF 'stall_events' "$app"
+    grep -qF 'timeline_summary' "$app"
     grep -qF '/api/server-health' "$app"
     grep -qF '/api/server-health/history?range=' "$app"
     grep -qF '/api/server-info' "$app"
-    grep -qF '/api/nettest/ping' "$app"
-    grep -qF '/api/nettest/download?size=262144' "$app"
-    grep -qF '/api/nettest/upload' "$app"
-    grep -qF '/api/nettest/report' "$app"
+    grep -qF 'nettestApiBase()}/ping' "$app"
+    grep -qF 'nettestApiBase()}/download?size=262144' "$app"
+    grep -qF 'nettestApiBase()}/upload' "$app"
+    grep -qF 'nettestApiBase()}/report' "$app"
+    grep -qF 'isDirectNettestMode' "$app"
+    grep -qF 'renderDirectNettest' "$app"
     grep -qF 'X-Nettest-Id' "$app"
     grep -qF 'SERVER_HEALTH_RANGES = ["10m", "1h", "6h", "12h", "24h", "3d", "7d", "30d"]' "$app"
     grep -qF 'serverHealthRange' "$app"
@@ -2347,6 +2355,63 @@ assert ctx["awg"]["persistent_keepalive"] == 25
 assert ctx["awg"]["h_ranges_present"] is True
 assert ctx["assessment"]["mobile"]["status"] == "ok"
 assert "MTU 1280 is conservative" in ctx["assessment"]["mobile"]["notes"]
+PY
+    rm -rf "$tmp"
+}
+
+@test "vpn-only nettest: is_vpn_internal_nettest requires local socket and header" {
+    command -v python3 &>/dev/null || skip "python3 not available"
+    local tmp
+    tmp=$(mktemp -d)
+    mkdir -p "$tmp/web"
+    AWG_DIR="$tmp" SERVER_CONF_FILE="$tmp/awg0.conf" REPO_ROOT="$BATS_TEST_DIRNAME/.." python3 - <<'PY'
+import importlib.util
+import io
+import json
+import os
+from pathlib import Path
+
+spec = importlib.util.spec_from_file_location("panel_server", Path(os.environ["REPO_ROOT"]) / "web" / "server.py")
+server = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(server)
+
+class Headers(dict):
+    def get(self, key, default=None):
+        return super().get(key, default)
+
+def make_h(socket_ip, extra_headers=None):
+    h = object.__new__(server.Handler)
+    h.client_address = (socket_ip, 12345)
+    h.headers = Headers(extra_headers or {})
+    return h
+
+# Local socket without header — not VPN internal
+h = make_h("127.0.0.1")
+assert server.is_vpn_internal_nettest(h) is False
+
+# Remote socket with header — not VPN internal (socket not local)
+h = make_h("10.9.9.5", {"X-AWG-Internal-Nettest": "1"})
+assert server.is_vpn_internal_nettest(h) is False
+
+# Local socket with correct header — VPN internal
+h = make_h("127.0.0.1", {"X-AWG-Internal-Nettest": "1"})
+assert server.is_vpn_internal_nettest(h) is True
+
+# /api/nettest-public/ping returns 403 without VPN marker (remote socket)
+h2 = object.__new__(server.Handler)
+h2.path = "/api/nettest-public/ping"
+h2.client_address = ("1.2.3.4", 80)
+h2.rfile = io.BytesIO(b"")
+h2.wfile = io.BytesIO()
+h2.responses = []
+h2.headers_sent = []
+h2.headers = Headers({"Host": "1.2.3.4"})
+h2.send_response = lambda code: h2.responses.append(code)
+h2.send_error = lambda code, *args, **kwargs: h2.responses.append(code)
+h2.send_header = lambda key, value: h2.headers_sent.append((key, value))
+h2.end_headers = lambda: None
+h2.do_GET()
+assert h2.responses == [403]
 PY
     rm -rf "$tmp"
 }

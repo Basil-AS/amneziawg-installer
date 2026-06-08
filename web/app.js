@@ -22,11 +22,16 @@ let healthInFlight = false;
 let nettestRunning = false;
 let topTrafficMode = localStorage.getItem("topTrafficMode") || "30d";
 let nettestNetworkType = localStorage.getItem("nettestNetworkType") || "mobile";
+let nettestDuration = Number(localStorage.getItem("nettestDuration") || 180);
 let serverHealthRange = localStorage.getItem("serverHealthRange") || "1h";
 const ACTIVE_CLIENT_POLL_MS = 5000;
 const HIDDEN_CLIENT_POLL_MS = 30000;
 const SERVER_HEALTH_POLL_MS = 10000;
 const SERVER_HEALTH_RANGES = ["10m", "1h", "6h", "12h", "24h", "3d", "7d", "30d"];
+const NETTEST_DURATIONS = {30: "Quick 30 s", 180: "Standard 3 min", 600: "Long 10 min"};
+const NETTEST_PROBE_INTERVAL_MS = 1000;
+const NETTEST_PING_TIMEOUT_MS = 2000;
+const NETTEST_STALL_THRESHOLD = 3;
 const NETTEST_PING_SAMPLES = 30;
 const NETTEST_PING_INTERVAL_MS = 250;
 const NETTEST_TIMEOUT_MS = 1800;
@@ -64,6 +69,7 @@ const icons = {
   apple: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M15.7 12.8c0-2.3 1.9-3.4 2-3.5-1.1-1.6-2.8-1.8-3.4-1.8-1.4-.1-2.8.8-3.5.8-.7 0-1.8-.8-3-.8-1.5 0-2.9.9-3.7 2.2-1.6 2.8-.4 6.9 1.1 9.1.8 1.1 1.7 2.4 2.9 2.4 1.2 0 1.6-.8 3-.8 1.4 0 1.8.8 3 .8 1.3 0 2.1-1.2 2.8-2.3.9-1.3 1.3-2.6 1.3-2.7-.1 0-2.5-1-2.5-3.4ZM13.4 6c.6-.8 1.1-1.9.9-3-.9.1-2 .6-2.7 1.4-.6.7-1.1 1.8-1 2.9 1 .1 2-.5 2.8-1.3Z"/></svg>',
   linux: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3c2.2 0 3.7 1.7 3.7 4.5 0 1.4-.3 2.6-.8 3.6 1.8 1.4 3.1 3.8 3.1 6.1 0 2.2-1.8 3.8-6 3.8s-6-1.6-6-3.8c0-2.3 1.3-4.7 3.1-6.1-.5-1-.8-2.2-.8-3.6C8.3 4.7 9.8 3 12 3Z"/><path d="M10 8h.01M14 8h.01M9.5 15h5"/></svg>',
   router: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="10" width="18" height="8" rx="2"/><path d="M7 14h.01M11 14h.01M15 14h3M8 10V6M16 10V6M5 21h14"/></svg>',
+  save: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2Z"/><path d="M17 21v-8H7v8M7 3v5h8"/></svg>',
   shield: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M9 12.75 11.25 15 15 9.75"/><path d="M12 3.75c2.1 1.95 4.95 3 7.88 3-.42 6.15-3.25 10.69-7.88 13.5-4.63-2.81-7.46-7.35-7.88-13.5 2.93 0 5.78-1.05 7.88-3Z"/></svg>',
   link: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M10.5 13.5 13.5 10.5"/><path d="M8.5 15.5 7 17a4 4 0 0 1-5.7-5.6l2.1-2.1A4 4 0 0 1 9 9"/><path d="M15.5 8.5 17 7a4 4 0 0 1 5.7 5.6l-2.1 2.1A4 4 0 0 1 15 15"/></svg>',
   pencil: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="m4 20 4.2-1 10.6-10.6a2.1 2.1 0 0 0-3-3L5.2 16 4 20Z"/><path d="m14.5 6.5 3 3"/></svg>',
@@ -185,6 +191,45 @@ function speed(n) {
 
 function isNetworkTesterPage() {
   return window.location.pathname.replace(/\/+$/, "") === "/nettest";
+}
+
+function isDirectNettestMode() {
+  return window.location.port === "8088" ||
+    (window.location.protocol === "http:" && window.location.hostname === "10.9.9.1");
+}
+
+function nettestApiBase() {
+  return isDirectNettestMode() ? "/api/nettest-public" : "/api/nettest";
+}
+
+async function fetchNettestProbe(path, options = {}, timeoutMs = NETTEST_TIMEOUT_MS) {
+  if (isDirectNettestMode()) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const response = await fetch(path, Object.assign({}, options, {signal: controller.signal}));
+      if (!response.ok) throw new Error(response.statusText || "request failed");
+      return response;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  return fetchWithTimeout(path, options, timeoutMs);
+}
+
+async function apiNettest(path, opt = {}) {
+  if (isDirectNettestMode()) {
+    const headers = Object.assign({}, opt.headers || {});
+    if (opt.body && !(opt.body instanceof FormData)) headers["Content-Type"] = "application/json";
+    const response = await fetch(path, Object.assign({}, opt, {headers}));
+    if (!response.ok) {
+      const text = await response.text();
+      throw new Error(text || response.statusText);
+    }
+    const ctype = response.headers.get("content-type") || "";
+    return ctype.includes("application/json") ? response.json() : response.blob();
+  }
+  return api(path, opt);
 }
 
 function shortValue(value, fallback = "-") {
@@ -580,22 +625,21 @@ function renderServerInfo() {
   const info = serverInfoState || {};
   const links = [
     {label: "Web Panel", href: info.web_current_url || info.web_public_url || "/"},
-    {label: "Network Tester", href: info.nettest_url || "/nettest"},
   ];
-  if (info["ad" + "guard_enabled"] && info["ad" + "guard_url"]) links.splice(1, 0, {label: "Ad" + "Guard", href: info["ad" + "guard_url"]});
+  if (info["ad" + "guard_enabled"] && info["ad" + "guard_url"]) links.push({label: "Ad" + "Guard", href: info["ad" + "guard_url"]});
+  if (info["nettest_vp" + "n_url"]) links.push({label: "Network Tester (" + "V" + "P" + "N)", href: info["nettest_vp" + "n_url"]});
+  const ipv6pub = info.public_ipv6 ? ` · ${esc(info.public_ipv6)}` : " · -";
+  const tunIpv6 = info["vp" + "n_ipv6"] ? esc(info["vp" + "n_ipv6"]) : "IPv6 disabled";
+  const resolverVal = info["d" + "ns_resolver"] ? esc(shortValue(info["d" + "ns_resolver"])) : "";
   host.innerHTML = `
-    <div class="server-info-grid">
-      <div class="server-info-box">
-        <p class="text-xs font-semibold uppercase text-[var(--muted)]">Server addresses</p>
-        <div class="server-info-line"><span>Public</span><strong>${esc(shortValue(info.public_ipv4))}</strong><strong>${esc(shortValue(info.public_ipv6))}</strong></div>
-        <div class="server-info-line"><span>${"VP" + "N"}</span><strong>${esc(shortValue(info["vp" + "n_ipv4"]))}</strong><strong>${esc(shortValue(info["vp" + "n_ipv6"], "IPv6 disabled"))}</strong></div>
+    <div class="top-network-strip mt-2">
+      <div class="network-addr-group">
+        <span><b>Public</b> ${esc(shortValue(info.public_ipv4))}${ipv6pub}</span>
+        <span><b>${"VP" + "N"}</b> ${esc(shortValue(info["vp" + "n_ipv4"]))} · ${tunIpv6}</span>
+        ${resolverVal ? `<span><b>${"D" + "NS"}</b> ${resolverVal}</span>` : ""}
       </div>
-      <div class="server-info-box">
-        <p class="text-xs font-semibold uppercase text-[var(--muted)]">Links</p>
-        <div class="quick-links">
-          ${links.map(item => `<a href="${esc(item.href)}" class="quick-link" ${item.href.startsWith("http") ? 'target="_blank" rel="noopener"' : ""}>${esc(item.label)}</a>`).join("")}
-        </div>
-        ${info["nettest_vp" + "n_url_available"] ? `<p class="mt-1 text-xs text-[var(--muted)]">${"VP" + "N"} tester: ${esc(info["nettest_vp" + "n_url"])}</p>` : `<p class="mt-1 text-xs text-[var(--muted)]">${esc(info["nettest_vp" + "n_note"] || "Network Tester uses authenticated Web Panel access.")}</p>`}
+      <div class="network-links-group">
+        ${links.map(item => `<a href="${esc(item.href)}" class="net-chip" ${item.href.startsWith("http") ? 'target="_blank" rel="noopener"' : ""}>${esc(item.label)}</a>`).join("")}
       </div>
     </div>
   `;
@@ -835,74 +879,65 @@ function createNettestId() {
   return `${Date.now().toString(36)}-${randomPart}`;
 }
 
-function nettestAssessment(latency, downloadProbe, uploadProbe) {
+function nettestProbeEpochs(durationSec) {
+  if (durationSec <= 60) return [0];
+  if (durationSec <= 300) return [5, durationSec - 12];
+  return [5, Math.floor(durationSec / 2) - 5, durationSec - 12];
+}
+
+function nettestControlsHTML() {
+  const durButtons = Object.entries(NETTEST_DURATIONS).map(([sec, label]) => {
+    const active = Number(sec) === nettestDuration;
+    return `<button type="button" data-nettest-dur="${esc(sec)}" class="h-8 rounded px-3 text-xs font-semibold transition ${active ? "bg-[var(--accent)] text-white" : "text-[var(--muted)] hover:text-[var(--text)]"}">${esc(label)}</button>`;
+  }).join("");
+  return `
+    <div class="nettest-grid mt-3">
+      <div>
+        <p class="text-xs font-semibold uppercase text-[var(--muted)]">Network type</p>
+        <div class="mt-2 inline-flex rounded-md border border-[var(--line)] bg-[var(--soft)] p-1">
+          <button type="button" data-nettest-type="mobile" class="h-8 rounded px-3 text-xs font-semibold transition">Mobile</button>
+          <button type="button" data-nettest-type="home" class="h-8 rounded px-3 text-xs font-semibold transition">Home</button>
+        </div>
+      </div>
+      <div>
+        <p class="text-xs font-semibold uppercase text-[var(--muted)]">Test duration</p>
+        <div class="mt-2 inline-flex rounded-md border border-[var(--line)] bg-[var(--soft)] p-1">
+          ${durButtons}
+        </div>
+      </div>
+      <label class="block sm:col-span-2">
+        <span class="text-xs font-semibold uppercase text-[var(--muted)]">Optional comment</span>
+        <input id="nettestComment" class="mt-2 h-10 w-full rounded-md border border-[var(--line)] bg-[var(--soft)] px-3 text-sm text-[var(--text)] outline-none focus:border-[var(--accent)]" placeholder="home Wi-Fi, mobile LTE..." autocomplete="off">
+      </label>
+    </div>`;
+}
+
+function nettestAssessment(latency, downloadProbe, uploadProbe, stallEvents, longestStallMs) {
   const loss = Number(latency.loss_percent || 0);
   const jitter = Number(latency.jitter_ms || 0);
   const stalls = Number(latency.stall_events || 0);
+  const longestSec = (longestStallMs || 0) / 1000;
   let quality = "good";
-  let summary = "Parameters look OK";
-  if (loss > 10 || stalls >= 3) {
+  let summary = "Connection looks stable";
+  if (loss > 5 || stalls >= 3 || longestSec >= 5) {
+    quality = "critical";
+    summary = "Severe packet loss or repeated stalls";
+  } else if (loss > 2 || stalls >= 2 || longestSec >= 3) {
     quality = "poor";
-    summary = "Repeated timeout bursts detected";
-  } else if (loss >= 2 || jitter >= 30 || stalls > 0) {
+    summary = "Significant packet loss or stalls detected";
+  } else if (loss >= 1 || jitter >= 30 || stalls > 0) {
     quality = "warning";
-    summary = "Burst loss or jitter detected";
+    summary = "Minor packet loss or jitter detected";
   }
-  if (!downloadProbe.ok && uploadProbe.ok) summary = "Download probe is weaker than upload";
-  if (!uploadProbe.ok && downloadProbe.ok) summary = "Upload probe is weaker than download";
+  if (!downloadProbe.ok && uploadProbe.ok) summary = "Download probe failed";
+  if (!uploadProbe.ok && downloadProbe.ok) summary = "Upload probe failed";
   return {quality, summary};
 }
 
-async function runLatencyProbe(progress, testId) {
-  const samples = [];
-  let lost = 0;
-  let stallEvents = 0;
-  let timeoutRun = 0;
-  let inStall = false;
-  for (let i = 0; i < NETTEST_PING_SAMPLES; i++) {
-    progress(`Testing latency ${i + 1}/${NETTEST_PING_SAMPLES}...`);
-    const started = performance.now();
-    try {
-      await fetchWithTimeout(`/api/nettest/ping?n=${encodeURIComponent(String(Date.now()) + "-" + i)}&test_id=${encodeURIComponent(testId)}`);
-      const rtt = performance.now() - started;
-      samples.push(rtt);
-      if (rtt > NETTEST_TIMEOUT_MS) timeoutRun += 1;
-      else {
-        timeoutRun = 0;
-        inStall = false;
-      }
-    } catch {
-      lost += 1;
-      timeoutRun += 1;
-    }
-    if (timeoutRun >= 3 && !inStall) {
-      stallEvents += 1;
-      inStall = true;
-    }
-    if (i < NETTEST_PING_SAMPLES - 1) await sleep(NETTEST_PING_INTERVAL_MS);
-  }
-  const avg = samples.length ? samples.reduce((sum, value) => sum + value, 0) / samples.length : 0;
-  const jitter = samples.length > 1
-    ? samples.slice(1).reduce((sum, value, index) => sum + Math.abs(value - samples[index]), 0) / (samples.length - 1)
-    : 0;
-  return {
-    samples: NETTEST_PING_SAMPLES,
-    ok: samples.length,
-    lost,
-    loss_percent: NETTEST_PING_SAMPLES ? (lost / NETTEST_PING_SAMPLES) * 100 : 0,
-    min_ms: samples.length ? Math.min(...samples) : 0,
-    avg_ms: avg,
-    max_ms: samples.length ? Math.max(...samples) : 0,
-    jitter_ms: jitter,
-    stall_events: stallEvents,
-  };
-}
-
-async function runDownloadProbe(progress, testId) {
-  progress("Testing small download...");
+async function runDownloadProbe(testId) {
   const started = performance.now();
   try {
-    const response = await fetchWithTimeout(`/api/nettest/download?size=262144&test_id=${encodeURIComponent(testId)}`, {}, 4000);
+    const response = await fetchNettestProbe(`${nettestApiBase()}/download?size=262144&test_id=${encodeURIComponent(testId)}`, {}, 6000);
     const blob = await response.blob();
     const duration = Math.max(1, performance.now() - started);
     return {ok: true, bytes: blob.size, duration_ms: duration, mbps: (blob.size * 8 / duration / 1000)};
@@ -911,17 +946,16 @@ async function runDownloadProbe(progress, testId) {
   }
 }
 
-async function runUploadProbe(progress, testId) {
-  progress("Testing small upload...");
+async function runUploadProbe(testId) {
   const payload = new Uint8Array(128 * 1024);
   for (let i = 0; i < payload.length; i++) payload[i] = i % 251;
   const started = performance.now();
   try {
-    const response = await fetchWithTimeout("/api/nettest/upload", {
+    const response = await fetchNettestProbe(`${nettestApiBase()}/upload`, {
       method: "POST",
       headers: {"Content-Type": "application/octet-stream", "X-Nettest-Id": testId},
       body: payload,
-    }, 4000);
+    }, 6000);
     const data = await response.json();
     const duration = Math.max(1, performance.now() - started);
     const sent = Number(data.bytes || payload.length);
@@ -934,25 +968,36 @@ async function runUploadProbe(progress, testId) {
 function renderNettestResult(result) {
   const host = document.querySelector("#nettestResult");
   if (!host || !result) return;
-  const assessment = result.assessment || nettestAssessment(result.latency || {}, result.download_probe || {}, result.upload_probe || {});
+  const stallEvents = Array.isArray(result.stall_events) ? result.stall_events : [];
+  const longestStall = (result.timeline_summary || {}).longest_stall_ms || stallEvents.reduce((m, e) => Math.max(m, e.duration_ms || 0), 0);
+  const assessment = result.assessment || nettestAssessment(result.latency || {}, result.download_probe || {}, result.upload_probe || {}, stallEvents, longestStall);
   const latency = result.latency || {};
   const downloadProbe = result.download_probe || {};
   const uploadProbe = result.upload_probe || {};
+  const durSec = Number(result.duration_seconds || 0);
+  const durLabel = durSec >= 60 ? `${Math.floor(durSec / 60)} min ${durSec % 60} s` : durSec ? `${durSec} s` : "";
+  const stallLines = stallEvents.map(e => {
+    const t = (e.started_at || "").substr(11, 8);
+    const d = e.duration_ms ? `${(e.duration_ms / 1000).toFixed(1)} s` : "open";
+    return `<li>${t}: ${d}, ${e.lost_probes || 0} lost</li>`;
+  }).join("");
   host.innerHTML = `
     <div class="nettest-result">
       <div class="flex flex-wrap items-center justify-between gap-2">
         <strong>Quality: ${esc(assessment.quality || "unknown")}</strong>
         ${healthBadge(assessment.quality || "unknown")}
+        ${durLabel ? `<span class="text-xs text-[var(--muted)]">${esc(durLabel)}</span>` : ""}
       </div>
       <p class="mt-1 text-sm text-[var(--muted)]">${esc(assessment.summary || "")}</p>
       <div class="nettest-metrics">
         <span>Latency avg ${Math.round(Number(latency.avg_ms || 0))} ms</span>
         <span>Jitter ${Math.round(Number(latency.jitter_ms || 0))} ms</span>
         <span>Loss ${formatPercent(latency.loss_percent, 1)}</span>
-        <span>Stalls ${Number(latency.stall_events || 0)}</span>
+        <span>Stalls ${stallEvents.length}</span>
         <span>Download ${Number(downloadProbe.mbps || 0).toFixed(2)} Mbps</span>
         <span>Upload ${Number(uploadProbe.mbps || 0).toFixed(2)} Mbps</span>
       </div>
+      ${stallEvents.length ? `<ul class="nettest-notes">${stallLines}</ul>` : ""}
     </div>
   `;
 }
@@ -960,43 +1005,142 @@ function renderNettestResult(result) {
 async function runNetworkTest() {
   if (nettestRunning) return;
   nettestRunning = true;
-  const start = document.querySelector("#startNettest");
-  const status = document.querySelector("#nettestStatus");
-  const comment = document.querySelector("#nettestComment")?.value || "";
-  const progress = message => {
-    if (status) status.textContent = message;
+  const durationSec = nettestDuration;
+  const startBtn = document.querySelector("#startNettest");
+  const statusEl = document.querySelector("#nettestStatus");
+  if (startBtn) startBtn.disabled = true;
+
+  const showLive = (elapsedSec, successPings, totalPings, stallEvents) => {
+    if (!statusEl) return;
+    const mm = String(Math.floor(elapsedSec / 60)).padStart(2, "0");
+    const ss = String(elapsedSec % 60).padStart(2, "0");
+    const totMm = String(Math.floor(durationSec / 60)).padStart(2, "0");
+    const totSs = String(durationSec % 60).padStart(2, "0");
+    const loss = totalPings > 0 ? ((totalPings - successPings) / totalPings * 100).toFixed(1) : "0.0";
+    let msg = `Running ${mm}:${ss} / ${totMm}:${totSs}  ·  Loss ${loss}%  ·  Stalls: ${stallEvents.length}`;
+    const last = stallEvents[stallEvents.length - 1];
+    if (last) {
+      const t = (last.started_at || "").substr(11, 8);
+      msg += `  ·  Last stall: ${t}`;
+      if (last.duration_ms > 0) msg += `, ${(last.duration_ms / 1000).toFixed(1)} s`;
+    }
+    statusEl.textContent = msg;
   };
-  if (start) start.disabled = true;
+
   try {
-    nettestContextState = nettestContextState || await api("/api/nettest/context");
+    nettestContextState = nettestContextState || await apiNettest(`${nettestApiBase()}/context`);
     const testId = createNettestId();
-    const latency = await runLatencyProbe(progress, testId);
-    const downloadProbe = await runDownloadProbe(progress, testId);
-    const uploadProbe = await runUploadProbe(progress, testId);
-    const assessment = nettestAssessment(latency, downloadProbe, uploadProbe);
-    progress("Saving report...");
+    const startedAt = new Date().toISOString();
+    const deadline = Date.now() + durationSec * 1000;
+    let totalProbes = 0, successProbes = 0;
+    let consecutiveTimeout = 0;
+    let inStall = false, stallStartTime = 0;
+    const stallEvents = [];
+    const rtts = [];
+    const downloadProbes = [], uploadProbes = [];
+    const probeEpochs = nettestProbeEpochs(durationSec);
+    let nextEpochIdx = 0;
+
+    while (Date.now() < deadline) {
+      const elapsedSec = Math.floor((durationSec * 1000 - Math.max(0, deadline - Date.now())) / 1000);
+      showLive(elapsedSec, successProbes, totalProbes, stallEvents);
+
+      if (nextEpochIdx < probeEpochs.length && elapsedSec >= probeEpochs[nextEpochIdx]) {
+        nextEpochIdx++;
+        if (statusEl) statusEl.textContent = "Probing download / upload...";
+        downloadProbes.push(await runDownloadProbe(testId));
+        uploadProbes.push(await runUploadProbe(testId));
+        if (Date.now() >= deadline) break;
+      }
+
+      const t0 = performance.now();
+      try {
+        await fetchNettestProbe(
+          `${nettestApiBase()}/ping?n=${encodeURIComponent(Date.now() + "")}&test_id=${encodeURIComponent(testId)}`,
+          {}, NETTEST_PING_TIMEOUT_MS
+        );
+        const rtt = performance.now() - t0;
+        rtts.push(rtt);
+        successProbes++;
+        consecutiveTimeout = 0;
+        if (inStall) {
+          const last = stallEvents[stallEvents.length - 1];
+          last.ended_at = new Date().toISOString();
+          last.duration_ms = Math.round(performance.now() - stallStartTime);
+          inStall = false;
+        }
+      } catch {
+        consecutiveTimeout++;
+        if (!inStall && consecutiveTimeout >= NETTEST_STALL_THRESHOLD) {
+          inStall = true;
+          stallStartTime = performance.now();
+          stallEvents.push({started_at: new Date().toISOString(), ended_at: null, duration_ms: 0, lost_probes: 0});
+        }
+        if (inStall) stallEvents[stallEvents.length - 1].lost_probes++;
+      }
+      totalProbes++;
+      await sleep(NETTEST_PROBE_INTERVAL_MS);
+    }
+
+    if (inStall && stallEvents.length > 0) {
+      const last = stallEvents[stallEvents.length - 1];
+      last.ended_at = new Date().toISOString();
+      last.duration_ms = Math.round(performance.now() - stallStartTime);
+    }
+
+    const finishedAt = new Date().toISOString();
+    const lostProbes = totalProbes - successProbes;
+    const lossPercent = totalProbes > 0 ? (lostProbes / totalProbes) * 100 : 0;
+    const avgRtt = rtts.length ? rtts.reduce((a, b) => a + b, 0) / rtts.length : 0;
+    const jitter = rtts.length > 1
+      ? rtts.slice(1).reduce((sum, v, i) => sum + Math.abs(v - rtts[i]), 0) / (rtts.length - 1)
+      : 0;
+    const longestStall = stallEvents.reduce((m, e) => Math.max(m, e.duration_ms || 0), 0);
+    const maxConsecutive = stallEvents.reduce((m, e) => Math.max(m, e.lost_probes || 0), 0);
+
+    const latency = {
+      samples: totalProbes, ok: successProbes, lost: lostProbes,
+      loss_percent: lossPercent,
+      min_ms: rtts.length ? Math.min(...rtts) : 0,
+      avg_ms: avgRtt,
+      max_ms: rtts.length ? Math.max(...rtts) : 0,
+      jitter_ms: jitter,
+      stall_events: stallEvents.length,
+    };
+    const bestDownload = downloadProbes.length ? [...downloadProbes].sort((a, b) => (b.mbps || 0) - (a.mbps || 0))[0] : {ok: false, bytes: 0, duration_ms: 0, mbps: 0};
+    const bestUpload = uploadProbes.length ? [...uploadProbes].sort((a, b) => (b.mbps || 0) - (a.mbps || 0))[0] : {ok: false, bytes: 0, duration_ms: 0, mbps: 0};
+    const timelineSummary = {longest_stall_ms: longestStall, timeout_bursts: stallEvents.length, max_consecutive_timeouts: maxConsecutive};
+    const assessment = nettestAssessment(latency, bestDownload, bestUpload, stallEvents, longestStall);
+
+    if (statusEl) statusEl.textContent = "Saving report...";
     const report = {
       network_type: nettestNetworkType,
       test_id: testId,
-      comment,
+      comment: document.querySelector("#nettestComment")?.value || "",
       user_agent: navigator.userAgent || "",
       browser_connection: browserConnectionInfo(),
+      duration_seconds: durationSec,
+      probe_interval_ms: NETTEST_PROBE_INTERVAL_MS,
+      started_at: startedAt,
+      finished_at: finishedAt,
       latency,
-      download_probe: downloadProbe,
-      upload_probe: uploadProbe,
+      download_probe: bestDownload,
+      upload_probe: bestUpload,
+      stall_events: stallEvents,
+      timeline_summary: timelineSummary,
       assessment,
       context: nettestContextState,
     };
-    const saved = await api("/api/nettest/report", {method: "POST", body: JSON.stringify(report)});
+    const saved = await apiNettest(`${nettestApiBase()}/report`, {method: "POST", body: JSON.stringify(report)});
     renderNettestResult(saved.report || report);
-    progress("Report saved.");
-    if (statusState.role === "super") await loadNettestReports();
+    if (statusEl) statusEl.textContent = "Report saved.";
+    if (statusState?.role === "super") await loadNettestReports();
   } catch (error) {
-    progress("Network test failed.");
+    if (statusEl) statusEl.textContent = "Network test failed.";
     showToast(error.message || "Network test failed", "error");
   } finally {
     nettestRunning = false;
-    if (start) start.disabled = false;
+    if (startBtn) startBtn.disabled = false;
   }
 }
 
@@ -1008,6 +1152,15 @@ function bindNetworkTester() {
     btn.onclick = () => {
       nettestNetworkType = btn.dataset.nettestType;
       localStorage.setItem("nettestNetworkType", nettestNetworkType);
+      bindNetworkTester();
+    };
+  });
+  document.querySelectorAll("[data-nettest-dur]").forEach(btn => {
+    const active = Number(btn.dataset.nettestDur) === nettestDuration;
+    btn.className = `h-8 rounded px-3 text-xs font-semibold transition ${active ? "bg-[var(--accent)] text-white" : "text-[var(--muted)] hover:text-[var(--text)]"}`;
+    btn.onclick = () => {
+      nettestDuration = Number(btn.dataset.nettestDur);
+      localStorage.setItem("nettestDuration", nettestDuration);
       bindNetworkTester();
     };
   });
@@ -1074,7 +1227,7 @@ async function renderPanel() {
         <button id="themeToggle" class="${buttonClasses("w-9 px-0")}" title="Theme">${icon(document.documentElement.dataset.theme === "dark" ? "sun" : "moon")}</button>
         <button id="helpButton" class="${buttonClasses("w-9 px-0")}" title="Help & Clients" aria-label="Help & Clients">${icon("help")}</button>
         ${statusState.repository_url ? `<a href="${esc(statusState.repository_url)}" target="_blank" rel="noopener" class="${buttonClasses("w-9 px-0")}" title="Repository" aria-label="Repository">${icon("github")}</a>` : ""}
-        <a href="${nettestPage ? "/" : "/nettest"}" class="${buttonClasses()}">${icon(nettestPage ? "router" : "refresh")}<span>${nettestPage ? "Web Panel" : "Network Tester"}</span></a>
+        ${nettestPage ? `<a href="/" class="${buttonClasses()}">${icon("router")}<span>Web Panel</span></a>` : ""}
         <button id="addClient" class="${primaryButtonClasses()}">${icon("plus")}<span>Add Client</span></button>
         <button id="logout" class="${buttonClasses()}">${icon("logout")}<span>Logout</span></button>
       </div>
@@ -1082,28 +1235,24 @@ async function renderPanel() {
 
     <section id="serverInfoPanel" class="mt-2"></section>
 
-    <section class="grid gap-3 sm:grid-cols-2 lg:grid-cols-6">
-      <div class="rounded-lg border border-[var(--line)] bg-[var(--panel)] p-4">
+    <section class="summary-cards mt-3">
+      <div class="rounded-lg border border-[var(--line)] bg-[var(--panel)] p-3">
         <p class="text-xs font-semibold uppercase text-[var(--muted)]">Active</p>
-        <strong id="metricActive" class="mt-2 block text-2xl">0</strong>
+        <strong id="metricActive" class="mt-1 block text-2xl">0</strong>
       </div>
-      <div class="rounded-lg border border-[var(--line)] bg-[var(--panel)] p-4">
+      <div class="rounded-lg border border-[var(--line)] bg-[var(--panel)] p-3">
         <p class="text-xs font-semibold uppercase text-[var(--muted)]">Clients</p>
-        <strong id="metricClients" class="mt-2 block text-2xl">0</strong>
+        <strong id="metricClients" class="mt-1 block text-2xl">0</strong>
       </div>
-      <div class="rounded-lg border border-[var(--line)] bg-[var(--panel)] p-4">
+      <div class="rounded-lg border border-[var(--line)] bg-[var(--panel)] p-3">
         <p class="text-xs font-semibold uppercase text-[var(--muted)]">Traffic Total</p>
-        <strong id="metricTrafficTotal" class="mt-2 block text-2xl">-</strong>
+        <strong id="metricTrafficTotal" class="mt-1 block text-2xl">-</strong>
         <p id="metricTrafficTotalSub" class="mt-1 text-xs text-[var(--muted)]">-</p>
       </div>
-      <div class="rounded-lg border border-[var(--line)] bg-[var(--panel)] p-4">
+      <div class="rounded-lg border border-[var(--line)] bg-[var(--panel)] p-3">
         <p class="text-xs font-semibold uppercase text-[var(--muted)]">30 Days</p>
-        <strong id="metricTraffic30d" class="mt-2 block text-2xl">-</strong>
+        <strong id="metricTraffic30d" class="mt-1 block text-2xl">-</strong>
         <p id="metricTraffic30dSub" class="mt-1 text-xs text-[var(--muted)]">-</p>
-      </div>
-      <div class="min-w-0 rounded-lg border border-[var(--line)] bg-[var(--panel)] p-4 sm:col-span-2">
-        <p class="text-xs font-semibold uppercase text-[var(--muted)]">Resolver</p>
-        <strong id="metricResolver" class="mt-2 flex min-w-0 items-center text-lg sm:text-2xl">-</strong>
       </div>
     </section>
 
@@ -1143,23 +1292,11 @@ async function renderPanel() {
       <div class="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h2 class="text-base font-semibold">Network Tester</h2>
-          <p class="text-sm text-[var(--muted)]">Run a lightweight browser-side quality test.</p>
+          <p class="text-sm text-[var(--muted)]">Run a browser-side quality test.</p>
         </div>
         <button id="startNettest" class="${primaryButtonClasses()}">${icon("refresh")}<span>Start test</span></button>
       </div>
-      <div class="nettest-grid mt-3">
-        <div>
-          <p class="text-xs font-semibold uppercase text-[var(--muted)]">Network type</p>
-          <div class="mt-2 inline-flex rounded-md border border-[var(--line)] bg-[var(--soft)] p-1">
-            <button type="button" data-nettest-type="mobile" class="h-8 rounded px-3 text-xs font-semibold transition">Mobile</button>
-            <button type="button" data-nettest-type="home" class="h-8 rounded px-3 text-xs font-semibold transition">Home</button>
-          </div>
-        </div>
-        <label class="block">
-          <span class="text-xs font-semibold uppercase text-[var(--muted)]">Optional comment</span>
-          <input id="nettestComment" class="mt-2 h-10 w-full rounded-md border border-[var(--line)] bg-[var(--soft)] px-3 text-sm text-[var(--text)] outline-none focus:border-[var(--accent)]" placeholder="home Wi-Fi, mobile LTE..." autocomplete="off">
-        </label>
-      </div>
+      ${nettestControlsHTML()}
       <div id="nettestContext" class="mt-3"></div>
       <p id="nettestStatus" class="mt-3 text-sm text-[var(--muted)]">Ready.</p>
       <div id="nettestResult" class="mt-3"></div>
@@ -1185,7 +1322,7 @@ async function renderPanel() {
         </div>
         <div class="flex flex-wrap gap-2">
           <button id="testWebAccessPolicy" class="${buttonClasses()}">${icon("shield")}<span>Test policy</span></button>
-          <button id="saveWebAccessPolicy" class="${primaryButtonClasses()}">${icon("download")}<span>Save</span></button>
+          <button id="saveWebAccessPolicy" class="${primaryButtonClasses()}">${icon("save")}<span>Save</span></button>
           <button id="saveRestartWebAccessPolicy" class="${buttonClasses("border-amber-600 text-amber-700")}">${icon("refresh")}<span>Save and restart</span></button>
         </div>
       </div>
@@ -1233,7 +1370,7 @@ async function renderPanel() {
   }
   if (nettestPage) {
     for (const selector of [
-      ".grid.gap-3.sm\\:grid-cols-2.lg\\:grid-cols-6",
+      ".summary-cards",
       "#trafficPanel",
       "#topTrafficPanel",
       "#serverHealthPanel",
@@ -1259,18 +1396,15 @@ async function loadAll() {
   if (isNetworkTesterPage()) {
     await loadServerInfo();
     try {
-      nettestContextState = await api("/api/nettest/context");
+      nettestContextState = await apiNettest(`${nettestApiBase()}/context`);
     } catch {
       nettestContextState = null;
     }
     renderNettestContext();
-    if (statusState.role === "super") await loadNettestReports();
+    if (statusState?.role === "super") await loadNettestReports();
     return;
   }
-  const [resolver] = await Promise.all([api("/api/resolver"), loadClients()]);
-  resolverState = resolver;
-  renderResolverMetric();
-  await loadServerInfo();
+  await Promise.all([loadClients(), loadServerInfo()]);
   try {
     nettestContextState = await api("/api/nettest/context");
   } catch {
@@ -2564,7 +2698,49 @@ function confirmModal(title, message, confirmLabel = "Continue", danger = true) 
   });
 }
 
+async function renderDirectNettest() {
+  app.innerHTML = `
+    <header class="flex flex-col gap-4 py-4 sm:flex-row sm:items-center sm:justify-between">
+      <div class="flex items-center gap-3">
+        <div class="grid h-11 w-11 place-items-center rounded-lg bg-[var(--accent)] text-lg font-black text-white">NT</div>
+        <div>
+          <h1 class="text-xl font-semibold leading-tight">Network Tester</h1>
+          <p class="text-sm text-[var(--muted)]">Quality check — no login required</p>
+        </div>
+      </div>
+      <div class="flex flex-wrap items-center gap-2">
+        <button id="themeToggle" class="${buttonClasses("w-9 px-0")}" title="Theme">${icon(document.documentElement.dataset.theme === "dark" ? "sun" : "moon")}</button>
+      </div>
+    </header>
+    <section class="mt-3 rounded-lg border border-[var(--line)] bg-[var(--panel)] p-4">
+      <div class="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h2 class="text-base font-semibold">Network Tester</h2>
+          <p class="text-sm text-[var(--muted)]">Run a lightweight browser-side quality test on this connection.</p>
+        </div>
+        <button id="startNettest" class="${primaryButtonClasses()}">${icon("refresh")}<span>Start test</span></button>
+      </div>
+      ${nettestControlsHTML()}
+      <div id="nettestContext" class="mt-3"></div>
+      <p id="nettestStatus" class="mt-3 text-sm text-[var(--muted)]">Ready.</p>
+      <div id="nettestResult" class="mt-3"></div>
+    </section>
+  `;
+  document.querySelector("#themeToggle").onclick = () => setTheme(document.documentElement.dataset.theme === "dark" ? "light" : "dark");
+  try {
+    nettestContextState = await apiNettest(`${nettestApiBase()}/context`);
+  } catch {
+    nettestContextState = null;
+  }
+  renderNettestContext();
+  bindNetworkTester();
+}
+
 async function boot() {
+  if (isDirectNettestMode()) {
+    await renderDirectNettest();
+    return;
+  }
   if (!token) {
     renderLogin();
     return;

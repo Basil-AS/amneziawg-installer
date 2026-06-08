@@ -97,13 +97,14 @@ NETTEST_LOCK = threading.Lock()
 NETTEST_ACTIVE = {}
 NETTEST_LAST_REPORT = {}
 NETTEST_REPORT_TIMES = {}
-NETTEST_ACTIVE_TTL = 120.0
+NETTEST_ACTIVE_TTL = 720.0
 NETTEST_REPORT_COOLDOWN = 60.0
 NETTEST_REPORTS_PER_HOUR = 12
 NETTEST_DEFAULT_DOWNLOAD_SIZE = 256 * 1024
 NETTEST_MAX_DOWNLOAD_SIZE = 1024 * 1024
 NETTEST_MAX_UPLOAD_SIZE = 512 * 1024
-NETTEST_MAX_REPORT_JSON = 256 * 1024
+NETTEST_MAX_REPORT_JSON = 512 * 1024
+VPN_NETTEST_PORT = 8088
 IP_INFO_CACHE_TTL = 7 * 24 * 3600
 IP_INFO_NEGATIVE_TTL = 3600
 IP_INFO_LOOKUP_TIMEOUT = 2.0
@@ -1341,20 +1342,29 @@ def server_info_payload():
     web_public_url = cfg.get("AWG_WEB_PUBLIC_URL") or f"https://{cfg.get('AWG_WEB_DOMAIN') or '194-180-189-244.sslip.io'}/"
     adguard_enabled = cfg.get("AWG_ADGUARD_ENABLED") == "1"
     adguard_url = f"http://{vpn_ipv4_host}:{cfg.get('AWG_ADGUARD_PORT') or '3000'}/" if adguard_enabled else ""
+    dns_mode = cfg.get("AWG_DNS_MODE", "system")
+    if dns_mode == "adguard":
+        dns_resolver = vpn_ipv4_host
+    elif dns_mode == "custom":
+        dns_resolver = cfg.get("AWG_CUSTOM_DNS", "1.1.1.1")
+    else:
+        dns_resolver = "1.1.1.1"
+    nettest_vpn_url = f"http://{vpn_ipv4_host}:{VPN_NETTEST_PORT}/nettest"
     return {
         "public_ipv4": public_ipv4,
         "public_ipv6": public_ipv6,
         "vpn_ipv4": vpn_ipv4,
         "vpn_ipv6": vpn_ipv6,
         "vpn_gateway_ipv4": vpn_ipv4_host,
+        "dns_resolver": dns_resolver,
         "web_public_url": web_public_url,
         "web_current_url": web_public_url,
         "adguard_url": adguard_url,
         "adguard_enabled": adguard_enabled,
         "nettest_url": "/nettest",
-        "nettest_vpn_url": "",
-        "nettest_vpn_url_available": False,
-        "nettest_vpn_note": "Dedicated VPN-only listener is not enabled; /nettest stays protected by bearer auth.",
+        "nettest_vpn_url": nettest_vpn_url,
+        "nettest_vpn_url_available": True,
+        "nettest_vpn_note": "",
         "route_mode": "amnezia-routes",
         "ipv6_mode": cfg.get("AWG_IPV6_MODE_EFFECTIVE") or cfg.get("AWG_IPV6_MODE") or "legacy",
         "preset": cfg.get("AWG_PRESET") or "",
@@ -1629,6 +1639,89 @@ def list_nettest_reports(limit=30):
             "upload_probe": data.get("upload_probe", {}),
         })
     return rows
+
+
+def is_vpn_internal_nettest(handler):
+    """Return True only when request arrives via the VPN-only nginx listener."""
+    socket_ip = handler.client_address[0] if getattr(handler, "client_address", None) else ""
+    if socket_ip not in ("127.0.0.1", "::1"):
+        return False
+    return handler.headers.get("X-AWG-Internal-Nettest") == "1"
+
+
+def vpn_client_ip_from_handler(handler):
+    """Return VPN client IP from X-Real-IP (set by nginx from $remote_addr)."""
+    raw = (handler.headers.get("X-Real-IP") or "").strip()
+    try:
+        return str(ipaddress.ip_address(raw))
+    except ValueError:
+        return ""
+
+
+def _vpn_ip_safe(ip):
+    """Convert IP to filename-safe string: 10.9.9.5 -> 10-9-9-5."""
+    return (ip or "").replace(".", "-").replace(":", "-") or "unknown"
+
+
+def save_nettest_report_vpn(handler, body):
+    """Save a network test report for VPN-only (unauthenticated) mode."""
+    network_type = clean_network_type(body.get("network_type"))
+    test_id = clean_nettest_id(body.get("test_id", ""))
+    vpn_ip = vpn_client_ip_from_handler(handler)
+    client_ip = vpn_ip or "unknown"
+    rate_stub = {"role": "vpn_anon", "hash": hashlib.sha256(client_ip.encode("utf-8")).hexdigest()[:8]}
+    if not check_nettest_report_rate(rate_stub, client_ip):
+        raise ValueError("nettest report rate limited")
+    created_at = utc_now_iso()
+    stamp = time.strftime("%Y%m%d-%H%M%S", time.gmtime())
+    NETTEST_REPORT_DIR.mkdir(parents=True, exist_ok=True)
+    os.chmod(NETTEST_REPORT_DIR, 0o700)
+    browser = body.get("browser_connection") if isinstance(body.get("browser_connection"), dict) else {}
+    latency = body.get("latency") if isinstance(body.get("latency"), dict) else {}
+    download_probe = body.get("download_probe") if isinstance(body.get("download_probe"), dict) else {}
+    upload_probe = body.get("upload_probe") if isinstance(body.get("upload_probe"), dict) else {}
+    stall_events = body.get("stall_events") if isinstance(body.get("stall_events"), list) else []
+    timeline_summary = body.get("timeline_summary") if isinstance(body.get("timeline_summary"), dict) else {}
+    duration_seconds = int(body.get("duration_seconds") or 0)
+    probe_interval_ms = int(body.get("probe_interval_ms") or 1000)
+    started_at = str(body.get("started_at") or created_at)[:30]
+    finished_at = str(body.get("finished_at") or created_at)[:30]
+    report = {
+        "version": 2,
+        "created_at": created_at,
+        "test_id": test_id,
+        "network_type": network_type,
+        "comment": clean_report_comment(body.get("comment", "")),
+        "vpn_client_ip": client_ip,
+        "client_ip": client_ip,
+        "socket_remote_ip": handler.client_address[0] if getattr(handler, "client_address", None) else "",
+        "trusted_proxy_used": True,
+        "vpn_only_mode": True,
+        "user_agent": str(body.get("user_agent") or handler.headers.get("User-Agent", ""))[:500],
+        "browser_connection": browser,
+        "duration_seconds": duration_seconds,
+        "probe_interval_ms": probe_interval_ms,
+        "started_at": started_at,
+        "finished_at": finished_at,
+        "latency": latency,
+        "download_probe": download_probe,
+        "upload_probe": upload_probe,
+        "stall_events": stall_events[:100],
+        "timeline_summary": timeline_summary,
+        "context": nettest_context_payload(),
+    }
+    report["assessment"] = nettest_assessment(report)
+    ip_safe = _vpn_ip_safe(client_ip)
+    filename = f"nettest_{network_type}_{stamp}_{ip_safe}.json"
+    path = NETTEST_REPORT_DIR / filename
+    tmp = NETTEST_REPORT_DIR / f".{filename}.tmp.{os.getpid()}"
+    tmp.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, path)
+    os.chmod(path, 0o600)
+    clear_nettest_session(rate_stub, client_ip, test_id)
+    audit_log(f"Saved VPN-only network test report type={network_type} vpn_client_ip={client_ip}")
+    return {"ok": True, "filename": filename, "report": report}
 
 
 def token_hash(token):
@@ -3400,11 +3493,114 @@ class Handler(SimpleHTTPRequestHandler):
         url = f"{self.request_base_url()}/import/{quote(name)}/{quote(token)}"
         self.send_json({"url": url, "expires_at": now + ttl, "ttl": ttl, "one_time": one_time})
 
+    def _handle_vpn_nettest_get(self, u):
+        vpn_ip = vpn_client_ip_from_handler(self)
+        if not check_rate_limit(vpn_ip or self.client_address[0]):
+            self.send_api_error(HTTPStatus.TOO_MANY_REQUESTS, "rate_limited")
+            return
+        query = parse_qs(u.query)
+        stub = {"role": "vpn_anon", "hash": hashlib.sha256((vpn_ip or "").encode()).hexdigest()[:8]}
+        if u.path == "/api/nettest-public/context":
+            self.send_json(nettest_context_payload())
+            return
+        if u.path == "/api/nettest-public/ping":
+            nonce = str((query.get("n") or [""])[0])[:64]
+            try:
+                test_id = clean_nettest_id((query.get("test_id") or [""])[0])
+            except ValueError as exc:
+                self.send_json({"error": str(exc)}, 400)
+                return
+            if test_id and not reserve_nettest_session(stub, vpn_ip, test_id):
+                self.send_json({"error": "nettest already active"}, HTTPStatus.TOO_MANY_REQUESTS)
+                return
+            self.send_json({"ok": True, "server_time": utc_now_iso(), "nonce": nonce, "vpn_client_ip": vpn_ip})
+            return
+        if u.path == "/api/nettest-public/download":
+            try:
+                test_id = clean_nettest_id((query.get("test_id") or [""])[0])
+            except ValueError as exc:
+                self.send_json({"error": str(exc)}, 400)
+                return
+            if test_id and not reserve_nettest_session(stub, vpn_ip, test_id):
+                self.send_json({"error": "nettest already active"}, HTTPStatus.TOO_MANY_REQUESTS)
+                return
+            try:
+                size = int((query.get("size") or [str(NETTEST_DEFAULT_DOWNLOAD_SIZE)])[0])
+            except (TypeError, ValueError):
+                size = NETTEST_DEFAULT_DOWNLOAD_SIZE
+            size = max(1, min(size, NETTEST_MAX_DOWNLOAD_SIZE))
+            pattern = b"amneziawg-nettest-" * 1024
+            data = (pattern * ((size // len(pattern)) + 1))[:size]
+            self.send_response(200)
+            self.send_header("Content-Type", "application/octet-stream")
+            self.send_header("Content-Length", str(len(data)))
+            self.send_security_headers()
+            if not self.finish_response_headers():
+                return
+            self.write_response_body(data)
+            return
+        self.send_error(404)
+
+    def _handle_vpn_nettest_post(self, u):
+        vpn_ip = vpn_client_ip_from_handler(self)
+        if not check_rate_limit(vpn_ip or self.client_address[0]):
+            self.send_api_error(HTTPStatus.TOO_MANY_REQUESTS, "rate_limited")
+            return
+        stub = {"role": "vpn_anon", "hash": hashlib.sha256((vpn_ip or "").encode()).hexdigest()[:8]}
+        if u.path == "/api/nettest-public/upload":
+            try:
+                test_id = clean_nettest_id(self.headers.get("X-Nettest-Id", ""))
+            except ValueError:
+                test_id = ""
+            if test_id and not reserve_nettest_session(stub, vpn_ip, test_id):
+                self.send_json({"error": "nettest already active"}, HTTPStatus.TOO_MANY_REQUESTS)
+                return
+            try:
+                size = int(self.headers.get("Content-Length", "0") or 0)
+            except (TypeError, ValueError):
+                size = 0
+            if size < 0 or size > NETTEST_MAX_UPLOAD_SIZE:
+                self.send_error(HTTPStatus.REQUEST_ENTITY_TOO_LARGE)
+                return
+            remaining = size
+            received = 0
+            while remaining > 0:
+                chunk = self.rfile.read(min(remaining, 65536))
+                if not chunk:
+                    break
+                received += len(chunk)
+                remaining -= len(chunk)
+            self.send_json({"ok": True, "bytes": received, "max_bytes": NETTEST_MAX_UPLOAD_SIZE})
+            return
+        if u.path == "/api/nettest-public/report":
+            try:
+                body = json_body_from_handler(self, NETTEST_MAX_REPORT_JSON)
+            except ValueError as exc:
+                if str(exc) == "payload too large":
+                    return
+                self.send_json({"error": str(exc)}, 400)
+                return
+            try:
+                self.send_json(save_nettest_report_vpn(self, body))
+            except ValueError as exc:
+                if str(exc) == "nettest report rate limited":
+                    self.send_json({"error": "rate limited"}, HTTPStatus.TOO_MANY_REQUESTS)
+                    return
+                self.send_json({"error": str(exc)}, 400)
+            return
+        self.send_error(404)
+
     def do_GET(self):
+        u = urlparse(self.path)
+        if u.path.startswith("/api/nettest-public/"):
+            if not is_vpn_internal_nettest(self):
+                self.send_api_error(HTTPStatus.FORBIDDEN, "forbidden")
+                return
+            self._handle_vpn_nettest_get(u)
+            return
         auth = self.api_auth()
         if auth is None:
             return
-        u = urlparse(self.path)
         if auth["role"] == "static":
             m_import = re.match(r"^/import/([^/]+)/([^/]+)$", u.path)
             if m_import:
@@ -3640,10 +3836,16 @@ class Handler(SimpleHTTPRequestHandler):
             self.send_json({"name": name, "ports": (peer or {}).get("p2p_ports", [])})
 
     def do_POST(self):
+        u = urlparse(self.path)
+        if u.path.startswith("/api/nettest-public/"):
+            if not is_vpn_internal_nettest(self):
+                self.send_api_error(HTTPStatus.FORBIDDEN, "forbidden")
+                return
+            self._handle_vpn_nettest_post(u)
+            return
         auth = self.api_auth()
         if auth is None:
             return
-        u = urlparse(self.path)
         try:
             if u.path == "/api/nettest/upload":
                 test_id = clean_nettest_id(self.headers.get("X-Nettest-Id", ""))
