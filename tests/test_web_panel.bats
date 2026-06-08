@@ -918,6 +918,7 @@ spec.loader.exec_module(server)
 assert set(server.STATIC_FILES) == {
     "/",
     "/index.html",
+    "/nettest",
     "/style.css",
     "/app.js",
     "/i1.js",
@@ -2056,12 +2057,88 @@ PY
 @test "web health collection uses lightweight proc/sysfs sources" {
     local server="$BATS_TEST_DIRNAME/../web/server.py"
     grep -qF 'SERVER_HEALTH_CACHE_TTL = 5.0' "$server"
+    grep -qF 'SERVER_HEALTH_SAMPLE_INTERVAL = 10.0' "$server"
+    grep -qF 'HEALTH_HISTORY_DIR = WEB_DIR / "health_history"' "$server"
+    grep -qF '"10m": 10 * 60' "$server"
+    grep -qF '"30d": 30 * 24 * 60 * 60' "$server"
     grep -qF '"/proc/loadavg"' "$server"
     grep -qF '"/proc/stat"' "$server"
     grep -qF '"/proc/meminfo"' "$server"
     grep -qF 'os.statvfs' "$server"
     grep -qF '"/sys/class/net"' "$server"
     grep -qF '"/proc/sys/net/netfilter/nf_conntrack_count"' "$server"
+}
+
+@test "web server health history aggregates JSONL samples without secrets" {
+    command -v python3 &>/dev/null || skip "python3 not available"
+    local tmp
+    tmp=$(mktemp -d)
+    mkdir -p "$tmp/web/health_history"
+    AWG_DIR="$tmp" SERVER_CONF_FILE="$tmp/awg0.conf" REPO_ROOT="$BATS_TEST_DIRNAME/.." python3 - <<'PY'
+import importlib.util
+import json
+import os
+import time
+from pathlib import Path
+
+spec = importlib.util.spec_from_file_location("panel_server", Path(os.environ["REPO_ROOT"]) / "web" / "server.py")
+server = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(server)
+now = int(time.time())
+path = Path(os.environ["AWG_DIR"]) / "web" / "health_history" / time.strftime("samples-%Y%m%d.jsonl", time.gmtime(now))
+rows = [
+    {"ts": now - 120, "timestamp": "old", "status": "ok", "cpu_usage_percent": 10, "memory_used_percent": 20, "memory_available_bytes": 800, "disk_used_percent": 50, "disk_free_bytes": 400, "conntrack_count": 10, "conntrack_used_percent": 1, "wan_rx_dropped": 0, "wan_tx_dropped": 0, "vpn_rx_dropped": 0, "vpn_tx_dropped": 0, "wan_rx_errors": 0, "wan_tx_errors": 0, "vpn_rx_errors": 0, "vpn_tx_errors": 0, "python_rss_bytes": 1000, "python_fd_count": 4, "python_threads": 1},
+    {"ts": now - 10, "timestamp": "new", "status": "warn", "cpu_usage_percent": 80, "memory_used_percent": 40, "memory_available_bytes": 600, "disk_used_percent": 51, "disk_free_bytes": 390, "conntrack_count": 20, "conntrack_used_percent": 2, "wan_rx_dropped": 2, "wan_tx_dropped": 0, "vpn_rx_dropped": 1, "vpn_tx_dropped": 0, "wan_rx_errors": 0, "wan_tx_errors": 1, "vpn_rx_errors": 0, "vpn_tx_errors": 0, "python_rss_bytes": 2000, "python_fd_count": 8, "python_threads": 2},
+]
+path.write_text("".join(json.dumps(row) + "\n" for row in rows))
+out = server.server_health_history("10m")
+assert out["range"] == "10m"
+assert out["bucket_seconds"] == 60
+assert out["summary"]["cpu"]["max"] == 80
+assert out["summary"]["network"]["drops_delta"] == 3
+assert out["summary"]["network"]["errors_delta"] == 1
+assert out["summary"]["process"]["max_fd_count"] == 8
+assert "token" not in json.dumps(out).lower()
+try:
+    server.server_health_history("../bad")
+except ValueError:
+    pass
+else:
+    raise AssertionError("invalid range accepted")
+PY
+    rm -rf "$tmp"
+}
+
+@test "web server info exposes safe address and link context" {
+    command -v python3 &>/dev/null || skip "python3 not available"
+    local tmp
+    tmp=$(mktemp -d)
+    mkdir -p "$tmp/web"
+    cat > "$tmp/awgsetup_cfg.init" <<'CFG'
+export AWG_ENDPOINT='194.180.189.244'
+export AWG_TUNNEL_SUBNET='10.9.9.1/24'
+export AWG_WEB_PUBLIC_URL='https://194-180-189-244.sslip.io/'
+export AWG_ADGUARD_ENABLED=1
+export AWG_ADGUARD_PORT=3000
+export AWG_IPV6_ENABLED=0
+export AWG_IPV6_MODE='legacy'
+export AWG_PRESET='mobile'
+CFG
+    AWG_DIR="$tmp" SERVER_CONF_FILE="$tmp/awg0.conf" REPO_ROOT="$BATS_TEST_DIRNAME/.." python3 - <<'PY'
+import importlib.util
+import os
+from pathlib import Path
+spec = importlib.util.spec_from_file_location("panel_server", Path(os.environ["REPO_ROOT"]) / "web" / "server.py")
+server = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(server)
+info = server.server_info_payload()
+assert info["public_ipv4"] == "194.180.189.244"
+assert info["vpn_ipv4"] == "10.9.9.1/24"
+assert info["adguard_url"] == "http://10.9.9.1:3000/"
+assert info["nettest_url"] == "/nettest"
+assert info["nettest_vpn_url_available"] is False
+PY
+    rm -rf "$tmp"
 }
 
 @test "network tester endpoints require auth and cap payloads" {
@@ -2210,15 +2287,66 @@ PY
 
 @test "web app exposes server health and network tester UI" {
     local app="$BATS_TEST_DIRNAME/../web/app.js"
+    local server="$BATS_TEST_DIRNAME/../web/server.py"
+    grep -qF '"/nettest": ("index.html"' "$server"
     grep -qF 'Server Health' "$app"
     grep -qF 'Network Tester' "$app"
+    grep -qF 'Server addresses' "$app"
+    grep -qF 'quick-links' "$app"
     grep -qF '/api/server-health' "$app"
+    grep -qF '/api/server-health/history?range=' "$app"
+    grep -qF '/api/server-info' "$app"
     grep -qF '/api/nettest/ping' "$app"
     grep -qF '/api/nettest/download?size=262144' "$app"
     grep -qF '/api/nettest/upload' "$app"
     grep -qF '/api/nettest/report' "$app"
     grep -qF 'X-Nettest-Id' "$app"
+    grep -qF 'SERVER_HEALTH_RANGES = ["10m", "1h", "6h", "12h", "24h", "3d", "7d", "30d"]' "$app"
+    grep -qF 'serverHealthRange' "$app"
+    grep -qF 'isNetworkTesterPage' "$app"
+    grep -qF 'nettestContext' "$app"
+    grep -qF 'Connection parameters' "$app"
     grep -qF 'data-nettest-type="mobile"' "$app"
     grep -qF 'data-nettest-type="home"' "$app"
     grep -qF 'NETTEST_PING_SAMPLES = 30' "$app"
+}
+
+@test "nettest context includes Amnezia parameter assessment" {
+    command -v python3 &>/dev/null || skip "python3 not available"
+    local tmp
+    tmp=$(mktemp -d)
+    mkdir -p "$tmp/web"
+    cat > "$tmp/awgsetup_cfg.init" <<'CFG'
+export AWG_MTU=1280
+export AWG_PRESET='mobile'
+export AWG_IPV6_MODE='legacy'
+export AWG_P2P_PORTS_PER_CLIENT=3
+export AWG_Jc=3
+export AWG_Jmin=34
+export AWG_Jmax=75
+export AWG_S1=86
+export AWG_S2=65
+export AWG_S3=33
+export AWG_S4=16
+export AWG_H1='1-2'
+export AWG_H2='3-4'
+export AWG_H3='5-6'
+export AWG_H4='7-8'
+CFG
+    AWG_DIR="$tmp" SERVER_CONF_FILE="$tmp/awg0.conf" REPO_ROOT="$BATS_TEST_DIRNAME/.." python3 - <<'PY'
+import importlib.util
+import os
+from pathlib import Path
+spec = importlib.util.spec_from_file_location("panel_server", Path(os.environ["REPO_ROOT"]) / "web" / "server.py")
+server = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(server)
+ctx = server.nettest_context_payload()
+assert ctx["preset"] == "mobile"
+assert ctx["awg"]["mtu"] == 1280
+assert ctx["awg"]["persistent_keepalive"] == 25
+assert ctx["awg"]["h_ranges_present"] is True
+assert ctx["assessment"]["mobile"]["status"] == "ok"
+assert "MTU 1280 is conservative" in ctx["assessment"]["mobile"]["notes"]
+PY
+    rm -rf "$tmp"
 }

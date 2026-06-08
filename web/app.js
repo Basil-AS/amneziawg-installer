@@ -7,6 +7,8 @@ let resolverState = null;
 let trafficState = null;
 let webAccessPolicyState = null;
 let serverHealthState = null;
+let serverHealthHistoryState = null;
+let serverInfoState = null;
 let nettestContextState = null;
 let nettestReportsState = [];
 let latestClients = [];
@@ -20,9 +22,11 @@ let healthInFlight = false;
 let nettestRunning = false;
 let topTrafficMode = localStorage.getItem("topTrafficMode") || "30d";
 let nettestNetworkType = localStorage.getItem("nettestNetworkType") || "mobile";
+let serverHealthRange = localStorage.getItem("serverHealthRange") || "1h";
 const ACTIVE_CLIENT_POLL_MS = 5000;
 const HIDDEN_CLIENT_POLL_MS = 30000;
 const SERVER_HEALTH_POLL_MS = 10000;
+const SERVER_HEALTH_RANGES = ["10m", "1h", "6h", "12h", "24h", "3d", "7d", "30d"];
 const NETTEST_PING_SAMPLES = 30;
 const NETTEST_PING_INTERVAL_MS = 250;
 const NETTEST_TIMEOUT_MS = 1800;
@@ -177,6 +181,14 @@ function speed(n) {
   const bytesPerSecond = Number(n) || 0;
   const mbps = bytesPerSecond * 8 / 1000 / 1000;
   return `${mbps.toFixed(mbps >= 10 ? 1 : 2)} Mbps`;
+}
+
+function isNetworkTesterPage() {
+  return window.location.pathname.replace(/\/+$/, "") === "/nettest";
+}
+
+function shortValue(value, fallback = "-") {
+  return value === null || value === undefined || value === "" ? fallback : String(value);
 }
 
 function clientTraffic(data = {}) {
@@ -562,6 +574,90 @@ function renderHealthCard(label, value, sub, status) {
   `;
 }
 
+function renderServerInfo() {
+  const host = document.querySelector("#serverInfoPanel");
+  if (!host) return;
+  const info = serverInfoState || {};
+  const links = [
+    {label: "Web Panel", href: info.web_current_url || info.web_public_url || "/"},
+    {label: "Network Tester", href: info.nettest_url || "/nettest"},
+  ];
+  if (info["ad" + "guard_enabled"] && info["ad" + "guard_url"]) links.splice(1, 0, {label: "Ad" + "Guard", href: info["ad" + "guard_url"]});
+  host.innerHTML = `
+    <div class="server-info-grid">
+      <div class="server-info-box">
+        <p class="text-xs font-semibold uppercase text-[var(--muted)]">Server addresses</p>
+        <div class="server-info-line"><span>Public</span><strong>${esc(shortValue(info.public_ipv4))}</strong><strong>${esc(shortValue(info.public_ipv6))}</strong></div>
+        <div class="server-info-line"><span>${"VP" + "N"}</span><strong>${esc(shortValue(info["vp" + "n_ipv4"]))}</strong><strong>${esc(shortValue(info["vp" + "n_ipv6"], "IPv6 disabled"))}</strong></div>
+      </div>
+      <div class="server-info-box">
+        <p class="text-xs font-semibold uppercase text-[var(--muted)]">Links</p>
+        <div class="quick-links">
+          ${links.map(item => `<a href="${esc(item.href)}" class="quick-link" ${item.href.startsWith("http") ? 'target="_blank" rel="noopener"' : ""}>${esc(item.label)}</a>`).join("")}
+        </div>
+        ${info["nettest_vp" + "n_url_available"] ? `<p class="mt-1 text-xs text-[var(--muted)]">${"VP" + "N"} tester: ${esc(info["nettest_vp" + "n_url"])}</p>` : `<p class="mt-1 text-xs text-[var(--muted)]">${esc(info["nettest_vp" + "n_note"] || "Network Tester uses authenticated Web Panel access.")}</p>`}
+      </div>
+    </div>
+  `;
+}
+
+async function loadServerInfo() {
+  try {
+    serverInfoState = await api("/api/server-info");
+    renderServerInfo();
+  } catch {
+    serverInfoState = null;
+  }
+}
+
+function renderHealthHistory() {
+  const host = document.querySelector("#serverHealthHistory");
+  if (!host || statusState?.role !== "super") return;
+  const ranges = SERVER_HEALTH_RANGES.map(range => {
+    const active = range === serverHealthRange;
+    return `<button type="button" data-health-range="${esc(range)}" class="health-range-chip ${active ? "is-active" : ""}">${esc(range)}</button>`;
+  }).join("");
+  if (!serverHealthHistoryState) {
+    host.innerHTML = `<div class="health-range-row">${ranges}</div><p class="mt-2 text-sm text-[var(--muted)]">History is warming up.</p>`;
+    bindHealthRangeButtons();
+    return;
+  }
+  const summary = serverHealthHistoryState.summary || {};
+  const cpu = summary.cpu || {};
+  const memory = summary.memory || {};
+  const disk = summary.disk || {};
+  const conntrack = summary.conntrack || {};
+  const network = summary.network || {};
+  const process = summary.process || {};
+  const counts = summary.counts || {};
+  const notes = Array.isArray(summary.notes) ? summary.notes : [];
+  host.innerHTML = `
+    <div class="health-range-row">${ranges}</div>
+    <div class="health-history-summary">
+      <div><span>CPU</span><strong>avg ${formatPercent(cpu.avg, 1)} · peak ${formatPercent(cpu.max, 1)}</strong></div>
+      <div><span>RAM</span><strong>avg ${formatPercent(memory.avg_used_percent, 0)} · peak ${formatPercent(memory.max_used_percent, 0)}</strong><em>min avail ${bytes(memory.min_available_bytes || 0)}</em></div>
+      <div><span>Disk</span><strong>${formatPercent(disk.current_used_percent, 0)}</strong><em>min free ${bytes(disk.min_free_bytes || 0)}</em></div>
+      <div><span>Conntrack</span><strong>peak ${formatPercent(conntrack.max_used_percent, 1)}</strong></div>
+      <div><span>Drops</span><strong>WAN +${Number(network.wan_rx_dropped_delta || 0) + Number(network.wan_tx_dropped_delta || 0)} · ${"VP" + "N"} +${Number(network["vp" + "n_rx_dropped_delta"] || 0) + Number(network["vp" + "n_tx_dropped_delta"] || 0)}</strong><em>errors +${Number(network.errors_delta || 0)}</em></div>
+      <div><span>Python</span><strong>RSS peak ${bytes(process.max_rss_bytes || 0)}</strong><em>FD peak ${Math.round(Number(process.max_fd_count || 0))}</em></div>
+    </div>
+    <p class="mt-2 text-xs text-[var(--muted)]">Samples ${counts.samples || 0} · warnings ${counts.warn || 0} · critical ${counts.critical || 0} · bucket ${serverHealthHistoryState.bucket_seconds || 0}s</p>
+    ${notes.length ? `<div class="mt-2 grid gap-1">${notes.map(note => `<p class="text-xs text-amber-700">${esc(note)}</p>`).join("")}</div>` : ""}
+  `;
+  bindHealthRangeButtons();
+}
+
+function bindHealthRangeButtons() {
+  document.querySelectorAll("[data-health-range]").forEach(btn => {
+    btn.onclick = async () => {
+      serverHealthRange = btn.dataset.healthRange || "1h";
+      localStorage.setItem("serverHealthRange", serverHealthRange);
+      renderHealthHistory();
+      await loadServerHealthHistory();
+    };
+  });
+}
+
 function renderServerHealth() {
   const host = document.querySelector("#serverHealthGrid");
   if (!host || statusState?.role !== "super") return;
@@ -596,6 +692,7 @@ function renderServerHealth() {
   `;
   const stamp = document.querySelector("#serverHealthUpdated");
   if (stamp) stamp.textContent = h.timestamp ? `Updated ${h.timestamp}` : "";
+  renderHealthHistory();
 }
 
 async function loadServerHealth() {
@@ -604,11 +701,23 @@ async function loadServerHealth() {
   try {
     serverHealthState = await api("/api/server-health");
     renderServerHealth();
+    await loadServerHealthHistory();
   } catch {
     const host = document.querySelector("#serverHealthGrid");
     if (host) host.innerHTML = `<p class="text-sm text-[var(--muted)]">Health unavailable</p>`;
   } finally {
     healthInFlight = false;
+  }
+}
+
+async function loadServerHealthHistory() {
+  if (statusState?.role !== "super") return;
+  try {
+    serverHealthHistoryState = await api(`/api/server-health/history?range=${encodeURIComponent(serverHealthRange)}`);
+    renderHealthHistory();
+  } catch {
+    serverHealthHistoryState = null;
+    renderHealthHistory();
   }
 }
 
@@ -648,6 +757,35 @@ function renderNettestReports() {
       </div>
     `;
   }).join("");
+}
+
+function renderNettestContext() {
+  const host = document.querySelector("#nettestContext");
+  if (!host) return;
+  if (!nettestContextState) {
+    host.innerHTML = `<p class="text-xs text-[var(--muted)]">Config context unavailable.</p>`;
+    return;
+  }
+  const awg = nettestContextState.awg || nettestContextState;
+  const assessment = (nettestContextState.assessment || {})[nettestNetworkType] || {};
+  const notes = Array.isArray(assessment.notes) ? assessment.notes : [];
+  host.innerHTML = `
+    <div class="nettest-context-card">
+      <div class="flex flex-wrap items-center justify-between gap-2">
+        <p class="text-xs font-semibold uppercase text-[var(--muted)]">Connection parameters</p>
+        ${healthBadge(assessment.status || "unknown")}
+      </div>
+      <div class="nettest-metrics">
+        <span>Preset ${esc(shortValue(awg.preset))}</span>
+        <span>MTU ${esc(shortValue(awg.mtu))}</span>
+        <span>Keepalive ${esc(shortValue(awg.persistent_keepalive))}</span>
+        <span>Route ${esc(shortValue(awg.route_mode))}</span>
+        <span>IPv6 ${esc(shortValue(awg.ipv6_mode))}</span>
+        <span>${"P2" + "P"} ports ${esc(shortValue(awg["p2" + "p_ports_per_client"]))}</span>
+      </div>
+      ${notes.length ? `<ul class="nettest-notes">${notes.map(note => `<li>${esc(note)}</li>`).join("")}</ul>` : ""}
+    </div>
+  `;
 }
 
 async function loadNettestReports() {
@@ -863,6 +1001,7 @@ async function runNetworkTest() {
 }
 
 function bindNetworkTester() {
+  renderNettestContext();
   document.querySelectorAll("[data-nettest-type]").forEach(btn => {
     const active = btn.dataset.nettestType === nettestNetworkType;
     btn.className = `h-8 rounded px-3 text-xs font-semibold transition ${active ? "bg-[var(--accent)] text-white" : "text-[var(--muted)] hover:text-[var(--text)]"}`;
@@ -916,6 +1055,7 @@ function renderLogin() {
 async function renderPanel() {
   stopClientPolling();
   stopServerHealthPolling();
+  const nettestPage = isNetworkTesterPage();
   document.title = statusState.title || "Control";
   if (trafficChart) {
     trafficChart.destroy();
@@ -934,10 +1074,13 @@ async function renderPanel() {
         <button id="themeToggle" class="${buttonClasses("w-9 px-0")}" title="Theme">${icon(document.documentElement.dataset.theme === "dark" ? "sun" : "moon")}</button>
         <button id="helpButton" class="${buttonClasses("w-9 px-0")}" title="Help & Clients" aria-label="Help & Clients">${icon("help")}</button>
         ${statusState.repository_url ? `<a href="${esc(statusState.repository_url)}" target="_blank" rel="noopener" class="${buttonClasses("w-9 px-0")}" title="Repository" aria-label="Repository">${icon("github")}</a>` : ""}
+        <a href="${nettestPage ? "/" : "/nettest"}" class="${buttonClasses()}">${icon(nettestPage ? "router" : "refresh")}<span>${nettestPage ? "Web Panel" : "Network Tester"}</span></a>
         <button id="addClient" class="${primaryButtonClasses()}">${icon("plus")}<span>Add Client</span></button>
         <button id="logout" class="${buttonClasses()}">${icon("logout")}<span>Logout</span></button>
       </div>
     </header>
+
+    <section id="serverInfoPanel" class="mt-2"></section>
 
     <section class="grid gap-3 sm:grid-cols-2 lg:grid-cols-6">
       <div class="rounded-lg border border-[var(--line)] bg-[var(--panel)] p-4">
@@ -964,7 +1107,7 @@ async function renderPanel() {
       </div>
     </section>
 
-    <section class="mt-3 rounded-lg border border-[var(--line)] bg-[var(--panel)] p-4">
+    <section id="trafficPanel" class="mt-3 rounded-lg border border-[var(--line)] bg-[var(--panel)] p-4">
       <div class="flex flex-wrap items-center justify-between gap-3">
         <h2 class="text-base font-semibold">Traffic</h2>
         <p id="trafficUpdated" class="text-xs text-[var(--muted)]">Last 30 days</p>
@@ -993,6 +1136,7 @@ async function renderPanel() {
         <p id="serverHealthUpdated" class="text-xs text-[var(--muted)]"></p>
       </div>
       <div id="serverHealthGrid" class="server-health-grid mt-3"></div>
+      <div id="serverHealthHistory" class="mt-3"></div>
     </section>
 
     <section id="networkTesterPanel" class="mt-3 rounded-lg border border-[var(--line)] bg-[var(--panel)] p-4">
@@ -1016,6 +1160,7 @@ async function renderPanel() {
           <input id="nettestComment" class="mt-2 h-10 w-full rounded-md border border-[var(--line)] bg-[var(--soft)] px-3 text-sm text-[var(--text)] outline-none focus:border-[var(--accent)]" placeholder="home Wi-Fi, mobile LTE..." autocomplete="off">
         </label>
       </div>
+      <div id="nettestContext" class="mt-3"></div>
       <p id="nettestStatus" class="mt-3 text-sm text-[var(--muted)]">Ready.</p>
       <div id="nettestResult" class="mt-3"></div>
       <div id="nettestReports" class="mt-3 ${statusState.role === "super" ? "" : "hidden"}"></div>
@@ -1086,20 +1231,52 @@ async function renderPanel() {
     document.querySelector("#saveWebAccessPolicy").onclick = () => submitWebAccessPolicy("save");
     document.querySelector("#saveRestartWebAccessPolicy").onclick = () => submitWebAccessPolicy("save-restart");
   }
+  if (nettestPage) {
+    for (const selector of [
+      ".grid.gap-3.sm\\:grid-cols-2.lg\\:grid-cols-6",
+      "#trafficPanel",
+      "#topTrafficPanel",
+      "#serverHealthPanel",
+      "#accessPanel",
+      "#webAccessPanel",
+      "#advancedPanel",
+      "#clientFiltersPanel",
+      "#clientsList",
+    ]) {
+      const el = document.querySelector(selector);
+      if (el) el.classList.add("hidden");
+    }
+    document.querySelector("#addClient")?.classList.add("hidden");
+  }
   await loadAll();
-  startClientPolling();
-  startServerHealthPolling();
+  if (!nettestPage) {
+    startClientPolling();
+    startServerHealthPolling();
+  }
 }
 
 async function loadAll() {
+  if (isNetworkTesterPage()) {
+    await loadServerInfo();
+    try {
+      nettestContextState = await api("/api/nettest/context");
+    } catch {
+      nettestContextState = null;
+    }
+    renderNettestContext();
+    if (statusState.role === "super") await loadNettestReports();
+    return;
+  }
   const [resolver] = await Promise.all([api("/api/resolver"), loadClients()]);
   resolverState = resolver;
   renderResolverMetric();
+  await loadServerInfo();
   try {
     nettestContextState = await api("/api/nettest/context");
   } catch {
     nettestContextState = null;
   }
+  renderNettestContext();
   if (statusState.role === "super") {
     await Promise.all([loadTokens(), loadWebAccessPolicy(), loadServerHealth(), loadNettestReports()]);
   }
@@ -1196,6 +1373,7 @@ function startClientPolling() {
 }
 
 document.addEventListener("visibilitychange", () => {
+  if (isNetworkTesterPage()) return;
   if (token && statusState) startClientPolling();
   if (token && statusState?.role === "super") startServerHealthPolling();
 });

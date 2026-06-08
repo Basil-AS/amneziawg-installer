@@ -33,6 +33,7 @@ TRAFFIC_FILE = WEB_DIR / "traffic_history.json"
 CLIENT_METADATA_FILE = WEB_DIR / "client_metadata.json"
 IP_INFO_CACHE_FILE = WEB_DIR / "ip_cache.json"
 NETTEST_REPORT_DIR = WEB_DIR / "nettest_reports"
+HEALTH_HISTORY_DIR = WEB_DIR / "health_history"
 LEGACY_TOKEN_FILE = WEB_DIR / "auth_token"
 NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 TOKEN_HASH_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -41,6 +42,7 @@ I1_RE = re.compile(r"^[<>a-fA-F0-9xbr\s]+$")
 STATIC_FILES = {
     "/": ("index.html", "text/html; charset=utf-8"),
     "/index.html": ("index.html", "text/html; charset=utf-8"),
+    "/nettest": ("index.html", "text/html; charset=utf-8"),
     "/style.css": ("style.css", "text/css; charset=utf-8"),
     "/app.js": ("app.js", "application/javascript; charset=utf-8"),
     "/i1.js": ("awg_i1.js", "application/javascript; charset=utf-8"),
@@ -76,6 +78,21 @@ SERVER_HEALTH_CACHE = None
 SERVER_HEALTH_CACHE_TS = 0.0
 SERVER_HEALTH_PREV_CPU = None
 SERVER_HEALTH_PREV_NET = {}
+SERVER_HEALTH_HISTORY_CACHE = {}
+SERVER_HEALTH_HISTORY_CACHE_TTL = 15.0
+SERVER_HEALTH_SAMPLE_INTERVAL = 10.0
+SERVER_HEALTH_RETENTION_DAYS = 30
+SERVER_HEALTH_COLLECTOR_STARTED = False
+SERVER_HEALTH_RANGES = {
+    "10m": 10 * 60,
+    "1h": 60 * 60,
+    "6h": 6 * 60 * 60,
+    "12h": 12 * 60 * 60,
+    "24h": 24 * 60 * 60,
+    "3d": 3 * 24 * 60 * 60,
+    "7d": 7 * 24 * 60 * 60,
+    "30d": 30 * 24 * 60 * 60,
+}
 NETTEST_LOCK = threading.Lock()
 NETTEST_ACTIVE = {}
 NETTEST_LAST_REPORT = {}
@@ -956,6 +973,284 @@ def collect_server_health(force=False):
         return payload
 
 
+def safe_float(value):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def safe_int(value):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def flatten_health_sample(payload):
+    now = time.time()
+    load = payload.get("load") if isinstance(payload.get("load"), dict) else {}
+    cpu = payload.get("cpu") if isinstance(payload.get("cpu"), dict) else {}
+    memory = payload.get("memory") if isinstance(payload.get("memory"), dict) else {}
+    disk = payload.get("disk") if isinstance(payload.get("disk"), dict) else {}
+    conntrack = payload.get("conntrack") if isinstance(payload.get("conntrack"), dict) else {}
+    network = payload.get("network") if isinstance(payload.get("network"), dict) else {}
+    process = payload.get("process") if isinstance(payload.get("process"), dict) else {}
+    wan = network.get("wan") if isinstance(network.get("wan"), dict) else {}
+    vpn = network.get("vpn") if isinstance(network.get("vpn"), dict) else {}
+    return {
+        "ts": int(now),
+        "timestamp": payload.get("timestamp") or utc_now_iso(),
+        "status": payload.get("status") or "unknown",
+        "cpu_usage_percent": safe_float(cpu.get("usage_percent")),
+        "load1": safe_float(load.get("one")),
+        "load5": safe_float(load.get("five")),
+        "load15": safe_float(load.get("fifteen")),
+        "cpu_count": safe_int(load.get("cpu_count")) or 1,
+        "memory_used_percent": safe_float(memory.get("used_percent")),
+        "memory_available_bytes": safe_int(memory.get("available_bytes")) or 0,
+        "swap_used_percent": safe_float(memory.get("swap_used_percent")),
+        "disk_used_percent": safe_float(disk.get("used_percent")),
+        "disk_free_bytes": safe_int(disk.get("free_bytes")) or 0,
+        "conntrack_count": safe_int(conntrack.get("count")),
+        "conntrack_used_percent": safe_float(conntrack.get("used_percent")),
+        "wan_iface": network.get("wan_iface") or "",
+        "wan_rx_bytes": safe_int(wan.get("rx_bytes")) or 0,
+        "wan_tx_bytes": safe_int(wan.get("tx_bytes")) or 0,
+        "wan_rx_dropped": safe_int(wan.get("rx_dropped")) or 0,
+        "wan_tx_dropped": safe_int(wan.get("tx_dropped")) or 0,
+        "wan_rx_errors": safe_int(wan.get("rx_errors")) or 0,
+        "wan_tx_errors": safe_int(wan.get("tx_errors")) or 0,
+        "vpn_iface": network.get("vpn_iface") or "",
+        "vpn_rx_bytes": safe_int(vpn.get("rx_bytes")) or 0,
+        "vpn_tx_bytes": safe_int(vpn.get("tx_bytes")) or 0,
+        "vpn_rx_dropped": safe_int(vpn.get("rx_dropped")) or 0,
+        "vpn_tx_dropped": safe_int(vpn.get("tx_dropped")) or 0,
+        "vpn_rx_errors": safe_int(vpn.get("rx_errors")) or 0,
+        "vpn_tx_errors": safe_int(vpn.get("tx_errors")) or 0,
+        "python_rss_bytes": safe_int(process.get("rss_bytes")) or 0,
+        "python_fd_count": safe_int(process.get("fd_count")) or 0,
+        "python_threads": safe_int(process.get("threads")) or 0,
+    }
+
+
+def health_sample_path(ts=None):
+    ts = time.time() if ts is None else ts
+    return HEALTH_HISTORY_DIR / f"samples-{time.strftime('%Y%m%d', time.gmtime(ts))}.jsonl"
+
+
+def prune_health_history(now=None):
+    now = time.time() if now is None else now
+    cutoff = now - (SERVER_HEALTH_RETENTION_DAYS + 1) * 86400
+    try:
+        for path in HEALTH_HISTORY_DIR.glob("samples-*.jsonl"):
+            if path.stat().st_mtime < cutoff:
+                path.unlink()
+    except OSError as exc:
+        audit_log(f"Health history prune warning error={type(exc).__name__}")
+
+
+def write_health_sample(sample):
+    try:
+        HEALTH_HISTORY_DIR.mkdir(parents=True, exist_ok=True)
+        os.chmod(HEALTH_HISTORY_DIR, 0o700)
+        path = health_sample_path(sample.get("ts") or time.time())
+        with path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(sample, sort_keys=True, separators=(",", ":")) + "\n")
+        os.chmod(path, 0o600)
+        if int(sample.get("ts") or 0) % 3600 < SERVER_HEALTH_SAMPLE_INTERVAL:
+            prune_health_history()
+    except OSError as exc:
+        audit_log(f"Health history write warning error={type(exc).__name__}")
+
+
+def health_collector_loop():
+    while True:
+        try:
+            write_health_sample(flatten_health_sample(collect_server_health(force=True)))
+        except Exception as exc:
+            audit_log(f"Health collector warning error={type(exc).__name__}")
+        time.sleep(SERVER_HEALTH_SAMPLE_INTERVAL)
+
+
+def start_server_health_collector():
+    global SERVER_HEALTH_COLLECTOR_STARTED
+    with SERVER_HEALTH_LOCK:
+        if SERVER_HEALTH_COLLECTOR_STARTED:
+            return
+        SERVER_HEALTH_COLLECTOR_STARTED = True
+    threading.Thread(target=health_collector_loop, name="health-history", daemon=True).start()
+
+
+def read_health_samples(range_seconds):
+    now = int(time.time())
+    start_ts = now - int(range_seconds)
+    rows = []
+    if not HEALTH_HISTORY_DIR.exists():
+        return rows
+    start_day = int((start_ts - 86400) // 86400)
+    end_day = int(now // 86400)
+    paths = []
+    for day in range(start_day, end_day + 1):
+        paths.append(HEALTH_HISTORY_DIR / f"samples-{time.strftime('%Y%m%d', time.gmtime(day * 86400))}.jsonl")
+    for path in paths:
+        if not path.exists():
+            continue
+        try:
+            with path.open("r", encoding="utf-8") as fh:
+                for line in fh:
+                    if not line.strip():
+                        continue
+                    try:
+                        row = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    ts = safe_int(row.get("ts")) or 0
+                    if start_ts <= ts <= now:
+                        rows.append(row)
+        except OSError:
+            continue
+    rows.sort(key=lambda item: safe_int(item.get("ts")) or 0)
+    return rows
+
+
+def avg_value(rows, key):
+    values = [safe_float(row.get(key)) for row in rows]
+    values = [value for value in values if value is not None]
+    return sum(values) / len(values) if values else None
+
+
+def max_value(rows, key):
+    values = [safe_float(row.get(key)) for row in rows]
+    values = [value for value in values if value is not None]
+    return max(values) if values else None
+
+
+def min_value(rows, key):
+    values = [safe_float(row.get(key)) for row in rows]
+    values = [value for value in values if value is not None]
+    return min(values) if values else None
+
+
+def counter_delta(rows, key):
+    values = [(safe_int(row.get("ts")) or 0, safe_int(row.get(key))) for row in rows if safe_int(row.get(key)) is not None]
+    if len(values) < 2:
+        return 0
+    return max(0, int(values[-1][1]) - int(values[0][1]))
+
+
+def bucket_seconds_for_range(range_seconds):
+    if range_seconds <= 3600:
+        return 60
+    if range_seconds <= 24 * 3600:
+        return 300
+    if range_seconds <= 7 * 24 * 3600:
+        return 1800
+    return 3600
+
+
+def bucket_health_series(rows, bucket_seconds):
+    buckets = {}
+    for row in rows:
+        ts = safe_int(row.get("ts")) or 0
+        key = ts - (ts % bucket_seconds)
+        buckets.setdefault(key, []).append(row)
+    series = []
+    for bucket_ts in sorted(buckets):
+        items = buckets[bucket_ts]
+        series.append({
+            "t": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(bucket_ts)),
+            "cpu": avg_value(items, "cpu_usage_percent"),
+            "memory": avg_value(items, "memory_used_percent"),
+            "load1": avg_value(items, "load1"),
+            "conntrack": avg_value(items, "conntrack_used_percent"),
+            "python_rss": max_value(items, "python_rss_bytes"),
+            "python_fd": max_value(items, "python_fd_count"),
+        })
+    return series
+
+
+def summarize_health_history(rows):
+    warn_count = sum(1 for row in rows if row.get("status") == "warn")
+    critical_count = sum(1 for row in rows if row.get("status") == "critical")
+    drops_delta = sum(counter_delta(rows, key) for key in (
+        "wan_rx_dropped", "wan_tx_dropped", "vpn_rx_dropped", "vpn_tx_dropped",
+    ))
+    errors_delta = sum(counter_delta(rows, key) for key in (
+        "wan_rx_errors", "wan_tx_errors", "vpn_rx_errors", "vpn_tx_errors",
+    ))
+    max_rss = max_value(rows, "python_rss_bytes")
+    current_rss = safe_int(rows[-1].get("python_rss_bytes")) if rows else None
+    rss_growth_ratio = (max_rss / current_rss) if current_rss else None
+    status = "ok"
+    if critical_count or (max_value(rows, "cpu_usage_percent") or 0) >= 90 or (max_value(rows, "memory_used_percent") or 0) >= 90:
+        status = "critical"
+    elif warn_count or drops_delta or errors_delta or (max_value(rows, "cpu_usage_percent") or 0) >= 75 or (max_value(rows, "memory_used_percent") or 0) >= 80:
+        status = "warn"
+    notes = []
+    if drops_delta:
+        notes.append(f"Interface drops increased +{drops_delta}.")
+    if errors_delta:
+        notes.append(f"Interface errors increased +{errors_delta}.")
+    if rss_growth_ratio and rss_growth_ratio >= 2:
+        notes.append("Python RSS peak is more than 2x current RSS.")
+    return {
+        "cpu": {"avg": avg_value(rows, "cpu_usage_percent"), "max": max_value(rows, "cpu_usage_percent")},
+        "load": {"avg1": avg_value(rows, "load1"), "max1": max_value(rows, "load1")},
+        "memory": {
+            "avg_used_percent": avg_value(rows, "memory_used_percent"),
+            "max_used_percent": max_value(rows, "memory_used_percent"),
+            "min_available_bytes": min_value(rows, "memory_available_bytes"),
+        },
+        "swap": {"max_used_percent": max_value(rows, "swap_used_percent")},
+        "disk": {"current_used_percent": rows[-1].get("disk_used_percent") if rows else None, "min_free_bytes": min_value(rows, "disk_free_bytes")},
+        "conntrack": {"max_count": max_value(rows, "conntrack_count"), "max_used_percent": max_value(rows, "conntrack_used_percent")},
+        "network": {
+            "wan_rx_dropped_delta": counter_delta(rows, "wan_rx_dropped"),
+            "wan_tx_dropped_delta": counter_delta(rows, "wan_tx_dropped"),
+            "vpn_rx_dropped_delta": counter_delta(rows, "vpn_rx_dropped"),
+            "vpn_tx_dropped_delta": counter_delta(rows, "vpn_tx_dropped"),
+            "wan_errors_delta": counter_delta(rows, "wan_rx_errors") + counter_delta(rows, "wan_tx_errors"),
+            "vpn_errors_delta": counter_delta(rows, "vpn_rx_errors") + counter_delta(rows, "vpn_tx_errors"),
+            "drops_delta": drops_delta,
+            "errors_delta": errors_delta,
+        },
+        "process": {"max_rss_bytes": max_rss, "max_fd_count": max_value(rows, "python_fd_count"), "max_threads": max_value(rows, "python_threads")},
+        "counts": {"samples": len(rows), "warn": warn_count, "critical": critical_count},
+        "status": status,
+        "notes": notes[:6],
+    }
+
+
+def server_health_history(range_key):
+    if range_key not in SERVER_HEALTH_RANGES:
+        raise ValueError("invalid history range")
+    now = time.time()
+    with SERVER_HEALTH_LOCK:
+        cached = SERVER_HEALTH_HISTORY_CACHE.get(range_key)
+        if cached and now - cached.get("ts", 0) < SERVER_HEALTH_HISTORY_CACHE_TTL:
+            return cached["value"]
+    range_seconds = SERVER_HEALTH_RANGES[range_key]
+    rows = read_health_samples(range_seconds)
+    if not rows:
+        rows = [flatten_health_sample(collect_server_health())]
+    bucket_seconds = bucket_seconds_for_range(range_seconds)
+    summary = summarize_health_history(rows)
+    payload = {
+        "range": range_key,
+        "range_seconds": range_seconds,
+        "bucket_seconds": bucket_seconds,
+        "sample_interval_seconds": SERVER_HEALTH_SAMPLE_INTERVAL,
+        "retention_days": SERVER_HEALTH_RETENTION_DAYS,
+        "summary": summary,
+        "series": bucket_health_series(rows, bucket_seconds),
+        "status": summary["status"],
+    }
+    with SERVER_HEALTH_LOCK:
+        SERVER_HEALTH_HISTORY_CACHE[range_key] = {"ts": now, "value": payload}
+    return payload
+
+
 def json_body_from_handler(handler, max_size):
     try:
         size = int(handler.headers.get("Content-Length", "0") or 0)
@@ -992,6 +1287,78 @@ def request_client_context(handler):
     policy = load_access_policy()
     remote_addr = handler.client_address[0] if getattr(handler, "client_address", None) else ""
     return client_ip_context(remote_addr, handler.headers, policy)
+
+
+def first_ip_in_subnet(cidr):
+    try:
+        net = ipaddress.ip_network(cidr, strict=False)
+    except ValueError:
+        return ""
+    try:
+        return str(net.network_address + 1)
+    except Exception:
+        return str(net.network_address)
+
+
+def detect_public_ipv6(iface=""):
+    try:
+        lines = Path("/proc/net/if_inet6").read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return ""
+    for line in lines:
+        parts = line.split()
+        if len(parts) < 6:
+            continue
+        raw, _idx, _plen, scope, _flags, name = parts[:6]
+        if iface and name != iface:
+            continue
+        if scope != "00" or name == "lo":
+            continue
+        try:
+            return str(ipaddress.IPv6Address(":".join(raw[i:i + 4] for i in range(0, 32, 4))))
+        except ValueError:
+            continue
+    return ""
+
+
+def server_info_payload():
+    cfg = parse_config()
+    endpoint = cfg.get("AWG_ENDPOINT") or ""
+    public_ipv4 = ""
+    public_ipv6 = ""
+    try:
+        endpoint_ip = ipaddress.ip_address(endpoint)
+        if endpoint_ip.version == 4:
+            public_ipv4 = str(endpoint_ip)
+        else:
+            public_ipv6 = str(endpoint_ip)
+    except ValueError:
+        pass
+    public_ipv6 = public_ipv6 or detect_public_ipv6(detect_wan_iface())
+    vpn_ipv4 = cfg.get("AWG_TUNNEL_SUBNET") or "10.9.9.1/24"
+    vpn_ipv4_host = first_ip_in_subnet(vpn_ipv4) or "10.9.9.1"
+    vpn_ipv6 = cfg.get("AWG_IPV6_SUBNET") if cfg.get("AWG_IPV6_ENABLED") == "1" else ""
+    web_public_url = cfg.get("AWG_WEB_PUBLIC_URL") or f"https://{cfg.get('AWG_WEB_DOMAIN') or '194-180-189-244.sslip.io'}/"
+    adguard_enabled = cfg.get("AWG_ADGUARD_ENABLED") == "1"
+    adguard_url = f"http://{vpn_ipv4_host}:{cfg.get('AWG_ADGUARD_PORT') or '3000'}/" if adguard_enabled else ""
+    return {
+        "public_ipv4": public_ipv4,
+        "public_ipv6": public_ipv6,
+        "vpn_ipv4": vpn_ipv4,
+        "vpn_ipv6": vpn_ipv6,
+        "vpn_gateway_ipv4": vpn_ipv4_host,
+        "web_public_url": web_public_url,
+        "web_current_url": web_public_url,
+        "adguard_url": adguard_url,
+        "adguard_enabled": adguard_enabled,
+        "nettest_url": "/nettest",
+        "nettest_vpn_url": "",
+        "nettest_vpn_url_available": False,
+        "nettest_vpn_note": "Dedicated VPN-only listener is not enabled; /nettest stays protected by bearer auth.",
+        "route_mode": "amnezia-routes",
+        "ipv6_mode": cfg.get("AWG_IPV6_MODE_EFFECTIVE") or cfg.get("AWG_IPV6_MODE") or "legacy",
+        "preset": cfg.get("AWG_PRESET") or "",
+    }
 
 
 def clean_network_type(value):
@@ -1062,9 +1429,68 @@ def check_nettest_report_rate(auth, client_ip, now=None):
         return True
 
 
+def awg_param_int(cfg, key):
+    value = safe_int(cfg.get(key))
+    return value if value is not None else None
+
+
+def assess_amnezia_params(awg):
+    notes_mobile = []
+    notes_home = []
+    mobile_status = "ok"
+    home_status = "ok"
+    preset = awg.get("preset") or "unknown"
+    mtu = awg.get("mtu")
+    keepalive = awg.get("persistent_keepalive")
+    if preset == "mobile":
+        notes_mobile.append("mobile preset selected")
+        notes_home.append("mobile preset is stable for home networks but may reduce peak throughput")
+    elif preset == "default":
+        notes_mobile.append("default preset can work, but mobile networks often prefer conservative parameters")
+        notes_home.append("default preset is suitable for stable home networks")
+        mobile_status = "warn"
+    else:
+        notes_mobile.append("preset is unknown; check generated client profile if stalls persist")
+        notes_home.append("preset is unknown; check generated client profile if stalls persist")
+        mobile_status = home_status = "warn"
+    if mtu == 1280:
+        notes_mobile.append("MTU 1280 is conservative")
+        notes_home.append("MTU 1280 prioritizes stability over maximum throughput")
+    elif mtu and mtu > 1380:
+        notes_mobile.append("MTU is high for mobile paths; watch for fragmentation stalls")
+        mobile_status = "warn"
+    elif mtu:
+        notes_mobile.append(f"MTU {mtu} is in a moderate range")
+    else:
+        notes_mobile.append("MTU is not detected")
+        mobile_status = "warn"
+    if keepalive == 25:
+        notes_mobile.append("PersistentKeepalive 25 helps NAT mappings")
+    elif keepalive:
+        notes_mobile.append(f"PersistentKeepalive {keepalive} differs from the usual mobile-friendly 25")
+        mobile_status = "warn"
+    else:
+        notes_mobile.append("PersistentKeepalive is not detected")
+        mobile_status = "warn"
+    if awg.get("h_ranges_present"):
+        notes_mobile.append("H ranges are present")
+    else:
+        notes_mobile.append("H ranges are not detected")
+        mobile_status = "warn"
+    if awg.get("ipv6_mode") in {"legacy", "disabled", ""}:
+        notes_home.append("IPv6 is disabled or legacy; this is OK when clients use IPv4-only routing")
+    else:
+        notes_home.append(f"IPv6 mode: {awg.get('ipv6_mode')}")
+    return {
+        "mobile": {"status": mobile_status, "notes": notes_mobile[:6]},
+        "home": {"status": home_status, "notes": notes_home[:6]},
+    }
+
+
 def nettest_context_payload():
-    mtu = None
-    keepalive = None
+    cfg = parse_config()
+    mtu = awg_param_int(cfg, "AWG_MTU")
+    keepalive = 25 if mtu == 1280 else None
     try:
         text = SERVER_CONF.read_text(encoding="utf-8", errors="ignore")
     except OSError:
@@ -1075,13 +1501,32 @@ def nettest_context_payload():
         mtu = int(mtu_match.group(1))
     if keepalive_match:
         keepalive = int(keepalive_match.group(1))
-    return {
-        "preset": "mobile" if mtu == 1280 or keepalive == 25 else "default",
+    preset = cfg.get("AWG_PRESET") or ("mobile" if mtu == 1280 or keepalive == 25 else "default")
+    awg = {
+        "preset": preset,
+        "jc": awg_param_int(cfg, "AWG_Jc"),
+        "jmin": awg_param_int(cfg, "AWG_Jmin"),
+        "jmax": awg_param_int(cfg, "AWG_Jmax"),
+        "s1": awg_param_int(cfg, "AWG_S1"),
+        "s2": awg_param_int(cfg, "AWG_S2"),
+        "s3": awg_param_int(cfg, "AWG_S3"),
+        "s4": awg_param_int(cfg, "AWG_S4"),
+        "h_ranges_present": all(cfg.get(key) for key in ("AWG_H1", "AWG_H2", "AWG_H3", "AWG_H4")),
         "mtu": mtu,
         "persistent_keepalive": keepalive,
         "route_mode": "amnezia-routes",
-        "ipv6_mode": "routed",
-        "p2p_ports_per_client": 3,
+        "ipv6_mode": cfg.get("AWG_IPV6_MODE_EFFECTIVE") or cfg.get("AWG_IPV6_MODE") or "legacy",
+        "p2p_ports_per_client": awg_param_int(cfg, "AWG_P2P_PORTS_PER_CLIENT") or 3,
+    }
+    return {
+        "preset": awg["preset"],
+        "mtu": awg["mtu"],
+        "persistent_keepalive": awg["persistent_keepalive"],
+        "route_mode": awg["route_mode"],
+        "ipv6_mode": awg["ipv6_mode"],
+        "p2p_ports_per_client": awg["p2p_ports_per_client"],
+        "awg": awg,
+        "assessment": assess_amnezia_params(awg),
     }
 
 
@@ -2285,8 +2730,30 @@ def parse_config():
         "AWG_CUSTOM_DNS": "1.1.1.1",
         "AWG_ADGUARD_ENABLED": "0",
         "AWG_ADGUARD_PORT": "3000",
+        "AWG_ENDPOINT": "",
+        "AWG_TUNNEL_SUBNET": "10.9.9.1/24",
+        "AWG_MTU": "",
         "AWG_IPV6_ENABLED": "0",
+        "AWG_IPV6_MODE": "legacy",
+        "AWG_IPV6_MODE_EFFECTIVE": "",
         "AWG_IPV6_SUBNET": "",
+        "AWG_P2P_PORTS_PER_CLIENT": "3",
+        "AWG_WEB_PUBLIC_URL": "",
+        "AWG_WEB_DOMAIN": "",
+        "AWG_WEB_PORT": "8443",
+        "AWG_WEB_BIND": "",
+        "AWG_PRESET": "",
+        "AWG_Jc": "",
+        "AWG_Jmin": "",
+        "AWG_Jmax": "",
+        "AWG_S1": "",
+        "AWG_S2": "",
+        "AWG_S3": "",
+        "AWG_S4": "",
+        "AWG_H1": "",
+        "AWG_H2": "",
+        "AWG_H3": "",
+        "AWG_H4": "",
         "AWG_SERVER_NAME": "MyVPN",
     }
     if not cfg.exists():
@@ -2967,6 +3434,9 @@ class Handler(SimpleHTTPRequestHandler):
                 "repository_url": REPOSITORY_URL,
             })
             return
+        if u.path == "/api/server-info":
+            self.send_json(server_info_payload())
+            return
         if u.path == "/api/server-health":
             if not self.require_super(auth):
                 return
@@ -2981,6 +3451,16 @@ class Handler(SimpleHTTPRequestHandler):
                 "trusted_proxy_used": bool(client_ctx.get("trusted_proxy_used")),
             }
             self.send_json(health)
+            return
+        if u.path == "/api/server-health/history":
+            if not self.require_super(auth):
+                return
+            query = parse_qs(u.query)
+            range_key = str((query.get("range") or ["1h"])[0])
+            try:
+                self.send_json(server_health_history(range_key))
+            except ValueError as exc:
+                self.send_json({"error": str(exc)}, 400)
             return
         if u.path == "/api/nettest/context":
             self.send_json(nettest_context_payload())
@@ -3499,6 +3979,7 @@ class Handler(SimpleHTTPRequestHandler):
 def main():
     load_tokens()
     policy = load_access_policy()
+    start_server_health_collector()
     os.chdir(WEB_DIR)
     bind_host = policy.get("bind_host") or os.environ.get("AWG_WEB_BIND") or "10.9.9.1"
     httpd = LimitedThreadingHTTPServer((bind_host, int(os.environ.get("AWG_WEB_PORT", "8443"))), Handler)
