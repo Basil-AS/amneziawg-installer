@@ -476,6 +476,22 @@ function renderAssignedTokenBadges(client) {
   `).join("") + (extra ? `<span class="rounded-full border border-[var(--line)] bg-[var(--soft)] px-2 py-0.5 text-[11px] font-medium text-[var(--muted)]">+${extra}</span>` : "");
 }
 
+function geoTooltip(info) {
+  if (!info) return "";
+  const lines = [];
+  const cc = info.country_code || info.country || "";
+  const city = info.city || "";
+  const region = info.region || "";
+  if (city || region || cc) lines.push([city, region, cc].filter(Boolean).join(", "));
+  if (info.provider || info.org) lines.push(`Provider: ${info.provider || info.org}`);
+  if (info.asn) lines.push(`ASN: ${info.asn}`);
+  const sources = Array.isArray(info.sources) && info.sources.length ? info.sources.join(", ") : (info.source || "");
+  if (sources) lines.push(`Sources: ${sources}`);
+  if (info.confidence) lines.push(`Confidence: ${info.confidence}`);
+  if (info.updated_at) lines.push(`Updated: ${info.updated_at}`);
+  return lines.join("\n");
+}
+
 function renderEndpointInfo(client) {
   const endpoint = client.endpoint || "";
   if (!endpoint || endpoint === "-") return "";
@@ -488,15 +504,19 @@ function renderEndpointInfo(client) {
     return '<div class="endpoint-info text-xs text-[var(--muted)]">IP info: unknown</div>';
   }
   const place = [city, country].filter(Boolean).join(" · ");
-  const title = [place, provider].filter(Boolean).join(" · ");
   const parts = [];
-  if (flag) parts.push(`<span class="endpoint-flag" title="${esc(country)}">${esc(flag)}</span>`);
-  if (place) parts.push(`<span class="endpoint-place truncate" title="${esc(country || city)}">${esc(place)}</span>`);
+  if (flag) parts.push(`<span class="endpoint-flag">${esc(flag)}</span>`);
+  if (place) parts.push(`<span class="endpoint-place truncate">${esc(place)}</span>`);
   if (provider) {
     if (parts.length) parts.push('<span class="endpoint-dot">·</span>');
-    parts.push(`<span class="endpoint-provider truncate" title="${esc(provider)}">${esc(provider)}</span>`);
+    parts.push(`<span class="endpoint-provider truncate">${esc(provider)}</span>`);
   }
-  return `<div class="endpoint-info" title="${esc(title)}">${parts.join("")}</div>`;
+  const conf = info.confidence || "";
+  if (conf === "low") {
+    parts.push(`<span class="endpoint-dot">·</span><span class="endpoint-confidence-low text-[10px] text-[var(--muted)]">low confidence</span>`);
+  }
+  const tooltip = geoTooltip(info);
+  return `<div class="endpoint-info" title="${esc(tooltip)}">${parts.join("")}</div>`;
 }
 
 function canManageClientAssignments() {
@@ -799,6 +819,9 @@ function renderNettestReports() {
     const geo = row.geo || {};
     const location = [geo.city, geo.region, geo.country_code || geo.country].filter(Boolean).join(", ") || "-";
     const provider = geo.provider || geo.org || geo.asn || "-";
+    const geoConf = geo.confidence || "";
+    const geoSources = Array.isArray(geo.sources) && geo.sources.length ? geo.sources.join(", ") : (geo.source || "");
+    const geoTip = geoTooltip(geo);
     const findings = Array.isArray(assessment.findings) ? assessment.findings.slice(0, 3) : [];
     const internalIp = row["vp" + "n_client_ip"] || row.client_ip || "-";
     const publicIp = row.public_ip || "-";
@@ -817,8 +840,9 @@ function renderNettestReports() {
             <span>Public ${esc(publicIp)}</span>
             <span>IPv6 leak ${leak.ipv6_leak_suspected ? "yes" : (leak.browser_public_ipv6 ? "no" : "unknown")}</span>
             <span>WebRTC ${leak.webrtc_ipv6_risk ? "risk" : "ok/unknown"}</span>
-            <span>${esc(location)}</span>
-            <span>${esc(provider)}</span>
+            <span title="${esc(geoTip)}">${esc(location)}</span>
+            <span title="${esc(geoTip)}">${esc(provider)}${geoConf === "low" ? " · low confidence" : ""}</span>
+            ${geoSources ? `<span class="text-[var(--muted)] text-[10px]">src: ${esc(geoSources)}</span>` : ""}
           </div>
         </div>
         <div class="nettest-report-stats">
@@ -1113,8 +1137,8 @@ function renderNettestResult(result) {
         <div class="nettest-metrics">
           <span>${"VP" + "N"} IP ${esc(shortValue(result["vp" + "n_client_ip"] || result.client_ip))}</span>
           <span>Public ${esc(shortValue(result.public_ip))}</span>
-          <span>Location ${esc([result.geo?.city, result.geo?.region, result.geo?.country_code || result.geo?.country].filter(Boolean).join(", ") || "-")}</span>
-          <span>Provider ${esc(result.geo?.provider || result.geo?.org || result.geo?.asn || "-")}</span>
+          <span title="${esc(geoTooltip(result.geo))}">Location ${esc([result.geo?.city, result.geo?.region, result.geo?.country_code || result.geo?.country].filter(Boolean).join(", ") || "-")}</span>
+          <span title="${esc(geoTooltip(result.geo))}">Provider ${esc(result.geo?.provider || result.geo?.org || result.geo?.asn || "-")}${result.geo?.confidence === "low" ? " · low confidence" : ""}</span>
         </div>
       ` : ""}
       <div class="nettest-metrics">

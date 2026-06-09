@@ -1,0 +1,27 @@
+{
+  "providers": {
+    "2ip": {
+      "enabled": false,
+      "token": ""
+    },
+    "ipinfo": {
+      "enabled": false,
+      "token": ""
+    },
+    "maxmind": {
+      "enabled": false,
+      "mmdb_path": "/root/awg/geoip/GeoLite2-City.mmdb"
+    },
+    "dbip": {
+      "enabled": false,
+      "token": ""
+    },
+    "ip2location": {
+      "enabled": false,
+      "token": ""
+    },
+    "ip-api": {
+      "enabled": true
+    }
+  }
+}

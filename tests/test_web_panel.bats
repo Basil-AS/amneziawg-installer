@@ -959,21 +959,29 @@ assert server.country_code_to_flag("ru") == "🇷🇺"
 assert server.country_code_to_flag("") == ""
 
 calls = []
-def fake_fetch(ip):
+def fake_ipapi(ip):
     calls.append(ip)
     return {
         "ip": ip,
         "country": "Finland",
         "country_code": "FI",
         "flag": server.country_code_to_flag("FI"),
+        "region": "",
         "city": "Helsinki",
+        "lat": None,
+        "lon": None,
+        "timezone": "Europe/Helsinki",
         "asn": "AS719",
+        "asn_id": "719",
         "org": "Elisa Oyj",
         "provider": "Elisa Oyj",
-        "source": "provider",
-        "updated_at": "2026-06-06T00:00:00Z",
+        "hosting": None,
+        "_source_name": "ip-api",
     }
-server._fetch_endpoint_ip_info = fake_fetch
+server._fetch_ipapi_provider = fake_ipapi
+server._fetch_2ip_provider = lambda ip: None
+server._fetch_ipinfo_provider = lambda ip: None
+server._fetch_mmdb_provider = lambda ip: None
 
 private = server.lookup_endpoint_ip_info("10.9.9.2")
 assert private["provider"] == "private"
@@ -2504,4 +2512,254 @@ h4.do_HEAD()
 assert h4.responses == [200]
 PY
     rm -rf "$tmp"
+}
+
+@test "geoip: lookup_ip_enriched skips private and reserved IPs" {
+    command -v python3 &>/dev/null || skip "python3 not available"
+    local tmp
+    tmp=$(mktemp -d)
+    mkdir -p "$tmp/web"
+    AWG_DIR="$tmp" SERVER_CONF_FILE="$tmp/awg0.conf" REPO_ROOT="$BATS_TEST_DIRNAME/.." python3 - <<'PY'
+import sys, os
+from pathlib import Path
+repo = Path(os.environ["REPO_ROOT"])
+import importlib.util
+spec = importlib.util.spec_from_file_location("server", repo / "web" / "server.py")
+server = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(server)
+for ip in ("10.9.9.5", "192.168.1.1", "127.0.0.1", "fc00::1", "100.64.0.1"):
+    r = server.lookup_ip_enriched(ip)
+    assert r["source"] == "local", f"Expected local for {ip}, got {r['source']}"
+    assert r["country"] == "", f"Expected empty country for {ip}"
+PY
+    rm -rf "$tmp"
+}
+
+@test "geoip: 2IP provider normalizes response to common schema" {
+    command -v python3 &>/dev/null || skip "python3 not available"
+    local tmp
+    tmp=$(mktemp -d)
+    mkdir -p "$tmp/web"
+    AWG_DIR="$tmp" SERVER_CONF_FILE="$tmp/awg0.conf" REPO_ROOT="$BATS_TEST_DIRNAME/.." python3 - <<'PY'
+import sys, os, json
+from pathlib import Path
+repo = Path(os.environ["REPO_ROOT"])
+import importlib.util, types, urllib.request
+spec = importlib.util.spec_from_file_location("server", repo / "web" / "server.py")
+server = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(server)
+fake_cfg = {"providers": {"2ip": {"enabled": True, "token": "testtoken"}}}
+server.load_geoip_providers_config = lambda: fake_cfg
+import io
+class FakeResp:
+    def read(self, n): return json.dumps({
+        "ip": "85.89.126.30", "city": "Moscow", "region": "Moscow",
+        "country": "Russian Federation", "code": "RU", "emoji": "\U0001f1f7\U0001f1fa",
+        "lat": "55.75582600", "lon": "37.61730000", "timezone": "Europe/Moscow",
+        "asn": {"id": "29233", "name": "IIP-NET-AS29233", "hosting": False}
+    }).encode()
+    def __enter__(self): return self
+    def __exit__(self, *a): pass
+server.urlopen = lambda url, timeout=None: FakeResp()
+r = server._fetch_2ip_provider("85.89.126.30")
+assert r is not None, "2ip provider must return a result"
+assert r["country_code"] == "RU", f"country_code={r['country_code']}"
+assert r["asn"] == "AS29233", f"asn={r['asn']}"
+assert r["asn_id"] == "29233", f"asn_id={r['asn_id']}"
+assert r["city"] == "Moscow", f"city={r['city']}"
+assert r["hosting"] == False, f"hosting={r['hosting']}"
+assert r["_source_name"] == "2ip", f"_source_name={r['_source_name']}"
+PY
+    rm -rf "$tmp"
+}
+
+@test "geoip: cache hit avoids provider call" {
+    command -v python3 &>/dev/null || skip "python3 not available"
+    local tmp
+    tmp=$(mktemp -d)
+    mkdir -p "$tmp/web"
+    AWG_DIR="$tmp" SERVER_CONF_FILE="$tmp/awg0.conf" REPO_ROOT="$BATS_TEST_DIRNAME/.." python3 - <<'PY'
+import os, json, time
+from pathlib import Path
+import importlib.util
+spec = importlib.util.spec_from_file_location("server", Path(os.environ["REPO_ROOT"]) / "web" / "server.py")
+server = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(server)
+cache_data = {"8.8.8.8": {
+    "_cache_ts": time.time(),
+    "status": "ok",
+    "info": {"ip": "8.8.8.8", "country": "United States", "country_code": "US",
+             "flag": "\U0001f1fa\U0001f1f8", "region": "California", "city": "Mountain View",
+             "asn": "AS15169", "asn_id": "15169", "provider": "Google LLC", "org": "Google LLC",
+             "sources": ["ip-api"], "confidence": "low",
+             "source": "cache", "updated_at": "2026-01-01T00:00:00Z"},
+}}
+server.IP_INFO_CACHE_FILE.write_text(json.dumps(cache_data), encoding="utf-8")
+call_count = [0]
+original_ipapi = server._fetch_ipapi_provider
+def mock_ipapi(ip):
+    call_count[0] += 1
+    return original_ipapi(ip)
+server._fetch_ipapi_provider = mock_ipapi
+server._fetch_2ip_provider = lambda ip: None
+server._fetch_ipinfo_provider = lambda ip: None
+server._fetch_mmdb_provider = lambda ip: None
+r = server.lookup_ip_enriched("8.8.8.8")
+assert r["source"] == "cache", f"Expected cache, got {r['source']}"
+assert call_count[0] == 0, f"Provider was called {call_count[0]} times, expected 0"
+PY
+    rm -rf "$tmp"
+}
+
+@test "geoip: corrupted cache fails soft and returns empty" {
+    command -v python3 &>/dev/null || skip "python3 not available"
+    local tmp
+    tmp=$(mktemp -d)
+    mkdir -p "$tmp/web"
+    AWG_DIR="$tmp" SERVER_CONF_FILE="$tmp/awg0.conf" REPO_ROOT="$BATS_TEST_DIRNAME/.." python3 - <<'PY'
+import os
+from pathlib import Path
+import importlib.util
+spec = importlib.util.spec_from_file_location("server", Path(os.environ["REPO_ROOT"]) / "web" / "server.py")
+server = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(server)
+server.IP_INFO_CACHE_FILE.write_text("{ INVALID JSON >>>", encoding="utf-8")
+result = server.load_ip_info_cache()
+assert result == {}, f"Expected empty dict on corrupt cache, got {result}"
+PY
+    rm -rf "$tmp"
+}
+
+@test "geoip: /api/geoip/status exposes no API tokens" {
+    command -v python3 &>/dev/null || skip "python3 not available"
+    grep -qF 'geoip_providers_status' "$BATS_TEST_DIRNAME/../web/server.py"
+    grep -qF '/api/geoip/status' "$BATS_TEST_DIRNAME/../web/server.py"
+    grep -qF '"has_token"' "$BATS_TEST_DIRNAME/../web/server.py"
+    if grep -qE '"token"\s*:.*[A-Za-z0-9]{8}' "$BATS_TEST_DIRNAME/../web/server.py"; then
+        fail "server.py must not hardcode tokens"
+    fi
+    local tmp
+    tmp=$(mktemp -d)
+    mkdir -p "$tmp/web"
+    cat > "$tmp/web/geoip_providers.json" <<'JSON'
+{"providers": {"2ip": {"enabled": true, "token": "secrettoken123"}}}
+JSON
+    AWG_DIR="$tmp" SERVER_CONF_FILE="$tmp/awg0.conf" REPO_ROOT="$BATS_TEST_DIRNAME/.." python3 - <<'PY'
+import os, json
+from pathlib import Path
+import importlib.util
+spec = importlib.util.spec_from_file_location("server", Path(os.environ["REPO_ROOT"]) / "web" / "server.py")
+server = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(server)
+status = server.geoip_providers_status()
+raw = json.dumps(status)
+assert "secrettoken123" not in raw, "token must not appear in status output"
+assert status["providers"]["2ip"]["has_token"] == True, "has_token should be True"
+assert "token" not in status["providers"]["2ip"] or status["providers"]["2ip"].get("token") is None, "raw token must not be in status"
+PY
+    rm -rf "$tmp"
+}
+
+@test "geoip: /api/geoip/refresh validates IP and requires super role" {
+    command -v python3 &>/dev/null || skip "python3 not available"
+    grep -qF '/api/geoip/refresh' "$BATS_TEST_DIRNAME/../web/server.py"
+    grep -qF 'require_super(auth)' "$BATS_TEST_DIRNAME/../web/server.py"
+    grep -qF 'ipaddress.ip_address(raw_ip)' "$BATS_TEST_DIRNAME/../web/server.py"
+}
+
+@test "geoip: endpoint_info response contains sources and confidence fields" {
+    command -v python3 &>/dev/null || skip "python3 not available"
+    grep -qF '"sources"' "$BATS_TEST_DIRNAME/../web/server.py"
+    grep -qF '"confidence"' "$BATS_TEST_DIRNAME/../web/server.py"
+    local tmp
+    tmp=$(mktemp -d)
+    mkdir -p "$tmp/web"
+    AWG_DIR="$tmp" SERVER_CONF_FILE="$tmp/awg0.conf" REPO_ROOT="$BATS_TEST_DIRNAME/.." python3 - <<'PY'
+import os, json as _json
+from pathlib import Path
+import importlib.util
+spec = importlib.util.spec_from_file_location("server", Path(os.environ["REPO_ROOT"]) / "web" / "server.py")
+server = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(server)
+class FakeResp:
+    def read(self, n): return _json.dumps({"status": "success", "country": "Russia",
+        "countryCode": "RU", "regionName": "Moscow", "city": "Moscow",
+        "lat": 55.75, "lon": 37.61, "timezone": "Europe/Moscow",
+        "isp": "MTS", "org": "MTS PJSC", "as": "AS8359 MTS PJSC"}).encode()
+    def __enter__(self): return self
+    def __exit__(self, *a): pass
+server.urlopen = lambda url, timeout=None: FakeResp()
+server._fetch_2ip_provider = lambda ip: None
+server._fetch_ipinfo_provider = lambda ip: None
+server._fetch_mmdb_provider = lambda ip: None
+info = server.lookup_ip_enriched("91.79.34.202")
+assert "sources" in info, f"sources missing from info: {list(info.keys())}"
+assert "confidence" in info, f"confidence missing from info: {list(info.keys())}"
+assert info["confidence"] in ("high", "medium", "low"), f"unexpected confidence: {info['confidence']}"
+assert isinstance(info["sources"], list), "sources must be a list"
+PY
+    rm -rf "$tmp"
+}
+
+@test "geoip: consensus confidence is high when 2 sources agree on country and city" {
+    command -v python3 &>/dev/null || skip "python3 not available"
+    local tmp
+    tmp=$(mktemp -d)
+    mkdir -p "$tmp/web"
+    AWG_DIR="$tmp" SERVER_CONF_FILE="$tmp/awg0.conf" REPO_ROOT="$BATS_TEST_DIRNAME/.." python3 - <<'PY'
+import os
+from pathlib import Path
+import importlib.util
+spec = importlib.util.spec_from_file_location("server", Path(os.environ["REPO_ROOT"]) / "web" / "server.py")
+server = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(server)
+r1 = {"country_code": "RU", "city": "Moscow", "provider": "UMOS", "_source_name": "2ip"}
+r2 = {"country_code": "RU", "city": "Moscow", "provider": "UMOS-Center", "_source_name": "ip-api"}
+merged, conf, sources = server._geoip_consensus([r1, r2])
+assert conf == "high", f"Expected high confidence, got {conf}"
+assert "2ip" in sources and "ip-api" in sources
+PY
+    rm -rf "$tmp"
+}
+
+@test "geoip: consensus confidence is medium when country matches but city differs" {
+    command -v python3 &>/dev/null || skip "python3 not available"
+    local tmp
+    tmp=$(mktemp -d)
+    mkdir -p "$tmp/web"
+    AWG_DIR="$tmp" SERVER_CONF_FILE="$tmp/awg0.conf" REPO_ROOT="$BATS_TEST_DIRNAME/.." python3 - <<'PY'
+import os
+from pathlib import Path
+import importlib.util
+spec = importlib.util.spec_from_file_location("server", Path(os.environ["REPO_ROOT"]) / "web" / "server.py")
+server = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(server)
+r1 = {"country_code": "RU", "city": "Moscow", "provider": "UMOS", "_source_name": "2ip"}
+r2 = {"country_code": "RU", "city": "Khimki", "provider": "UMOS", "_source_name": "ip-api"}
+merged, conf, sources = server._geoip_consensus([r1, r2])
+assert conf == "medium", f"Expected medium confidence, got {conf}"
+PY
+    rm -rf "$tmp"
+}
+
+@test "geoip: example config file exists and has no real tokens" {
+    [ -f "$BATS_TEST_DIRNAME/../web/geoip_providers.example.json" ]
+    python3 -c "import json; d=json.load(open('$BATS_TEST_DIRNAME/../web/geoip_providers.example.json')); assert 'providers' in d"
+    if grep -qE '"token"\s*:\s*"[A-Za-z0-9+/]{8}' "$BATS_TEST_DIRNAME/../web/geoip_providers.example.json"; then
+        fail "example config must not contain real tokens"
+    fi
+}
+
+@test "geoip: nettest reports geo includes sources and confidence fields" {
+    grep -qF '"sources"' "$BATS_TEST_DIRNAME/../web/server.py"
+    grep -qF '"confidence"' "$BATS_TEST_DIRNAME/../web/server.py"
+    grep -qF 'geo.get("sources"' "$BATS_TEST_DIRNAME/../web/server.py"
+    grep -qF 'geo.get("confidence"' "$BATS_TEST_DIRNAME/../web/server.py"
+}
+
+@test "geoip: app.js displays geo sources and confidence in tooltip" {
+    grep -qF 'geoTooltip' "$BATS_TEST_DIRNAME/../web/app.js"
+    grep -qF 'Sources:' "$BATS_TEST_DIRNAME/../web/app.js"
+    grep -qF 'Confidence:' "$BATS_TEST_DIRNAME/../web/app.js"
+    grep -qF 'low confidence' "$BATS_TEST_DIRNAME/../web/app.js"
 }

@@ -105,9 +105,11 @@ NETTEST_MAX_DOWNLOAD_SIZE = 1024 * 1024
 NETTEST_MAX_UPLOAD_SIZE = 512 * 1024
 NETTEST_MAX_REPORT_JSON = 512 * 1024
 VPN_NETTEST_PORT = 8088
-IP_INFO_CACHE_TTL = 7 * 24 * 3600
+IP_INFO_CACHE_TTL = 30 * 24 * 3600
 IP_INFO_NEGATIVE_TTL = 3600
-IP_INFO_LOOKUP_TIMEOUT = 2.0
+IP_INFO_ERROR_CACHE_TTL = 30 * 60
+IP_INFO_LOOKUP_TIMEOUT = 3.0
+GEOIP_PROVIDERS_FILE = WEB_DIR / "geoip_providers.json"
 SERVER_NAME_RE = re.compile(r"^[\w .,!?\-()]{1,128}$", re.UNICODE)
 DELETED_TRAFFIC_KEY = "_deleted_clients_total"
 PANEL_TITLE = "AmneziaWG Panel"
@@ -1742,7 +1744,10 @@ def enriched_nettest_network_context(handler, client_ip, vpn_client_ip=""):
             "provider": geo.get("provider") or geo.get("org") or "",
             "isp": geo.get("provider") or "",
             "asn": geo.get("asn", ""),
+            "asn_id": geo.get("asn_id", ""),
             "org": geo.get("org", ""),
+            "sources": geo.get("sources", []),
+            "confidence": geo.get("confidence", "low"),
             "source": geo.get("source", ""),
         },
         "peer": peer,
@@ -2454,9 +2459,21 @@ def load_ip_info_cache():
         return {}
     try:
         data = json.loads(IP_INFO_CACHE_FILE.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
     except Exception:
+        _backup_corrupt_cache()
         return {}
-    return data if isinstance(data, dict) else {}
+
+
+def _backup_corrupt_cache():
+    try:
+        stamp = time.strftime("%Y%m%d-%H%M%S", time.gmtime())
+        bak = IP_INFO_CACHE_FILE.with_name(f"{IP_INFO_CACHE_FILE.name}.corrupt.{stamp}")
+        if IP_INFO_CACHE_FILE.exists():
+            IP_INFO_CACHE_FILE.rename(bak)
+            os.chmod(bak, 0o600)
+    except Exception:
+        pass
 
 
 def write_ip_info_cache(data):
@@ -2475,6 +2492,13 @@ def country_code_to_flag(code):
     return "".join(chr(0x1F1E6 + ord(char) - ord("A")) for char in code)
 
 
+def _safe_float(v):
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
 def _empty_endpoint_info(ip, source="local", provider=""):
     return {
         "ip": ip,
@@ -2484,11 +2508,322 @@ def _empty_endpoint_info(ip, source="local", provider=""):
         "region": "",
         "city": "",
         "asn": "",
+        "asn_id": "",
         "org": "",
         "provider": provider,
+        "sources": [],
+        "confidence": "low",
         "source": source,
         "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
+
+
+def load_geoip_providers_config():
+    """Load providers config from runtime file. Returns empty providers dict if missing."""
+    try:
+        if GEOIP_PROVIDERS_FILE.exists():
+            data = json.loads(GEOIP_PROVIDERS_FILE.read_text(encoding="utf-8"))
+            if isinstance(data, dict) and isinstance(data.get("providers"), dict):
+                return data
+    except Exception:
+        pass
+    return {"providers": {}}
+
+
+def _geoip_provider_cfg(name):
+    return load_geoip_providers_config().get("providers", {}).get(name, {})
+
+
+def _fetch_2ip_provider(ip):
+    cfg = _geoip_provider_cfg("2ip")
+    if not cfg.get("enabled"):
+        return None
+    token = (cfg.get("token") or os.environ.get("AWG_GEOIP_2IP_TOKEN", "")).strip()
+    if not token:
+        return None
+    url = f"https://api.2ip.io/geo/{ip}?token={token}"
+    try:
+        with urlopen(url, timeout=IP_INFO_LOOKUP_TIMEOUT) as resp:
+            payload = resp.read(32768)
+    except Exception:
+        return None
+    try:
+        data = json.loads(payload.decode("utf-8"))
+    except Exception:
+        return None
+    if not isinstance(data, dict) or not data.get("ip"):
+        return None
+    asn_data = data.get("asn") or {}
+    asn_id = str(asn_data.get("id") or "").strip()
+    asn = f"AS{asn_id}" if asn_id else ""
+    provider = str(asn_data.get("name") or "").strip()
+    country_code = str(data.get("code") or "").upper().strip()
+    return {
+        "ip": ip,
+        "country": str(data.get("country") or "").strip(),
+        "country_code": country_code,
+        "flag": str(data.get("emoji") or country_code_to_flag(country_code)).strip(),
+        "region": str(data.get("region") or "").strip(),
+        "city": str(data.get("city") or "").strip(),
+        "lat": _safe_float(data.get("lat")),
+        "lon": _safe_float(data.get("lon")),
+        "timezone": str(data.get("timezone") or "").strip(),
+        "asn": asn,
+        "asn_id": asn_id,
+        "provider": provider,
+        "org": provider,
+        "hosting": bool(asn_data.get("hosting")),
+        "_source_name": "2ip",
+    }
+
+
+def _fetch_ipinfo_provider(ip):
+    cfg = _geoip_provider_cfg("ipinfo")
+    if not cfg.get("enabled"):
+        return None
+    token = (cfg.get("token") or os.environ.get("AWG_GEOIP_IPINFO_TOKEN", "")).strip()
+    if not token:
+        return None
+    url = f"https://ipinfo.io/{ip}?token={token}"
+    try:
+        with urlopen(url, timeout=IP_INFO_LOOKUP_TIMEOUT) as resp:
+            payload = resp.read(32768)
+    except Exception:
+        return None
+    try:
+        data = json.loads(payload.decode("utf-8"))
+    except Exception:
+        return None
+    if not isinstance(data, dict) or not data.get("ip"):
+        return None
+    country_code = str(data.get("country") or "").upper().strip()
+    org_raw = str(data.get("org") or "").strip()
+    org_parts = org_raw.split(" ", 1)
+    asn = org_parts[0] if org_parts and org_parts[0].startswith("AS") else ""
+    asn_id = asn[2:] if asn.startswith("AS") and asn[2:].isdigit() else ""
+    org_name = org_parts[1] if len(org_parts) > 1 else org_raw
+    loc = str(data.get("loc") or "").split(",")
+    lat = _safe_float(loc[0]) if len(loc) >= 1 else None
+    lon = _safe_float(loc[1]) if len(loc) >= 2 else None
+    return {
+        "ip": ip,
+        "country": "",
+        "country_code": country_code,
+        "flag": country_code_to_flag(country_code),
+        "region": str(data.get("region") or "").strip(),
+        "city": str(data.get("city") or "").strip(),
+        "lat": lat,
+        "lon": lon,
+        "timezone": str(data.get("timezone") or "").strip(),
+        "asn": asn,
+        "asn_id": asn_id,
+        "provider": org_name,
+        "org": org_name,
+        "hosting": bool(data.get("bogon")),
+        "_source_name": "ipinfo",
+    }
+
+
+def _fetch_mmdb_provider(ip):
+    cfg = _geoip_provider_cfg("maxmind")
+    if not cfg.get("enabled"):
+        return None
+    try:
+        import geoip2.database as _geoip2  # type: ignore
+    except ImportError:
+        return None
+    city_path = cfg.get("mmdb_path") or str(AWG_DIR / "geoip/GeoLite2-City.mmdb")
+    asn_path = str(AWG_DIR / "geoip/GeoLite2-ASN.mmdb")
+    result = {}
+    try:
+        with _geoip2.Reader(city_path) as reader:
+            r = reader.city(ip)
+            country_code = str(r.country.iso_code or "").upper()
+            subdiv = r.subdivisions.most_specific.name if r.subdivisions else ""
+            result.update({
+                "ip": ip,
+                "country": str(r.country.name or "").strip(),
+                "country_code": country_code,
+                "flag": country_code_to_flag(country_code),
+                "region": str(subdiv or "").strip(),
+                "city": str(r.city.name or "").strip(),
+                "lat": float(r.location.latitude) if r.location.latitude is not None else None,
+                "lon": float(r.location.longitude) if r.location.longitude is not None else None,
+                "timezone": str(r.location.time_zone or "").strip(),
+                "_source_name": "maxmind",
+            })
+    except Exception:
+        return None
+    try:
+        if Path(asn_path).exists():
+            with _geoip2.Reader(asn_path) as reader:
+                r = reader.asn(ip)
+                asn_id = str(r.autonomous_system_number or "")
+                asn = f"AS{asn_id}" if asn_id else ""
+                org = str(r.autonomous_system_organization or "").strip()
+                result.update({"asn": asn, "asn_id": asn_id, "provider": org, "org": org})
+    except Exception:
+        pass
+    return result if result else None
+
+
+def _geoip_consensus(results):
+    """Merge provider results into consensus dict with confidence score."""
+    if not results:
+        return None, "low", []
+    source_names = [r.get("_source_name", "unknown") for r in results]
+    if len(results) == 1:
+        merged = {k: v for k, v in results[0].items() if not k.startswith("_")}
+        src = results[0].get("_source_name", "unknown")
+        conf = "low" if src == "ip-api" else "medium"
+        return merged, conf, source_names
+
+    merged = {}
+    for field in ("country", "country_code", "region", "city", "asn", "asn_id", "provider", "org", "timezone", "flag"):
+        vals = [str(r.get(field) or "").strip() for r in results if str(r.get(field) or "").strip()]
+        if not vals:
+            merged[field] = ""
+            continue
+        counts = {}
+        for v in vals:
+            k = v.lower()
+            if k not in counts:
+                counts[k] = {"count": 0, "val": v}
+            counts[k]["count"] += 1
+        best = max(counts.values(), key=lambda x: x["count"])
+        merged[field] = best["val"]
+    for field in ("lat", "lon"):
+        for r in results:
+            if r.get(field) is not None:
+                merged[field] = r[field]
+                break
+    for r in results:
+        if r.get("hosting") is not None:
+            merged["hosting"] = r["hosting"]
+            break
+
+    cc_vals = [str(r.get("country_code") or "").upper() for r in results if r.get("country_code")]
+    city_vals = [str(r.get("city") or "").strip().lower() for r in results if r.get("city")]
+    cc_match = len(set(cc_vals)) <= 1 and len(cc_vals) >= 2
+    city_match = len(set(city_vals)) <= 1 and len(city_vals) >= 2
+
+    if cc_match and city_match:
+        confidence = "high"
+    elif cc_match:
+        confidence = "medium"
+    else:
+        confidence = "low"
+    return merged, confidence, source_names
+
+
+def lookup_ip_enriched(ip, purpose="endpoint"):
+    """Multi-provider GeoIP: cache → MMDB → one external provider → consensus."""
+    ip = (ip or "").strip()
+    if not ip:
+        return _empty_endpoint_info(ip, source="local")
+    if _is_private_endpoint_ip(ip):
+        return _empty_endpoint_info(ip, source="local", provider="private")
+
+    now = time.time()
+    with IP_INFO_CACHE_LOCK:
+        cache = load_ip_info_cache()
+        cached = cache.get(ip)
+        if isinstance(cached, dict):
+            ts = float(cached.get("_cache_ts") or 0)
+            status = cached.get("status", "ok")
+            ttl = (IP_INFO_NEGATIVE_TTL if status == "negative"
+                   else IP_INFO_ERROR_CACHE_TTL if status == "error"
+                   else IP_INFO_CACHE_TTL)
+            if ts and now - ts < ttl:
+                info = dict(cached.get("info") or _empty_endpoint_info(ip, source="cache"))
+                info["source"] = "cache"
+                return info
+
+    results = []
+    r = _fetch_mmdb_provider(ip)
+    if r:
+        results.append(r)
+    ext = (_fetch_2ip_provider(ip) or _fetch_ipinfo_provider(ip) or _fetch_ipapi_provider(ip))
+    if ext:
+        results.append(ext)
+
+    if not results:
+        info = _empty_endpoint_info(ip, source="provider")
+        with IP_INFO_CACHE_LOCK:
+            cache = load_ip_info_cache()
+            cache[ip] = {"status": "negative", "_cache_ts": now, "info": info}
+            try:
+                write_ip_info_cache(cache)
+            except Exception:
+                pass
+        return info
+
+    merged, confidence, source_names = _geoip_consensus(results)
+    flag = str(merged.get("flag") or "").strip()
+    if not flag and merged.get("country_code"):
+        flag = country_code_to_flag(str(merged["country_code"]))
+    info = {
+        "ip": ip,
+        "country": str(merged.get("country") or "").strip(),
+        "country_code": str(merged.get("country_code") or "").upper().strip(),
+        "flag": flag,
+        "region": str(merged.get("region") or "").strip(),
+        "city": str(merged.get("city") or "").strip(),
+        "asn": str(merged.get("asn") or "").strip(),
+        "asn_id": str(merged.get("asn_id") or "").strip(),
+        "provider": str(merged.get("provider") or "").strip(),
+        "org": str(merged.get("org") or "").strip(),
+        "timezone": str(merged.get("timezone") or "").strip(),
+        "hosting": merged.get("hosting"),
+        "sources": source_names,
+        "confidence": confidence,
+        "source": "provider",
+        "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }
+    if merged.get("lat") is not None:
+        info["lat"] = merged["lat"]
+    if merged.get("lon") is not None:
+        info["lon"] = merged["lon"]
+
+    with IP_INFO_CACHE_LOCK:
+        cache = load_ip_info_cache()
+        cache[ip] = {
+            "status": "ok",
+            "_cache_ts": now,
+            "info": info,
+            "source_details": {
+                r.get("_source_name", "unknown"): {k: v for k, v in r.items() if not k.startswith("_")}
+                for r in results
+            },
+        }
+        try:
+            write_ip_info_cache(cache)
+        except Exception:
+            pass
+    return info
+
+
+def geoip_cache_stats():
+    with IP_INFO_CACHE_LOCK:
+        cache = load_ip_info_cache()
+    return len(cache)
+
+
+def geoip_providers_status():
+    """Return provider status without exposing tokens."""
+    cfg = load_geoip_providers_config().get("providers", {})
+    providers = {}
+    for name, pcfg in (cfg or {}).items():
+        entry = {"enabled": bool(pcfg.get("enabled"))}
+        if "token" in pcfg:
+            entry["has_token"] = bool(pcfg.get("token"))
+        if name == "maxmind":
+            mmdb = pcfg.get("mmdb_path") or str(AWG_DIR / "geoip/GeoLite2-City.mmdb")
+            entry["mmdb_present"] = Path(mmdb).exists()
+        providers[name] = entry
+    if "ip-api" not in providers:
+        providers["ip-api"] = {"enabled": True}
+    return {"cache_entries": geoip_cache_stats(), "providers": providers}
 
 
 def _is_private_endpoint_ip(ip):
@@ -2513,11 +2848,14 @@ def _is_private_endpoint_ip(ip):
     )
 
 
-def _fetch_endpoint_ip_info(ip):
-    url = f"http://ip-api.com/json/{ip}?fields=status,country,countryCode,regionName,city,isp,org,as,query,message"
+def _fetch_ipapi_provider(ip):
+    cfg = _geoip_provider_cfg("ip-api")
+    if cfg.get("enabled") is False:
+        return None
+    url = f"http://ip-api.com/json/{ip}?fields=status,country,countryCode,regionName,city,lat,lon,timezone,isp,org,as,query,message"
     try:
-        with urlopen(url, timeout=IP_INFO_LOOKUP_TIMEOUT) as response:
-            payload = response.read(16384)
+        with urlopen(url, timeout=IP_INFO_LOOKUP_TIMEOUT) as resp:
+            payload = resp.read(16384)
     except (OSError, URLError, TimeoutError, ValueError):
         return None
     try:
@@ -2526,10 +2864,13 @@ def _fetch_endpoint_ip_info(ip):
         return None
     if not isinstance(data, dict) or data.get("status") != "success":
         return None
-    country_code = str(data.get("countryCode") or "").upper()
+    country_code = str(data.get("countryCode") or "").upper().strip()
     org = str(data.get("org") or "").strip()
     isp = str(data.get("isp") or "").strip()
-    provider = org or isp
+    asn_raw = str(data.get("as") or "").strip()
+    asn_parts = asn_raw.split(" ", 1)
+    asn = asn_parts[0] if asn_parts else ""
+    asn_id = asn[2:] if asn.startswith("AS") and asn[2:].isdigit() else ""
     return {
         "ip": ip,
         "country": str(data.get("country") or "").strip(),
@@ -2537,11 +2878,15 @@ def _fetch_endpoint_ip_info(ip):
         "flag": country_code_to_flag(country_code),
         "region": str(data.get("regionName") or "").strip(),
         "city": str(data.get("city") or "").strip(),
-        "asn": str(data.get("as") or "").strip(),
+        "lat": _safe_float(data.get("lat")),
+        "lon": _safe_float(data.get("lon")),
+        "timezone": str(data.get("timezone") or "").strip(),
+        "asn": asn,
+        "asn_id": asn_id,
+        "provider": org or isp,
         "org": org,
-        "provider": provider,
-        "source": "provider",
-        "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "hosting": None,
+        "_source_name": "ip-api",
     }
 
 
@@ -2557,10 +2902,13 @@ def lookup_endpoint_ip_info(ip, allow_refresh=True):
         cache = load_ip_info_cache()
         cached = cache.get(ip)
         if isinstance(cached, dict):
-            updated_at = float(cached.get("_cache_ts") or 0)
-            ttl = IP_INFO_NEGATIVE_TTL if cached.get("status") == "negative" else IP_INFO_CACHE_TTL
+            ts = float(cached.get("_cache_ts") or 0)
+            status = cached.get("status", "ok")
+            ttl = (IP_INFO_NEGATIVE_TTL if status == "negative"
+                   else IP_INFO_ERROR_CACHE_TTL if status == "error"
+                   else IP_INFO_CACHE_TTL)
             info = dict(cached.get("info") or _empty_endpoint_info(ip, source="cache"))
-            if updated_at and now - updated_at < ttl:
+            if ts and now - ts < ttl:
                 info["source"] = "cache"
                 return info
             if not allow_refresh:
@@ -2569,22 +2917,7 @@ def lookup_endpoint_ip_info(ip, allow_refresh=True):
 
     if not allow_refresh:
         return _empty_endpoint_info(ip, source="cache")
-
-    info = _fetch_endpoint_ip_info(ip)
-    if info is None:
-        info = _empty_endpoint_info(ip, source="provider")
-        status = "negative"
-    else:
-        status = "ok"
-
-    with IP_INFO_CACHE_LOCK:
-        cache = load_ip_info_cache()
-        cache[ip] = {"status": status, "_cache_ts": now, "info": info}
-        try:
-            write_ip_info_cache(cache)
-        except Exception:
-            pass
-    return info
+    return lookup_ip_enriched(ip)
 
 
 def split_endpoint(endpoint):
@@ -3958,6 +4291,11 @@ class Handler(SimpleHTTPRequestHandler):
                 return
             self.send_json({"reports": list_nettest_reports()})
             return
+        if u.path == "/api/geoip/status":
+            if not self.require_super(auth):
+                return
+            self.send_json(geoip_providers_status())
+            return
         if u.path == "/api/help/clients":
             self.send_json({"groups": HELP_CLIENT_GROUPS})
             return
@@ -4133,6 +4471,30 @@ class Handler(SimpleHTTPRequestHandler):
                         self.send_json({"error": "rate limited"}, HTTPStatus.TOO_MANY_REQUESTS)
                         return
                     raise
+                return
+            if u.path == "/api/geoip/refresh":
+                if not self.require_super(auth):
+                    return
+                body = json_body_from_handler(self, 1024)
+                raw_ip = str(body.get("ip") or "").strip()
+                try:
+                    validated_ip = str(ipaddress.ip_address(raw_ip))
+                except ValueError:
+                    self.send_json({"error": "invalid ip"}, 400)
+                    return
+                if _is_private_endpoint_ip(validated_ip):
+                    self.send_json({"error": "private/reserved ip"}, 400)
+                    return
+                with IP_INFO_CACHE_LOCK:
+                    cache = load_ip_info_cache()
+                    if validated_ip in cache:
+                        del cache[validated_ip]
+                    try:
+                        write_ip_info_cache(cache)
+                    except Exception:
+                        pass
+                info = lookup_ip_enriched(validated_ip)
+                self.send_json({"ok": True, "ip": validated_ip, "info": info})
                 return
             body = self.json_body()
             if u.path == "/api/clients":
