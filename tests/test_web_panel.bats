@@ -1069,8 +1069,8 @@ PY
     grep -qF 'Endpoint: ${esc(endpoint)}</p>' "$BATS_TEST_DIRNAME/../web/app.js"
     grep -qF '${renderEndpointInfo(client)}' "$BATS_TEST_DIRNAME/../web/app.js"
     grep -qF 'endpoint-info' "$BATS_TEST_DIRNAME/../web/app.js"
-    grep -qF 'endpoint-provider truncate' "$BATS_TEST_DIRNAME/../web/app.js"
-    grep -qF '.endpoint-provider' "$BATS_TEST_DIRNAME/../web/style.css"
+    grep -qF 'endpoint-geo-main' "$BATS_TEST_DIRNAME/../web/app.js"
+    grep -qF '.endpoint-geo-main' "$BATS_TEST_DIRNAME/../web/style.css"
 }
 
 @test "WG Tunnel import links are authenticated, RBAC scoped, hashed, and raw no-store" {
@@ -2822,9 +2822,11 @@ PY
 
 @test "geoip: app.js displays geo sources and confidence in tooltip" {
     grep -qF 'geoTooltip' "$BATS_TEST_DIRNAME/../web/app.js"
-    grep -qF 'Sources:' "$BATS_TEST_DIRNAME/../web/app.js"
-    grep -qF 'Confidence:' "$BATS_TEST_DIRNAME/../web/app.js"
-    grep -qF 'low confidence' "$BATS_TEST_DIRNAME/../web/app.js"
+    grep -qF 'formatGeoTooltip' "$BATS_TEST_DIRNAME/../web/app.js"
+    grep -qF 'Consensus:' "$BATS_TEST_DIRNAME/../web/app.js"
+    grep -qF 'formatGeoSourceLine' "$BATS_TEST_DIRNAME/../web/app.js"
+    grep -qF 'endpoint-geo-main' "$BATS_TEST_DIRNAME/../web/app.js"
+    grep -qF 'endpoint-geo-sources' "$BATS_TEST_DIRNAME/../web/app.js"
 }
 
 @test "geoip: app.js has source label helper for 2IP/DB-IP/MaxMind" {
@@ -2833,6 +2835,7 @@ PY
     grep -qF '"dbip": "DB-IP"' "$BATS_TEST_DIRNAME/../web/app.js"
     grep -qF '"maxmind": "MaxMind"' "$BATS_TEST_DIRNAME/../web/app.js"
     grep -qF '"dbip_mmdb": "DB-IP MMDB"' "$BATS_TEST_DIRNAME/../web/app.js"
+    grep -qF '"ip-api": "ip-api"' "$BATS_TEST_DIRNAME/../web/app.js"
 }
 
 @test "geoip: DB-IP free endpoint normalizes to common schema" {
@@ -3026,4 +3029,219 @@ PY
     grep -qF 'dbip_mmdb' "$BATS_TEST_DIRNAME/../web/server.py"
     grep -qF 'allow_free' "$BATS_TEST_DIRNAME/../web/server.py"
     grep -qF 'multi_source' "$BATS_TEST_DIRNAME/../web/server.py"
+}
+
+@test "geoip: lookup_ip_enriched includes sanitized source_details per provider" {
+    command -v python3 &>/dev/null || skip "python3 not available"
+    local tmp
+    tmp=$(mktemp -d)
+    mkdir -p "$tmp/web"
+    AWG_DIR="$tmp" SERVER_CONF_FILE="$tmp/awg0.conf" REPO_ROOT="$BATS_TEST_DIRNAME/.." python3 - <<'PY'
+import os, json
+from pathlib import Path
+import importlib.util
+spec = importlib.util.spec_from_file_location("server", Path(os.environ["REPO_ROOT"]) / "web" / "server.py")
+server = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(server)
+
+def make_provider(name, city, asn, asn_id, provider_name):
+    def fn(ip):
+        return {
+            "ip": ip, "country": "Russia", "country_code": "RU", "flag": "\U0001f1f7\U0001f1fa",
+            "region": "Moscow", "city": city, "asn": asn, "asn_id": asn_id,
+            "provider": provider_name, "org": provider_name, "timezone": "Europe/Moscow",
+            "hosting": False, "lat": 55.7, "lon": 37.6, "_source_name": name,
+            "_secret_token": "shouldnotleak", "_url": "https://example.invalid/?token=shouldnotleak",
+        }
+    return fn
+
+server._fetch_mmdb_provider = lambda ip: None
+server._fetch_dbip_mmdb_provider = lambda ip: None
+server._fetch_2ip_provider = make_provider("2ip", "Moscow", "AS29233", "29233", "IIP-NET-AS29233")
+server._fetch_dbip_provider = make_provider("dbip", "Moscow", "AS29233", "29233", "Moscow State University")
+server._fetch_ipinfo_provider = lambda ip: None
+server._fetch_ipapi_provider = lambda ip: None
+
+info = server.lookup_ip_enriched("85.89.126.30", multi_source=True)
+assert "source_details" in info, f"source_details missing: {list(info.keys())}"
+sd = info["source_details"]
+assert "2ip" in sd, f"2ip missing from source_details: {sd}"
+assert "dbip" in sd, f"dbip missing from source_details: {sd}"
+assert sd["2ip"]["city"] == "Moscow"
+assert sd["2ip"]["asn"] == "AS29233"
+assert sd["2ip"]["provider"] == "IIP-NET-AS29233"
+assert sd["dbip"]["provider"] == "Moscow State University"
+# Internal fields (token/url) must never appear in source_details
+raw = json.dumps(sd)
+assert "shouldnotleak" not in raw, "secret leaked into source_details"
+assert "_secret_token" not in raw and "_url" not in raw
+# Top-level info must also be free of internal fields
+raw_info = json.dumps(info)
+assert "shouldnotleak" not in raw_info, "secret leaked into info"
+assert info["confidence"] == "high"
+PY
+    rm -rf "$tmp"
+}
+
+@test "geoip: source_details for error provider is sanitized status/error only" {
+    command -v python3 &>/dev/null || skip "python3 not available"
+    local tmp
+    tmp=$(mktemp -d)
+    mkdir -p "$tmp/web"
+    AWG_DIR="$tmp" SERVER_CONF_FILE="$tmp/awg0.conf" REPO_ROOT="$BATS_TEST_DIRNAME/.." python3 - <<'PY'
+import os, json
+from pathlib import Path
+import importlib.util
+spec = importlib.util.spec_from_file_location("server", Path(os.environ["REPO_ROOT"]) / "web" / "server.py")
+server = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(server)
+fake_cfg = {"providers": {"2ip": {"enabled": True, "token": "secrettoken123"}}}
+server.load_geoip_providers_config = lambda: fake_cfg
+from urllib.error import HTTPError
+import io
+def raise_429(url, timeout=None):
+    raise HTTPError(url, 429, "Too Many Requests", {}, io.BytesIO(b"rate limit"))
+server.urlopen = raise_429
+# Direct provider call must return None on 429 (graceful fallback)
+r = server._fetch_2ip_provider("8.8.8.8")
+assert r is None, "2ip provider must return None on HTTP 429"
+PY
+    rm -rf "$tmp"
+}
+
+@test "geoip: app.js formatGeoTooltip renders Consensus and per-source lines" {
+    command -v node &>/dev/null || skip "node not available"
+    local tmp
+    tmp=$(mktemp -d)
+    cat > "$tmp/check.mjs" <<'JS'
+import fs from "node:fs";
+const src = fs.readFileSync(process.argv[2], "utf8");
+const start = src.indexOf("const _GEO_SOURCE_LABELS");
+const end = src.indexOf("function renderEndpointInfo");
+if (start < 0 || end < 0) throw new Error("geo helper block not found");
+const block = src.slice(start, end);
+const esc = (s) => String(s);
+const fn = new Function("esc", block + "\nreturn { geoSourceLabel, formatGeoConsensus, formatGeoSourceLine, formatGeoTooltip, formatGeoSourcesCompact, geoTooltip };");
+const helpers = fn(esc);
+
+// Single source (low confidence, e.g. ip-api only)
+const single = {
+  city: "Moscow", country_code: "RU", asn: "AS29233", flag: "\u{1f1f7}\u{1f1fa}",
+  confidence: "low", sources: ["ip-api"], updated_at: "2026-06-09T22:28:00Z",
+  source_details: { "ip-api": { city: "Moscow", country_code: "RU", provider: "UMOS", org: "UMOS", asn: "AS29233" } },
+};
+const singleTip = helpers.formatGeoTooltip(single);
+if (!singleTip.includes("Consensus: Moscow, RU · AS29233 · low")) throw new Error("single consensus line wrong: " + singleTip);
+if (!singleTip.includes("ip-api: Moscow, RU · UMOS · AS29233")) throw new Error("single source line wrong: " + singleTip);
+if (!singleTip.includes("Updated: 2026-06-09T22:28:00Z")) throw new Error("updated line missing: " + singleTip);
+if (helpers.formatGeoSourcesCompact(single) !== "ip-api") throw new Error("single compact wrong: " + helpers.formatGeoSourcesCompact(single));
+
+// Two sources, high confidence
+const two = {
+  city: "Moscow", country_code: "RU", asn: "AS29233", flag: "\u{1f1f7}\u{1f1fa}",
+  confidence: "high", sources: ["2ip", "dbip"], updated_at: "2026-06-09T22:28:00Z",
+  source_details: {
+    "2ip": { city: "Moscow", country_code: "RU", provider: "IIP-NET-AS29233", org: "IIP-NET-AS29233", asn: "AS29233" },
+    "dbip": { city: "Moscow", country_code: "RU", provider: "Moscow State University", org: "Moscow State University", asn: "AS29233" },
+  },
+};
+const twoTip = helpers.formatGeoTooltip(two);
+if (!twoTip.includes("Consensus: Moscow, RU · AS29233 · high")) throw new Error("two consensus wrong: " + twoTip);
+if (!twoTip.includes("2IP: Moscow, RU · IIP-NET-AS29233 · AS29233")) throw new Error("2ip line wrong: " + twoTip);
+if (!twoTip.includes("DB-IP: Moscow, RU · Moscow State University · AS29233")) throw new Error("dbip line wrong: " + twoTip);
+if (helpers.formatGeoSourcesCompact(two) !== "2IP + DB-IP") throw new Error("two compact wrong: " + helpers.formatGeoSourcesCompact(two));
+
+// Three sources
+const three = { ...two, sources: ["2ip", "dbip", "ip-api"], source_details: { ...two.source_details,
+  "ip-api": { city: "Moscow", country_code: "RU", provider: "UMOS", org: "UMOS", asn: "AS29233" } } };
+if (helpers.formatGeoSourcesCompact(three) !== "2IP + DB-IP + ip-api") throw new Error("three compact wrong: " + helpers.formatGeoSourcesCompact(three));
+const threeTip = helpers.formatGeoTooltip(three);
+if (!threeTip.includes("ip-api: Moscow, RU · UMOS · AS29233")) throw new Error("ip-api line missing: " + threeTip);
+
+// geoTooltip alias must match formatGeoTooltip
+if (helpers.geoTooltip(two) !== helpers.formatGeoTooltip(two)) throw new Error("geoTooltip alias mismatch");
+
+// Empty/missing info handled gracefully
+if (helpers.formatGeoTooltip(null) !== "") throw new Error("null info should yield empty tooltip");
+if (helpers.formatGeoSourcesCompact({}) !== "") throw new Error("empty info should yield empty sources");
+
+console.log("OK");
+JS
+    node "$tmp/check.mjs" "$BATS_TEST_DIRNAME/../web/app.js"
+    rm -rf "$tmp"
+}
+
+@test "geoip: renderEndpointInfo applies confidence class and compact sources" {
+    command -v node &>/dev/null || skip "node not available"
+    local tmp
+    tmp=$(mktemp -d)
+    cat > "$tmp/check.mjs" <<'JS'
+import fs from "node:fs";
+const src = fs.readFileSync(process.argv[2], "utf8");
+const start = src.indexOf("const _GEO_SOURCE_LABELS");
+const end = src.indexOf("function canManageClientAssignments");
+if (start < 0 || end < 0) throw new Error("geo block not found");
+const block = src.slice(start, end);
+const esc = (s) => String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]));
+const fn = new Function("esc", block + "\nreturn { renderEndpointInfo };");
+const helpers = fn(esc);
+
+const client = {
+  endpoint: "85.89.126.30:51820",
+  endpoint_info: {
+    city: "Moscow", country_code: "RU", asn: "AS29233", flag: "\u{1f1f7}\u{1f1fa}",
+    confidence: "high", sources: ["2ip", "dbip"], updated_at: "2026-06-09T22:28:00Z",
+    source_details: {
+      "2ip": { city: "Moscow", country_code: "RU", provider: "IIP-NET-AS29233", org: "IIP-NET-AS29233", asn: "AS29233" },
+      "dbip": { city: "Moscow", country_code: "RU", provider: "Moscow State University", org: "Moscow State University", asn: "AS29233" },
+    },
+  },
+};
+const html = helpers.renderEndpointInfo(client);
+if (!html.includes("geo-confidence-high")) throw new Error("missing confidence class: " + html);
+if (!html.includes("endpoint-geo-main")) throw new Error("missing main span: " + html);
+if (!html.includes("endpoint-geo-sources")) throw new Error("missing sources span: " + html);
+if (!html.includes("2IP + DB-IP")) throw new Error("missing compact sources: " + html);
+if (!html.includes("Moscow, RU")) throw new Error("missing location: " + html);
+if (!html.includes("AS29233")) throw new Error("missing asn: " + html);
+if (!html.includes("Consensus:")) throw new Error("missing consensus in tooltip: " + html);
+if (html.includes("secrettoken") || html.toLowerCase().includes("token=")) throw new Error("token leaked: " + html);
+
+// Low confidence -> geo-confidence-low class
+const lowClient = { endpoint: "1.2.3.4:51820", endpoint_info: {
+  city: "Moscow", country_code: "RU", asn: "AS29233", flag: "\u{1f1f7}\u{1f1fa}",
+  confidence: "low", sources: ["ip-api"], source_details: { "ip-api": { city: "Moscow", country_code: "RU", provider: "UMOS", org: "UMOS", asn: "AS29233" } },
+}};
+const lowHtml = helpers.renderEndpointInfo(lowClient);
+if (!lowHtml.includes("geo-confidence-low")) throw new Error("missing low confidence class: " + lowHtml);
+if (!lowHtml.includes("ip-api")) throw new Error("missing ip-api source label: " + lowHtml);
+
+// No endpoint -> empty string
+if (helpers.renderEndpointInfo({ endpoint: "" }) !== "") throw new Error("empty endpoint should render nothing");
+
+// No geo info -> unknown placeholder
+const unknownHtml = helpers.renderEndpointInfo({ endpoint: "1.2.3.4:51820", endpoint_info: {} });
+if (!unknownHtml.includes("IP info: unknown")) throw new Error("missing unknown placeholder: " + unknownHtml);
+
+console.log("OK");
+JS
+    node "$tmp/check.mjs" "$BATS_TEST_DIRNAME/../web/app.js"
+    rm -rf "$tmp"
+}
+
+@test "geoip: nettest report row shows compact geo consensus and sources" {
+    grep -qF 'formatGeoConsensus(geo)' "$BATS_TEST_DIRNAME/../web/app.js"
+    grep -qF 'formatGeoSourcesCompact(geo)' "$BATS_TEST_DIRNAME/../web/app.js"
+    grep -qF 'formatGeoTooltip(geo)' "$BATS_TEST_DIRNAME/../web/app.js"
+    grep -qF 'formatGeoTooltip(result.geo)' "$BATS_TEST_DIRNAME/../web/app.js"
+    grep -qF 'formatGeoSourcesCompact(result.geo' "$BATS_TEST_DIRNAME/../web/app.js"
+}
+
+@test "geoip: style.css defines compact endpoint-geo classes" {
+    grep -qF '.endpoint-geo' "$BATS_TEST_DIRNAME/../web/style.css"
+    grep -qF '.endpoint-geo-main' "$BATS_TEST_DIRNAME/../web/style.css"
+    grep -qF '.endpoint-geo-sources' "$BATS_TEST_DIRNAME/../web/style.css"
+    grep -qF '.geo-confidence-high' "$BATS_TEST_DIRNAME/../web/style.css"
+    grep -qF '.geo-confidence-medium' "$BATS_TEST_DIRNAME/../web/style.css"
+    grep -qF '.geo-confidence-low' "$BATS_TEST_DIRNAME/../web/style.css"
 }

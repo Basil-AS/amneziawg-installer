@@ -2856,6 +2856,20 @@ def lookup_ip_enriched(ip, purpose="endpoint", multi_source=False):
     flag = str(merged.get("flag") or "").strip()
     if not flag and merged.get("country_code"):
         flag = country_code_to_flag(str(merged["country_code"]))
+
+    # Compact sanitized per-source details (no tokens, URLs, lat/lon)
+    source_details = {}
+    for r in results:
+        src = r.get("_source_name", "unknown")
+        source_details[src] = {
+            "city": str(r.get("city") or "").strip(),
+            "region": str(r.get("region") or "").strip(),
+            "country_code": str(r.get("country_code") or "").upper().strip(),
+            "provider": str(r.get("provider") or "").strip(),
+            "org": str(r.get("org") or "").strip(),
+            "asn": str(r.get("asn") or "").strip(),
+        }
+
     info = {
         "ip": ip,
         "country": str(merged.get("country") or "").strip(),
@@ -2871,6 +2885,7 @@ def lookup_ip_enriched(ip, purpose="endpoint", multi_source=False):
         "hosting": merged.get("hosting"),
         "sources": source_names,
         "confidence": confidence,
+        "source_details": source_details,
         "source": "provider",
         "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
@@ -2881,15 +2896,7 @@ def lookup_ip_enriched(ip, purpose="endpoint", multi_source=False):
 
     with IP_INFO_CACHE_LOCK:
         cache = load_ip_info_cache()
-        cache[ip] = {
-            "status": "ok",
-            "_cache_ts": now,
-            "info": info,
-            "source_details": {
-                r.get("_source_name", "unknown"): {k: v for k, v in r.items() if not k.startswith("_")}
-                for r in results
-            },
-        }
+        cache[ip] = {"status": "ok", "_cache_ts": now, "info": info}
         try:
             write_ip_info_cache(cache)
         except Exception:

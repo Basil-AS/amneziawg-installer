@@ -478,54 +478,87 @@ function renderAssignedTokenBadges(client) {
 
 const _GEO_SOURCE_LABELS = {
   "2ip": "2IP", "dbip": "DB-IP", "dbip_mmdb": "DB-IP MMDB",
-  "maxmind": "MaxMind", "ipinfo": "ipinfo.io", "ip-api": "ip-api",
+  "maxmind": "MaxMind", "ipinfo": "ipinfo", "ip-api": "ip-api", "cache": "cache",
 };
 function geoSourceLabel(name) {
   return _GEO_SOURCE_LABELS[name] || name;
 }
 
-function geoTooltip(info) {
+function formatGeoConsensus(info) {
+  if (!info) return "";
+  const cc = info.country_code || "";
+  const city = info.city || "";
+  const asn = info.asn || "";
+  const conf = info.confidence || "";
+  const location = [city, cc].filter(Boolean).join(", ");
+  return [location, asn, conf].filter(Boolean).join(" · ");
+}
+
+function formatGeoSourceLine(source, detail) {
+  if (!detail) return "";
+  if (detail.status === "error") return `${geoSourceLabel(source)}: ${detail.error || "error"}`;
+  const city = detail.city || "";
+  const cc = detail.country_code || "";
+  const location = [city, cc].filter(Boolean).join(", ");
+  const prov = detail.provider || detail.org || "";
+  const asn = detail.asn || "";
+  const parts = [location, prov, asn].filter(Boolean);
+  if (!parts.length) return "";
+  return `${geoSourceLabel(source)}: ${parts.join(" · ")}`;
+}
+
+function formatGeoTooltip(info) {
   if (!info) return "";
   const lines = [];
-  const cc = info.country_code || info.country || "";
-  const city = info.city || "";
-  const region = info.region || "";
-  if (city || region || cc) lines.push([city, region, cc].filter(Boolean).join(", "));
-  if (info.provider || info.org) lines.push(`Provider: ${info.provider || info.org}`);
-  if (info.asn) lines.push(`ASN: ${info.asn}`);
-  const rawSources = Array.isArray(info.sources) && info.sources.length ? info.sources : (info.source ? [info.source] : []);
-  const sources = rawSources.map(geoSourceLabel).join(", ");
-  if (sources) lines.push(`Sources: ${sources}`);
-  if (info.confidence) lines.push(`Confidence: ${info.confidence}`);
+  const consensus = formatGeoConsensus(info);
+  if (consensus) lines.push(`Consensus: ${consensus}`);
+  const details = (info.source_details && typeof info.source_details === "object") ? info.source_details : {};
+  const sources = Array.isArray(info.sources) && info.sources.length ? info.sources : [];
+  for (const src of sources) {
+    if (src === "cache") continue;
+    const line = formatGeoSourceLine(src, details[src]);
+    if (line) lines.push(line);
+  }
   if (info.updated_at) lines.push(`Updated: ${info.updated_at}`);
   return lines.join("\n");
+}
+
+function formatGeoSourcesCompact(info) {
+  if (!info) return "";
+  const sources = (Array.isArray(info.sources) && info.sources.length
+    ? info.sources
+    : (info.source && info.source !== "cache" ? [info.source] : [])
+  ).filter(s => s !== "cache");
+  return sources.map(geoSourceLabel).join(" + ");
+}
+
+// Keep geoTooltip as alias so existing callers and tests continue to work
+function geoTooltip(info) {
+  return formatGeoTooltip(info);
 }
 
 function renderEndpointInfo(client) {
   const endpoint = client.endpoint || "";
   if (!endpoint || endpoint === "-") return "";
   const info = client.endpoint_info || {};
-  const provider = info.provider || info.org || "";
-  const country = info.country || "";
-  const city = info.city || "";
   const flag = info.flag || "";
-  if (!provider && !country && !city && !flag) {
+  const city = info.city || "";
+  const cc = info.country_code || "";
+  const asn = info.asn || "";
+  const conf = info.confidence || "";
+  if (!flag && !city && !cc && !info.country && !info.provider) {
     return '<div class="endpoint-info text-xs text-[var(--muted)]">IP info: unknown</div>';
   }
-  const place = [city, country].filter(Boolean).join(" · ");
-  const parts = [];
-  if (flag) parts.push(`<span class="endpoint-flag">${esc(flag)}</span>`);
-  if (place) parts.push(`<span class="endpoint-place truncate">${esc(place)}</span>`);
-  if (provider) {
-    if (parts.length) parts.push('<span class="endpoint-dot">·</span>');
-    parts.push(`<span class="endpoint-provider truncate">${esc(provider)}</span>`);
-  }
-  const conf = info.confidence || "";
-  if (conf === "low") {
-    parts.push(`<span class="endpoint-dot">·</span><span class="endpoint-confidence-low text-[10px] text-[var(--muted)]">low confidence</span>`);
-  }
-  const tooltip = geoTooltip(info);
-  return `<div class="endpoint-info" title="${esc(tooltip)}">${parts.join("")}</div>`;
+  const location = [city, cc].filter(Boolean).join(", ");
+  const mainParts = [location, asn, conf].filter(Boolean);
+  const mainText = (flag ? esc(flag) + " " : "") + esc(mainParts.join(" · "));
+  const sourcesCompact = formatGeoSourcesCompact(info);
+  const tooltip = formatGeoTooltip(info);
+  const confClass = conf ? `geo-confidence-${conf}` : "";
+  return `<div class="endpoint-geo${confClass ? " " + confClass : ""}" title="${esc(tooltip)}">` +
+    `<span class="endpoint-geo-main">${mainText}</span>` +
+    (sourcesCompact ? `<span class="endpoint-geo-sources">${esc(sourcesCompact)}</span>` : "") +
+    `</div>`;
 }
 
 function canManageClientAssignments() {
@@ -826,11 +859,9 @@ function renderNettestReports() {
     const latency = row.latency || {};
     const timeline = row.timeline_summary || {};
     const geo = row.geo || {};
-    const location = [geo.city, geo.region, geo.country_code || geo.country].filter(Boolean).join(", ") || "-";
-    const provider = geo.provider || geo.org || geo.asn || "-";
-    const geoConf = geo.confidence || "";
-    const geoSources = (Array.isArray(geo.sources) && geo.sources.length ? geo.sources : (geo.source ? [geo.source] : [])).map(geoSourceLabel).join(", ");
-    const geoTip = geoTooltip(geo);
+    const geoConsensusLine = (geo.flag ? geo.flag + " " : "") + (formatGeoConsensus(geo) || [geo.city, geo.region, geo.country_code || geo.country].filter(Boolean).join(", ") || "-");
+    const geoSourcesCompact = formatGeoSourcesCompact(geo);
+    const geoTip = formatGeoTooltip(geo);
     const findings = Array.isArray(assessment.findings) ? assessment.findings.slice(0, 3) : [];
     const internalIp = row["vp" + "n_client_ip"] || row.client_ip || "-";
     const publicIp = row.public_ip || "-";
@@ -849,9 +880,8 @@ function renderNettestReports() {
             <span>Public ${esc(publicIp)}</span>
             <span>IPv6 leak ${leak.ipv6_leak_suspected ? "yes" : (leak.browser_public_ipv6 ? "no" : "unknown")}</span>
             <span>WebRTC ${leak.webrtc_ipv6_risk ? "risk" : "ok/unknown"}</span>
-            <span title="${esc(geoTip)}">${esc(location)}</span>
-            <span title="${esc(geoTip)}">${esc(provider)}${geoConf === "low" ? " · low confidence" : ""}</span>
-            ${geoSources ? `<span class="text-[var(--muted)] text-[10px]">src: ${esc(geoSources)}</span>` : ""}
+            <span title="${esc(geoTip)}">${esc(geoConsensusLine)}</span>
+            ${geoSourcesCompact ? `<span class="endpoint-geo-sources" title="${esc(geoTip)}">${esc(geoSourcesCompact)}</span>` : ""}
           </div>
         </div>
         <div class="nettest-report-stats">
@@ -1146,8 +1176,8 @@ function renderNettestResult(result) {
         <div class="nettest-metrics">
           <span>${"VP" + "N"} IP ${esc(shortValue(result["vp" + "n_client_ip"] || result.client_ip))}</span>
           <span>Public ${esc(shortValue(result.public_ip))}</span>
-          <span title="${esc(geoTooltip(result.geo))}">Location ${esc([result.geo?.city, result.geo?.region, result.geo?.country_code || result.geo?.country].filter(Boolean).join(", ") || "-")}</span>
-          <span title="${esc(geoTooltip(result.geo))}">Provider ${esc(result.geo?.provider || result.geo?.org || result.geo?.asn || "-")}${result.geo?.confidence === "low" ? " · low confidence" : ""}</span>
+          <span title="${esc(formatGeoTooltip(result.geo))}">Geo ${esc((result.geo?.flag ? result.geo.flag + " " : "") + (formatGeoConsensus(result.geo || {}) || "-"))}</span>
+          ${formatGeoSourcesCompact(result.geo || {}) ? `<span class="endpoint-geo-sources" title="${esc(formatGeoTooltip(result.geo))}">${esc(formatGeoSourcesCompact(result.geo || {}))}</span>` : ""}
         </div>
       ` : ""}
       <div class="nettest-metrics">
