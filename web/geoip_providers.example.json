@@ -4,21 +4,24 @@
       "enabled": false,
       "token": ""
     },
+    "dbip": {
+      "enabled": false,
+      "token": "",
+      "allow_free": false,
+      "base_url": "https://api.db-ip.com/v2"
+    },
     "ipinfo": {
       "enabled": false,
       "token": ""
     },
     "maxmind": {
       "enabled": false,
-      "mmdb_path": "/root/awg/geoip/GeoLite2-City.mmdb"
+      "city_mmdb_path": "/root/awg/geoip/GeoLite2-City.mmdb",
+      "asn_mmdb_path": "/root/awg/geoip/GeoLite2-ASN.mmdb"
     },
-    "dbip": {
+    "dbip_mmdb": {
       "enabled": false,
-      "token": ""
-    },
-    "ip2location": {
-      "enabled": false,
-      "token": ""
+      "mmdb_path": "/root/awg/geoip/dbip-city-lite.mmdb"
     },
     "ip-api": {
       "enabled": true

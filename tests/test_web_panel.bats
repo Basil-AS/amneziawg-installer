@@ -2763,3 +2763,204 @@ PY
     grep -qF 'Confidence:' "$BATS_TEST_DIRNAME/../web/app.js"
     grep -qF 'low confidence' "$BATS_TEST_DIRNAME/../web/app.js"
 }
+
+@test "geoip: app.js has source label helper for 2IP/DB-IP/MaxMind" {
+    grep -qF 'geoSourceLabel' "$BATS_TEST_DIRNAME/../web/app.js"
+    grep -qF '"2ip": "2IP"' "$BATS_TEST_DIRNAME/../web/app.js"
+    grep -qF '"dbip": "DB-IP"' "$BATS_TEST_DIRNAME/../web/app.js"
+    grep -qF '"maxmind": "MaxMind"' "$BATS_TEST_DIRNAME/../web/app.js"
+    grep -qF '"dbip_mmdb": "DB-IP MMDB"' "$BATS_TEST_DIRNAME/../web/app.js"
+}
+
+@test "geoip: DB-IP free endpoint normalizes to common schema" {
+    command -v python3 &>/dev/null || skip "python3 not available"
+    local tmp
+    tmp=$(mktemp -d)
+    mkdir -p "$tmp/web"
+    AWG_DIR="$tmp" SERVER_CONF_FILE="$tmp/awg0.conf" REPO_ROOT="$BATS_TEST_DIRNAME/.." python3 - <<'PY'
+import os, json as _json
+from pathlib import Path
+import importlib.util
+spec = importlib.util.spec_from_file_location("server", Path(os.environ["REPO_ROOT"]) / "web" / "server.py")
+server = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(server)
+fake_cfg = {"providers": {"dbip": {"enabled": True, "allow_free": True}}}
+server.load_geoip_providers_config = lambda: fake_cfg
+class FakeResp:
+    def read(self, n): return _json.dumps({
+        "ipAddress": "85.89.126.30",
+        "countryCode": "RU",
+        "countryName": "Russia",
+        "stateProv": "Moscow",
+        "city": "Moscow",
+    }).encode()
+    def __enter__(self): return self
+    def __exit__(self, *a): pass
+server.urlopen = lambda url, timeout=None: FakeResp()
+r = server._fetch_dbip_provider("85.89.126.30")
+assert r is not None, "dbip free provider must return result"
+assert r["country_code"] == "RU", f"country_code={r['country_code']}"
+assert r["city"] == "Moscow", f"city={r['city']}"
+assert r["region"] == "Moscow", f"region={r['region']}"
+assert r["_source_name"] == "dbip", f"_source_name={r['_source_name']}"
+PY
+    rm -rf "$tmp"
+}
+
+@test "geoip: DB-IP paid endpoint uses token path, free disabled without allow_free" {
+    command -v python3 &>/dev/null || skip "python3 not available"
+    local tmp
+    tmp=$(mktemp -d)
+    mkdir -p "$tmp/web"
+    AWG_DIR="$tmp" SERVER_CONF_FILE="$tmp/awg0.conf" REPO_ROOT="$BATS_TEST_DIRNAME/.." python3 - <<'PY'
+import os, json as _json
+from pathlib import Path
+import importlib.util
+spec = importlib.util.spec_from_file_location("server", Path(os.environ["REPO_ROOT"]) / "web" / "server.py")
+server = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(server)
+# Without allow_free and no token: should return None
+no_token_cfg = {"providers": {"dbip": {"enabled": True, "allow_free": False}}}
+server.load_geoip_providers_config = lambda: no_token_cfg
+r = server._fetch_dbip_provider("8.8.8.8")
+assert r is None, "dbip without token and allow_free=False must return None"
+PY
+    rm -rf "$tmp"
+}
+
+@test "geoip: DB-IP paid response with ASN fields normalizes correctly" {
+    command -v python3 &>/dev/null || skip "python3 not available"
+    local tmp
+    tmp=$(mktemp -d)
+    mkdir -p "$tmp/web"
+    AWG_DIR="$tmp" SERVER_CONF_FILE="$tmp/awg0.conf" REPO_ROOT="$BATS_TEST_DIRNAME/.." python3 - <<'PY'
+import os, json as _json
+from pathlib import Path
+import importlib.util
+spec = importlib.util.spec_from_file_location("server", Path(os.environ["REPO_ROOT"]) / "web" / "server.py")
+server = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(server)
+fake_cfg = {"providers": {"dbip": {"enabled": True, "token": "testtoken"}}}
+server.load_geoip_providers_config = lambda: fake_cfg
+urls_called = []
+class FakeResp:
+    def read(self, n): return _json.dumps({
+        "ipAddress": "91.79.34.202",
+        "countryCode": "RU",
+        "countryName": "Russia",
+        "stateProv": "Moscow",
+        "city": "Moscow",
+        "latitude": 55.7558,
+        "longitude": 37.6173,
+        "timeZone": "Europe/Moscow",
+        "asNumber": 8359,
+        "isp": "MTS PJSC",
+        "organization": "MTS PJSC",
+        "isHostingProvider": False,
+    }).encode()
+    def __enter__(self): return self
+    def __exit__(self, *a): pass
+def fake_urlopen(url, timeout=None):
+    urls_called.append(url)
+    return FakeResp()
+server.urlopen = fake_urlopen
+r = server._fetch_dbip_provider("91.79.34.202")
+assert r is not None, "dbip with token must return result"
+assert r["country_code"] == "RU"
+assert r["asn"] == "AS8359", f"asn={r['asn']}"
+assert r["asn_id"] == "8359", f"asn_id={r['asn_id']}"
+assert r["provider"] == "MTS PJSC"
+assert r["hosting"] == False
+# Token must not appear in the returned dict
+raw = _json.dumps(r)
+assert "testtoken" not in raw, "token must not appear in normalized result"
+# URL should contain token but we don't print it here
+assert len(urls_called) == 1
+PY
+    rm -rf "$tmp"
+}
+
+@test "geoip: status endpoint shows dbip has_token and allow_free without raw token" {
+    command -v python3 &>/dev/null || skip "python3 not available"
+    local tmp
+    tmp=$(mktemp -d)
+    mkdir -p "$tmp/web"
+    cat > "$tmp/web/geoip_providers.json" <<'JSON'
+{"providers": {"dbip": {"enabled": true, "token": "secretdbip456", "allow_free": false}, "ip-api": {"enabled": true}}}
+JSON
+    AWG_DIR="$tmp" SERVER_CONF_FILE="$tmp/awg0.conf" REPO_ROOT="$BATS_TEST_DIRNAME/.." python3 - <<'PY'
+import os, json
+from pathlib import Path
+import importlib.util
+spec = importlib.util.spec_from_file_location("server", Path(os.environ["REPO_ROOT"]) / "web" / "server.py")
+server = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(server)
+status = server.geoip_providers_status()
+raw = json.dumps(status)
+assert "secretdbip456" not in raw, "raw token must not appear in status"
+assert status["providers"]["dbip"]["has_token"] == True
+assert status["providers"]["dbip"]["allow_free"] == False
+assert "enabled" in status["providers"]["dbip"]
+PY
+    rm -rf "$tmp"
+}
+
+@test "geoip: example config has dbip and dbip_mmdb entries" {
+    [ -f "$BATS_TEST_DIRNAME/../web/geoip_providers.example.json" ]
+    REPO_ROOT="$BATS_TEST_DIRNAME/.." python3 - <<'PY'
+import json, os
+p = os.path.join(os.environ["REPO_ROOT"], "web", "geoip_providers.example.json")
+d = json.load(open(p))
+providers = d.get("providers", {})
+assert "dbip" in providers, "example config must have dbip entry"
+assert "dbip_mmdb" in providers, "example config must have dbip_mmdb entry"
+assert "2ip" in providers
+assert providers["dbip"].get("token", "") == "", "dbip token must be empty in example"
+assert providers["dbip_mmdb"].get("token", "") == ""
+print("OK")
+PY
+}
+
+@test "geoip: multi_source refresh collects up to 2 external providers" {
+    command -v python3 &>/dev/null || skip "python3 not available"
+    local tmp
+    tmp=$(mktemp -d)
+    mkdir -p "$tmp/web"
+    AWG_DIR="$tmp" SERVER_CONF_FILE="$tmp/awg0.conf" REPO_ROOT="$BATS_TEST_DIRNAME/.." python3 - <<'PY'
+import os, json as _json
+from pathlib import Path
+import importlib.util
+spec = importlib.util.spec_from_file_location("server", Path(os.environ["REPO_ROOT"]) / "web" / "server.py")
+server = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(server)
+calls = []
+def make_provider(name):
+    def provider(ip):
+        calls.append(name)
+        return {"ip": ip, "country_code": "RU", "city": "Moscow", "country": "Russia",
+                "region": "Moscow", "asn": "AS1", "asn_id": "1", "provider": "Test",
+                "org": "Test", "flag": "\U0001f1f7\U0001f1fa", "hosting": False,
+                "lat": None, "lon": None, "timezone": "Europe/Moscow", "_source_name": name}
+    return provider
+server._fetch_mmdb_provider = lambda ip: None
+server._fetch_dbip_mmdb_provider = lambda ip: None
+server._fetch_2ip_provider = make_provider("2ip")
+server._fetch_dbip_provider = make_provider("dbip")
+server._fetch_ipinfo_provider = make_provider("ipinfo")
+server._fetch_ipapi_provider = make_provider("ip-api")
+info = server.lookup_ip_enriched("85.89.126.30", multi_source=True)
+assert "2ip" in calls, "2ip should be called"
+assert "dbip" in calls, "dbip should be called"
+assert len(calls) == 2, f"expected 2 external calls for multi_source, got {len(calls)}: {calls}"
+assert info["confidence"] == "high", f"expected high confidence with 2 agreeing sources, got {info['confidence']}"
+PY
+    rm -rf "$tmp"
+}
+
+@test "geoip: server.py exports _fetch_dbip_provider and _fetch_dbip_mmdb_provider" {
+    grep -qF 'def _fetch_dbip_provider' "$BATS_TEST_DIRNAME/../web/server.py"
+    grep -qF 'def _fetch_dbip_mmdb_provider' "$BATS_TEST_DIRNAME/../web/server.py"
+    grep -qF 'dbip_mmdb' "$BATS_TEST_DIRNAME/../web/server.py"
+    grep -qF 'allow_free' "$BATS_TEST_DIRNAME/../web/server.py"
+    grep -qF 'multi_source' "$BATS_TEST_DIRNAME/../web/server.py"
+}

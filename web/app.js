@@ -476,6 +476,14 @@ function renderAssignedTokenBadges(client) {
   `).join("") + (extra ? `<span class="rounded-full border border-[var(--line)] bg-[var(--soft)] px-2 py-0.5 text-[11px] font-medium text-[var(--muted)]">+${extra}</span>` : "");
 }
 
+const _GEO_SOURCE_LABELS = {
+  "2ip": "2IP", "dbip": "DB-IP", "dbip_mmdb": "DB-IP MMDB",
+  "maxmind": "MaxMind", "ipinfo": "ipinfo.io", "ip-api": "ip-api",
+};
+function geoSourceLabel(name) {
+  return _GEO_SOURCE_LABELS[name] || name;
+}
+
 function geoTooltip(info) {
   if (!info) return "";
   const lines = [];
@@ -485,7 +493,8 @@ function geoTooltip(info) {
   if (city || region || cc) lines.push([city, region, cc].filter(Boolean).join(", "));
   if (info.provider || info.org) lines.push(`Provider: ${info.provider || info.org}`);
   if (info.asn) lines.push(`ASN: ${info.asn}`);
-  const sources = Array.isArray(info.sources) && info.sources.length ? info.sources.join(", ") : (info.source || "");
+  const rawSources = Array.isArray(info.sources) && info.sources.length ? info.sources : (info.source ? [info.source] : []);
+  const sources = rawSources.map(geoSourceLabel).join(", ");
   if (sources) lines.push(`Sources: ${sources}`);
   if (info.confidence) lines.push(`Confidence: ${info.confidence}`);
   if (info.updated_at) lines.push(`Updated: ${info.updated_at}`);
@@ -820,7 +829,7 @@ function renderNettestReports() {
     const location = [geo.city, geo.region, geo.country_code || geo.country].filter(Boolean).join(", ") || "-";
     const provider = geo.provider || geo.org || geo.asn || "-";
     const geoConf = geo.confidence || "";
-    const geoSources = Array.isArray(geo.sources) && geo.sources.length ? geo.sources.join(", ") : (geo.source || "");
+    const geoSources = (Array.isArray(geo.sources) && geo.sources.length ? geo.sources : (geo.source ? [geo.source] : [])).map(geoSourceLabel).join(", ");
     const geoTip = geoTooltip(geo);
     const findings = Array.isArray(assessment.findings) ? assessment.findings.slice(0, 3) : [];
     const internalIp = row["vp" + "n_client_ip"] || row.client_ip || "-";

@@ -2541,7 +2541,8 @@ def _fetch_2ip_provider(ip):
     token = (cfg.get("token") or os.environ.get("AWG_GEOIP_2IP_TOKEN", "")).strip()
     if not token:
         return None
-    url = f"https://api.2ip.io/geo/{ip}?token={token}"
+    base = (cfg.get("base_url") or "https://api.2ip.me").rstrip("/")
+    url = f"{base}/geo.json?ip={ip}&token={token}"
     try:
         with urlopen(url, timeout=IP_INFO_LOOKUP_TIMEOUT) as resp:
             payload = resp.read(32768)
@@ -2553,11 +2554,19 @@ def _fetch_2ip_provider(ip):
         return None
     if not isinstance(data, dict) or not data.get("ip"):
         return None
+    # 2ip.me: flat fields (country_code, autonomous_system_number, isp)
+    # 2ip.io legacy: nested asn object with id/name, field "code" for country
     asn_data = data.get("asn") or {}
-    asn_id = str(asn_data.get("id") or "").strip()
+    asn_id = str(
+        data.get("autonomous_system_number") or asn_data.get("id") or ""
+    ).strip().lstrip("AS").lstrip("as")
     asn = f"AS{asn_id}" if asn_id else ""
-    provider = str(asn_data.get("name") or "").strip()
-    country_code = str(data.get("code") or "").upper().strip()
+    provider = str(
+        data.get("isp") or data.get("organization") or asn_data.get("name") or ""
+    ).strip()
+    country_code = str(
+        data.get("country_code") or data.get("code") or ""
+    ).upper().strip()
     return {
         "ip": ip,
         "country": str(data.get("country") or "").strip(),
@@ -2565,9 +2574,9 @@ def _fetch_2ip_provider(ip):
         "flag": str(data.get("emoji") or country_code_to_flag(country_code)).strip(),
         "region": str(data.get("region") or "").strip(),
         "city": str(data.get("city") or "").strip(),
-        "lat": _safe_float(data.get("lat")),
-        "lon": _safe_float(data.get("lon")),
-        "timezone": str(data.get("timezone") or "").strip(),
+        "lat": _safe_float(data.get("latitude") or data.get("lat")),
+        "lon": _safe_float(data.get("longitude") or data.get("lon")),
+        "timezone": str(data.get("time_zone") or data.get("timezone") or "").strip(),
         "asn": asn,
         "asn_id": asn_id,
         "provider": provider,
@@ -2624,19 +2633,11 @@ def _fetch_ipinfo_provider(ip):
     }
 
 
-def _fetch_mmdb_provider(ip):
-    cfg = _geoip_provider_cfg("maxmind")
-    if not cfg.get("enabled"):
-        return None
-    try:
-        import geoip2.database as _geoip2  # type: ignore
-    except ImportError:
-        return None
-    city_path = cfg.get("mmdb_path") or str(AWG_DIR / "geoip/GeoLite2-City.mmdb")
-    asn_path = str(AWG_DIR / "geoip/GeoLite2-ASN.mmdb")
+def _read_mmdb_city(geoip2_mod, city_path, asn_path, ip, source_name):
+    """Shared MMDB reader for city + optional ASN. Returns dict or None."""
     result = {}
     try:
-        with _geoip2.Reader(city_path) as reader:
+        with geoip2_mod.Reader(city_path) as reader:
             r = reader.city(ip)
             country_code = str(r.country.iso_code or "").upper()
             subdiv = r.subdivisions.most_specific.name if r.subdivisions else ""
@@ -2650,21 +2651,95 @@ def _fetch_mmdb_provider(ip):
                 "lat": float(r.location.latitude) if r.location.latitude is not None else None,
                 "lon": float(r.location.longitude) if r.location.longitude is not None else None,
                 "timezone": str(r.location.time_zone or "").strip(),
-                "_source_name": "maxmind",
+                "_source_name": source_name,
             })
     except Exception:
         return None
-    try:
-        if Path(asn_path).exists():
-            with _geoip2.Reader(asn_path) as reader:
+    if asn_path and Path(asn_path).exists():
+        try:
+            with geoip2_mod.Reader(asn_path) as reader:
                 r = reader.asn(ip)
                 asn_id = str(r.autonomous_system_number or "")
                 asn = f"AS{asn_id}" if asn_id else ""
                 org = str(r.autonomous_system_organization or "").strip()
                 result.update({"asn": asn, "asn_id": asn_id, "provider": org, "org": org})
+        except Exception:
+            pass
+    return result or None
+
+
+def _fetch_mmdb_provider(ip):
+    cfg = _geoip_provider_cfg("maxmind")
+    if not cfg.get("enabled"):
+        return None
+    try:
+        import geoip2.database as _geoip2  # type: ignore
+    except ImportError:
+        return None
+    city_path = cfg.get("city_mmdb_path") or cfg.get("mmdb_path") or str(AWG_DIR / "geoip/GeoLite2-City.mmdb")
+    asn_path = cfg.get("asn_mmdb_path") or str(AWG_DIR / "geoip/GeoLite2-ASN.mmdb")
+    return _read_mmdb_city(_geoip2, city_path, asn_path, ip, "maxmind")
+
+
+def _fetch_dbip_mmdb_provider(ip):
+    cfg = _geoip_provider_cfg("dbip_mmdb")
+    if not cfg.get("enabled"):
+        return None
+    try:
+        import geoip2.database as _geoip2  # type: ignore
+    except ImportError:
+        return None
+    mmdb_path = cfg.get("mmdb_path") or str(AWG_DIR / "geoip/dbip-city-lite.mmdb")
+    if not Path(mmdb_path).exists():
+        return None
+    return _read_mmdb_city(_geoip2, mmdb_path, None, ip, "dbip_mmdb")
+
+
+def _fetch_dbip_provider(ip):
+    cfg = _geoip_provider_cfg("dbip")
+    if not cfg.get("enabled"):
+        return None
+    token = (cfg.get("token") or os.environ.get("AWG_GEOIP_DBIP_TOKEN", "")).strip()
+    base_url = (cfg.get("base_url") or "https://api.db-ip.com/v2").rstrip("/")
+    if token:
+        url = f"{base_url}/{token}/{ip}"
+    elif cfg.get("allow_free"):
+        url = f"{base_url}/free/{ip}"
+    else:
+        return None
+    try:
+        with urlopen(url, timeout=IP_INFO_LOOKUP_TIMEOUT) as resp:
+            payload = resp.read(32768)
     except Exception:
-        pass
-    return result if result else None
+        return None
+    try:
+        data = json.loads(payload.decode("utf-8"))
+    except Exception:
+        return None
+    if not isinstance(data, dict) or not data.get("ipAddress"):
+        return None
+    country_code = str(data.get("countryCode") or "").upper().strip()
+    asn_num = data.get("asNumber")
+    asn_id = str(asn_num) if asn_num else ""
+    asn = f"AS{asn_id}" if asn_id else ""
+    org = str(data.get("organization") or data.get("isp") or "").strip()
+    return {
+        "ip": ip,
+        "country": str(data.get("countryName") or "").strip(),
+        "country_code": country_code,
+        "flag": country_code_to_flag(country_code),
+        "region": str(data.get("stateProv") or "").strip(),
+        "city": str(data.get("city") or "").strip(),
+        "lat": _safe_float(data.get("latitude")),
+        "lon": _safe_float(data.get("longitude")),
+        "timezone": str(data.get("timeZone") or data.get("timezone") or "").strip(),
+        "asn": asn,
+        "asn_id": asn_id,
+        "provider": org,
+        "org": org,
+        "hosting": bool(data.get("isHostingProvider")),
+        "_source_name": "dbip",
+    }
 
 
 def _geoip_consensus(results):
@@ -2675,7 +2750,8 @@ def _geoip_consensus(results):
     if len(results) == 1:
         merged = {k: v for k, v in results[0].items() if not k.startswith("_")}
         src = results[0].get("_source_name", "unknown")
-        conf = "low" if src == "ip-api" else "medium"
+        _free_only = {"ip-api"}
+        conf = "low" if src in _free_only else "medium"
         return merged, conf, source_names
 
     merged = {}
@@ -2716,8 +2792,12 @@ def _geoip_consensus(results):
     return merged, confidence, source_names
 
 
-def lookup_ip_enriched(ip, purpose="endpoint"):
-    """Multi-provider GeoIP: cache → MMDB → one external provider → consensus."""
+def lookup_ip_enriched(ip, purpose="endpoint", multi_source=False):
+    """Multi-provider GeoIP: cache → MMDBs → external provider(s) → consensus.
+
+    multi_source=True (forced refresh) collects up to 2 external providers
+    for better consensus. Normal lookup uses max 1 external call.
+    """
     ip = (ip or "").strip()
     if not ip:
         return _empty_endpoint_info(ip, source="local")
@@ -2740,12 +2820,33 @@ def lookup_ip_enriched(ip, purpose="endpoint"):
                 return info
 
     results = []
-    r = _fetch_mmdb_provider(ip)
-    if r:
-        results.append(r)
-    ext = (_fetch_2ip_provider(ip) or _fetch_ipinfo_provider(ip) or _fetch_ipapi_provider(ip))
-    if ext:
-        results.append(ext)
+    # Local MMDBs first (no network, unlimited, fast)
+    for mmdb_fetch in (_fetch_mmdb_provider, _fetch_dbip_mmdb_provider):
+        r = mmdb_fetch(ip)
+        if r:
+            results.append(r)
+
+    if multi_source:
+        # Forced refresh: collect up to 2 external providers for richer consensus
+        _ext_order = (_fetch_2ip_provider, _fetch_dbip_provider, _fetch_ipinfo_provider, _fetch_ipapi_provider)
+        collected = 0
+        for fetcher in _ext_order:
+            r = fetcher(ip)
+            if r:
+                results.append(r)
+                collected += 1
+                if collected >= 2:
+                    break
+    else:
+        # Normal lookup: one external call only
+        ext = (
+            _fetch_2ip_provider(ip)
+            or _fetch_dbip_provider(ip)
+            or _fetch_ipinfo_provider(ip)
+            or _fetch_ipapi_provider(ip)
+        )
+        if ext:
+            results.append(ext)
 
     if not results:
         info = _empty_endpoint_info(ip, source="provider")
@@ -2817,8 +2918,13 @@ def geoip_providers_status():
         entry = {"enabled": bool(pcfg.get("enabled"))}
         if "token" in pcfg:
             entry["has_token"] = bool(pcfg.get("token"))
-        if name == "maxmind":
-            mmdb = pcfg.get("mmdb_path") or str(AWG_DIR / "geoip/GeoLite2-City.mmdb")
+        if name == "dbip":
+            entry["allow_free"] = bool(pcfg.get("allow_free"))
+            if "token" not in pcfg:
+                entry["has_token"] = False
+        if name in ("maxmind", "dbip_mmdb"):
+            mmdb = (pcfg.get("city_mmdb_path") or pcfg.get("mmdb_path") or
+                    str(AWG_DIR / ("geoip/GeoLite2-City.mmdb" if name == "maxmind" else "geoip/dbip-city-lite.mmdb")))
             entry["mmdb_present"] = Path(mmdb).exists()
         providers[name] = entry
     if "ip-api" not in providers:
@@ -4493,7 +4599,7 @@ class Handler(SimpleHTTPRequestHandler):
                         write_ip_info_cache(cache)
                     except Exception:
                         pass
-                info = lookup_ip_enriched(validated_ip)
+                info = lookup_ip_enriched(validated_ip, multi_source=True)
                 self.send_json({"ok": True, "ip": validated_ip, "info": info})
                 return
             body = self.json_body()
