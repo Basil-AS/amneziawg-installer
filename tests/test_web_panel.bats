@@ -1947,9 +1947,10 @@ PY
 
 @test "RU and EN common libraries normalize IPv6 aliases identically" {
     for common in awg_common.sh awg_common_en.sh; do
-        grep -qF 'routed|ndp|nat66|legacy' "$BATS_TEST_DIRNAME/../$common"
+        grep -qF 'routed|ndp|nat66|block|legacy' "$BATS_TEST_DIRNAME/../$common"
         grep -qF 'native) echo "ndp"' "$BATS_TEST_DIRNAME/../$common"
         grep -qF 'ula) echo "nat66"' "$BATS_TEST_DIRNAME/../$common"
+        grep -qF 'leak-block|leak_block|disable) echo "block"' "$BATS_TEST_DIRNAME/../$common"
     done
 }
 
@@ -2244,6 +2245,13 @@ body = {
     "comment": "home LTE",
     "user_agent": "test-browser",
     "browser_connection": {"effectiveType": "4g"},
+    "leak_checks": {
+        "browser_public_ipv4": "46.34.133.234",
+        "browser_public_ipv6": "2001:db8:bad::1",
+        "webrtc_available": True,
+        "webrtc_ipv6_candidates": ["2001:db8:bad::2"],
+        "webrtc_private_candidates": ["10.9.9.9"],
+    },
     "latency": {"samples": 30, "ok": 29, "lost": 1, "loss_percent": 3.3, "avg_ms": 43, "jitter_ms": 7, "stall_events": 1},
     "download_probe": {"ok": True, "bytes": 262144, "duration_ms": 300, "mbps": 7.0},
     "upload_probe": {"ok": True, "bytes": 131072, "duration_ms": 250, "mbps": 4.2},
@@ -2297,8 +2305,11 @@ assert saved["geo"]["provider"] == "Test ISP"
 assert saved["duration_seconds"] == 180
 assert saved["timeline_summary"]["max_consecutive_timeouts"] == 3
 assert saved["stall_events"][0]["lost_probes"] == 3
+assert saved["leak_checks"]["ipv6_leak_suspected"] is True
+assert saved["leak_checks"]["webrtc_ipv6_risk"] is True
+assert "raw-user-token" not in json.dumps(saved["leak_checks"])
 assert "browser" in saved
-assert saved["assessment"]["quality"] == "warning"
+assert saved["assessment"]["quality"] == "critical"
 PY
     rm -rf "$tmp"
 }
@@ -2353,6 +2364,12 @@ PY
     grep -qF 'isNetworkTesterPage' "$app"
     grep -qF 'nettestContext' "$app"
     grep -qF 'Connection parameters' "$app"
+    grep -qF 'WebRTC / IPv6 leak checks' "$app"
+    grep -qF 'api6.ipify.org' "$app"
+    grep -qF 'RTCPeerConnection' "$app"
+    grep -qF 'leak_checks' "$server"
+    grep -qF 'connect-src' "$server"
+    grep -qF 'https://api6.ipify.org' "$server"
     grep -qF 'data-nettest-type="mobile"' "$app"
     grep -qF 'data-nettest-type="home"' "$app"
     grep -qF 'NETTEST_PING_SAMPLES = 30' "$app"

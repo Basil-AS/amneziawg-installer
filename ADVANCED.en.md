@@ -168,6 +168,12 @@ Defines which traffic the **client** routes through the VPN tunnel.
 
 **AllowedIPs Calculator:** [WireGuard AllowedIPs Calculator](https://www.procustodibus.com/blog/2021/03/wireguard-allowedips-calculator/).
 
+### IPv6 and leak protection
+
+Full-tunnel mode must handle IPv6 explicitly. When the server has routed/NDP/NAT66 IPv6, clients receive an IPv6 address and `AllowedIPs` includes `::/0`, so websites see the VPN server IPv6. When no working IPv6 route is available, use `--ipv6-mode=block`: the installer adds `::/0` as a leak-block route without assigning a client IPv6 address, so native mobile-carrier IPv6 should not silently bypass the VPN.
+
+WebRTC leaks cannot be fully blocked by the server: browsers may expose local/public ICE candidates independently of the L3 VPN. Network Tester reports IPv6/WebRTC risk. On Android, enable Always-on VPN and Block connections without VPN. In Firefox, limit ICE candidates with `media.peerconnection.ice.default_address_only=true` and `media.peerconnection.ice.no_host=true`, or disable WebRTC with `media.peerconnection.enabled=false` if acceptable. For Chromium/Edge, use WebRTC Network Limiter or browser policies.
+
 <a id="persistentkeepalive-adv"></a>
 ### PersistentKeepalive
 

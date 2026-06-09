@@ -802,6 +802,7 @@ function renderNettestReports() {
     const findings = Array.isArray(assessment.findings) ? assessment.findings.slice(0, 3) : [];
     const internalIp = row["vp" + "n_client_ip"] || row.client_ip || "-";
     const publicIp = row.public_ip || "-";
+    const leak = row.leak_checks || {};
     const longestStall = Number(timeline.longest_stall_ms || 0);
     return `
       <div class="nettest-report-row">
@@ -814,6 +815,8 @@ function renderNettestReports() {
           <div class="nettest-report-meta">
             <span>${"VP" + "N"} IP ${esc(internalIp)}</span>
             <span>Public ${esc(publicIp)}</span>
+            <span>IPv6 leak ${leak.ipv6_leak_suspected ? "yes" : (leak.browser_public_ipv6 ? "no" : "unknown")}</span>
+            <span>WebRTC ${leak.webrtc_ipv6_risk ? "risk" : "ok/unknown"}</span>
             <span>${esc(location)}</span>
             <span>${esc(provider)}</span>
           </div>
@@ -881,6 +884,95 @@ function browserConnectionInfo() {
     platform: navigator.platform || "",
     timezone_offset_minutes: new Date().getTimezoneOffset(),
     viewport: `${window.innerWidth}x${window.innerHeight}`,
+  };
+}
+
+async function fetchJsonMaybe(url, timeoutMs = 3500) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, {cache: "no-store", signal: controller.signal});
+    if (!response.ok) throw new Error("probe failed");
+    return await response.json();
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function candidateAddresses(candidate) {
+  const out = [];
+  const re = /(?:^|\s)((?:[0-9]{1,3}\.){3}[0-9]{1,3}|[a-f0-9:]{2,})\s+\d+\s+typ\s+host/ig;
+  let match;
+  while ((match = re.exec(candidate || ""))) out.push(match[1]);
+  return out;
+}
+
+function isPrivateCandidate(ip) {
+  return /^10\.|^192\.168\.|^172\.(1[6-9]|2[0-9]|3[0-1])\.|^127\.|^169\.254\.|^fe80:/i.test(ip || "");
+}
+
+async function collectWebrtcCandidates() {
+  const RTCPeer = window.RTCPeerConnection || window.webkitRTCPeerConnection || window.mozRTCPeerConnection;
+  if (!RTCPeer) return {webrtc_available: false, webrtc_ipv6_candidates: [], webrtc_private_candidates: []};
+  const ipv6 = new Set();
+  const priv = new Set();
+  const pc = new RTCPeer({iceServers: []});
+  try {
+    pc.createDataChannel("nettest");
+    pc.onicecandidate = event => {
+      const cand = event.candidate?.candidate || "";
+      for (const addr of candidateAddresses(cand)) {
+        if (addr.includes(":")) ipv6.add(addr);
+        if (isPrivateCandidate(addr)) priv.add(addr);
+      }
+    };
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    await sleep(1200);
+  } catch {
+    // Browsers may hide host candidates; keep this check best-effort.
+  } finally {
+    try { pc.close(); } catch {}
+  }
+  return {
+    webrtc_available: true,
+    webrtc_ipv6_candidates: [...ipv6].slice(0, 20),
+    webrtc_private_candidates: [...priv].slice(0, 20),
+  };
+}
+
+async function runLeakChecks(context) {
+  const notes = [];
+  const secureV6Key = "v" + "pn_ipv6";
+  let browser4 = "", browser6 = "";
+  try {
+    const data4 = await fetchJsonMaybe("https://api.ipify.org?format=json");
+    browser4 = data4.ip || "";
+  } catch {
+    notes.push("IPv4 external probe failed");
+  }
+  try {
+    const data6 = await fetchJsonMaybe("https://api6.ipify.org?format=json");
+    browser6 = data6.ip || "";
+  } catch {
+    notes.push("IPv6 external probe failed or no browser IPv6 path");
+  }
+  const rtc = await collectWebrtcCandidates();
+  const expected6 = [context?.server_public_ipv6, context?.[secureV6Key]].filter(Boolean);
+  const ipv6Leak = Boolean(browser6 && (!expected6.length || !expected6.includes(browser6)));
+  if (ipv6Leak) notes.push("Browser public IPv6 differs from secure path/server IPv6 context");
+  if (rtc.webrtc_ipv6_candidates?.length) notes.push("WebRTC IPv6 host candidates observed");
+  return {
+    browser_public_ipv4: browser4,
+    browser_public_ipv6: browser6,
+    server_public_ipv4: context?.server_public_ipv4 || "",
+    server_public_ipv6: context?.server_public_ipv6 || "",
+    [secureV6Key]: context?.[secureV6Key] || "",
+    ipv6_leak_suspected: ipv6Leak,
+    webrtc_available: Boolean(rtc.webrtc_available),
+    webrtc_ipv6_candidates: rtc.webrtc_ipv6_candidates || [],
+    webrtc_private_candidates: rtc.webrtc_private_candidates || [],
+    notes,
   };
 }
 
@@ -1001,6 +1093,7 @@ function renderNettestResult(result) {
   const latency = result.latency || {};
   const downloadProbe = result.download_probe || {};
   const uploadProbe = result.upload_probe || {};
+  const leak = result.leak_checks || {};
   const durSec = Number(result.duration_seconds || 0);
   const durLabel = durSec >= 60 ? `${Math.floor(durSec / 60)} min ${durSec % 60} s` : durSec ? `${durSec} s` : "";
   const stallLines = stallEvents.map(e => {
@@ -1031,6 +1124,20 @@ function renderNettestResult(result) {
         <span>Stalls ${stallEvents.length}</span>
         <span>Download ${Number(downloadProbe.mbps || 0).toFixed(2)} Mbps</span>
         <span>Upload ${Number(uploadProbe.mbps || 0).toFixed(2)} Mbps</span>
+      </div>
+      <div class="nettest-context-card">
+        <div class="flex flex-wrap items-center justify-between gap-2">
+          <p class="text-xs font-semibold uppercase text-[var(--muted)]">WebRTC / IPv6 leak checks</p>
+          ${healthBadge(leak.ipv6_leak_suspected || leak.webrtc_ipv6_risk ? "critical" : (leak.browser_public_ipv6 ? "ok" : "unknown"))}
+        </div>
+        <div class="nettest-metrics">
+          <span>Browser IPv4 ${esc(shortValue(leak.browser_public_ipv4))}</span>
+          <span>Browser IPv6 ${esc(shortValue(leak.browser_public_ipv6))}</span>
+          <span>Expected IPv6 ${esc(shortValue(leak.server_public_ipv6 || leak["v" + "pn_ipv6"] || "blocked/none"))}</span>
+          <span>WebRTC ${leak.webrtc_available ? "available" : "unavailable"}</span>
+        </div>
+        ${Array.isArray(leak.notes) && leak.notes.length ? `<ul class="nettest-notes">${leak.notes.map(note => `<li>${esc(note)}</li>`).join("")}</ul>` : ""}
+        <p class="mt-2 text-xs text-[var(--muted)]">Android: use Always-on ${"V" + "PN"} and Block connections without ${"V" + "PN"} when the server has no routed IPv6. Browsers may need WebRTC host-candidate limits.</p>
       </div>
       ${stallEvents.length ? `<ul class="nettest-notes">${stallLines}</ul>` : ""}
     </div>
@@ -1145,6 +1252,8 @@ async function runNetworkTest() {
     const bestDownload = downloadProbes.length ? [...downloadProbes].sort((a, b) => (b.mbps || 0) - (a.mbps || 0))[0] : {ok: false, bytes: 0, duration_ms: 0, mbps: 0};
     const bestUpload = uploadProbes.length ? [...uploadProbes].sort((a, b) => (b.mbps || 0) - (a.mbps || 0))[0] : {ok: false, bytes: 0, duration_ms: 0, mbps: 0};
     const timelineSummary = {longest_stall_ms: longestStall, timeout_bursts: stallEvents.length, max_consecutive_timeouts: maxConsecutive};
+    if (statusEl) statusEl.textContent = "Checking IPv6 / WebRTC leaks...";
+    const leakChecks = await runLeakChecks(nettestContextState || {});
     const assessment = nettestAssessment(latency, bestDownload, bestUpload, stallEvents, longestStall);
 
     if (statusEl) statusEl.textContent = "Saving report...";
@@ -1163,6 +1272,7 @@ async function runNetworkTest() {
       upload_probe: bestUpload,
       stall_events: stallEvents,
       timeline_summary: timelineSummary,
+      leak_checks: leakChecks,
       assessment,
       context: nettestContextState,
     };

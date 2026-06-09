@@ -241,6 +241,9 @@ IPv6 modes:
 | `routed` | Your provider gives you a separate routed IPv6 prefix (`/64`, `/56`, `/48`) specifically for VPN clients |
 | `ndp` | The server already has the current public `/64` on `eth0`/the external interface; client IPv6 addresses are announced through NDP proxy |
 | `nat66` | Fallback via NAT66 when routed/NDP is not suitable |
+| `block` | IPv6 leak-block for full tunnel: `::/0` is routed into the tunnel without assigning a client IPv6 address, so native carrier IPv6 should not bypass the VPN |
+
+If Android/mobile carrier access gives the client native IPv6, an IPv4-only full tunnel can leak over IPv6. Use `routed`/`ndp`/`nat66` when the server has a working IPv6 path, or `--ipv6-mode=block` for explicit leak-block behavior. WebRTC leaks are browser-side too: Network Tester reports IPv6/WebRTC risk and shows client recommendations.
 
 P2P/DNAT is configured after installation:
 
@@ -260,7 +263,7 @@ sudo /root/awg/manage_amneziawg.sh p2p toggle CLIENT_NAME
 | `--disable-web` | Do not deploy the web panel | `--disable-web` |
 | `--enable-native-ipv6` | Compatibility alias for enabling client IPv6 | `--enable-native-ipv6` |
 | `--disallow-ipv6` | Force-disable IPv6 | `--disallow-ipv6` |
-| `--ipv6-mode=MODE` | IPv6 mode: `auto`, `routed`, `ndp`, `nat66` | `--ipv6-mode=auto` |
+| `--ipv6-mode=MODE` | IPv6 mode: `auto`, `routed`, `ndp`, `nat66`, `block` | `--ipv6-mode=auto` |
 | `--ipv6-subnet=CIDR` | Client IPv6 prefix | `--ipv6-subnet=2001:db8:1::/64` |
 | `--upgrade-ipv6` | Add IPv6/P2P metadata to existing clients | `--upgrade-ipv6` |
 | `--p2p-base-port=PORT` | Base P2P port range | `--p2p-base-port=20000` |

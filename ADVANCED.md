@@ -164,6 +164,12 @@ sudo bash install_amneziawg.sh --jc=2 --jmin=20 --jmax=60 --yes --route-amnezia
 
 **Калькулятор AllowedIPs:** [WireGuard AllowedIPs Calculator](https://www.procustodibus.com/blog/2021/03/wireguard-allowedips-calculator/).
 
+### IPv6 и leak protection
+
+В full-tunnel режиме IPv6 должен быть обработан явно. Если сервер имеет routed/NDP/NAT66 IPv6, клиент получает IPv6 address и `AllowedIPs` включает `::/0`, поэтому сайты видят IPv6 VPN-сервера. Если рабочей IPv6 маршрутизации нет, используйте `--ipv6-mode=block`: installer добавит `::/0` как leak-block маршрут без выдачи клиентского IPv6 адреса, чтобы native IPv6 мобильного оператора не обходил VPN молча.
+
+WebRTC leak полностью на сервере не блокируется: браузер может раскрывать local/public candidates независимо от L3 VPN. Network Tester показывает IPv6/WebRTC risk. Для Android включайте Always-on VPN и Block connections without VPN. Для Firefox можно ограничить ICE candidates через `media.peerconnection.ice.default_address_only=true` и `media.peerconnection.ice.no_host=true`, либо полностью отключить WebRTC через `media.peerconnection.enabled=false`, если это приемлемо. Для Chromium/Edge используйте WebRTC Network Limiter/политики браузера.
+
 <a id="persistentkeepalive-adv"></a>
 ### PersistentKeepalive
 

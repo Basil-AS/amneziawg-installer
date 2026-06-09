@@ -188,9 +188,10 @@ _awg_bool() {
 
 normalize_awg_ipv6_mode() {
     case "${1:-legacy}" in
-        routed|ndp|nat66|legacy) echo "${1:-legacy}" ;;
+        routed|ndp|nat66|block|legacy) echo "${1:-legacy}" ;;
         native) echo "ndp" ;;
         ula) echo "nat66" ;;
+        leak-block|leak_block|disable) echo "block" ;;
         disabled|off|0) echo "legacy" ;;
         *) return 1 ;;
     esac
@@ -202,6 +203,11 @@ awg_ipv6_mode() {
 
 awg_ipv6_enabled() {
     _awg_bool "${AWG_IPV6_ENABLED:-0}" && [[ -n "${AWG_IPV6_SUBNET:-}" ]]
+}
+
+awg_ipv6_leak_block_enabled() {
+    [[ "$(normalize_awg_ipv6_mode "${AWG_IPV6_MODE:-legacy}" 2>/dev/null || echo legacy)" == "block" ]] || \
+        [[ "${AWG_IPV6_LEAK_PROTECTION:-warn}" == "block" ]]
 }
 
 awg_p2p_enabled() {
@@ -1137,7 +1143,7 @@ safe_load_config() {
                 DISABLE_IPV6|ALLOWED_IPS_MODE|ALLOWED_IPS|AWG_ENDPOINT|AWG_MTU|\
                 AWG_Jc|AWG_Jmin|AWG_Jmax|AWG_S1|AWG_S2|AWG_S3|AWG_S4|\
                 AWG_H1|AWG_H2|AWG_H3|AWG_H4|AWG_I1|AWG_PRESET|NO_TWEAKS|AWG_APPLY_MODE|\
-                AWG_IPV6_ENABLED|AWG_IPV6_MODE|AWG_IPV6_MODE_REQUESTED|AWG_IPV6_MODE_EFFECTIVE|AWG_IPV6_MODE_REASON|AWG_IPV6_SUBNET|AWG_IPV6_NDP_PROXY|\
+                AWG_IPV6_ENABLED|AWG_IPV6_MODE|AWG_IPV6_MODE_REQUESTED|AWG_IPV6_MODE_EFFECTIVE|AWG_IPV6_MODE_REASON|AWG_IPV6_SUBNET|AWG_IPV6_NDP_PROXY|AWG_IPV6_LEAK_PROTECTION|\
                 AWG_P2P_ENABLED|AWG_P2P_BASE_PORT|AWG_P2P_PORTS_PER_CLIENT|AWG_FULLCONE_NAT|\
                 AWG_WEB_ENABLED|AWG_WEB_PORT|AWG_WEB_BIND|AWG_WEB_CERT_MODE|AWG_WEB_DOMAIN|AWG_WEB_CERT_FILE|AWG_WEB_KEY_FILE|AWG_WEB_CERT_PROVIDER|AWG_WEB_LE_EMAIL|AWG_WEB_PUBLIC_URL|AWG_WEB_CERT_FALLBACK|AWG_WEB_CERT_ATTEMPTED_MODE|AWG_WEB_CERT_FAILURE_REASON|AWG_WEB_CERT_FALLBACK_USED|\
                 AWG_DNS_MODE|AWG_CUSTOM_DNS|AWG_ADGUARD_ENABLED|AWG_ADGUARD_PORT|AWG_ADGUARD_DIR|\
@@ -1551,6 +1557,10 @@ render_client_config() {
                 allowed_ips="${allowed_ips}, ::/0"
             fi
         fi
+    elif awg_ipv6_leak_block_enabled && [[ "${ALLOWED_IPS_MODE:-}" == "1" ]]; then
+        if [[ "$allowed_ips" != *"::/0"* ]]; then
+            allowed_ips="${allowed_ips}, ::/0"
+        fi
     fi
     local mtu
     mtu=$(_extract_mtu_from_server_conf) || mtu=""
@@ -1568,6 +1578,7 @@ render_client_config() {
     cat > "$tmpfile" << EOF
 [Interface]
 # Name = ${server_name}
+# IPv6 leak protection: $(if awg_ipv6_enabled; then echo "IPv6 is routed through VPN (${AWG_IPV6_MODE:-legacy})."; elif awg_ipv6_leak_block_enabled; then echo "block mode enabled; ::/0 is routed into the tunnel without assigning a VPN IPv6 address."; else echo "IPv4-only; native client IPv6 can leak unless the client blocks IPv6 outside VPN."; fi)
 PrivateKey = ${client_privkey}
 Address = ${address_line}
 DNS = ${dns_servers}

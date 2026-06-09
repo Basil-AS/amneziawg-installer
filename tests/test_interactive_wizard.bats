@@ -134,8 +134,8 @@
     grep -qF 'Your choice [1]:' "$en"
     grep -qF 'AWG_IPV6_MODE_REQUESTED=$(resolve_ipv6_mode_choice "$ipv6_choice")' "$ru"
     grep -qF 'AWG_IPV6_MODE_REQUESTED=$(resolve_ipv6_mode_choice "$ipv6_choice")' "$en"
-    grep -qF 'Выберите 1, 2, 3 или 4' "$ru"
-    grep -qF 'Choose 1, 2, 3 or 4' "$en"
+    grep -qF 'Выберите 1, 2, 3, 4 или 5' "$ru"
+    grep -qF 'Choose 1, 2, 3, 4 or 5' "$en"
     grep -qF 'IPv6: $(ipv6_summary_line)' "$ru"
     grep -qF 'IPv6: $(ipv6_summary_line)' "$en"
     grep -qF 'requested auto, effective' "$ru"
@@ -155,6 +155,7 @@
         [ "$(resolve_ipv6_mode_choice 2)" = "routed" ]
         [ "$(resolve_ipv6_mode_choice 3)" = "ndp" ]
         [ "$(resolve_ipv6_mode_choice 4)" = "nat66" ]
+        [ "$(resolve_ipv6_mode_choice 5)" = "block" ]
         if resolve_ipv6_mode_choice bad; then exit 1; fi
     ' _ "$installer"
     [ "$status" -eq 0 ]
@@ -178,6 +179,10 @@
 
         select_effective_ipv6_mode auto "fd12:3456:789a:2::/64"
         [ "$AWG_IPV6_MODE" = "nat66" ]
+
+        select_effective_ipv6_mode block ""
+        [ "$AWG_IPV6_MODE" = "block" ]
+        [ -z "${AWG_IPV6_SUBNET:-}" ]
 
         unset -f detect_ipv6_64_subnet
         detect_ipv6_64_subnet(){ return 1; }

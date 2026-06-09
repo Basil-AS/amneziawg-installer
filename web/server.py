@@ -1531,6 +1531,7 @@ def assess_amnezia_params(awg):
 
 def nettest_context_payload():
     cfg = parse_config()
+    info = server_info_payload()
     mtu = awg_param_int(cfg, "AWG_MTU")
     keepalive = 25 if mtu == 1280 else None
     try:
@@ -1566,6 +1567,10 @@ def nettest_context_payload():
         "persistent_keepalive": awg["persistent_keepalive"],
         "route_mode": awg["route_mode"],
         "ipv6_mode": awg["ipv6_mode"],
+        "ipv6_leak_protection": cfg.get("AWG_IPV6_LEAK_PROTECTION") or ("route" if awg["ipv6_mode"] not in {"legacy", "disabled", ""} else "warn"),
+        "server_public_ipv4": info.get("public_ipv4", ""),
+        "server_public_ipv6": info.get("public_ipv6", ""),
+        "vpn_ipv6": info.get("vpn_ipv6", ""),
         "p2p_ports_per_client": awg["p2p_ports_per_client"],
         "awg": awg,
         "assessment": assess_amnezia_params(awg),
@@ -1578,6 +1583,7 @@ def nettest_assessment(report):
     upload_probe = report.get("upload_probe") if isinstance(report.get("upload_probe"), dict) else {}
     timeline = report.get("timeline_summary") if isinstance(report.get("timeline_summary"), dict) else {}
     context = report.get("context") if isinstance(report.get("context"), dict) else {}
+    leak_checks = report.get("leak_checks") if isinstance(report.get("leak_checks"), dict) else {}
     awg = context.get("awg") if isinstance(context.get("awg"), dict) else context
     loss = float(latency.get("loss_percent") or 0)
     jitter = float(latency.get("jitter_ms") or 0)
@@ -1611,6 +1617,14 @@ def nettest_assessment(report):
         findings.append("MTU is conservative")
     if keepalive == 25:
         findings.append("keepalive helps NAT mappings")
+    if leak_checks.get("ipv6_leak_suspected"):
+        quality = "critical" if quality in {"good", "warning"} else quality
+        summary = "IPv6 leak suspected"
+        findings.append("browser public IPv6 differs from VPN/server IPv6")
+        recommendations.append("Enable IPv6 routing through VPN or IPv6 leak-block mode; on Android enable Always-on VPN and Block connections without VPN.")
+    if leak_checks.get("webrtc_ipv6_risk"):
+        findings.append("WebRTC IPv6 candidate observed")
+        recommendations.append("Limit or disable WebRTC host candidates in the browser if browser leaks matter.")
     if download_probe.get("ok") is False and upload_probe.get("ok") is not False:
         recommendations.append("Download probe is weak while upload is OK; check client receive path and tunnel stability.")
     if upload_probe.get("ok") is False and download_probe.get("ok") is not False:
@@ -1628,6 +1642,37 @@ def nettest_assessment(report):
 
 def sanitize_browser_report(value):
     return value if isinstance(value, dict) else {}
+
+
+def sanitize_leak_checks(value, context=None):
+    if not isinstance(value, dict):
+        value = {}
+    context = context if isinstance(context, dict) else {}
+    server_public_ipv4 = str(context.get("server_public_ipv4") or "")[:80]
+    server_public_ipv6 = str(context.get("server_public_ipv6") or "")[:120]
+    vpn_ipv6 = str(context.get("vpn_ipv6") or "")[:120]
+    browser_ipv4 = str(value.get("browser_public_ipv4") or "")[:80]
+    browser_ipv6 = str(value.get("browser_public_ipv6") or "")[:120]
+    webrtc_ipv6 = [str(item)[:120] for item in value.get("webrtc_ipv6_candidates", []) if isinstance(item, str)][:20]
+    webrtc_private = [str(item)[:120] for item in value.get("webrtc_private_candidates", []) if isinstance(item, str)][:20]
+    notes = [str(item)[:240] for item in value.get("notes", []) if isinstance(item, str)][:12]
+    expected_v6 = {item for item in (server_public_ipv6, vpn_ipv6) if item and item not in {"-", "IPv6 disabled"}}
+    ipv6_leak = bool(browser_ipv6 and (not expected_v6 or browser_ipv6 not in expected_v6))
+    if ipv6_leak:
+        notes.append("Browser public IPv6 is visible and does not match the VPN/server IPv6 context.")
+    return {
+        "browser_public_ipv4": browser_ipv4,
+        "browser_public_ipv6": browser_ipv6,
+        "server_public_ipv4": server_public_ipv4,
+        "server_public_ipv6": server_public_ipv6,
+        "vpn_ipv6": vpn_ipv6,
+        "ipv6_leak_suspected": ipv6_leak,
+        "webrtc_available": bool(value.get("webrtc_available")),
+        "webrtc_ipv6_risk": bool(webrtc_ipv6),
+        "webrtc_ipv6_candidates": webrtc_ipv6,
+        "webrtc_private_candidates": webrtc_private,
+        "notes": notes,
+    }
 
 
 def public_geo_for_ip(ip, allow_refresh=True):
@@ -1726,6 +1771,8 @@ def save_nettest_report(auth, handler, body):
     probe_interval_ms = int(body.get("probe_interval_ms") or 1000)
     started_at = str(body.get("started_at") or created_at)[:30]
     finished_at = str(body.get("finished_at") or created_at)[:30]
+    context_payload = nettest_context_payload()
+    leak_checks = sanitize_leak_checks(body.get("leak_checks"), context_payload)
     network_context = enriched_nettest_network_context(handler, client_ip)
     report = {
         "version": 1,
@@ -1755,7 +1802,8 @@ def save_nettest_report(auth, handler, body):
         "upload_probe": upload_probe,
         "stall_events": stall_events[:100],
         "timeline_summary": timeline_summary,
-        "context": nettest_context_payload(),
+        "leak_checks": leak_checks,
+        "context": context_payload,
     }
     report["assessment"] = nettest_assessment(report)
     filename = f"nettest_{network_type}_{stamp}_{token_fp}.json"
@@ -1801,6 +1849,7 @@ def list_nettest_reports(limit=30):
             "latency": data.get("latency", {}),
             "download_probe": data.get("download_probe", {}),
             "upload_probe": data.get("upload_probe", {}),
+            "leak_checks": data.get("leak_checks", {}),
         })
     return rows
 
@@ -1850,6 +1899,8 @@ def save_nettest_report_vpn(handler, body):
     probe_interval_ms = int(body.get("probe_interval_ms") or 1000)
     started_at = str(body.get("started_at") or created_at)[:30]
     finished_at = str(body.get("finished_at") or created_at)[:30]
+    context_payload = nettest_context_payload()
+    leak_checks = sanitize_leak_checks(body.get("leak_checks"), context_payload)
     network_context = enriched_nettest_network_context(handler, client_ip, vpn_client_ip=client_ip)
     report = {
         "version": 2,
@@ -1877,7 +1928,8 @@ def save_nettest_report_vpn(handler, body):
         "upload_probe": upload_probe,
         "stall_events": stall_events[:100],
         "timeline_summary": timeline_summary,
-        "context": nettest_context_payload(),
+        "leak_checks": leak_checks,
+        "context": context_payload,
     }
     report["assessment"] = nettest_assessment(report)
     ip_safe = _vpn_ip_safe(client_ip)
@@ -3482,7 +3534,7 @@ class Handler(SimpleHTTPRequestHandler):
         self.send_header(
             "Content-Security-Policy",
             "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
-            "img-src 'self' data: blob:; connect-src 'self'; object-src 'none'; "
+            "img-src 'self' data: blob:; connect-src 'self' https://api.ipify.org https://api6.ipify.org; object-src 'none'; "
             "base-uri 'none'; frame-ancestors 'none'",
         )
         self.send_header("X-Content-Type-Options", "nosniff")

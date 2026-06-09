@@ -43,6 +43,38 @@ CONF
     grep -q '^AllowedIPs = 0\.0\.0\.0/0$' "$AWG_DIR/allroute.conf"
 }
 
+@test "IPv6 leak-block mode routes ::/0 for full tunnel without assigning IPv6" {
+    create_init_config
+    cat >> "$CONFIG_FILE" <<'CONF'
+export ALLOWED_IPS_MODE=1
+export ALLOWED_IPS='0.0.0.0/0'
+export AWG_IPV6_ENABLED=0
+export AWG_IPV6_MODE='block'
+export AWG_IPV6_LEAK_PROTECTION='block'
+CONF
+    create_server_config
+    run render_client_config "blockv6" "10.9.9.15" "CLIENT_PRIV" "SERVER_PUB" "vpn.example.com" "39743"
+    [ "$status" -eq 0 ]
+    grep -q '^Address = 10\.9\.9\.15/32$' "$AWG_DIR/blockv6.conf"
+    grep -q '^AllowedIPs = 0\.0\.0\.0/0, ::/0$' "$AWG_DIR/blockv6.conf"
+    grep -q '^# IPv6 leak protection: block mode enabled' "$AWG_DIR/blockv6.conf"
+}
+
+@test "IPv4-only client config emits IPv6 leak warning comment" {
+    create_init_config
+    cat >> "$CONFIG_FILE" <<'CONF'
+export ALLOWED_IPS_MODE=1
+export ALLOWED_IPS='0.0.0.0/0'
+export AWG_IPV6_ENABLED=0
+export AWG_IPV6_MODE='legacy'
+CONF
+    create_server_config
+    run render_client_config "warnv6" "10.9.9.16" "CLIENT_PRIV" "SERVER_PUB" "vpn.example.com" "39743"
+    [ "$status" -eq 0 ]
+    grep -q '^AllowedIPs = 0\.0\.0\.0/0$' "$AWG_DIR/warnv6.conf"
+    grep -q 'native client IPv6 can leak' "$AWG_DIR/warnv6.conf"
+}
+
 @test "custom AllowedIPs includes tunnel-local DNS route without duplicates" {
     create_init_config
     create_server_config

@@ -34,11 +34,11 @@ MANAGE_SCRIPT_PATH="$AWG_DIR/manage_amneziawg.sh"
 # используются первыми; remote download разрешён только с pinned SHA256 либо
 # при явном AWG_ALLOW_UNVERIFIED_DOWNLOAD=1 для разработки.
 declare -A AWG_ASSET_SHA256=(
-    ["awg_common.sh"]="1cbb3a25323cb30a711be963aef7fd9ccf9143c000088722a589fd617f0333ea"
+    ["awg_common.sh"]="d293c17c2bba29087915e0046e7287548ba11319b2b41d4d5875357ed42d4f6d"
     ["manage_amneziawg.sh"]="4906b48b40ad461d92dc64f91f8753fc0d7c8aff4768c18485c448ca64af154e"
-    ["web/server.py"]="80442c84532b98cbf8009f146c3da834a6f62c057c49796d0d8f9f97fcb07db0"
+    ["web/server.py"]="903bd4313d15364677aa20a6227bc791dd39747d92615a5e2e30cf5394ed444d"
     ["web/index.html"]="7c07ed1d1991e08c0f9fc31e86ed8eb2bba5fa96387088f1f18918396cf7e662"
-    ["web/app.js"]="c4a42ff63df79823a425281710cebb0d3309e6363ffc50c243b5757452df3d64"
+    ["web/app.js"]="923f8ee7b885a4efc25e028e58e8aa3b5191e20ed066786d65727e7eb38d1786"
     ["web/awg_i1.js"]="c97a6ac6c4e4bd7ab24c37c45f451e364414f276441f8da1c0805d26013aaa03"
     ["web/style.css"]="359dca587b0c9208044d3fd39abc6be63042d8de262f47bf1b86636e5b50ebd5"
     ["web/favicon.svg"]="ae700ecb12dbf01403d0ed25247bac6b70f11201b094ee6c14b774b7fa533859"
@@ -338,7 +338,7 @@ show_help() {
   --allow-ipv6          Оставить IPv6 включенным неинтерактивно
   --disallow-ipv6       Принудительно отключить IPv6 неинтерактивно
   --enable-native-ipv6  Совместимый алиас: включить IPv6 для клиентов
-  --ipv6-mode=MODE      IPv6 режим клиентов: auto, routed, ndp или nat66
+  --ipv6-mode=MODE      IPv6 режим клиентов: auto, routed, ndp, nat66, block или legacy
   --ipv6-subnet=CIDR    Задать IPv6 /48../64 для клиентов (например 2001:db8:1::/64)
   --upgrade-ipv6        Мигрировать существующих клиентов на IPv6/P2P metadata
   --p2p-base-port=PORT  Базовый P2P порт (умолч. 20000; диапазон base+1..base+1024)
@@ -689,7 +689,7 @@ safe_load_config() {
                 DISABLE_IPV6|ALLOWED_IPS_MODE|ALLOWED_IPS|AWG_ENDPOINT|AWG_MTU|\
                 AWG_Jc|AWG_Jmin|AWG_Jmax|AWG_S1|AWG_S2|AWG_S3|AWG_S4|\
                 AWG_H1|AWG_H2|AWG_H3|AWG_H4|AWG_I1|AWG_PRESET|NO_TWEAKS|AWG_APPLY_MODE|\
-                AWG_IPV6_ENABLED|AWG_IPV6_MODE|AWG_IPV6_MODE_REQUESTED|AWG_IPV6_MODE_EFFECTIVE|AWG_IPV6_MODE_REASON|AWG_IPV6_SUBNET|AWG_IPV6_NDP_PROXY|\
+                AWG_IPV6_ENABLED|AWG_IPV6_MODE|AWG_IPV6_MODE_REQUESTED|AWG_IPV6_MODE_EFFECTIVE|AWG_IPV6_MODE_REASON|AWG_IPV6_SUBNET|AWG_IPV6_NDP_PROXY|AWG_IPV6_LEAK_PROTECTION|\
                 AWG_P2P_ENABLED|AWG_P2P_BASE_PORT|AWG_P2P_PORTS_PER_CLIENT|AWG_FULLCONE_NAT|AWG_DISABLE_UFW|\
                 AWG_WEB_ENABLED|AWG_WEB_PORT|AWG_WEB_BIND|AWG_WEB_CERT_MODE|AWG_WEB_DOMAIN|AWG_WEB_CERT_FILE|AWG_WEB_KEY_FILE|AWG_WEB_CERT_PROVIDER|AWG_WEB_LE_EMAIL|AWG_WEB_PUBLIC_URL|AWG_WEB_CERT_FALLBACK|AWG_WEB_CERT_ATTEMPTED_MODE|AWG_WEB_CERT_FAILURE_REASON|AWG_WEB_CERT_FALLBACK_USED|\
                 AWG_DNS_MODE|AWG_CUSTOM_DNS|AWG_ADGUARD_ENABLED|AWG_ADGUARD_PORT|AWG_ADGUARD_DIR|\
@@ -913,9 +913,10 @@ generate_ula_subnet() {
 
 normalize_ipv6_mode_installer() {
     case "${1:-legacy}" in
-        auto|routed|ndp|nat66|legacy) echo "${1:-legacy}" ;;
+        auto|routed|ndp|nat66|block|legacy) echo "${1:-legacy}" ;;
         native) echo "ndp" ;;
         ula) echo "nat66" ;;
+        leak-block|leak_block|disable) echo "block" ;;
         disabled|off|0) echo "legacy" ;;
         *) return 1 ;;
     esac
@@ -927,6 +928,7 @@ resolve_ipv6_mode_choice() {
         2|routed) echo "routed" ;;
         3|ndp) echo "ndp" ;;
         4|nat66) echo "nat66" ;;
+        5|block|leak-block|leak_block) echo "block" ;;
         *) return 1 ;;
     esac
 }
@@ -940,6 +942,11 @@ select_effective_ipv6_mode() {
             AWG_IPV6_MODE="routed"
             AWG_IPV6_SUBNET="$subnet"
             AWG_IPV6_MODE_REASON="selected routed because user provided dedicated prefix"
+            ;;
+        block)
+            AWG_IPV6_MODE="block"
+            AWG_IPV6_SUBNET=""
+            AWG_IPV6_MODE_REASON="selected IPv6 leak-block mode"
             ;;
         ndp)
             if [[ -z "$subnet" ]]; then
@@ -1040,9 +1047,17 @@ configure_ipv6_client_mode() {
     AWG_IPV6_MODE_REASON=${AWG_IPV6_MODE_REASON:-}
     AWG_IPV6_SUBNET=${AWG_IPV6_SUBNET:-}
     AWG_IPV6_NDP_PROXY=${AWG_IPV6_NDP_PROXY:-0}
+    AWG_IPV6_LEAK_PROTECTION=${AWG_IPV6_LEAK_PROTECTION:-warn}
     local requested_mode=""
 
-    if [[ "${DISABLE_IPV6:-1}" -eq 1 ]]; then
+    if [[ -n "$CLI_IPV6_MODE" ]]; then
+        requested_mode=$(normalize_ipv6_mode_installer "$CLI_IPV6_MODE") || \
+            die "Некорректный --ipv6-mode: '$CLI_IPV6_MODE' (ожидается auto, routed, ndp, nat66, block или legacy)."
+    else
+        requested_mode=$(normalize_ipv6_mode_installer "${AWG_IPV6_MODE_REQUESTED:-${AWG_IPV6_MODE:-legacy}}" 2>/dev/null || echo "legacy")
+    fi
+
+    if [[ "${DISABLE_IPV6:-1}" -eq 1 && "$requested_mode" != "block" ]]; then
         AWG_IPV6_ENABLED=0
         AWG_IPV6_MODE_REQUESTED=legacy
         AWG_IPV6_MODE=legacy
@@ -1050,15 +1065,9 @@ configure_ipv6_client_mode() {
         AWG_IPV6_MODE_REASON="disabled"
         AWG_IPV6_SUBNET=""
         AWG_IPV6_NDP_PROXY=0
-        export AWG_IPV6_ENABLED AWG_IPV6_MODE_REQUESTED AWG_IPV6_MODE AWG_IPV6_MODE_EFFECTIVE AWG_IPV6_MODE_REASON AWG_IPV6_SUBNET AWG_IPV6_NDP_PROXY
+        AWG_IPV6_LEAK_PROTECTION=warn
+        export AWG_IPV6_ENABLED AWG_IPV6_MODE_REQUESTED AWG_IPV6_MODE AWG_IPV6_MODE_EFFECTIVE AWG_IPV6_MODE_REASON AWG_IPV6_SUBNET AWG_IPV6_NDP_PROXY AWG_IPV6_LEAK_PROTECTION
         return 0
-    fi
-
-    if [[ -n "$CLI_IPV6_MODE" ]]; then
-        requested_mode=$(normalize_ipv6_mode_installer "$CLI_IPV6_MODE") || \
-            die "Некорректный --ipv6-mode: '$CLI_IPV6_MODE' (ожидается auto, routed, ndp или nat66)."
-    else
-        requested_mode=$(normalize_ipv6_mode_installer "${AWG_IPV6_MODE_REQUESTED:-${AWG_IPV6_MODE:-legacy}}" 2>/dev/null || echo "legacy")
     fi
 
     AWG_IPV6_ENABLED=1
@@ -1078,7 +1087,16 @@ configure_ipv6_client_mode() {
     fi
 
     AWG_IPV6_MODE_REQUESTED="$requested_mode"
-    if [[ "$requested_mode" != "legacy" ]]; then
+    if [[ "$requested_mode" == "block" ]]; then
+        AWG_IPV6_ENABLED=0
+        AWG_IPV6_MODE_REQUESTED=block
+        AWG_IPV6_MODE=block
+        AWG_IPV6_MODE_EFFECTIVE=block
+        AWG_IPV6_MODE_REASON="IPv6 leak-block mode: full-tunnel clients receive ::/0 without a VPN IPv6 address"
+        AWG_IPV6_SUBNET=""
+        AWG_IPV6_NDP_PROXY=0
+        AWG_IPV6_LEAK_PROTECTION=block
+    elif [[ "$requested_mode" != "legacy" ]]; then
         if ! select_effective_ipv6_mode "$requested_mode" "$AWG_IPV6_SUBNET"; then
             case "$requested_mode" in
                 routed) die "Для IPv6 mode routed нужен отдельный routed IPv6 prefix. Укажите --ipv6-subnet=... или выберите auto/ndp/nat66." ;;
@@ -1092,6 +1110,7 @@ configure_ipv6_client_mode() {
         if [[ "$requested_mode" == "auto" ]]; then
             log "IPv6 auto: ${AWG_IPV6_MODE_REASON}; effective=${AWG_IPV6_MODE}, subnet=${AWG_IPV6_SUBNET}"
         fi
+        AWG_IPV6_LEAK_PROTECTION=route
     elif [[ -n "$AWG_IPV6_SUBNET" ]]; then
         AWG_IPV6_MODE_EFFECTIVE="$AWG_IPV6_MODE"
     fi
@@ -1100,10 +1119,11 @@ configure_ipv6_client_mode() {
         routed) AWG_IPV6_NDP_PROXY=0 ;;
         ndp) AWG_IPV6_NDP_PROXY=1 ;;
         nat66) AWG_IPV6_NDP_PROXY=0 ;;
-        *) AWG_IPV6_ENABLED=0; AWG_IPV6_MODE_REQUESTED=legacy; AWG_IPV6_MODE=legacy; AWG_IPV6_MODE_EFFECTIVE=legacy; AWG_IPV6_MODE_REASON="disabled"; AWG_IPV6_SUBNET=""; AWG_IPV6_NDP_PROXY=0 ;;
+        block) AWG_IPV6_ENABLED=0; AWG_IPV6_NDP_PROXY=0; AWG_IPV6_LEAK_PROTECTION=block ;;
+        *) AWG_IPV6_ENABLED=0; AWG_IPV6_MODE_REQUESTED=legacy; AWG_IPV6_MODE=legacy; AWG_IPV6_MODE_EFFECTIVE=legacy; AWG_IPV6_MODE_REASON="disabled"; AWG_IPV6_SUBNET=""; AWG_IPV6_NDP_PROXY=0; AWG_IPV6_LEAK_PROTECTION=warn ;;
     esac
     AWG_IPV6_MODE_EFFECTIVE="$AWG_IPV6_MODE"
-    export AWG_IPV6_ENABLED AWG_IPV6_MODE_REQUESTED AWG_IPV6_MODE AWG_IPV6_MODE_EFFECTIVE AWG_IPV6_MODE_REASON AWG_IPV6_SUBNET AWG_IPV6_NDP_PROXY
+    export AWG_IPV6_ENABLED AWG_IPV6_MODE_REQUESTED AWG_IPV6_MODE AWG_IPV6_MODE_EFFECTIVE AWG_IPV6_MODE_REASON AWG_IPV6_SUBNET AWG_IPV6_NDP_PROXY AWG_IPV6_LEAK_PROTECTION
 }
 
 configure_routing_mode() {
@@ -1221,12 +1241,13 @@ prompt_ipv6_mode() {
     echo "  2) routed — отдельный routed IPv6 prefix (/64, /56, /48), выданный провайдером именно под VPN"
     echo "  3) ndp — использовать текущую публичную /64 на eth0 через NDP proxy"
     echo "  4) nat66 — fallback через NAT66"
+    echo "  5) block — IPv4-only full tunnel блокирует IPv6 route (::/0), чтобы снизить риск IPv6 leak"
     while true; do
         read -rp "Ваш выбор [1]: " ipv6_choice < /dev/tty
         if AWG_IPV6_MODE_REQUESTED=$(resolve_ipv6_mode_choice "$ipv6_choice"); then
             break
         fi
-        log_warn "Неизвестный IPv6 mode '$ipv6_choice'. Выберите 1, 2, 3 или 4."
+        log_warn "Неизвестный IPv6 mode '$ipv6_choice'. Выберите 1, 2, 3, 4 или 5."
     done
     AWG_IPV6_MODE="$AWG_IPV6_MODE_REQUESTED"
     case "$AWG_IPV6_MODE_REQUESTED" in
@@ -2885,6 +2906,7 @@ initialize_setup() {
     AWG_IPV6_MODE_REASON="${AWG_IPV6_MODE_REASON:-}"
     AWG_IPV6_SUBNET="${AWG_IPV6_SUBNET:-}"
     AWG_IPV6_NDP_PROXY=${AWG_IPV6_NDP_PROXY:-0}
+    AWG_IPV6_LEAK_PROTECTION=${AWG_IPV6_LEAK_PROTECTION:-warn}
     AWG_P2P_ENABLED=${AWG_P2P_ENABLED:-1}
     AWG_P2P_BASE_PORT=${AWG_P2P_BASE_PORT:-20000}
     AWG_P2P_PORTS_PER_CLIENT=${AWG_P2P_PORTS_PER_CLIENT:-3}
@@ -2936,6 +2958,7 @@ initialize_setup() {
         AWG_IPV6_MODE_REASON=${AWG_IPV6_MODE_REASON:-}
         AWG_IPV6_SUBNET=${AWG_IPV6_SUBNET:-}
         AWG_IPV6_NDP_PROXY=${AWG_IPV6_NDP_PROXY:-0}
+    AWG_IPV6_LEAK_PROTECTION=${AWG_IPV6_LEAK_PROTECTION:-warn}
         AWG_P2P_ENABLED=${AWG_P2P_ENABLED:-1}
         AWG_P2P_BASE_PORT=${AWG_P2P_BASE_PORT:-20000}
         AWG_P2P_PORTS_PER_CLIENT=${AWG_P2P_PORTS_PER_CLIENT:-3}
@@ -3173,6 +3196,7 @@ export AWG_IPV6_MODE_EFFECTIVE='${AWG_IPV6_MODE_EFFECTIVE:-${AWG_IPV6_MODE}}'
 export AWG_IPV6_MODE_REASON='${AWG_IPV6_MODE_REASON}'
 export AWG_IPV6_SUBNET='${AWG_IPV6_SUBNET}'
 export AWG_IPV6_NDP_PROXY=${AWG_IPV6_NDP_PROXY}
+export AWG_IPV6_LEAK_PROTECTION='${AWG_IPV6_LEAK_PROTECTION:-warn}'
 export AWG_P2P_ENABLED=${AWG_P2P_ENABLED}
 export AWG_P2P_BASE_PORT=${AWG_P2P_BASE_PORT}
 export AWG_P2P_PORTS_PER_CLIENT=${AWG_P2P_PORTS_PER_CLIENT}
@@ -3225,7 +3249,7 @@ EOF
     chmod 600 "$CONFIG_FILE" || log_warn "Ошибка chmod $CONFIG_FILE"
     log "Настройки сохранены."
     export AWG_PORT AWG_TUNNEL_SUBNET DISABLE_IPV6 ALLOWED_IPS_MODE ALLOWED_IPS AWG_ENDPOINT AWG_SERVER_NAME
-    export AWG_IPV6_ENABLED AWG_IPV6_MODE_REQUESTED AWG_IPV6_MODE AWG_IPV6_MODE_EFFECTIVE AWG_IPV6_MODE_REASON AWG_IPV6_SUBNET AWG_IPV6_NDP_PROXY
+    export AWG_IPV6_ENABLED AWG_IPV6_MODE_REQUESTED AWG_IPV6_MODE AWG_IPV6_MODE_EFFECTIVE AWG_IPV6_MODE_REASON AWG_IPV6_SUBNET AWG_IPV6_NDP_PROXY AWG_IPV6_LEAK_PROTECTION
     export AWG_P2P_ENABLED AWG_P2P_BASE_PORT AWG_P2P_PORTS_PER_CLIENT AWG_FULLCONE_NAT
     export AWG_WEB_ENABLED AWG_WEB_PORT AWG_WEB_BIND AWG_DISABLE_UFW
     export AWG_WEB_CERT_MODE AWG_WEB_DOMAIN AWG_WEB_CERT_FILE AWG_WEB_KEY_FILE AWG_WEB_CERT_PROVIDER AWG_WEB_LE_EMAIL AWG_WEB_PUBLIC_URL
@@ -4126,21 +4150,26 @@ step5_download_scripts() {
 
 setup_ndppd_config() {
     [[ "${AWG_IPV6_ENABLED:-0}" -eq 1 && "${AWG_IPV6_MODE:-}" == "ndp" && "${AWG_IPV6_NDP_PROXY:-0}" -eq 1 ]] || return 0
-    local nic
+    local nic conf="/etc/ndppd.conf"
+    [[ -n "${AWG_IPV6_SUBNET:-}" ]] || { log_warn "ndppd пропущен: AWG_IPV6_SUBNET пуст."; return 0; }
     nic=$(ip route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="dev") print $(i+1); exit}')
     [[ -n "$nic" ]] || nic="eth0"
-    cat > /etc/ndppd.conf << EOF
+    if [[ -f "$conf" ]] && ! grep -q "Managed by AmneziaWG installer" "$conf"; then
+        cp -a "$conf" "${conf}.bak.$(date +%Y%m%d-%H%M%S)" || die "Не удалось сделать backup $conf"
+    fi
+    cat > "$conf" << EOF
+# Managed by AmneziaWG installer. Manual changes may be overwritten.
 route_ttl 30000
 proxy ${nic} {
     router yes
     timeout 500
     ttl 30000
     rule ${AWG_IPV6_SUBNET} {
-        static
+        auto
     }
 }
 EOF
-    chmod 644 /etc/ndppd.conf
+    chmod 644 "$conf"
     systemctl enable ndppd 2>/dev/null || log_warn "Не удалось enable ndppd"
     systemctl restart ndppd 2>/dev/null || log_warn "Не удалось restart ndppd"
     log "ndppd настроен для ${AWG_IPV6_SUBNET} через ${nic}."

@@ -45,6 +45,22 @@ CONF
     grep -q 'IPV6_MODE" == "nat66"' "$AWG_DIR/postup.sh"
 }
 
+@test "installer ndppd config is managed only for ndp mode with auto rule" {
+    local ru="$BATS_TEST_DIRNAME/../install_amneziawg.sh"
+    local en="$BATS_TEST_DIRNAME/../install_amneziawg_en.sh"
+    grep -qF 'AWG_IPV6_MODE:-}" == "ndp"' "$ru"
+    grep -qF 'AWG_IPV6_MODE:-}" == "ndp"' "$en"
+    grep -qF 'Managed by AmneziaWG installer' "$ru"
+    grep -qF 'Managed by AmneziaWG installer' "$en"
+    grep -qF "rule \${AWG_IPV6_SUBNET}" "$ru"
+    grep -qF "rule \${AWG_IPV6_SUBNET}" "$en"
+    grep -qF '        auto' "$ru"
+    grep -qF '        auto' "$en"
+    if grep -qF 'AWG_IPV6_MODE:-}" == "native"' "$en"; then
+        fail "EN installer must not use obsolete native mode for ndppd"
+    fi
+}
+
 @test "generate_vpn_uri writes server name and defaultName" {
     command -v python3 &>/dev/null || skip "python3 not available"
     perl -MCompress::Zlib -MMIME::Base64 -e '1' 2>/dev/null || skip "perl Compress::Zlib/MIME::Base64 not available"
