@@ -6,7 +6,9 @@
 <p align="center"><em>Форк оригинального AmneziaWG installer: upstream-совместимая база + IPv6, P2P-порты и веб-панель</em></p>
 
 <p align="center">
-  <img src="logo.jpg" alt="AmneziaWG 2.0 VPN Installer — Ubuntu, Debian, Raspberry Pi, ARM64, мобильные сети" width="600">
+  <img src="docs/screenshots/web-panel-dashboard.png" alt="Веб-панель AmneziaWG: сводка, трафик и топ клиентов" width="960">
+  <br>
+  <img src="docs/screenshots/web-panel-health.png" alt="Веб-панель AmneziaWG: Server Health с историей нагрузки" width="960">
 </p>
 
 <p align="center">

@@ -6,7 +6,9 @@
 <p align="center"><em>Fork of the original AmneziaWG installer: upstream-compatible base plus IPv6, P2P ports, and a web panel</em></p>
 
 <p align="center">
-  <img src="logo.jpg" alt="AmneziaWG 2.0 VPN Installer — Ubuntu, Debian, Raspberry Pi, ARM64, mobile carrier optimization" width="600">
+  <img src="docs/screenshots/web-panel-dashboard.png" alt="AmneziaWG Web Panel dashboard with summary cards, traffic and top clients" width="960">
+  <br>
+  <img src="docs/screenshots/web-panel-health.png" alt="AmneziaWG Web Panel Server Health with load history" width="960">
 </p>
 
 <p align="center">
