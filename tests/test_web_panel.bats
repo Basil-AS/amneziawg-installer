@@ -2544,13 +2544,13 @@ PY
 import sys, os, json
 from pathlib import Path
 repo = Path(os.environ["REPO_ROOT"])
-import importlib.util, types, urllib.request
+import importlib.util
 spec = importlib.util.spec_from_file_location("server", repo / "web" / "server.py")
 server = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(server)
 fake_cfg = {"providers": {"2ip": {"enabled": True, "token": "testtoken"}}}
 server.load_geoip_providers_config = lambda: fake_cfg
-import io
+urls_called = []
 class FakeResp:
     def read(self, n): return json.dumps({
         "ip": "85.89.126.30", "city": "Moscow", "region": "Moscow",
@@ -2560,7 +2560,10 @@ class FakeResp:
     }).encode()
     def __enter__(self): return self
     def __exit__(self, *a): pass
-server.urlopen = lambda url, timeout=None: FakeResp()
+def fake_urlopen(url, timeout=None):
+    urls_called.append(url)
+    return FakeResp()
+server.urlopen = fake_urlopen
 r = server._fetch_2ip_provider("85.89.126.30")
 assert r is not None, "2ip provider must return a result"
 assert r["country_code"] == "RU", f"country_code={r['country_code']}"
@@ -2569,6 +2572,66 @@ assert r["asn_id"] == "29233", f"asn_id={r['asn_id']}"
 assert r["city"] == "Moscow", f"city={r['city']}"
 assert r["hosting"] == False, f"hosting={r['hosting']}"
 assert r["_source_name"] == "2ip", f"_source_name={r['_source_name']}"
+# URL must use api.2ip.io/{ip}?token pattern, not api.2ip.me or /geo/
+assert len(urls_called) == 1, f"expected 1 url call, got {len(urls_called)}"
+u = urls_called[0]
+assert "api.2ip.io" in u, f"URL must use api.2ip.io, got: {u}"
+assert "85.89.126.30" in u, f"IP must appear in URL path, got: {u}"
+assert "/geo" not in u, f"URL must not use /geo/ path, got: {u}"
+assert "api.2ip.me" not in u, f"URL must not use api.2ip.me, got: {u}"
+# Token must not appear in the returned result dict
+raw = json.dumps(r)
+assert "testtoken" not in raw, "token must not appear in normalized result"
+PY
+    rm -rf "$tmp"
+}
+
+@test "geoip: 2IP empty {} response returns None and does not cache" {
+    command -v python3 &>/dev/null || skip "python3 not available"
+    local tmp
+    tmp=$(mktemp -d)
+    mkdir -p "$tmp/web"
+    AWG_DIR="$tmp" SERVER_CONF_FILE="$tmp/awg0.conf" REPO_ROOT="$BATS_TEST_DIRNAME/.." python3 - <<'PY'
+import os, json
+from pathlib import Path
+import importlib.util
+spec = importlib.util.spec_from_file_location("server", Path(os.environ["REPO_ROOT"]) / "web" / "server.py")
+server = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(server)
+fake_cfg = {"providers": {"2ip": {"enabled": True, "token": "testtoken"}}}
+server.load_geoip_providers_config = lambda: fake_cfg
+class EmptyResp:
+    def read(self, n): return b"{}"
+    def __enter__(self): return self
+    def __exit__(self, *a): pass
+server.urlopen = lambda url, timeout=None: EmptyResp()
+r = server._fetch_2ip_provider("8.8.8.8")
+assert r is None, f"empty {{}} response must return None, got {r}"
+PY
+    rm -rf "$tmp"
+}
+
+@test "geoip: 2IP HTTP 429 falls back gracefully without raising" {
+    command -v python3 &>/dev/null || skip "python3 not available"
+    local tmp
+    tmp=$(mktemp -d)
+    mkdir -p "$tmp/web"
+    AWG_DIR="$tmp" SERVER_CONF_FILE="$tmp/awg0.conf" REPO_ROOT="$BATS_TEST_DIRNAME/.." python3 - <<'PY'
+import os, json
+from pathlib import Path
+from urllib.error import HTTPError
+import io
+import importlib.util
+spec = importlib.util.spec_from_file_location("server", Path(os.environ["REPO_ROOT"]) / "web" / "server.py")
+server = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(server)
+fake_cfg = {"providers": {"2ip": {"enabled": True, "token": "testtoken"}}}
+server.load_geoip_providers_config = lambda: fake_cfg
+def raise_429(url, timeout=None):
+    raise HTTPError(url, 429, "Too Many Requests", {}, io.BytesIO(b"rate limit"))
+server.urlopen = raise_429
+r = server._fetch_2ip_provider("8.8.8.8")
+assert r is None, f"HTTP 429 must return None for graceful fallback, got {r}"
 PY
     rm -rf "$tmp"
 }

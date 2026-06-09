@@ -2541,8 +2541,8 @@ def _fetch_2ip_provider(ip):
     token = (cfg.get("token") or os.environ.get("AWG_GEOIP_2IP_TOKEN", "")).strip()
     if not token:
         return None
-    base = (cfg.get("base_url") or "https://api.2ip.me").rstrip("/")
-    url = f"{base}/geo.json?ip={ip}&token={token}"
+    base = (cfg.get("base_url") or "https://api.2ip.io").rstrip("/")
+    url = f"{base}/{quote(ip)}?token={quote(token)}"
     try:
         with urlopen(url, timeout=IP_INFO_LOOKUP_TIMEOUT) as resp:
             payload = resp.read(32768)
@@ -2552,21 +2552,14 @@ def _fetch_2ip_provider(ip):
         data = json.loads(payload.decode("utf-8"))
     except Exception:
         return None
+    # Empty {} response means no data; fall through to next provider
     if not isinstance(data, dict) or not data.get("ip"):
         return None
-    # 2ip.me: flat fields (country_code, autonomous_system_number, isp)
-    # 2ip.io legacy: nested asn object with id/name, field "code" for country
     asn_data = data.get("asn") or {}
-    asn_id = str(
-        data.get("autonomous_system_number") or asn_data.get("id") or ""
-    ).strip().lstrip("AS").lstrip("as")
+    asn_id = str(asn_data.get("id") or "").strip()
     asn = f"AS{asn_id}" if asn_id else ""
-    provider = str(
-        data.get("isp") or data.get("organization") or asn_data.get("name") or ""
-    ).strip()
-    country_code = str(
-        data.get("country_code") or data.get("code") or ""
-    ).upper().strip()
+    provider = str(asn_data.get("name") or "").strip()
+    country_code = str(data.get("code") or "").upper().strip()
     return {
         "ip": ip,
         "country": str(data.get("country") or "").strip(),
@@ -2574,9 +2567,9 @@ def _fetch_2ip_provider(ip):
         "flag": str(data.get("emoji") or country_code_to_flag(country_code)).strip(),
         "region": str(data.get("region") or "").strip(),
         "city": str(data.get("city") or "").strip(),
-        "lat": _safe_float(data.get("latitude") or data.get("lat")),
-        "lon": _safe_float(data.get("longitude") or data.get("lon")),
-        "timezone": str(data.get("time_zone") or data.get("timezone") or "").strip(),
+        "lat": _safe_float(data.get("lat")),
+        "lon": _safe_float(data.get("lon")),
+        "timezone": str(data.get("timezone") or "").strip(),
         "asn": asn,
         "asn_id": asn_id,
         "provider": provider,
