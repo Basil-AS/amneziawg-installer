@@ -624,9 +624,7 @@ function renderServerInfo() {
   const addressHost = document.querySelector("#metricAddresses");
   if (!linksHost && !addressHost) return;
   const info = serverInfoState || {};
-  const links = [
-    {label: "Web Panel", href: info.web_current_url || info.web_public_url || "/"},
-  ];
+  const links = [];
   if (info["ad" + "guard_enabled"] && info["ad" + "guard_url"]) links.push({label: "Ad" + "Guard", href: info["ad" + "guard_url"]});
   if (info["nettest_vp" + "n_url"]) links.push({label: "Network Tester (" + "V" + "P" + "N)", href: info["nettest_vp" + "n_url"]});
   if (linksHost) {

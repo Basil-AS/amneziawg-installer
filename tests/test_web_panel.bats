@@ -2305,6 +2305,7 @@ PY
 
 @test "web app exposes server health and network tester UI" {
     local app="$BATS_TEST_DIRNAME/../web/app.js"
+    local css="$BATS_TEST_DIRNAME/../web/style.css"
     local server="$BATS_TEST_DIRNAME/../web/server.py"
     grep -qF '"/nettest": ("index.html"' "$server"
     grep -qF 'Server Health' "$app"
@@ -2317,6 +2318,14 @@ PY
     grep -qF 'IP / Addresses' "$app"
     grep -qF 'metricLinks' "$app"
     grep -qF 'metricAddresses' "$app"
+    grep -qF 'grid-template-columns:minmax(88px,.55fr) minmax(88px,.55fr) minmax(190px,1.15fr) minmax(190px,1.15fr) minmax(150px,1fr) minmax(210px,1.35fr)' "$css"
+    grep -qF '.summary-card-narrow{grid-column:span 1}' "$css"
+    grep -qF '.summary-link-row{display:flex;flex-direction:column' "$css"
+    grep -qF '"Ad" + "Guard"' "$app"
+    grep -qF 'Network Tester (' "$app"
+    if grep -qF '{label: "Web Panel"' "$app"; then
+        false
+    fi
     if grep -qF 'id="metricResolver"' "$app"; then
         false
     fi
