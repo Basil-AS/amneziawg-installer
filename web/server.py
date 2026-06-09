@@ -1140,6 +1140,32 @@ def counter_delta(rows, key):
     return max(0, int(values[-1][1]) - int(values[0][1]))
 
 
+def counter_rate_summary(rows, key):
+    values = [(safe_int(row.get("ts")) or 0, safe_int(row.get(key))) for row in rows if safe_int(row.get(key)) is not None]
+    if len(values) < 2:
+        return {"avg_bps": 0, "peak_bps": 0, "current_bps": 0}
+    first_ts, first_value = values[0]
+    last_ts, last_value = values[-1]
+    duration = max(1, last_ts - first_ts)
+    avg_bps = max(0, int(last_value) - int(first_value)) / duration
+    peak_bps = 0
+    current_bps = 0
+    for idx in range(1, len(values)):
+        prev_ts, prev_value = values[idx - 1]
+        ts, value = values[idx]
+        elapsed = ts - prev_ts
+        if elapsed <= 0 or int(value) < int(prev_value):
+            continue
+        rate = (int(value) - int(prev_value)) / elapsed
+        peak_bps = max(peak_bps, rate)
+        current_bps = rate
+    return {
+        "avg_bps": round(avg_bps, 2),
+        "peak_bps": round(peak_bps, 2),
+        "current_bps": round(current_bps, 2),
+    }
+
+
 def bucket_seconds_for_range(range_seconds):
     if range_seconds <= 3600:
         return 60
@@ -1215,6 +1241,12 @@ def summarize_health_history(rows):
             "vpn_errors_delta": counter_delta(rows, "vpn_rx_errors") + counter_delta(rows, "vpn_tx_errors"),
             "drops_delta": drops_delta,
             "errors_delta": errors_delta,
+            "rates": {
+                "wan_rx": counter_rate_summary(rows, "wan_rx_bytes"),
+                "wan_tx": counter_rate_summary(rows, "wan_tx_bytes"),
+                "vpn_rx": counter_rate_summary(rows, "vpn_rx_bytes"),
+                "vpn_tx": counter_rate_summary(rows, "vpn_tx_bytes"),
+            },
         },
         "process": {"max_rss_bytes": max_rss, "max_fd_count": max_value(rows, "python_fd_count"), "max_threads": max_value(rows, "python_threads")},
         "counts": {"samples": len(rows), "warn": warn_count, "critical": critical_count},
@@ -1544,27 +1576,132 @@ def nettest_assessment(report):
     latency = report.get("latency") if isinstance(report.get("latency"), dict) else {}
     download_probe = report.get("download_probe") if isinstance(report.get("download_probe"), dict) else {}
     upload_probe = report.get("upload_probe") if isinstance(report.get("upload_probe"), dict) else {}
+    timeline = report.get("timeline_summary") if isinstance(report.get("timeline_summary"), dict) else {}
+    context = report.get("context") if isinstance(report.get("context"), dict) else {}
+    awg = context.get("awg") if isinstance(context.get("awg"), dict) else context
     loss = float(latency.get("loss_percent") or 0)
     jitter = float(latency.get("jitter_ms") or 0)
     stalls = int(latency.get("stall_events") or 0)
+    longest_stall_ms = int(timeline.get("longest_stall_ms") or 0)
+    max_consecutive = int(timeline.get("max_consecutive_timeouts") or 0)
+    mtu = int(awg.get("mtu") or 0) if isinstance(awg, dict) else 0
+    keepalive = int(awg.get("persistent_keepalive") or 0) if isinstance(awg, dict) else 0
     quality = "good"
     summary = "Parameters look OK"
     recommendations = []
-    if loss > 10 or stalls >= 3:
+    findings = []
+    if loss > 15 or stalls >= 4 or longest_stall_ms >= 8000:
+        quality = "critical"
+        summary = "Severe repeated stalls detected"
+    elif loss > 10 or stalls >= 3 or longest_stall_ms >= 5000:
         quality = "poor"
         summary = "Repeated timeout bursts detected"
-    elif loss >= 2 or jitter >= 30 or stalls:
+    elif loss >= 2 or jitter >= 30 or stalls or longest_stall_ms >= 2000:
         quality = "warning"
         summary = "Burst loss or jitter detected"
+    if stalls:
+        findings.append(f"timeout bursts={stalls}, longest={round(longest_stall_ms / 1000, 1)}s")
+    if max_consecutive:
+        findings.append(f"max consecutive timeouts={max_consecutive}")
+    if loss:
+        findings.append(f"loss={round(loss, 1)}%")
+    if jitter >= 30:
+        findings.append(f"jitter={round(jitter, 1)}ms")
+    if mtu and mtu <= 1280:
+        findings.append("MTU is conservative")
+    if keepalive == 25:
+        findings.append("keepalive helps NAT mappings")
     if download_probe.get("ok") is False and upload_probe.get("ok") is not False:
         recommendations.append("Download probe is weak while upload is OK; check client receive path and tunnel stability.")
     if upload_probe.get("ok") is False and download_probe.get("ok") is not False:
         recommendations.append("Upload probe is weak while download is OK; check client uplink and local network.")
     if loss > 0 or stalls:
         recommendations.append("Run ping to VPN server IP and 1.1.1.1 during the same stall window.")
+    if stalls >= 2 and jitter < 30:
+        recommendations.append("Pattern may indicate UDP path interference or unstable NAT; not conclusive.")
+    elif stalls:
+        recommendations.append("Pattern suggests general network instability; DPI cannot be proven from this test alone.")
     if not recommendations:
         recommendations.append("No obvious browser-side issue detected.")
-    return {"quality": quality, "summary": summary, "recommendations": recommendations[:4]}
+    return {"quality": quality, "summary": summary, "findings": findings[:8], "recommendations": recommendations[:5]}
+
+
+def sanitize_browser_report(value):
+    return value if isinstance(value, dict) else {}
+
+
+def public_geo_for_ip(ip, allow_refresh=True):
+    if not ip:
+        return _empty_endpoint_info("", source="local")
+    return lookup_endpoint_ip_info(ip, allow_refresh=allow_refresh)
+
+
+def peer_endpoint_for_vpn_ip(vpn_ip):
+    vpn_ip = (vpn_ip or "").strip()
+    if not vpn_ip:
+        return "", {}
+    for cmd in (("awg", "show", "all", "dump"), ("wg", "show", "all", "dump")):
+        try:
+            result = subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=3)
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if result.returncode != 0:
+            continue
+        for line in result.stdout.splitlines():
+            parts = line.split("\t")
+            if len(parts) < 9:
+                continue
+            endpoint = parts[3]
+            allowed_ips = parts[4]
+            if not endpoint or endpoint in {"(none)", "none"}:
+                continue
+            for item in allowed_ips.split(","):
+                item = item.strip()
+                if not item:
+                    continue
+                try:
+                    network = ipaddress.ip_network(item, strict=False)
+                    addr = ipaddress.ip_address(vpn_ip)
+                except ValueError:
+                    continue
+                if addr in network:
+                    endpoint_ip, endpoint_port = split_endpoint(endpoint)
+                    return endpoint_ip, {
+                        "endpoint": endpoint,
+                        "endpoint_ip": endpoint_ip,
+                        "endpoint_port": endpoint_port,
+                        "latest_handshake": parts[5],
+                        "transfer_rx": parts[6],
+                        "transfer_tx": parts[7],
+                        "persistent_keepalive": parts[8],
+                    }
+    return "", {}
+
+
+def enriched_nettest_network_context(handler, client_ip, vpn_client_ip=""):
+    public_ip = ""
+    peer = {}
+    if vpn_client_ip:
+        public_ip, peer = peer_endpoint_for_vpn_ip(vpn_client_ip)
+    if not public_ip and client_ip and not _is_private_endpoint_ip(client_ip):
+        public_ip = client_ip
+    geo = public_geo_for_ip(public_ip, allow_refresh=True) if public_ip else _empty_endpoint_info("", source="local")
+    return {
+        "vpn_client_ip": vpn_client_ip or "",
+        "public_ip": public_ip or "",
+        "geo": {
+            "country": geo.get("country", ""),
+            "country_code": geo.get("country_code", ""),
+            "region": geo.get("region", ""),
+            "city": geo.get("city", ""),
+            "provider": geo.get("provider") or geo.get("org") or "",
+            "isp": geo.get("provider") or "",
+            "asn": geo.get("asn", ""),
+            "org": geo.get("org", ""),
+            "source": geo.get("source", ""),
+        },
+        "peer": peer,
+    }
 
 
 def save_nettest_report(auth, handler, body):
@@ -1579,10 +1716,17 @@ def save_nettest_report(auth, handler, body):
     stamp = time.strftime("%Y%m%d-%H%M%S", time.gmtime())
     NETTEST_REPORT_DIR.mkdir(parents=True, exist_ok=True)
     os.chmod(NETTEST_REPORT_DIR, 0o700)
-    browser = body.get("browser_connection") if isinstance(body.get("browser_connection"), dict) else {}
+    browser = sanitize_browser_report(body.get("browser_connection"))
     latency = body.get("latency") if isinstance(body.get("latency"), dict) else {}
     download_probe = body.get("download_probe") if isinstance(body.get("download_probe"), dict) else {}
     upload_probe = body.get("upload_probe") if isinstance(body.get("upload_probe"), dict) else {}
+    stall_events = body.get("stall_events") if isinstance(body.get("stall_events"), list) else []
+    timeline_summary = body.get("timeline_summary") if isinstance(body.get("timeline_summary"), dict) else {}
+    duration_seconds = int(body.get("duration_seconds") or 0)
+    probe_interval_ms = int(body.get("probe_interval_ms") or 1000)
+    started_at = str(body.get("started_at") or created_at)[:30]
+    finished_at = str(body.get("finished_at") or created_at)[:30]
+    network_context = enriched_nettest_network_context(handler, client_ip)
     report = {
         "version": 1,
         "created_at": created_at,
@@ -1593,13 +1737,24 @@ def save_nettest_report(auth, handler, body):
         "token_alias": token_alias_for_auth(auth),
         "token_role": auth.get("role"),
         "client_ip": client_ip,
+        "vpn_client_ip": network_context.get("vpn_client_ip", ""),
+        "public_ip": network_context.get("public_ip", client_ip),
+        "geo": network_context.get("geo", {}),
+        "peer": network_context.get("peer", {}),
         "socket_remote_ip": client_ctx.get("socket_remote_ip"),
         "trusted_proxy_used": bool(client_ctx.get("trusted_proxy_used")),
         "user_agent": str(body.get("user_agent") or handler.headers.get("User-Agent", ""))[:500],
+        "browser": browser,
         "browser_connection": browser,
+        "duration_seconds": duration_seconds,
+        "probe_interval_ms": probe_interval_ms,
+        "started_at": started_at,
+        "finished_at": finished_at,
         "latency": latency,
         "download_probe": download_probe,
         "upload_probe": upload_probe,
+        "stall_events": stall_events[:100],
+        "timeline_summary": timeline_summary,
         "context": nettest_context_payload(),
     }
     report["assessment"] = nettest_assessment(report)
@@ -1633,6 +1788,15 @@ def list_nettest_reports(limit=30):
             "token_fp": data.get("token_fp"),
             "token_alias": data.get("token_alias"),
             "client_ip": data.get("client_ip"),
+            "vpn_client_ip": data.get("vpn_client_ip"),
+            "public_ip": data.get("public_ip"),
+            "geo": data.get("geo", {}),
+            "duration_seconds": data.get("duration_seconds"),
+            "timeline_summary": data.get("timeline_summary", {}),
+            "stall_events": data.get("stall_events", [])[:5],
+            "browser": data.get("browser") or data.get("browser_connection", {}),
+            "user_agent": data.get("user_agent"),
+            "context": data.get("context", {}),
             "assessment": data.get("assessment", {}),
             "latency": data.get("latency", {}),
             "download_probe": data.get("download_probe", {}),
@@ -1676,7 +1840,7 @@ def save_nettest_report_vpn(handler, body):
     stamp = time.strftime("%Y%m%d-%H%M%S", time.gmtime())
     NETTEST_REPORT_DIR.mkdir(parents=True, exist_ok=True)
     os.chmod(NETTEST_REPORT_DIR, 0o700)
-    browser = body.get("browser_connection") if isinstance(body.get("browser_connection"), dict) else {}
+    browser = sanitize_browser_report(body.get("browser_connection"))
     latency = body.get("latency") if isinstance(body.get("latency"), dict) else {}
     download_probe = body.get("download_probe") if isinstance(body.get("download_probe"), dict) else {}
     upload_probe = body.get("upload_probe") if isinstance(body.get("upload_probe"), dict) else {}
@@ -1686,6 +1850,7 @@ def save_nettest_report_vpn(handler, body):
     probe_interval_ms = int(body.get("probe_interval_ms") or 1000)
     started_at = str(body.get("started_at") or created_at)[:30]
     finished_at = str(body.get("finished_at") or created_at)[:30]
+    network_context = enriched_nettest_network_context(handler, client_ip, vpn_client_ip=client_ip)
     report = {
         "version": 2,
         "created_at": created_at,
@@ -1694,10 +1859,14 @@ def save_nettest_report_vpn(handler, body):
         "comment": clean_report_comment(body.get("comment", "")),
         "vpn_client_ip": client_ip,
         "client_ip": client_ip,
+        "public_ip": network_context.get("public_ip", ""),
+        "geo": network_context.get("geo", {}),
+        "peer": network_context.get("peer", {}),
         "socket_remote_ip": handler.client_address[0] if getattr(handler, "client_address", None) else "",
         "trusted_proxy_used": True,
         "vpn_only_mode": True,
         "user_agent": str(body.get("user_agent") or handler.headers.get("User-Agent", ""))[:500],
+        "browser": browser,
         "browser_connection": browser,
         "duration_seconds": duration_seconds,
         "probe_interval_ms": probe_interval_ms,
@@ -2260,6 +2429,7 @@ def _empty_endpoint_info(ip, source="local", provider=""):
         "country": "",
         "country_code": "",
         "flag": "",
+        "region": "",
         "city": "",
         "asn": "",
         "org": "",
@@ -2292,7 +2462,7 @@ def _is_private_endpoint_ip(ip):
 
 
 def _fetch_endpoint_ip_info(ip):
-    url = f"http://ip-api.com/json/{ip}?fields=status,country,countryCode,city,isp,org,as,query,message"
+    url = f"http://ip-api.com/json/{ip}?fields=status,country,countryCode,regionName,city,isp,org,as,query,message"
     try:
         with urlopen(url, timeout=IP_INFO_LOOKUP_TIMEOUT) as response:
             payload = response.read(16384)
@@ -2313,6 +2483,7 @@ def _fetch_endpoint_ip_info(ip):
         "country": str(data.get("country") or "").strip(),
         "country_code": country_code,
         "flag": country_code_to_flag(country_code),
+        "region": str(data.get("regionName") or "").strip(),
         "city": str(data.get("city") or "").strip(),
         "asn": str(data.get("as") or "").strip(),
         "org": org,
@@ -3400,6 +3571,35 @@ class Handler(SimpleHTTPRequestHandler):
 
     def do_HEAD(self):
         u = urlparse(self.path)
+        if not u.path.startswith("/api/"):
+            static = STATIC_FILES.get(u.path)
+            if static is None:
+                self.send_error(404)
+                return
+            filename, ctype = static
+            path = WEB_DIR / filename
+            try:
+                size = path.stat().st_size
+            except OSError:
+                self.send_error(404)
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(size))
+            self.send_security_headers()
+            self.send_header("Cache-Control", "no-store")
+            self.finish_response_headers()
+            return
+        if u.path.startswith("/api/nettest-public/"):
+            if not is_vpn_internal_nettest(self):
+                self.send_error(HTTPStatus.FORBIDDEN)
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", "0")
+            self.send_security_headers()
+            self.finish_response_headers()
+            return
         if not u.path.startswith("/api/"):
             self.send_error(404)
             return

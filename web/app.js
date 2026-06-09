@@ -620,29 +620,33 @@ function renderHealthCard(label, value, sub, status) {
 }
 
 function renderServerInfo() {
-  const host = document.querySelector("#serverInfoPanel");
-  if (!host) return;
+  const linksHost = document.querySelector("#metricLinks");
+  const addressHost = document.querySelector("#metricAddresses");
+  if (!linksHost && !addressHost) return;
   const info = serverInfoState || {};
   const links = [
     {label: "Web Panel", href: info.web_current_url || info.web_public_url || "/"},
   ];
   if (info["ad" + "guard_enabled"] && info["ad" + "guard_url"]) links.push({label: "Ad" + "Guard", href: info["ad" + "guard_url"]});
   if (info["nettest_vp" + "n_url"]) links.push({label: "Network Tester (" + "V" + "P" + "N)", href: info["nettest_vp" + "n_url"]});
-  const ipv6pub = info.public_ipv6 ? ` · ${esc(info.public_ipv6)}` : " · -";
-  const tunIpv6 = info["vp" + "n_ipv6"] ? esc(info["vp" + "n_ipv6"]) : "IPv6 disabled";
-  const resolverVal = info["d" + "ns_resolver"] ? esc(shortValue(info["d" + "ns_resolver"])) : "";
-  host.innerHTML = `
-    <div class="top-network-strip mt-2">
-      <div class="network-addr-group">
-        <span><b>Public</b> ${esc(shortValue(info.public_ipv4))}${ipv6pub}</span>
-        <span><b>${"VP" + "N"}</b> ${esc(shortValue(info["vp" + "n_ipv4"]))} · ${tunIpv6}</span>
-        ${resolverVal ? `<span><b>${"D" + "NS"}</b> ${resolverVal}</span>` : ""}
-      </div>
-      <div class="network-links-group">
-        ${links.map(item => `<a href="${esc(item.href)}" class="net-chip" ${item.href.startsWith("http") ? 'target="_blank" rel="noopener"' : ""}>${esc(item.label)}</a>`).join("")}
-      </div>
-    </div>
-  `;
+  if (linksHost) {
+    linksHost.innerHTML = links
+      .map(item => `<a href="${esc(item.href)}" class="summary-link-chip" ${item.href.startsWith("http") ? 'target="_blank" rel="noopener"' : ""}>${esc(item.label)}</a>`)
+      .join("");
+  }
+  if (addressHost) {
+    const resolverVal = info["d" + "ns_resolver"] ? shortValue(info["d" + "ns_resolver"]) : "";
+    const rows = [
+      ["Public IPv4", shortValue(info.public_ipv4)],
+      ["Public IPv6", shortValue(info.public_ipv6)],
+      ["V" + "P" + "N IPv4", shortValue(info["vp" + "n_ipv4"])],
+      ["V" + "P" + "N IPv6", shortValue(info["vp" + "n_ipv6"], "IPv6 disabled")],
+    ];
+    if (resolverVal) rows.push(["D" + "NS / Resolver", resolverVal]);
+    addressHost.innerHTML = rows.map(([label, value]) => `
+      <div class="summary-address-row"><span>${esc(label)}</span><strong>${esc(value)}</strong></div>
+    `).join("");
+  }
 }
 
 async function loadServerInfo() {
@@ -672,6 +676,7 @@ function renderHealthHistory() {
   const disk = summary.disk || {};
   const conntrack = summary.conntrack || {};
   const network = summary.network || {};
+  const rates = network.rates || {};
   const process = summary.process || {};
   const counts = summary.counts || {};
   const notes = Array.isArray(summary.notes) ? summary.notes : [];
@@ -683,6 +688,8 @@ function renderHealthHistory() {
       <div><span>Disk</span><strong>${formatPercent(disk.current_used_percent, 0)}</strong><em>min free ${bytes(disk.min_free_bytes || 0)}</em></div>
       <div><span>Conntrack</span><strong>peak ${formatPercent(conntrack.max_used_percent, 1)}</strong></div>
       <div><span>Drops</span><strong>WAN +${Number(network.wan_rx_dropped_delta || 0) + Number(network.wan_tx_dropped_delta || 0)} · ${"VP" + "N"} +${Number(network["vp" + "n_rx_dropped_delta"] || 0) + Number(network["vp" + "n_tx_dropped_delta"] || 0)}</strong><em>errors +${Number(network.errors_delta || 0)}</em></div>
+      <div><span>WAN speed</span><strong>avg ↓ ${speed(rates.wan_rx?.avg_bps || 0)} · ↑ ${speed(rates.wan_tx?.avg_bps || 0)}</strong><em>peak ↓ ${speed(rates.wan_rx?.peak_bps || 0)} · ↑ ${speed(rates.wan_tx?.peak_bps || 0)}</em></div>
+      <div><span>${"VP" + "N"} speed</span><strong>avg ↓ ${speed(rates["vp" + "n_rx"]?.avg_bps || 0)} · ↑ ${speed(rates["vp" + "n_tx"]?.avg_bps || 0)}</strong><em>peak ↓ ${speed(rates["vp" + "n_rx"]?.peak_bps || 0)} · ↑ ${speed(rates["vp" + "n_tx"]?.peak_bps || 0)}</em></div>
       <div><span>Python</span><strong>RSS peak ${bytes(process.max_rss_bytes || 0)}</strong><em>FD peak ${Math.round(Number(process.max_fd_count || 0))}</em></div>
     </div>
     <p class="mt-2 text-xs text-[var(--muted)]">Samples ${counts.samples || 0} · warnings ${counts.warn || 0} · critical ${counts.critical || 0} · bucket ${serverHealthHistoryState.bucket_seconds || 0}s</p>
@@ -790,14 +797,36 @@ function renderNettestReports() {
   host.innerHTML = nettestReportsState.slice(0, 5).map(row => {
     const assessment = row.assessment || {};
     const latency = row.latency || {};
+    const timeline = row.timeline_summary || {};
+    const geo = row.geo || {};
+    const location = [geo.city, geo.region, geo.country_code || geo.country].filter(Boolean).join(", ") || "-";
+    const provider = geo.provider || geo.org || geo.asn || "-";
+    const findings = Array.isArray(assessment.findings) ? assessment.findings.slice(0, 3) : [];
+    const internalIp = row["vp" + "n_client_ip"] || row.client_ip || "-";
+    const publicIp = row.public_ip || "-";
+    const longestStall = Number(timeline.longest_stall_ms || 0);
     return `
       <div class="nettest-report-row">
         <div>
-          <span class="font-semibold">${esc(row.network_type || "-")}</span>
-          <span class="text-[var(--muted)]">${esc(row.created_at || "")}</span>
+          <div class="flex flex-wrap items-center gap-2">
+            <span class="font-semibold">${esc(row.network_type || "-")}</span>
+            <span class="text-[var(--muted)]">${esc(row.created_at || "")}</span>
+            ${healthBadge(assessment.quality || "unknown")}
+          </div>
+          <div class="nettest-report-meta">
+            <span>${"VP" + "N"} IP ${esc(internalIp)}</span>
+            <span>Public ${esc(publicIp)}</span>
+            <span>${esc(location)}</span>
+            <span>${esc(provider)}</span>
+          </div>
         </div>
-        <div>${healthBadge(assessment.quality || "unknown")}</div>
-        <div class="text-[var(--muted)]">loss ${formatPercent(latency.loss_percent, 1)} · avg ${Math.round(Number(latency.avg_ms || 0))} ms</div>
+        <div class="nettest-report-stats">
+          <strong>loss ${formatPercent(latency.loss_percent, 1)}</strong>
+          <span>avg ${Math.round(Number(latency.avg_ms || 0))} ms · jitter ${Math.round(Number(latency.jitter_ms || 0))} ms</span>
+          <span>longest stall ${(longestStall / 1000).toFixed(1)} s · bursts ${timeline.timeout_bursts || latency.stall_events || 0}</span>
+          ${assessment.summary ? `<span>${esc(assessment.summary)}</span>` : ""}
+          ${findings.length ? `<span>${findings.map(esc).join(" · ")}</span>` : ""}
+        </div>
       </div>
     `;
   }).join("");
@@ -989,6 +1018,14 @@ function renderNettestResult(result) {
         ${durLabel ? `<span class="text-xs text-[var(--muted)]">${esc(durLabel)}</span>` : ""}
       </div>
       <p class="mt-1 text-sm text-[var(--muted)]">${esc(assessment.summary || "")}</p>
+      ${(result["vp" + "n_client_ip"] || result.public_ip || result.geo) ? `
+        <div class="nettest-metrics">
+          <span>${"VP" + "N"} IP ${esc(shortValue(result["vp" + "n_client_ip"] || result.client_ip))}</span>
+          <span>Public ${esc(shortValue(result.public_ip))}</span>
+          <span>Location ${esc([result.geo?.city, result.geo?.region, result.geo?.country_code || result.geo?.country].filter(Boolean).join(", ") || "-")}</span>
+          <span>Provider ${esc(result.geo?.provider || result.geo?.org || result.geo?.asn || "-")}</span>
+        </div>
+      ` : ""}
       <div class="nettest-metrics">
         <span>Latency avg ${Math.round(Number(latency.avg_ms || 0))} ms</span>
         <span>Jitter ${Math.round(Number(latency.jitter_ms || 0))} ms</span>
@@ -1233,26 +1270,32 @@ async function renderPanel() {
       </div>
     </header>
 
-    <section id="serverInfoPanel" class="mt-2"></section>
-
     <section class="summary-cards mt-3">
-      <div class="rounded-lg border border-[var(--line)] bg-[var(--panel)] p-3">
+      <div class="summary-card summary-card-narrow">
         <p class="text-xs font-semibold uppercase text-[var(--muted)]">Active</p>
         <strong id="metricActive" class="mt-1 block text-2xl">0</strong>
       </div>
-      <div class="rounded-lg border border-[var(--line)] bg-[var(--panel)] p-3">
+      <div class="summary-card summary-card-narrow">
         <p class="text-xs font-semibold uppercase text-[var(--muted)]">Clients</p>
         <strong id="metricClients" class="mt-1 block text-2xl">0</strong>
       </div>
-      <div class="rounded-lg border border-[var(--line)] bg-[var(--panel)] p-3">
+      <div class="summary-card summary-card-traffic">
         <p class="text-xs font-semibold uppercase text-[var(--muted)]">Traffic Total</p>
         <strong id="metricTrafficTotal" class="mt-1 block text-2xl">-</strong>
         <p id="metricTrafficTotalSub" class="mt-1 text-xs text-[var(--muted)]">-</p>
       </div>
-      <div class="rounded-lg border border-[var(--line)] bg-[var(--panel)] p-3">
+      <div class="summary-card summary-card-traffic">
         <p class="text-xs font-semibold uppercase text-[var(--muted)]">30 Days</p>
         <strong id="metricTraffic30d" class="mt-1 block text-2xl">-</strong>
         <p id="metricTraffic30dSub" class="mt-1 text-xs text-[var(--muted)]">-</p>
+      </div>
+      <div class="summary-card summary-card-links">
+        <p class="text-xs font-semibold uppercase text-[var(--muted)]">Links</p>
+        <div id="metricLinks" class="summary-link-row mt-2"></div>
+      </div>
+      <div class="summary-card summary-card-addresses">
+        <p class="text-xs font-semibold uppercase text-[var(--muted)]">IP / Addresses</p>
+        <div id="metricAddresses" class="summary-address-list mt-2"></div>
       </div>
     </section>
 

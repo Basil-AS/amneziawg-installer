@@ -595,6 +595,7 @@ PY
     local tmp
     tmp=$(mktemp -d)
     mkdir -p "$tmp/web"
+    printf '<html>ok</html>' > "$tmp/web/index.html"
     AWG_DIR="$tmp" SERVER_CONF_FILE="$tmp/awg0.conf" REPO_ROOT="$BATS_TEST_DIRNAME/.." python3 - <<'PY'
 import importlib.util
 import os
@@ -1308,6 +1309,7 @@ PY
     local tmp
     tmp=$(mktemp -d)
     mkdir -p "$tmp/web"
+    printf '<html>ok</html>' > "$tmp/web/index.html"
     AWG_DIR="$tmp" SERVER_CONF_FILE="$tmp/awg0.conf" REPO_ROOT="$BATS_TEST_DIRNAME/.." python3 - <<'PY'
 import importlib.util
 import json
@@ -2087,8 +2089,8 @@ spec.loader.exec_module(server)
 now = int(time.time())
 path = Path(os.environ["AWG_DIR"]) / "web" / "health_history" / time.strftime("samples-%Y%m%d.jsonl", time.gmtime(now))
 rows = [
-    {"ts": now - 120, "timestamp": "old", "status": "ok", "cpu_usage_percent": 10, "memory_used_percent": 20, "memory_available_bytes": 800, "disk_used_percent": 50, "disk_free_bytes": 400, "conntrack_count": 10, "conntrack_used_percent": 1, "wan_rx_dropped": 0, "wan_tx_dropped": 0, "vpn_rx_dropped": 0, "vpn_tx_dropped": 0, "wan_rx_errors": 0, "wan_tx_errors": 0, "vpn_rx_errors": 0, "vpn_tx_errors": 0, "python_rss_bytes": 1000, "python_fd_count": 4, "python_threads": 1},
-    {"ts": now - 10, "timestamp": "new", "status": "warn", "cpu_usage_percent": 80, "memory_used_percent": 40, "memory_available_bytes": 600, "disk_used_percent": 51, "disk_free_bytes": 390, "conntrack_count": 20, "conntrack_used_percent": 2, "wan_rx_dropped": 2, "wan_tx_dropped": 0, "vpn_rx_dropped": 1, "vpn_tx_dropped": 0, "wan_rx_errors": 0, "wan_tx_errors": 1, "vpn_rx_errors": 0, "vpn_tx_errors": 0, "python_rss_bytes": 2000, "python_fd_count": 8, "python_threads": 2},
+    {"ts": now - 120, "timestamp": "old", "status": "ok", "cpu_usage_percent": 10, "memory_used_percent": 20, "memory_available_bytes": 800, "disk_used_percent": 50, "disk_free_bytes": 400, "conntrack_count": 10, "conntrack_used_percent": 1, "wan_rx_bytes": 1000, "wan_tx_bytes": 2000, "vpn_rx_bytes": 3000, "vpn_tx_bytes": 4000, "wan_rx_dropped": 0, "wan_tx_dropped": 0, "vpn_rx_dropped": 0, "vpn_tx_dropped": 0, "wan_rx_errors": 0, "wan_tx_errors": 0, "vpn_rx_errors": 0, "vpn_tx_errors": 0, "python_rss_bytes": 1000, "python_fd_count": 4, "python_threads": 1},
+    {"ts": now - 10, "timestamp": "new", "status": "warn", "cpu_usage_percent": 80, "memory_used_percent": 40, "memory_available_bytes": 600, "disk_used_percent": 51, "disk_free_bytes": 390, "conntrack_count": 20, "conntrack_used_percent": 2, "wan_rx_bytes": 21000, "wan_tx_bytes": 42000, "vpn_rx_bytes": 63000, "vpn_tx_bytes": 84000, "wan_rx_dropped": 2, "wan_tx_dropped": 0, "vpn_rx_dropped": 1, "vpn_tx_dropped": 0, "wan_rx_errors": 0, "wan_tx_errors": 1, "vpn_rx_errors": 0, "vpn_tx_errors": 0, "python_rss_bytes": 2000, "python_fd_count": 8, "python_threads": 2},
 ]
 path.write_text("".join(json.dumps(row) + "\n" for row in rows))
 out = server.server_health_history("10m")
@@ -2097,6 +2099,8 @@ assert out["bucket_seconds"] == 60
 assert out["summary"]["cpu"]["max"] == 80
 assert out["summary"]["network"]["drops_delta"] == 3
 assert out["summary"]["network"]["errors_delta"] == 1
+assert out["summary"]["network"]["rates"]["wan_rx"]["avg_bps"] > 0
+assert out["summary"]["network"]["rates"]["vpn_tx"]["peak_bps"] > 0
 assert out["summary"]["process"]["max_fd_count"] == 8
 assert "token" not in json.dumps(out).lower()
 try:
@@ -2243,6 +2247,10 @@ body = {
     "latency": {"samples": 30, "ok": 29, "lost": 1, "loss_percent": 3.3, "avg_ms": 43, "jitter_ms": 7, "stall_events": 1},
     "download_probe": {"ok": True, "bytes": 262144, "duration_ms": 300, "mbps": 7.0},
     "upload_probe": {"ok": True, "bytes": 131072, "duration_ms": 250, "mbps": 4.2},
+    "duration_seconds": 180,
+    "probe_interval_ms": 1000,
+    "stall_events": [{"started_at": "2026-06-09T00:00:00Z", "duration_ms": 3000, "lost_probes": 3}],
+    "timeline_summary": {"longest_stall_ms": 3000, "timeout_bursts": 1, "max_consecutive_timeouts": 3},
 }
 payload = json.dumps(body).encode()
 
@@ -2267,6 +2275,7 @@ h.send_response = lambda code: h.responses.append(code)
 h.send_error = lambda code, *args, **kwargs: h.responses.append(code)
 h.send_header = lambda key, value: h.headers_sent.append((key, value))
 h.end_headers = lambda: None
+server.lookup_endpoint_ip_info = lambda ip, allow_refresh=True: {"ip": ip, "country": "Testland", "country_code": "TL", "region": "Test region", "city": "Test city", "provider": "Test ISP", "org": "Test Org", "asn": "AS64500", "source": "test"}
 h.do_POST()
 assert h.responses == [200]
 out = json.loads(h.wfile.getvalue().decode())
@@ -2282,6 +2291,13 @@ assert saved["test_id"] == "report123"
 assert saved["token_fp"] == user_hash[:8]
 assert saved["token_alias"] == "Roma"
 assert saved["client_ip"] == "46.34.133.234"
+assert saved["public_ip"] == "46.34.133.234"
+assert saved["geo"]["country"] == "Testland"
+assert saved["geo"]["provider"] == "Test ISP"
+assert saved["duration_seconds"] == 180
+assert saved["timeline_summary"]["max_consecutive_timeouts"] == 3
+assert saved["stall_events"][0]["lost_probes"] == 3
+assert "browser" in saved
 assert saved["assessment"]["quality"] == "warning"
 PY
     rm -rf "$tmp"
@@ -2293,12 +2309,26 @@ PY
     grep -qF '"/nettest": ("index.html"' "$server"
     grep -qF 'Server Health' "$app"
     grep -qF 'Network Tester' "$app"
-    grep -qF 'top-network-strip' "$app"
-    grep -qF 'net-chip' "$app"
+    grep -qF 'summary-card-narrow' "$app"
+    grep -qF 'summary-card-links' "$app"
+    grep -qF 'summary-card-addresses' "$app"
+    grep -qF 'Traffic Total' "$app"
+    grep -qF '30 Days' "$app"
+    grep -qF 'IP / Addresses' "$app"
+    grep -qF 'metricLinks' "$app"
+    grep -qF 'metricAddresses' "$app"
+    if grep -qF 'id="metricResolver"' "$app"; then
+        false
+    fi
+    if grep -qF 'href="/nettest" class="${buttonClasses()}">${icon("router")}' "$app"; then
+        false
+    fi
     grep -qF 'NETTEST_DURATIONS' "$app"
     grep -qF 'data-nettest-dur=' "$app"
     grep -qF 'stall_events' "$app"
     grep -qF 'timeline_summary' "$app"
+    grep -qF 'longest stall' "$app"
+    grep -qF 'Public ${esc(publicIp)}' "$app"
     grep -qF '/api/server-health' "$app"
     grep -qF '/api/server-health/history?range=' "$app"
     grep -qF '/api/server-info' "$app"
@@ -2364,6 +2394,7 @@ PY
     local tmp
     tmp=$(mktemp -d)
     mkdir -p "$tmp/web"
+    printf '<html>ok</html>' > "$tmp/web/index.html"
     AWG_DIR="$tmp" SERVER_CONF_FILE="$tmp/awg0.conf" REPO_ROOT="$BATS_TEST_DIRNAME/.." python3 - <<'PY'
 import importlib.util
 import io
@@ -2412,6 +2443,39 @@ h2.send_header = lambda key, value: h2.headers_sent.append((key, value))
 h2.end_headers = lambda: None
 h2.do_GET()
 assert h2.responses == [403]
+
+# Internal VPN-only listener can use public nettest endpoint without bearer.
+h3 = object.__new__(server.Handler)
+h3.path = "/api/nettest-public/ping"
+h3.client_address = ("127.0.0.1", 80)
+h3.rfile = io.BytesIO(b"")
+h3.wfile = io.BytesIO()
+h3.responses = []
+h3.headers_sent = []
+h3.headers = Headers({"Host": "10.9.9.1:8088", "X-AWG-Internal-Nettest": "1", "X-Real-IP": "10.9.9.27"})
+h3.send_response = lambda code: h3.responses.append(code)
+h3.send_error = lambda code, *args, **kwargs: h3.responses.append(code)
+h3.send_header = lambda key, value: h3.headers_sent.append((key, value))
+h3.end_headers = lambda: None
+h3.do_GET()
+assert h3.responses == [200]
+assert json.loads(h3.wfile.getvalue().decode())["vpn_client_ip"] == "10.9.9.27"
+
+# Static nettest page also supports HEAD for lightweight smoke checks.
+h4 = object.__new__(server.Handler)
+h4.path = "/nettest"
+h4.client_address = ("127.0.0.1", 80)
+h4.rfile = io.BytesIO(b"")
+h4.wfile = io.BytesIO()
+h4.responses = []
+h4.headers_sent = []
+h4.headers = Headers({"Host": "10.9.9.1:8088", "X-AWG-Internal-Nettest": "1", "X-Real-IP": "10.9.9.27"})
+h4.send_response = lambda code: h4.responses.append(code)
+h4.send_error = lambda code, *args, **kwargs: h4.responses.append(code)
+h4.send_header = lambda key, value: h4.headers_sent.append((key, value))
+h4.end_headers = lambda: None
+h4.do_HEAD()
+assert h4.responses == [200]
 PY
     rm -rf "$tmp"
 }
