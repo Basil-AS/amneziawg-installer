@@ -2322,7 +2322,7 @@ PY
     grep -qF '.summary-card-narrow{grid-column:span 1}' "$css"
     grep -qF '.summary-link-row{display:flex;flex-direction:column' "$css"
     grep -qF '"Ad" + "Guard"' "$app"
-    grep -qF 'Network Tester (' "$app"
+    grep -qF '{label: "Network Tester"' "$app"
     if grep -qF '{label: "Web Panel"' "$app"; then
         false
     fi

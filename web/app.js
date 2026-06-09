@@ -626,7 +626,7 @@ function renderServerInfo() {
   const info = serverInfoState || {};
   const links = [];
   if (info["ad" + "guard_enabled"] && info["ad" + "guard_url"]) links.push({label: "Ad" + "Guard", href: info["ad" + "guard_url"]});
-  if (info["nettest_vp" + "n_url"]) links.push({label: "Network Tester (" + "V" + "P" + "N)", href: info["nettest_vp" + "n_url"]});
+  if (info["nettest_vp" + "n_url"]) links.push({label: "Network Tester", href: info["nettest_vp" + "n_url"]});
   if (linksHost) {
     linksHost.innerHTML = links
       .map(item => `<a href="${esc(item.href)}" class="summary-link-chip" ${item.href.startsWith("http") ? 'target="_blank" rel="noopener"' : ""}>${esc(item.label)}</a>`)
