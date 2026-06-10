@@ -2324,6 +2324,116 @@ PY
     rm -rf "$tmp"
 }
 
+@test "nettest: stale active-test lock is reclaimed via force and cleared via /cancel" {
+    command -v python3 &>/dev/null || skip "python3 not available"
+    local tmp
+    tmp=$(mktemp -d)
+    mkdir -p "$tmp/web"
+    AWG_DIR="$tmp" SERVER_CONF_FILE="$tmp/awg0.conf" REPO_ROOT="$BATS_TEST_DIRNAME/.." python3 - <<'PY'
+import importlib.util
+import io
+import json
+import os
+import time
+from pathlib import Path
+
+spec = importlib.util.spec_from_file_location("panel_server", Path(os.environ["REPO_ROOT"]) / "web" / "server.py")
+server = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(server)
+user_token = "user-secret"
+server.write_tokens({"super_token_hash": server.token_hash("super"), "users": {server.token_hash(user_token): {"name": "net user", "clients": []}}})
+
+class Headers(dict):
+    def get(self, key, default=None):
+        return super().get(key, default)
+
+def make_handler(method, path, token=None, body=b""):
+    h = object.__new__(server.Handler)
+    h.path = path
+    h.client_address = ("127.0.0.1", 12345)
+    h.rfile = io.BytesIO(body)
+    h.wfile = io.BytesIO()
+    h.responses = []
+    h.headers_sent = []
+    values = {"Host": "127.0.0.1", "Content-Length": str(len(body))}
+    if token:
+        values["Authorization"] = f"Bearer {token}"
+    h.headers = Headers(values)
+    h.send_response = lambda code: h.responses.append(code)
+    h.send_error = lambda code, *args, **kwargs: h.responses.append(code)
+    h.send_header = lambda key, value: h.headers_sent.append((key, value))
+    h.end_headers = lambda: None
+    return h
+
+# Test A starts and pings successfully, taking the active-test lock.
+h = make_handler("GET", "/api/nettest/ping?test_id=aaaaaaaa", token=user_token)
+h.do_GET()
+assert h.responses == [200]
+
+# Page reload abandons test A (no /report sent). A brand-new test B's
+# first probe without force is rejected -- this reproduces the historical
+# "100% fail for ~12 minutes after refresh" bug.
+h = make_handler("GET", "/api/nettest/ping?test_id=bbbbbbbb", token=user_token)
+h.do_GET()
+assert h.responses == [429]
+
+# The frontend sends force=1 on the first probe of every new test, which
+# reclaims the stale lock instead of failing.
+h = make_handler("GET", "/api/nettest/ping?test_id=bbbbbbbb&force=1", token=user_token)
+h.do_GET()
+assert h.responses == [200]
+
+# Subsequent probes of test B succeed without needing force, while a
+# stray late ping from abandoned test A is rejected without disturbing B.
+h = make_handler("GET", "/api/nettest/ping?test_id=bbbbbbbb", token=user_token)
+h.do_GET()
+assert h.responses == [200]
+h = make_handler("GET", "/api/nettest/ping?test_id=aaaaaaaa", token=user_token)
+h.do_GET()
+assert h.responses == [429]
+h = make_handler("GET", "/api/nettest/ping?test_id=bbbbbbbb", token=user_token)
+h.do_GET()
+assert h.responses == [200]
+
+# Explicit /cancel releases the lock so a new test (C) starts cleanly
+# without needing force.
+h = make_handler("POST", "/api/nettest/cancel", token=user_token, body=json.dumps({"test_id": "bbbbbbbb"}).encode())
+h.do_POST()
+assert h.responses == [200]
+assert json.loads(h.wfile.getvalue().decode())["ok"] is True
+
+h = make_handler("GET", "/api/nettest/ping?test_id=cccccccc", token=user_token)
+h.do_GET()
+assert h.responses == [200]
+
+# A fully expired lock is purged on the next reservation attempt and does
+# not block a new test even without force.
+auth = server.authenticate(f"Bearer {user_token}")
+key = server.nettest_rate_key(auth, "127.0.0.1")
+with server.NETTEST_LOCK:
+    server.NETTEST_ACTIVE[key] = {"test_id": "dddddddd", "expires_at": time.time() - 1}
+h = make_handler("GET", "/api/nettest/ping?test_id=eeeeeeee", token=user_token)
+h.do_GET()
+assert h.responses == [200]
+
+print("OK")
+PY
+    rm -rf "$tmp"
+}
+
+@test "nettest: app.js cleans up state before/after a run and on page unload" {
+    local app="$BATS_TEST_DIRNAME/../web/app.js"
+    grep -qF "let activeNettestController = null;" "$app"
+    grep -qF "let currentNettestRun = null;" "$app"
+    grep -qF "function stopNettest(" "$app"
+    grep -qF 'stopNettest({reason: "restart"})' "$app"
+    grep -qF "activeNettestController.abort()" "$app"
+    grep -qF 'window.addEventListener("beforeunload"' "$app"
+    grep -qF "function cancelNettest(" "$app"
+    grep -qF "/cancel" "$app"
+    grep -qF "force=" "$app"
+}
+
 @test "web app exposes server health and network tester UI" {
     local app="$BATS_TEST_DIRNAME/../web/app.js"
     local css="$BATS_TEST_DIRNAME/../web/style.css"
@@ -3440,20 +3550,89 @@ if (!tooltip.includes("2IP: Samara, RU · Beeline (BEE-AS) · AS16345")) throw n
 if (!tooltip.includes("DB-IP: Samara, RU · PJSC VimpelCom · AS16345")) throw new Error("dbip line wrong: " + tooltip);
 if (tooltip.includes("PJSC VimpelCom (PJSC VimpelCom)")) throw new Error("dbip line should not duplicate identical name: " + tooltip);
 if (!tooltip.includes("ip-api: Samara, RU · Beeline · AS16345")) throw new Error("ip-api line wrong: " + tooltip);
-// WHOIS line: provider · org · asn, no city/region
-if (!tooltip.includes("WHOIS: BEELINE-BROADBAND · Dynamic IP Pool for Broadband Customers · AS16345")) throw new Error("whois line wrong: " + tooltip);
+// WHOIS line: provider_display (raw provider) · org · asn · route, no city/region
+if (!tooltip.includes("WHOIS: Beeline Broadband (BEELINE-BROADBAND) · Dynamic IP Pool for Broadband Customers · AS16345 · 128.71.0.0/16")) throw new Error("whois line wrong: " + tooltip);
 if (!tooltip.includes("Updated: 2026-06-10T12:00:00Z")) throw new Error("updated line missing: " + tooltip);
 
-// Order: 2IP, DB-IP, ip-api, WHOIS, Updated
+// Order: 2IP, ip-api, DB-IP, WHOIS, Updated (ipinfo/ip2location/maxmind/dbip_mmdb absent here)
 const lines = tooltip.split("\n");
 const idx2ip = lines.findIndex((l) => l.startsWith("2IP:"));
 const idxDbip = lines.findIndex((l) => l.startsWith("DB-IP:"));
 const idxIpapi = lines.findIndex((l) => l.startsWith("ip-api:"));
 const idxWhois = lines.findIndex((l) => l.startsWith("WHOIS:"));
 const idxUpdated = lines.findIndex((l) => l.startsWith("Updated:"));
-if (!(idx2ip < idxDbip && idxDbip < idxIpapi && idxIpapi < idxWhois && idxWhois < idxUpdated)) {
+if (!(idx2ip < idxIpapi && idxIpapi < idxDbip && idxDbip < idxWhois && idxWhois < idxUpdated)) {
   throw new Error("unexpected tooltip ordering: " + tooltip);
 }
+
+console.log("OK");
+JS
+    node "$tmp/check.mjs" "$BATS_TEST_DIRNAME/../web/app.js"
+    rm -rf "$tmp"
+}
+
+@test "geoip: compact priority is 2ip > ipinfo > ip-api > dbip, WHOIS never primary, tooltip covers ipinfo/RDAP/PTR" {
+    command -v node &>/dev/null || skip "node not available"
+    local tmp
+    tmp=$(mktemp -d)
+    cat > "$tmp/check.mjs" <<'JS'
+import fs from "node:fs";
+const src = fs.readFileSync(process.argv[2], "utf8");
+const start = src.indexOf("const _GEO_SOURCE_LABELS");
+const end = src.indexOf("function renderEndpointInfo");
+if (start < 0 || end < 0) throw new Error("geo helper block not found");
+const block = src.slice(start, end);
+const esc = (s) => String(s);
+const fn = new Function("esc", block + "\nreturn { preferredGeoSource, formatGeoCompact, formatGeoTooltip };");
+const helpers = fn(esc);
+
+// 2ip absent, ipinfo + dbip present -> ipinfo wins (new priority puts ipinfo above dbip)
+const noTwoIp = {
+  city: "Moscow", country_code: "RU", flag: "\u{1f1f7}\u{1f1fa}",
+  sources: ["ipinfo", "dbip"], updated_at: "2026-06-10T08:00:00Z",
+  source_details: {
+    "ipinfo": { city: "Moscow", country_code: "RU", provider: "PJSC Vimpelcom", provider_display: "PJSC Vimpelcom", org: "PJSC Vimpelcom", asn: "AS3216" },
+    "dbip": { city: "Moscow", country_code: "RU", provider: "Moscow State University", provider_display: "Moscow State University", org: "Moscow State University", asn: "AS3216" },
+  },
+};
+if (helpers.preferredGeoSource(noTwoIp).source !== "ipinfo") throw new Error("without 2ip, ipinfo should be preferred over dbip: " + JSON.stringify(helpers.preferredGeoSource(noTwoIp)));
+if (helpers.formatGeoCompact(noTwoIp) !== "\u{1f1f7}\u{1f1fa} Moscow, RU · PJSC Vimpelcom · ipinfo") throw new Error("ipinfo-fallback compact wrong: " + helpers.formatGeoCompact(noTwoIp));
+
+// 2ip present alongside ipinfo/dbip -> 2ip still wins
+const withTwoIp = { ...noTwoIp, sources: ["2ip", "ipinfo", "dbip"], source_details: { ...noTwoIp.source_details,
+  "2ip": { city: "Moscow", country_code: "RU", provider: "MCC", provider_display: "MCC", org: "MCC", asn: "AS25513" } } };
+if (helpers.preferredGeoSource(withTwoIp).source !== "2ip") throw new Error("2ip must win even when ipinfo/dbip present: " + JSON.stringify(helpers.preferredGeoSource(withTwoIp)));
+if (helpers.formatGeoCompact(withTwoIp) !== "\u{1f1f7}\u{1f1fa} Moscow, RU · MCC · 2IP") throw new Error("2ip-preferred compact wrong: " + helpers.formatGeoCompact(withTwoIp));
+
+// 2ip_whois only (no other usable source) -> never used as compact primary source
+const whoisOnly = {
+  source_details: {
+    "2ip_whois": { provider: "BEELINE-BROADBAND", provider_display: "Beeline Broadband", org: "Dynamic IP Pool for Broadband Customers", asn: "AS16345", route: "128.71.0.0/16" },
+  },
+};
+if (helpers.preferredGeoSource(whoisOnly) !== null) throw new Error("2ip_whois must not be selected as compact primary source: " + JSON.stringify(helpers.preferredGeoSource(whoisOnly)));
+if (helpers.formatGeoCompact(whoisOnly) !== "") throw new Error("compact must be empty when only 2ip_whois is available: " + helpers.formatGeoCompact(whoisOnly));
+
+// Tooltip covers ipinfo, RDAP and PTR entries when present
+const full = {
+  city: "Moscow", country_code: "RU", flag: "\u{1f1f7}\u{1f1fa}",
+  sources: ["2ip", "ipinfo"], updated_at: "2026-06-10T09:00:00Z",
+  source_details: {
+    "2ip": { city: "Moscow", country_code: "RU", provider: "MCC", provider_display: "MCC", org: "MCC", asn: "AS25513" },
+    "ipinfo": { city: "Moscow", country_code: "RU", provider: "PJSC Vimpelcom", provider_display: "PJSC Vimpelcom", org: "PJSC Vimpelcom", asn: "AS3216" },
+    "rdap": { provider: "VIMPELCOM-RU", provider_display: "PJSC Vimpelcom", org: "PJSC Vimpelcom", network: "85.89.124.0/22" },
+    "ptr": { domain: "host-85-89-126-30.example.net" },
+  },
+};
+const fullTip = helpers.formatGeoTooltip(full);
+if (!fullTip.includes("ipinfo: Moscow, RU · PJSC Vimpelcom · AS3216")) throw new Error("ipinfo line missing: " + fullTip);
+if (!fullTip.includes("RDAP: PJSC Vimpelcom (VIMPELCOM-RU) · PJSC Vimpelcom · 85.89.124.0/22")) throw new Error("rdap line missing: " + fullTip);
+if (!fullTip.includes("PTR: host-85-89-126-30.example.net")) throw new Error("ptr line missing: " + fullTip);
+
+// Provider-error source: shown as "error: ..." in tooltip, never as compact source
+const withError = { ...withTwoIp, source_details: { ...withTwoIp.source_details, "2ip": { status: "error", error: "429 Too Many Requests" } } };
+if (helpers.preferredGeoSource(withError).source === "2ip") throw new Error("error-status 2ip must not be preferred: " + JSON.stringify(helpers.preferredGeoSource(withError)));
+if (!helpers.formatGeoTooltip(withError).includes("2IP: error: 429 Too Many Requests")) throw new Error("2ip error line missing: " + helpers.formatGeoTooltip(withError));
 
 console.log("OK");
 JS

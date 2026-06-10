@@ -1432,7 +1432,7 @@ def nettest_rate_key(auth, client_ip):
     return fp or hashlib.sha256(str(client_ip or "unknown").encode("utf-8")).hexdigest()[:8]
 
 
-def reserve_nettest_session(auth, client_ip, test_id, now=None):
+def reserve_nettest_session(auth, client_ip, test_id, now=None, force=False):
     if not test_id:
         return True
     now = time.time() if now is None else now
@@ -1440,22 +1440,28 @@ def reserve_nettest_session(auth, client_ip, test_id, now=None):
     with NETTEST_LOCK:
         for item_key, item in list(NETTEST_ACTIVE.items()):
             if float(item.get("expires_at") or 0) <= now:
+                if item.get("test_id") and item.get("test_id") != test_id:
+                    audit_log(f"nettest: stale active session expired key={item_key} test_id={item.get('test_id')}")
                 NETTEST_ACTIVE.pop(item_key, None)
         current = NETTEST_ACTIVE.get(key)
         if current and current.get("test_id") != test_id and float(current.get("expires_at") or 0) > now:
-            return False
+            if not force:
+                return False
+            audit_log(f"nettest: active test replaced for client key={key} old_test_id={current.get('test_id')} new_test_id={test_id}")
         NETTEST_ACTIVE[key] = {"test_id": test_id, "expires_at": now + NETTEST_ACTIVE_TTL}
         return True
 
 
 def clear_nettest_session(auth, client_ip, test_id):
     if not test_id:
-        return
+        return False
     key = nettest_rate_key(auth, client_ip)
     with NETTEST_LOCK:
         current = NETTEST_ACTIVE.get(key)
         if current and current.get("test_id") == test_id:
             NETTEST_ACTIVE.pop(key, None)
+            return True
+    return False
 
 
 def check_nettest_report_rate(auth, client_ip, now=None):
@@ -4363,12 +4369,13 @@ class Handler(SimpleHTTPRequestHandler):
             return
         if u.path == "/api/nettest-public/ping":
             nonce = str((query.get("n") or [""])[0])[:64]
+            force = (query.get("force") or [""])[0] in ("1", "true", "yes")
             try:
                 test_id = clean_nettest_id((query.get("test_id") or [""])[0])
             except ValueError as exc:
                 self.send_json({"error": str(exc)}, 400)
                 return
-            if test_id and not reserve_nettest_session(stub, vpn_ip, test_id):
+            if test_id and not reserve_nettest_session(stub, vpn_ip, test_id, force=force):
                 self.send_json({"error": "nettest already active"}, HTTPStatus.TOO_MANY_REQUESTS)
                 return
             self.send_json({"ok": True, "server_time": utc_now_iso(), "nonce": nonce, "vpn_client_ip": vpn_ip})
@@ -4446,6 +4453,23 @@ class Handler(SimpleHTTPRequestHandler):
                     return
                 self.send_json({"error": str(exc)}, 400)
             return
+        if u.path == "/api/nettest-public/cancel":
+            try:
+                body = json_body_from_handler(self, 1024)
+            except ValueError as exc:
+                if str(exc) == "payload too large":
+                    return
+                self.send_json({"error": str(exc)}, 400)
+                return
+            try:
+                test_id = clean_nettest_id(body.get("test_id", ""))
+            except ValueError as exc:
+                self.send_json({"error": str(exc)}, 400)
+                return
+            if test_id and clear_nettest_session(stub, vpn_ip, test_id):
+                audit_log(f"nettest: cancelled by client vpn_ip={vpn_ip} test_id={test_id}")
+            self.send_json({"ok": True})
+            return
         self.send_error(404)
 
     def do_GET(self):
@@ -4522,13 +4546,14 @@ class Handler(SimpleHTTPRequestHandler):
         if u.path == "/api/nettest/ping":
             query = parse_qs(u.query)
             nonce = str((query.get("n") or [""])[0])[:64]
+            force = (query.get("force") or [""])[0] in ("1", "true", "yes")
             try:
                 test_id = clean_nettest_id((query.get("test_id") or [""])[0])
             except ValueError as exc:
                 self.send_json({"error": str(exc)}, 400)
                 return
             client_ctx = request_client_context(self)
-            if test_id and not reserve_nettest_session(auth, client_ctx.get("client_ip"), test_id):
+            if test_id and not reserve_nettest_session(auth, client_ctx.get("client_ip"), test_id, force=force):
                 self.send_json({"error": "nettest already active"}, HTTPStatus.TOO_MANY_REQUESTS)
                 return
             self.send_json({"ok": True, "server_time": utc_now_iso(), "nonce": nonce})
@@ -4744,6 +4769,14 @@ class Handler(SimpleHTTPRequestHandler):
                         self.send_json({"error": "rate limited"}, HTTPStatus.TOO_MANY_REQUESTS)
                         return
                     raise
+                return
+            if u.path == "/api/nettest/cancel":
+                body = json_body_from_handler(self, 1024)
+                test_id = clean_nettest_id(body.get("test_id", ""))
+                client_ctx = request_client_context(self)
+                if test_id and clear_nettest_session(auth, client_ctx.get("client_ip"), test_id):
+                    audit_log(f"nettest: cancelled by client actor_fp={auth_fingerprint(auth)} test_id={test_id}")
+                self.send_json({"ok": True})
                 return
             if u.path == "/api/geoip/refresh":
                 if not self.require_super(auth):

@@ -20,6 +20,8 @@ let healthTimer = null;
 let pollInFlight = false;
 let healthInFlight = false;
 let nettestRunning = false;
+let activeNettestController = null;
+let currentNettestRun = null;
 let topTrafficMode = localStorage.getItem("topTrafficMode") || "30d";
 let nettestNetworkType = localStorage.getItem("nettestNetworkType") || "mobile";
 let nettestDuration = Number(localStorage.getItem("nettestDuration") || 180);
@@ -93,6 +95,9 @@ document.addEventListener("scroll", () => {
 }, true);
 window.addEventListener("resize", () => {
   if (openClientMenu) closeClientMenus();
+});
+window.addEventListener("beforeunload", () => {
+  stopNettest({reason: "unload"});
 });
 
 function esc(value) {
@@ -206,12 +211,14 @@ async function fetchNettestProbe(path, options = {}, timeoutMs = NETTEST_TIMEOUT
   if (isDirectNettestMode()) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
+    const detach = attachNettestAbort(controller);
     try {
       const response = await fetch(path, Object.assign({}, options, {signal: controller.signal}));
       if (!response.ok) throw new Error(response.statusText || "request failed");
       return response;
     } finally {
       clearTimeout(timer);
+      detach();
     }
   }
   return fetchWithTimeout(path, options, timeoutMs);
@@ -479,21 +486,22 @@ function renderAssignedTokenBadges(client) {
 const _GEO_SOURCE_LABELS = {
   "2ip": "2IP", "dbip": "DB-IP", "dbip_mmdb": "DB-IP MMDB",
   "maxmind": "MaxMind", "ipinfo": "ipinfo", "ip-api": "ip-api", "cache": "cache",
-  "2ip_whois": "WHOIS",
+  "ip2location": "IP2Location", "2ip_whois": "WHOIS", "rdap": "RDAP", "ptr": "PTR",
 };
 function geoSourceLabel(name) {
   return _GEO_SOURCE_LABELS[name] || name;
 }
 
 // Order in which a single "best" source is picked for the compact card line
-const _GEO_SOURCE_PRIORITY = ["2ip", "dbip", "maxmind", "dbip_mmdb", "ipinfo", "ip-api", "cache"];
+const _GEO_SOURCE_PRIORITY = ["2ip", "ipinfo", "ip-api", "ip2location", "dbip", "maxmind", "dbip_mmdb", "cache"];
 
 function preferredGeoSource(info) {
   if (!info) return null;
   const details = (info.source_details && typeof info.source_details === "object") ? info.source_details : {};
   for (const src of _GEO_SOURCE_PRIORITY) {
     const detail = details[src];
-    if (detail && (detail.city || detail.country_code || detail.asn || detail.provider)) {
+    if (!detail || detail.status === "error") continue;
+    if (detail.city || detail.country_code || detail.provider || detail.provider_display || detail.org) {
       return { source: src, label: geoSourceLabel(src), detail };
     }
   }
@@ -517,18 +525,25 @@ function formatGeoCompact(info) {
 
 function formatGeoSourceLine(source, detail) {
   if (!detail) return "";
-  if (detail.status === "error") return `${geoSourceLabel(source)}: ${detail.error || "error"}`;
-  if (source === "2ip_whois") {
-    const parts = [detail.provider, detail.org, detail.asn].filter(Boolean);
+  if (detail.status === "error") return `${geoSourceLabel(source)}: error: ${detail.error || "error"}`;
+  if (source === "ptr") {
+    const domain = detail.domain || detail.ptr || detail.hostname || "";
+    return domain ? `${geoSourceLabel(source)}: ${domain}` : "";
+  }
+  const display = detail.provider_display || detail.provider || detail.org || "";
+  const raw = detail.provider || detail.org || "";
+  const prov = (display && raw && display !== raw) ? `${display} (${raw})` : display;
+  if (source === "2ip_whois" || source === "rdap") {
+    const netRoute = detail.route || detail.network || "";
+    const parts = source === "rdap"
+      ? [prov, detail.org, netRoute].filter(Boolean)
+      : [prov, detail.org, detail.asn, netRoute].filter(Boolean);
     if (!parts.length) return "";
     return `${geoSourceLabel(source)}: ${parts.join(" · ")}`;
   }
   const city = detail.city || "";
   const cc = detail.country_code || "";
   const location = [city, cc].filter(Boolean).join(", ");
-  const display = detail.provider_display || detail.provider || detail.org || "";
-  const raw = detail.provider || detail.org || "";
-  const prov = (display && raw && display !== raw) ? `${display} (${raw})` : display;
   const asn = detail.asn || "";
   const parts = [location, prov, asn].filter(Boolean);
   if (!parts.length) return "";
@@ -536,7 +551,7 @@ function formatGeoSourceLine(source, detail) {
 }
 
 // Order in which per-source lines are shown in the hover tooltip
-const _GEO_TOOLTIP_ORDER = ["2ip", "dbip", "maxmind", "dbip_mmdb", "ipinfo", "ip-api", "2ip_whois"];
+const _GEO_TOOLTIP_ORDER = ["2ip", "ipinfo", "ip-api", "ip2location", "dbip", "maxmind", "dbip_mmdb", "2ip_whois", "rdap", "ptr"];
 
 function formatGeoTooltip(info) {
   if (!info) return "";
@@ -1055,9 +1070,56 @@ function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+// Link a request-local AbortController to the current nettest run, so
+// stopNettest()/page unload can cancel in-flight probes immediately.
+function attachNettestAbort(controller) {
+  if (!activeNettestController) return () => {};
+  if (activeNettestController.signal.aborted) {
+    controller.abort();
+    return () => {};
+  }
+  const onAbort = () => controller.abort();
+  activeNettestController.signal.addEventListener("abort", onAbort);
+  return () => activeNettestController?.signal.removeEventListener("abort", onAbort);
+}
+
+function cancelNettest(testId) {
+  if (!testId) return;
+  const url = `${nettestApiBase()}/cancel`;
+  const payload = JSON.stringify({test_id: testId});
+  if (isDirectNettestMode()) {
+    try { navigator.sendBeacon(url, payload); } catch { /* best effort */ }
+    return;
+  }
+  try {
+    fetch(url, {
+      method: "POST",
+      headers: {"Authorization": "Bearer " + token, "Content-Type": "application/json"},
+      body: payload,
+      keepalive: true,
+    }).catch(() => {});
+  } catch { /* best effort */ }
+}
+
+// Stop any in-progress network test: abort in-flight probes, best-effort
+// notify the server so the active-test lock is released, and reset state.
+function stopNettest(opts = {}) {
+  const reason = opts.reason || "stop";
+  if (activeNettestController) {
+    activeNettestController.abort();
+    activeNettestController = null;
+  }
+  if (currentNettestRun?.testId && reason !== "report") {
+    cancelNettest(currentNettestRun.testId);
+  }
+  currentNettestRun = null;
+  nettestRunning = false;
+}
+
 async function fetchWithTimeout(path, options = {}, timeoutMs = NETTEST_TIMEOUT_MS) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const detach = attachNettestAbort(controller);
   try {
     const headers = Object.assign({"Authorization": "Bearer " + token}, options.headers || {});
     const response = await fetch(path, Object.assign({}, options, {headers, signal: controller.signal}));
@@ -1065,6 +1127,7 @@ async function fetchWithTimeout(path, options = {}, timeoutMs = NETTEST_TIMEOUT_
     return response;
   } finally {
     clearTimeout(timer);
+    detach();
   }
 }
 
@@ -1219,8 +1282,12 @@ function renderNettestResult(result) {
 }
 
 async function runNetworkTest() {
-  if (nettestRunning) return;
+  // Ensure a clean slate even if a previous run left stale state behind
+  // (reload mid-test, repeated clicks, abandoned tab, etc.).
+  stopNettest({reason: "restart"});
   nettestRunning = true;
+  activeNettestController = new AbortController();
+  let reportSent = false;
   const durationSec = nettestDuration;
   const startBtn = document.querySelector("#startNettest");
   const statusEl = document.querySelector("#nettestStatus");
@@ -1246,6 +1313,7 @@ async function runNetworkTest() {
   try {
     nettestContextState = nettestContextState || await apiNettest(`${nettestApiBase()}/context`);
     const testId = createNettestId();
+    currentNettestRun = {testId};
     const startedAt = new Date().toISOString();
     const deadline = Date.now() + durationSec * 1000;
     let totalProbes = 0, successProbes = 0;
@@ -1271,8 +1339,11 @@ async function runNetworkTest() {
 
       const t0 = performance.now();
       try {
+        // force=1 on the first probe reclaims a stale active-test lock left
+        // behind by a reloaded/abandoned previous run for this client.
+        const force = totalProbes === 0 ? "1" : "0";
         await fetchNettestProbe(
-          `${nettestApiBase()}/ping?n=${encodeURIComponent(Date.now() + "")}&test_id=${encodeURIComponent(testId)}`,
+          `${nettestApiBase()}/ping?n=${encodeURIComponent(Date.now() + "")}&test_id=${encodeURIComponent(testId)}&force=${force}`,
           {}, NETTEST_PING_TIMEOUT_MS
         );
         const rtt = performance.now() - t0;
@@ -1351,6 +1422,7 @@ async function runNetworkTest() {
       context: nettestContextState,
     };
     const saved = await apiNettest(`${nettestApiBase()}/report`, {method: "POST", body: JSON.stringify(report)});
+    reportSent = true;
     renderNettestResult(saved.report || report);
     if (statusEl) statusEl.textContent = "Report saved.";
     if (statusState?.role === "super") await loadNettestReports();
@@ -1358,7 +1430,9 @@ async function runNetworkTest() {
     if (statusEl) statusEl.textContent = "Network test failed.";
     showToast(error.message || "Network test failed", "error");
   } finally {
-    nettestRunning = false;
+    // On success the server already cleared the active-test lock via
+    // /report; otherwise best-effort cancel so a retry isn't blocked.
+    stopNettest({reason: reportSent ? "report" : "error"});
     if (startBtn) startBtn.disabled = false;
   }
 }
