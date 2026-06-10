@@ -980,8 +980,45 @@ def fake_ipapi(ip):
         "hosting": None,
         "_source_name": "ip-api",
     }
+def fake_2ip(ip):
+    return {
+        "ip": ip,
+        "country": "Finland",
+        "country_code": "FI",
+        "flag": server.country_code_to_flag("FI"),
+        "region": "",
+        "city": "Helsinki",
+        "lat": None,
+        "lon": None,
+        "timezone": "Europe/Helsinki",
+        "asn": "AS719",
+        "asn_id": "719",
+        "org": "Elisa Oyj",
+        "provider": "Elisa Oyj",
+        "hosting": False,
+        "_source_name": "2ip",
+    }
+def fake_dbip(ip):
+    return {
+        "ip": ip,
+        "country": "Finland",
+        "country_code": "FI",
+        "flag": server.country_code_to_flag("FI"),
+        "region": "",
+        "city": "Helsinki",
+        "lat": None,
+        "lon": None,
+        "timezone": "Europe/Helsinki",
+        "asn": "",
+        "asn_id": "",
+        "provider": "",
+        "org": "",
+        "hosting": False,
+        "_source_name": "dbip",
+    }
 server._fetch_ipapi_provider = fake_ipapi
-server._fetch_2ip_provider = lambda ip: None
+server._fetch_2ip_provider = fake_2ip
+server._fetch_dbip_provider = fake_dbip
 server._fetch_ipinfo_provider = lambda ip: None
 server._fetch_mmdb_provider = lambda ip: None
 
@@ -989,9 +1026,11 @@ private = server.lookup_endpoint_ip_info("10.9.9.2")
 assert private["provider"] == "private"
 assert calls == []
 
+# 3 real sources incl. ip-api -> not thin, second call is a pure cache hit
 first = server.lookup_endpoint_ip_info("85.89.126.30")
 second = server.lookup_endpoint_ip_info("85.89.126.30")
 assert first["city"] == "Helsinki"
+assert sorted(first["source_details"].keys()) == ["2ip", "dbip", "ip-api"]
 assert second["source"] == "cache"
 assert calls == ["85.89.126.30"]
 
@@ -3153,7 +3192,7 @@ print("OK")
 PY
 }
 
-@test "geoip: multi_source refresh collects up to 3 external providers (2ip, dbip, ip-api)" {
+@test "geoip: multi_source refresh collects all external providers (2ip, dbip, ip-api, ipinfo)" {
     command -v python3 &>/dev/null || skip "python3 not available"
     local tmp
     tmp=$(mktemp -d)
@@ -3184,8 +3223,9 @@ info = server.lookup_ip_enriched("85.89.126.30", multi_source=True)
 assert "2ip" in calls, "2ip should be called"
 assert "dbip" in calls, "dbip should be called"
 assert "ip-api" in calls, "ip-api should be called"
-assert "ipinfo" not in calls, f"ipinfo should not be reached once 3 sources collected: {calls}"
-assert len(calls) == 3, f"expected 3 external calls for multi_source, got {len(calls)}: {calls}"
+assert "ipinfo" in calls, f"ipinfo should now also be collected: {calls}"
+assert len(calls) == 4, f"expected 4 external calls for multi_source, got {len(calls)}: {calls}"
+assert sorted(info["source_details"].keys()) == ["2ip", "dbip", "ip-api", "ipinfo"]
 assert info["confidence"] == "high", f"expected high confidence with agreeing sources, got {info['confidence']}"
 assert info["multi_source"] is True, "multi_source flag must be recorded in cached info"
 PY
@@ -3424,6 +3464,145 @@ assert whois_detail["network"] == "128.70.0.0 - 128.71.255.255"
 # Primary source for compact display remains 2ip, not whois
 assert info2["sources"][0] == "2ip", info2["sources"]
 assert info2["source_details"]["2ip"]["provider_display"] == "Beeline"
+print("OK")
+PY
+    rm -rf "$tmp"
+}
+
+@test "geoip: lookup_endpoint_ip_info treats 2ip-only or 2ip+dbip cache as thin and enriches" {
+    command -v python3 &>/dev/null || skip "python3 not available"
+    local tmp
+    tmp=$(mktemp -d)
+    mkdir -p "$tmp/web"
+    AWG_DIR="$tmp" SERVER_CONF_FILE="$tmp/awg0.conf" REPO_ROOT="$BATS_TEST_DIRNAME/.." python3 - <<'PY'
+import os, json, time
+from pathlib import Path
+import importlib.util
+spec = importlib.util.spec_from_file_location("server", Path(os.environ["REPO_ROOT"]) / "web" / "server.py")
+server = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(server)
+
+calls = []
+def make_provider(name, **overrides):
+    base = {"country": "Russia", "country_code": "RU", "flag": "\U0001f1f7\U0001f1fa",
+            "region": "Moscow", "city": "Moscow", "asn": "AS29233", "asn_id": "29233",
+            "provider": "IIP-NET-AS29233", "org": "IIP-NET-AS29233",
+            "timezone": "Europe/Moscow", "hosting": False, "lat": 55.7, "lon": 37.6,
+            "_source_name": name}
+    base.update(overrides)
+    def fn(ip):
+        calls.append(name)
+        d = dict(base)
+        d["ip"] = ip
+        return d
+    return fn
+
+server._fetch_mmdb_provider = lambda ip: None
+server._fetch_dbip_mmdb_provider = lambda ip: None
+server._fetch_2ip_provider = make_provider("2ip")
+server._fetch_dbip_provider = make_provider("dbip", provider="", org="")
+server._fetch_ipapi_provider = make_provider("ip-api", provider="OAO Mgts)", org="")
+server._fetch_ipinfo_provider = lambda ip: None
+
+# Old-format cache: only "2ip" in source_details, missing provider_display
+old_only_2ip = {"85.89.126.30": {
+    "_cache_ts": time.time(), "status": "ok",
+    "info": {"ip": "85.89.126.30", "country": "Russian Federation", "country_code": "RU",
+             "flag": "\U0001f1f7\U0001f1fa", "region": "Moscow", "city": "Moscow",
+             "asn": "AS29233", "provider": "IIP-NET-AS29233", "org": "IIP-NET-AS29233",
+             "sources": ["2ip"], "confidence": "medium", "source": "provider",
+             "source_details": {"2ip": {"city": "Moscow", "country_code": "RU",
+                                          "provider": "IIP-NET-AS29233", "org": "IIP-NET-AS29233",
+                                          "asn": "AS29233", "region": "Moscow"}},
+             "updated_at": "2026-06-09T00:00:00Z"},
+}}
+server.write_ip_info_cache(old_only_2ip)
+info = server.lookup_endpoint_ip_info("85.89.126.30")
+assert calls, "stale 2ip-only cache must trigger enrichment"
+assert info["source"] == "provider"
+sd = info["source_details"]
+assert "2ip" in sd and "dbip" in sd and "ip-api" in sd, sd.keys()
+assert sd["2ip"]["provider_display"] == "IIP-NET", sd["2ip"]["provider_display"]
+assert info["provider_display"] == "IIP-NET", info["provider_display"]
+
+# Old-format cache: "2ip" + "dbip" only (the production regression case)
+calls.clear()
+old_2ip_dbip = {"85.89.126.30": {
+    "_cache_ts": time.time(), "status": "ok",
+    "info": {"ip": "85.89.126.30", "country": "Russian Federation", "country_code": "RU",
+             "flag": "\U0001f1f7\U0001f1fa", "region": "Moscow", "city": "Moscow",
+             "asn": "AS29233", "provider": "IIP-NET-AS29233", "org": "IIP-NET-AS29233",
+             "sources": ["2ip", "dbip"], "confidence": "high", "source": "provider",
+             "source_details": {
+                 "2ip": {"city": "Moscow", "country_code": "RU", "provider": "IIP-NET-AS29233",
+                         "org": "IIP-NET-AS29233", "asn": "AS29233", "region": "Moscow"},
+                 "dbip": {"city": "Moscow", "country_code": "RU", "provider": "", "org": "",
+                          "asn": "", "region": "Moscow"},
+             },
+             "updated_at": "2026-06-09T00:00:00Z"},
+}}
+server.write_ip_info_cache(old_2ip_dbip)
+info2 = server.lookup_endpoint_ip_info("85.89.126.30")
+assert calls, "stale 2ip+dbip cache must trigger enrichment too"
+sd2 = info2["source_details"]
+assert sorted(sd2.keys()) == ["2ip", "dbip", "ip-api"], sd2.keys()
+assert sd2["2ip"]["provider_display"] == "IIP-NET"
+print("OK")
+PY
+    rm -rf "$tmp"
+}
+
+@test "geoip: lookup_endpoint_ip_info does not refresh cache that already has 2ip+ipinfo+ip-api+dbip" {
+    command -v python3 &>/dev/null || skip "python3 not available"
+    local tmp
+    tmp=$(mktemp -d)
+    mkdir -p "$tmp/web"
+    AWG_DIR="$tmp" SERVER_CONF_FILE="$tmp/awg0.conf" REPO_ROOT="$BATS_TEST_DIRNAME/.." python3 - <<'PY'
+import os, json, time
+from pathlib import Path
+import importlib.util
+spec = importlib.util.spec_from_file_location("server", Path(os.environ["REPO_ROOT"]) / "web" / "server.py")
+server = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(server)
+
+calls = []
+def fail_if_called(name):
+    def fn(ip):
+        calls.append(name)
+        return None
+    return fn
+
+server._fetch_mmdb_provider = lambda ip: None
+server._fetch_dbip_mmdb_provider = lambda ip: None
+server._fetch_2ip_provider = fail_if_called("2ip")
+server._fetch_dbip_provider = fail_if_called("dbip")
+server._fetch_ipapi_provider = fail_if_called("ip-api")
+server._fetch_ipinfo_provider = fail_if_called("ipinfo")
+
+def detail(provider, asn, country_code="RU", city="Moscow"):
+    return {"city": city, "country_code": country_code, "provider": provider,
+            "provider_display": provider, "org": provider, "asn": asn, "region": "Moscow"}
+
+full_cache = {"213.141.129.188": {
+    "_cache_ts": time.time(), "status": "ok",
+    "info": {"ip": "213.141.129.188", "country": "Russian Federation", "country_code": "RU",
+             "flag": "\U0001f1f7\U0001f1fa", "region": "Moscow", "city": "Moscow",
+             "asn": "AS12714", "provider": "MEGAFON-AS", "provider_display": "Megafon",
+             "org": "MEGAFON-AS", "sources": ["2ip", "ipinfo", "ip-api", "dbip"],
+             "confidence": "high", "source": "provider", "multi_source": True,
+             "source_details": {
+                 "2ip": detail("MEGAFON-AS", "AS12714"),
+                 "ipinfo": detail("PJSC Vimpelcom", "AS12714"),
+                 "ip-api": detail("MERIDIAN", "AS12714"),
+                 "dbip": detail("", "", city="Moscow (Vostochnyy administrativnyy okrug)"),
+             },
+             "updated_at": "2026-06-10T00:00:00Z"},
+}}
+server.write_ip_info_cache(full_cache)
+info = server.lookup_endpoint_ip_info("213.141.129.188")
+assert calls == [], f"fully-enriched cache must not trigger any provider calls: {calls}"
+assert info["source"] == "cache"
+assert sorted(info["source_details"].keys()) == ["2ip", "dbip", "ip-api", "ipinfo"]
 print("OK")
 PY
     rm -rf "$tmp"

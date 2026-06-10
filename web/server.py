@@ -2912,12 +2912,14 @@ def _geoip_consensus(results):
 def lookup_ip_enriched(ip, purpose="endpoint", multi_source=False, force_refresh=False, want_whois=False):
     """Multi-provider GeoIP: cache → MMDBs → external provider(s) → consensus.
 
-    multi_source=True collects up to 3 external providers (2ip, dbip, ip-api,
-    falling back to ipinfo) for richer per-source detail. Normal lookup uses
-    max 1 external call. force_refresh=True bypasses a fresh cache hit (used
-    for controlled endpoint enrichment). want_whois=True additionally fetches
-    2ip WHOIS details (if enabled) to enrich source_details with org/network
-    info; it never affects the primary consensus/compact source.
+    multi_source=True collects from all known external providers (2ip, dbip,
+    ip-api, ipinfo) for richer per-source detail; disabled/unconfigured
+    providers (e.g. ipinfo without a token) return None immediately and cost
+    nothing. Normal lookup uses max 1 external call. force_refresh=True
+    bypasses a fresh cache hit (used for controlled endpoint enrichment).
+    want_whois=True additionally fetches 2ip WHOIS details (if enabled) to
+    enrich source_details with org/network info; it never affects the
+    primary consensus/compact source.
     """
     ip = (ip or "").strip()
     if not ip:
@@ -2950,16 +2952,14 @@ def lookup_ip_enriched(ip, purpose="endpoint", multi_source=False, force_refresh
             results.append(r)
 
     if multi_source:
-        # Forced refresh: collect up to 3 external providers for richer detail
+        # Forced refresh: collect from every external provider for richer
+        # detail. Disabled/unconfigured providers (e.g. ipinfo without a
+        # token) return None immediately, so this stays cheap.
         _ext_order = (_fetch_2ip_provider, _fetch_dbip_provider, _fetch_ipapi_provider, _fetch_ipinfo_provider)
-        collected = 0
         for fetcher in _ext_order:
             r = fetcher(ip)
             if r:
                 results.append(r)
-                collected += 1
-                if collected >= 3:
-                    break
     else:
         # Normal lookup: one external call only
         ext = (
@@ -3151,9 +3151,11 @@ def _fetch_ipapi_provider(ip):
 def lookup_endpoint_ip_info(ip, allow_refresh=True):
     """Endpoint-card lookup with controlled multi-source enrichment.
 
-    - Cache hit with 2+ real sources: return cache as-is.
-    - Cache hit with 0/1 sources that hasn't been multi-source enriched yet
-      and refresh is allowed: do one controlled multi-source lookup.
+    - Cache hit with >=3 real (non-WHOIS) sources, including ipinfo or
+      ip-api, and current source_details format: return cache as-is.
+    - Cache hit that is "thin" (fewer than 3 real sources, missing both
+      ipinfo and ip-api, or predates the provider_display field) and
+      refresh is allowed: do one controlled multi-source lookup.
     - Cache miss: multi-source lookup if refresh is allowed, else empty info.
     """
     ip = (ip or "").strip()
@@ -3182,8 +3184,16 @@ def lookup_endpoint_ip_info(ip, allow_refresh=True):
 
     if cached_info is not None:
         source_details = cached_info.get("source_details") or {}
-        source_count = len([src for src in source_details if src != "2ip_whois"])
-        thin = source_count < 2 and not cached_info.get("multi_source")
+        real_sources = [src for src in source_details if src != "2ip_whois"]
+        old_format = any(
+            not isinstance(detail, dict) or "provider_display" not in detail
+            for detail in source_details.values()
+        )
+        thin = (
+            len(real_sources) < 3
+            or not ({"ipinfo", "ip-api"} & set(real_sources))
+            or old_format
+        )
         if fresh and not thin:
             cached_info["source"] = "cache"
             return cached_info
