@@ -1739,16 +1739,20 @@ def enriched_nettest_network_context(handler, client_ip, vpn_client_ip=""):
         "geo": {
             "country": geo.get("country", ""),
             "country_code": geo.get("country_code", ""),
+            "flag": geo.get("flag", ""),
             "region": geo.get("region", ""),
             "city": geo.get("city", ""),
             "provider": geo.get("provider") or geo.get("org") or "",
+            "provider_display": geo.get("provider_display", ""),
             "isp": geo.get("provider") or "",
             "asn": geo.get("asn", ""),
             "asn_id": geo.get("asn_id", ""),
             "org": geo.get("org", ""),
             "sources": geo.get("sources", []),
+            "source_details": geo.get("source_details", {}),
             "confidence": geo.get("confidence", "low"),
             "source": geo.get("source", ""),
+            "updated_at": geo.get("updated_at", ""),
         },
         "peer": peer,
     }
@@ -2499,6 +2503,47 @@ def _safe_float(v):
         return None
 
 
+# Small alias map for common Russian ASN/provider names -> human-friendly display
+PROVIDER_ALIASES = {
+    "BEE": "Beeline",
+    "BEELINE": "Beeline",
+    "VIMPELCOM": "Beeline",
+    "MEGAFON": "Megafon",
+    "MEGAFON-AS": "Megafon",
+    "MTS": "MTS",
+    "MGTS": "MGTS",
+    "ROSTELECOM": "Rostelecom",
+    "SINP-MSU": "SINP-MSU",
+    "MCC": "MCC",
+}
+
+_PROVIDER_AS_SUFFIX_RE = re.compile(r"[-_ ]AS\d*$", re.IGNORECASE)
+_PROVIDER_STANDALONE_AS_RE = re.compile(r"^AS\d+$", re.IGNORECASE)
+
+
+def clean_provider_display(provider="", org="", asn=""):
+    """Produce a human-friendly provider/org name for compact UI display.
+
+    Strips technical "-AS"/"-AS1234" suffixes and applies a small alias
+    map for common Russian ISPs (e.g. "BEE-AS" -> "Beeline"). Falls back
+    to the cleaned source string when no alias is known.
+    """
+    raw = str(provider or "").strip() or str(org or "").strip()
+    if not raw:
+        return ""
+    if _PROVIDER_STANDALONE_AS_RE.match(raw):
+        return ""
+    cleaned = raw
+    while True:
+        m = _PROVIDER_AS_SUFFIX_RE.search(cleaned)
+        if not m:
+            break
+        cleaned = cleaned[:m.start()].rstrip(" -_")
+    if not cleaned:
+        cleaned = raw
+    return PROVIDER_ALIASES.get(cleaned.upper(), cleaned)
+
+
 def _empty_endpoint_info(ip, source="local", provider=""):
     return {
         "ip": ip,
@@ -2576,6 +2621,56 @@ def _fetch_2ip_provider(ip):
         "org": provider,
         "hosting": bool(asn_data.get("hosting")),
         "_source_name": "2ip",
+    }
+
+
+def _fetch_2ip_whois_provider(ip):
+    """Optional WHOIS enrichment via 2ip.io. Provides org/network details, no city."""
+    cfg = _geoip_provider_cfg("2ip_whois")
+    if not cfg.get("enabled"):
+        return None
+    token = (cfg.get("token") or _geoip_provider_cfg("2ip").get("token")
+             or os.environ.get("AWG_GEOIP_2IP_TOKEN", "")).strip()
+    if not token:
+        return None
+    base = (cfg.get("base_url") or "https://api.2ip.io/whois").rstrip("/")
+    url = f"{base}/{quote(ip)}?token={quote(token)}"
+    try:
+        with urlopen(url, timeout=IP_INFO_LOOKUP_TIMEOUT) as resp:
+            payload = resp.read(32768)
+    except Exception:
+        return None
+    try:
+        data = json.loads(payload.decode("utf-8"))
+    except Exception:
+        return None
+    if not isinstance(data, dict):
+        return None
+    whois = data.get("whois") or {}
+    network = whois.get("network") or {}
+    route = whois.get("route") or {}
+    country_code = str(network.get("country") or "").upper().strip()
+    asn = str(route.get("asn") or "").strip().upper()
+    if asn and not asn.startswith("AS"):
+        asn = f"AS{asn}"
+    asn_id = asn[2:] if asn.startswith("AS") else ""
+    provider = str(network.get("name") or "").strip()
+    org = str(network.get("description") or "").strip()
+    if not provider and not org and not asn:
+        return None
+    return {
+        "ip": ip,
+        "country_code": country_code,
+        "flag": country_code_to_flag(country_code),
+        "region": "",
+        "city": "",
+        "asn": asn,
+        "asn_id": asn_id,
+        "provider": provider,
+        "org": org,
+        "network": str(network.get("range") or "").strip(),
+        "route": str(route.get("range") or "").strip(),
+        "_source_name": "2ip_whois",
     }
 
 
@@ -2735,6 +2830,29 @@ def _fetch_dbip_provider(ip):
     }
 
 
+def _build_source_detail(r):
+    """Sanitized per-source detail for source_details (no tokens/URLs/lat/lon)."""
+    provider = str(r.get("provider") or "").strip()
+    org = str(r.get("org") or "").strip()
+    asn = str(r.get("asn") or "").strip()
+    detail = {
+        "city": str(r.get("city") or "").strip(),
+        "region": str(r.get("region") or "").strip(),
+        "country_code": str(r.get("country_code") or "").upper().strip(),
+        "provider": provider,
+        "provider_display": clean_provider_display(provider, org, asn),
+        "org": org,
+        "asn": asn,
+    }
+    network = str(r.get("network") or "").strip()
+    route = str(r.get("route") or "").strip()
+    if network:
+        detail["network"] = network
+    if route:
+        detail["route"] = route
+    return detail
+
+
 def _geoip_consensus(results):
     """Merge provider results into consensus dict with confidence score."""
     if not results:
@@ -2785,11 +2903,15 @@ def _geoip_consensus(results):
     return merged, confidence, source_names
 
 
-def lookup_ip_enriched(ip, purpose="endpoint", multi_source=False):
+def lookup_ip_enriched(ip, purpose="endpoint", multi_source=False, force_refresh=False, want_whois=False):
     """Multi-provider GeoIP: cache → MMDBs → external provider(s) → consensus.
 
-    multi_source=True (forced refresh) collects up to 2 external providers
-    for better consensus. Normal lookup uses max 1 external call.
+    multi_source=True collects up to 3 external providers (2ip, dbip, ip-api,
+    falling back to ipinfo) for richer per-source detail. Normal lookup uses
+    max 1 external call. force_refresh=True bypasses a fresh cache hit (used
+    for controlled endpoint enrichment). want_whois=True additionally fetches
+    2ip WHOIS details (if enabled) to enrich source_details with org/network
+    info; it never affects the primary consensus/compact source.
     """
     ip = (ip or "").strip()
     if not ip:
@@ -2798,16 +2920,18 @@ def lookup_ip_enriched(ip, purpose="endpoint", multi_source=False):
         return _empty_endpoint_info(ip, source="local", provider="private")
 
     now = time.time()
+    cached_entry = None
     with IP_INFO_CACHE_LOCK:
         cache = load_ip_info_cache()
         cached = cache.get(ip)
         if isinstance(cached, dict):
+            cached_entry = cached
             ts = float(cached.get("_cache_ts") or 0)
             status = cached.get("status", "ok")
             ttl = (IP_INFO_NEGATIVE_TTL if status == "negative"
                    else IP_INFO_ERROR_CACHE_TTL if status == "error"
                    else IP_INFO_CACHE_TTL)
-            if ts and now - ts < ttl:
+            if not force_refresh and ts and now - ts < ttl:
                 info = dict(cached.get("info") or _empty_endpoint_info(ip, source="cache"))
                 info["source"] = "cache"
                 return info
@@ -2820,15 +2944,15 @@ def lookup_ip_enriched(ip, purpose="endpoint", multi_source=False):
             results.append(r)
 
     if multi_source:
-        # Forced refresh: collect up to 2 external providers for richer consensus
-        _ext_order = (_fetch_2ip_provider, _fetch_dbip_provider, _fetch_ipinfo_provider, _fetch_ipapi_provider)
+        # Forced refresh: collect up to 3 external providers for richer detail
+        _ext_order = (_fetch_2ip_provider, _fetch_dbip_provider, _fetch_ipapi_provider, _fetch_ipinfo_provider)
         collected = 0
         for fetcher in _ext_order:
             r = fetcher(ip)
             if r:
                 results.append(r)
                 collected += 1
-                if collected >= 2:
+                if collected >= 3:
                     break
     else:
         # Normal lookup: one external call only
@@ -2840,6 +2964,10 @@ def lookup_ip_enriched(ip, purpose="endpoint", multi_source=False):
         )
         if ext:
             results.append(ext)
+
+    whois_result = None
+    if results and want_whois:
+        whois_result = _fetch_2ip_whois_provider(ip)
 
     if not results:
         info = _empty_endpoint_info(ip, source="provider")
@@ -2861,14 +2989,21 @@ def lookup_ip_enriched(ip, purpose="endpoint", multi_source=False):
     source_details = {}
     for r in results:
         src = r.get("_source_name", "unknown")
-        source_details[src] = {
-            "city": str(r.get("city") or "").strip(),
-            "region": str(r.get("region") or "").strip(),
-            "country_code": str(r.get("country_code") or "").upper().strip(),
-            "provider": str(r.get("provider") or "").strip(),
-            "org": str(r.get("org") or "").strip(),
-            "asn": str(r.get("asn") or "").strip(),
-        }
+        source_details[src] = _build_source_detail(r)
+    if whois_result:
+        source_details["2ip_whois"] = _build_source_detail(whois_result)
+
+    # Preserve previously cached per-source details for sources not refreshed
+    # this round (e.g. WHOIS fetched on an earlier manual refresh).
+    if cached_entry:
+        old_details = (cached_entry.get("info") or {}).get("source_details")
+        if isinstance(old_details, dict):
+            for src, detail in old_details.items():
+                source_details.setdefault(src, detail)
+
+    provider = str(merged.get("provider") or "").strip()
+    org = str(merged.get("org") or "").strip()
+    asn = str(merged.get("asn") or "").strip()
 
     info = {
         "ip": ip,
@@ -2877,15 +3012,17 @@ def lookup_ip_enriched(ip, purpose="endpoint", multi_source=False):
         "flag": flag,
         "region": str(merged.get("region") or "").strip(),
         "city": str(merged.get("city") or "").strip(),
-        "asn": str(merged.get("asn") or "").strip(),
+        "asn": asn,
         "asn_id": str(merged.get("asn_id") or "").strip(),
-        "provider": str(merged.get("provider") or "").strip(),
-        "org": str(merged.get("org") or "").strip(),
+        "provider": provider,
+        "provider_display": clean_provider_display(provider, org, asn),
+        "org": org,
         "timezone": str(merged.get("timezone") or "").strip(),
         "hosting": merged.get("hosting"),
         "sources": source_names,
         "confidence": confidence,
         "source_details": source_details,
+        "multi_source": bool(multi_source),
         "source": "provider",
         "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
@@ -2926,9 +3063,18 @@ def geoip_providers_status():
             mmdb = (pcfg.get("city_mmdb_path") or pcfg.get("mmdb_path") or
                     str(AWG_DIR / ("geoip/GeoLite2-City.mmdb" if name == "maxmind" else "geoip/dbip-city-lite.mmdb")))
             entry["mmdb_present"] = Path(mmdb).exists()
+        if name == "2ip_whois":
+            entry["only_on_refresh"] = bool(pcfg.get("only_on_refresh", True))
+            entry["has_token"] = bool(pcfg.get("token")) or bool((cfg.get("2ip") or {}).get("token"))
         providers[name] = entry
     if "ip-api" not in providers:
         providers["ip-api"] = {"enabled": True}
+    if "2ip_whois" not in providers:
+        providers["2ip_whois"] = {
+            "enabled": False,
+            "has_token": bool((cfg.get("2ip") or {}).get("token")),
+            "only_on_refresh": True,
+        }
     return {"cache_entries": geoip_cache_stats(), "providers": providers}
 
 
@@ -2997,6 +3143,13 @@ def _fetch_ipapi_provider(ip):
 
 
 def lookup_endpoint_ip_info(ip, allow_refresh=True):
+    """Endpoint-card lookup with controlled multi-source enrichment.
+
+    - Cache hit with 2+ real sources: return cache as-is.
+    - Cache hit with 0/1 sources that hasn't been multi-source enriched yet
+      and refresh is allowed: do one controlled multi-source lookup.
+    - Cache miss: multi-source lookup if refresh is allowed, else empty info.
+    """
     ip = (ip or "").strip()
     if not ip:
         return _empty_endpoint_info(ip, source="local")
@@ -3007,23 +3160,37 @@ def lookup_endpoint_ip_info(ip, allow_refresh=True):
     with IP_INFO_CACHE_LOCK:
         cache = load_ip_info_cache()
         cached = cache.get(ip)
+        cached_info = None
+        fresh = False
         if isinstance(cached, dict):
             ts = float(cached.get("_cache_ts") or 0)
             status = cached.get("status", "ok")
             ttl = (IP_INFO_NEGATIVE_TTL if status == "negative"
                    else IP_INFO_ERROR_CACHE_TTL if status == "error"
                    else IP_INFO_CACHE_TTL)
-            info = dict(cached.get("info") or _empty_endpoint_info(ip, source="cache"))
-            if ts and now - ts < ttl:
-                info["source"] = "cache"
-                return info
-            if not allow_refresh:
-                info["source"] = "cache"
-                return info
+            cached_info = dict(cached.get("info") or _empty_endpoint_info(ip, source="cache"))
+            fresh = bool(ts) and (now - ts < ttl)
+
+    whois_cfg = _geoip_provider_cfg("2ip_whois")
+    want_whois = bool(whois_cfg.get("enabled")) and not whois_cfg.get("only_on_refresh", True)
+
+    if cached_info is not None:
+        source_details = cached_info.get("source_details") or {}
+        source_count = len([src for src in source_details if src != "2ip_whois"])
+        thin = source_count < 2 and not cached_info.get("multi_source")
+        if fresh and not thin:
+            cached_info["source"] = "cache"
+            return cached_info
+        if not allow_refresh:
+            cached_info["source"] = "cache"
+            return cached_info
+        # Fresh-but-thin or stale, and refresh allowed: do one controlled
+        # multi-source enrichment pass.
+        return lookup_ip_enriched(ip, purpose="endpoint", multi_source=True, force_refresh=True, want_whois=want_whois)
 
     if not allow_refresh:
         return _empty_endpoint_info(ip, source="cache")
-    return lookup_ip_enriched(ip)
+    return lookup_ip_enriched(ip, purpose="endpoint", multi_source=True, want_whois=want_whois)
 
 
 def split_endpoint(endpoint):
@@ -4599,7 +4766,7 @@ class Handler(SimpleHTTPRequestHandler):
                         write_ip_info_cache(cache)
                     except Exception:
                         pass
-                info = lookup_ip_enriched(validated_ip, multi_source=True)
+                info = lookup_ip_enriched(validated_ip, multi_source=True, force_refresh=True, want_whois=True)
                 self.send_json({"ok": True, "ip": validated_ip, "info": info})
                 return
             body = self.json_body()

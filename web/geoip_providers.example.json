@@ -4,6 +4,12 @@
       "enabled": false,
       "token": ""
     },
+    "2ip_whois": {
+      "enabled": false,
+      "token": "",
+      "base_url": "https://api.2ip.io/whois",
+      "only_on_refresh": true
+    },
     "dbip": {
       "enabled": false,
       "token": "",

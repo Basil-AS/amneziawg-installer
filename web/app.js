@@ -479,6 +479,7 @@ function renderAssignedTokenBadges(client) {
 const _GEO_SOURCE_LABELS = {
   "2ip": "2IP", "dbip": "DB-IP", "dbip_mmdb": "DB-IP MMDB",
   "maxmind": "MaxMind", "ipinfo": "ipinfo", "ip-api": "ip-api", "cache": "cache",
+  "2ip_whois": "WHOIS",
 };
 function geoSourceLabel(name) {
   return _GEO_SOURCE_LABELS[name] || name;
@@ -505,7 +506,8 @@ function formatGeoCompact(info) {
   const detail = preferred ? preferred.detail : {};
   const city = detail.city || info.city || "";
   const cc = detail.country_code || info.country_code || "";
-  const prov = detail.provider || detail.org || info.provider || info.org || "";
+  const prov = detail.provider_display || detail.provider || detail.org ||
+    info.provider_display || info.provider || info.org || "";
   const location = [city, cc].filter(Boolean).join(", ");
   const parts = [location, prov, preferred ? preferred.label : ""].filter(Boolean);
   if (!parts.length) return "";
@@ -516,24 +518,36 @@ function formatGeoCompact(info) {
 function formatGeoSourceLine(source, detail) {
   if (!detail) return "";
   if (detail.status === "error") return `${geoSourceLabel(source)}: ${detail.error || "error"}`;
+  if (source === "2ip_whois") {
+    const parts = [detail.provider, detail.org, detail.asn].filter(Boolean);
+    if (!parts.length) return "";
+    return `${geoSourceLabel(source)}: ${parts.join(" · ")}`;
+  }
   const city = detail.city || "";
   const cc = detail.country_code || "";
   const location = [city, cc].filter(Boolean).join(", ");
-  const prov = detail.provider || detail.org || "";
+  const display = detail.provider_display || detail.provider || detail.org || "";
+  const raw = detail.provider || detail.org || "";
+  const prov = (display && raw && display !== raw) ? `${display} (${raw})` : display;
   const asn = detail.asn || "";
   const parts = [location, prov, asn].filter(Boolean);
   if (!parts.length) return "";
   return `${geoSourceLabel(source)}: ${parts.join(" · ")}`;
 }
 
+// Order in which per-source lines are shown in the hover tooltip
+const _GEO_TOOLTIP_ORDER = ["2ip", "dbip", "maxmind", "dbip_mmdb", "ipinfo", "ip-api", "2ip_whois"];
+
 function formatGeoTooltip(info) {
   if (!info) return "";
   const lines = [];
   const details = (info.source_details && typeof info.source_details === "object") ? info.source_details : {};
-  const sources = Array.isArray(info.sources) && info.sources.length ? info.sources : [];
-  for (const src of sources) {
-    if (src === "cache") continue;
-    const line = formatGeoSourceLine(src, details[src]);
+  const extra = Object.keys(details).filter((src) => !_GEO_TOOLTIP_ORDER.includes(src) && src !== "cache");
+  const order = _GEO_TOOLTIP_ORDER.concat(extra);
+  for (const src of order) {
+    const detail = details[src];
+    if (!detail) continue;
+    const line = formatGeoSourceLine(src, detail);
     if (line) lines.push(line);
   }
   if (info.updated_at) lines.push(`Updated: ${info.updated_at}`);

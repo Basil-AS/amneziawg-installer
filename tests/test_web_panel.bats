@@ -2725,6 +2725,59 @@ PY
     rm -rf "$tmp"
 }
 
+@test "geoip: /api/geoip/status reports 2ip_whois without exposing its token" {
+    command -v python3 &>/dev/null || skip "python3 not available"
+    local tmp
+    tmp=$(mktemp -d)
+    mkdir -p "$tmp/web"
+    cat > "$tmp/web/geoip_providers.json" <<'JSON'
+{"providers": {
+  "2ip": {"enabled": true, "token": "secrettoken123"},
+  "2ip_whois": {"enabled": false, "token": "", "base_url": "https://api.2ip.io/whois", "only_on_refresh": true}
+}}
+JSON
+    AWG_DIR="$tmp" SERVER_CONF_FILE="$tmp/awg0.conf" REPO_ROOT="$BATS_TEST_DIRNAME/.." python3 - <<'PY'
+import os, json
+from pathlib import Path
+import importlib.util
+spec = importlib.util.spec_from_file_location("server", Path(os.environ["REPO_ROOT"]) / "web" / "server.py")
+server = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(server)
+status = server.geoip_providers_status()
+raw = json.dumps(status)
+assert "secrettoken123" not in raw, "token must not appear in status output"
+whois = status["providers"]["2ip_whois"]
+assert whois["enabled"] is False
+assert whois["only_on_refresh"] is True
+# Falls back to the "2ip" token presence even though its own token is empty
+assert whois["has_token"] is True, whois
+assert "token" not in whois
+PY
+    rm -rf "$tmp"
+
+    # Config without any "2ip_whois" entry: status still synthesizes a
+    # disabled, sanitized entry (no crash on older configs).
+    tmp=$(mktemp -d)
+    mkdir -p "$tmp/web"
+    cat > "$tmp/web/geoip_providers.json" <<'JSON'
+{"providers": {"2ip": {"enabled": false, "token": ""}}}
+JSON
+    AWG_DIR="$tmp" SERVER_CONF_FILE="$tmp/awg0.conf" REPO_ROOT="$BATS_TEST_DIRNAME/.." python3 - <<'PY'
+import os
+from pathlib import Path
+import importlib.util
+spec = importlib.util.spec_from_file_location("server", Path(os.environ["REPO_ROOT"]) / "web" / "server.py")
+server = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(server)
+status = server.geoip_providers_status()
+whois = status["providers"]["2ip_whois"]
+assert whois["enabled"] is False, whois
+assert whois["only_on_refresh"] is True, whois
+assert whois["has_token"] is False, whois
+PY
+    rm -rf "$tmp"
+}
+
 @test "geoip: /api/geoip/refresh validates IP and requires super role" {
     command -v python3 &>/dev/null || skip "python3 not available"
     grep -qF '/api/geoip/refresh' "$BATS_TEST_DIRNAME/../web/server.py"
@@ -2990,7 +3043,7 @@ print("OK")
 PY
 }
 
-@test "geoip: multi_source refresh collects up to 2 external providers" {
+@test "geoip: multi_source refresh collects up to 3 external providers (2ip, dbip, ip-api)" {
     command -v python3 &>/dev/null || skip "python3 not available"
     local tmp
     tmp=$(mktemp -d)
@@ -3020,8 +3073,11 @@ server._fetch_ipapi_provider = make_provider("ip-api")
 info = server.lookup_ip_enriched("85.89.126.30", multi_source=True)
 assert "2ip" in calls, "2ip should be called"
 assert "dbip" in calls, "dbip should be called"
-assert len(calls) == 2, f"expected 2 external calls for multi_source, got {len(calls)}: {calls}"
-assert info["confidence"] == "high", f"expected high confidence with 2 agreeing sources, got {info['confidence']}"
+assert "ip-api" in calls, "ip-api should be called"
+assert "ipinfo" not in calls, f"ipinfo should not be reached once 3 sources collected: {calls}"
+assert len(calls) == 3, f"expected 3 external calls for multi_source, got {len(calls)}: {calls}"
+assert info["confidence"] == "high", f"expected high confidence with agreeing sources, got {info['confidence']}"
+assert info["multi_source"] is True, "multi_source flag must be recorded in cached info"
 PY
     rm -rf "$tmp"
 }
@@ -3032,6 +3088,37 @@ PY
     grep -qF 'dbip_mmdb' "$BATS_TEST_DIRNAME/../web/server.py"
     grep -qF 'allow_free' "$BATS_TEST_DIRNAME/../web/server.py"
     grep -qF 'multi_source' "$BATS_TEST_DIRNAME/../web/server.py"
+}
+
+@test "geoip: clean_provider_display strips AS suffixes and applies alias map" {
+    command -v python3 &>/dev/null || skip "python3 not available"
+    local tmp
+    tmp=$(mktemp -d)
+    mkdir -p "$tmp/web"
+    AWG_DIR="$tmp" SERVER_CONF_FILE="$tmp/awg0.conf" REPO_ROOT="$BATS_TEST_DIRNAME/.." python3 - <<'PY'
+import os
+from pathlib import Path
+import importlib.util
+spec = importlib.util.spec_from_file_location("server", Path(os.environ["REPO_ROOT"]) / "web" / "server.py")
+server = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(server)
+cpd = server.clean_provider_display
+assert cpd("BEE-AS") == "Beeline", cpd("BEE-AS")
+assert cpd("MEGAFON-AS") == "Megafon", cpd("MEGAFON-AS")
+assert cpd("IIP-NET-AS29233") == "IIP-NET", cpd("IIP-NET-AS29233")
+assert cpd("SINP-MSU") == "SINP-MSU", cpd("SINP-MSU")
+assert cpd("MCC") == "MCC", cpd("MCC")
+assert cpd("MTS") == "MTS", cpd("MTS")
+# Standalone "ASxxxx" provider has no good display name -> empty (caller falls back)
+assert cpd("AS16345") == "", cpd("AS16345")
+assert cpd("") == ""
+# Unknown raw names pass through cleaned but unaliased
+assert cpd("PJSC VimpelCom") == "PJSC VimpelCom", cpd("PJSC VimpelCom")
+# org fallback when provider is empty
+assert cpd("", "MEGAFON-AS") == "Megafon"
+print("OK")
+PY
+    rm -rf "$tmp"
 }
 
 @test "geoip: lookup_ip_enriched includes sanitized source_details per provider" {
@@ -3073,7 +3160,10 @@ assert "dbip" in sd, f"dbip missing from source_details: {sd}"
 assert sd["2ip"]["city"] == "Moscow"
 assert sd["2ip"]["asn"] == "AS29233"
 assert sd["2ip"]["provider"] == "IIP-NET-AS29233"
+assert sd["2ip"]["provider_display"] == "IIP-NET", f"provider_display={sd['2ip']['provider_display']}"
 assert sd["dbip"]["provider"] == "Moscow State University"
+assert sd["dbip"]["provider_display"] == "Moscow State University"
+assert info["provider_display"], f"top-level provider_display missing: {info.get('provider_display')!r}"
 # Internal fields (token/url) must never appear in source_details
 raw = json.dumps(sd)
 assert "shouldnotleak" not in raw, "secret leaked into source_details"
@@ -3108,6 +3198,123 @@ server.urlopen = raise_429
 # Direct provider call must return None on 429 (graceful fallback)
 r = server._fetch_2ip_provider("8.8.8.8")
 assert r is None, "2ip provider must return None on HTTP 429"
+PY
+    rm -rf "$tmp"
+}
+
+@test "geoip: 2ip_whois provider normalizes WHOIS response and is disabled by default" {
+    command -v python3 &>/dev/null || skip "python3 not available"
+    local tmp
+    tmp=$(mktemp -d)
+    mkdir -p "$tmp/web"
+    AWG_DIR="$tmp" SERVER_CONF_FILE="$tmp/awg0.conf" REPO_ROOT="$BATS_TEST_DIRNAME/.." python3 - <<'PY'
+import os, json as _json
+from pathlib import Path
+import importlib.util
+spec = importlib.util.spec_from_file_location("server", Path(os.environ["REPO_ROOT"]) / "web" / "server.py")
+server = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(server)
+
+# Disabled by default: no config entry at all -> None, no network call
+fake_cfg = {"providers": {"2ip": {"enabled": True, "token": "testtoken"}}}
+server.load_geoip_providers_config = lambda: fake_cfg
+def boom(url, timeout=None):
+    raise AssertionError("must not call network when 2ip_whois disabled")
+server.urlopen = boom
+assert server._fetch_2ip_whois_provider("128.71.202.174") is None
+
+# Enabled with token fallback from "2ip": normalizes whois response
+fake_cfg2 = {"providers": {
+    "2ip": {"enabled": True, "token": "testtoken"},
+    "2ip_whois": {"enabled": True, "token": "", "base_url": "https://api.2ip.io/whois", "only_on_refresh": True},
+}}
+server.load_geoip_providers_config = lambda: fake_cfg2
+urls_called = []
+class FakeResp:
+    def read(self, n): return _json.dumps({
+        "whois": {
+            "network": {"range": "128.70.0.0 - 128.71.255.255", "name": "BEELINE-BROADBAND",
+                        "description": "Dynamic IP Pool for Broadband Customers", "country": "RU"},
+            "route": {"range": "128.71.0.0/16", "description": "16345 Mobile Region", "asn": "AS16345"},
+            "org": None,
+        }
+    }).encode()
+    def __enter__(self): return self
+    def __exit__(self, *a): pass
+def fake_urlopen(url, timeout=None):
+    urls_called.append(url)
+    return FakeResp()
+server.urlopen = fake_urlopen
+r = server._fetch_2ip_whois_provider("128.71.202.174")
+assert r is not None, "whois provider must return a result when enabled"
+assert r["country_code"] == "RU"
+assert r["provider"] == "BEELINE-BROADBAND", r["provider"]
+assert r["org"] == "Dynamic IP Pool for Broadband Customers", r["org"]
+assert r["asn"] == "AS16345", r["asn"]
+assert r["city"] == "", "whois has no city"
+assert r["_source_name"] == "2ip_whois"
+raw = _json.dumps(r)
+assert "testtoken" not in raw, "token must not leak into normalized whois result"
+assert len(urls_called) == 1
+PY
+    rm -rf "$tmp"
+}
+
+@test "geoip: lookup_ip_enriched adds 2ip_whois to source_details only when want_whois enabled" {
+    command -v python3 &>/dev/null || skip "python3 not available"
+    local tmp
+    tmp=$(mktemp -d)
+    mkdir -p "$tmp/web"
+    AWG_DIR="$tmp" SERVER_CONF_FILE="$tmp/awg0.conf" REPO_ROOT="$BATS_TEST_DIRNAME/.." python3 - <<'PY'
+import os
+from pathlib import Path
+import importlib.util
+spec = importlib.util.spec_from_file_location("server", Path(os.environ["REPO_ROOT"]) / "web" / "server.py")
+server = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(server)
+
+def make_provider(name, provider_name="BEE-AS"):
+    def fn(ip):
+        return {"ip": ip, "country": "Russia", "country_code": "RU", "flag": "\U0001f1f7\U0001f1fa",
+                "region": "Samara Oblast", "city": "Samara", "asn": "AS16345", "asn_id": "16345",
+                "provider": provider_name, "org": provider_name, "timezone": "Europe/Samara",
+                "hosting": False, "lat": 53.2, "lon": 50.2, "_source_name": name}
+    return fn
+
+server._fetch_mmdb_provider = lambda ip: None
+server._fetch_dbip_mmdb_provider = lambda ip: None
+server._fetch_2ip_provider = make_provider("2ip")
+server._fetch_dbip_provider = lambda ip: None
+server._fetch_ipinfo_provider = lambda ip: None
+server._fetch_ipapi_provider = lambda ip: None
+whois_calls = [0]
+def fake_whois(ip):
+    whois_calls[0] += 1
+    return {"ip": ip, "country_code": "RU", "flag": "\U0001f1f7\U0001f1fa", "region": "", "city": "",
+            "asn": "AS16345", "asn_id": "16345", "provider": "BEELINE-BROADBAND",
+            "org": "Dynamic IP Pool for Broadband Customers", "network": "128.70.0.0 - 128.71.255.255",
+            "route": "128.71.0.0/16", "_source_name": "2ip_whois"}
+server._fetch_2ip_whois_provider = fake_whois
+
+# want_whois=False (default): no whois fetch
+info = server.lookup_ip_enriched("128.71.202.174", multi_source=True, want_whois=False)
+assert "2ip_whois" not in info["source_details"], info["source_details"]
+assert whois_calls[0] == 0
+
+# want_whois=True: whois enriches source_details but does not change primary fields
+server.IP_INFO_CACHE_FILE.unlink(missing_ok=True)
+info2 = server.lookup_ip_enriched("128.71.202.174", multi_source=True, want_whois=True, force_refresh=True)
+assert whois_calls[0] == 1
+assert "2ip_whois" in info2["source_details"], info2["source_details"]
+whois_detail = info2["source_details"]["2ip_whois"]
+assert whois_detail["provider"] == "BEELINE-BROADBAND"
+assert whois_detail["org"] == "Dynamic IP Pool for Broadband Customers"
+assert whois_detail["asn"] == "AS16345"
+assert whois_detail["network"] == "128.70.0.0 - 128.71.255.255"
+# Primary source for compact display remains 2ip, not whois
+assert info2["sources"][0] == "2ip", info2["sources"]
+assert info2["source_details"]["2ip"]["provider_display"] == "Beeline"
+print("OK")
 PY
     rm -rf "$tmp"
 }
@@ -3185,6 +3392,68 @@ if (helpers.formatGeoTooltip(null) !== "") throw new Error("null info should yie
 if (helpers.formatGeoCompact(null) !== "") throw new Error("null info should yield empty compact line");
 if (helpers.formatGeoCompact({}) !== "") throw new Error("empty info should yield empty compact line");
 if (helpers.preferredGeoSource(null) !== null) throw new Error("null info should yield null preferred source");
+
+console.log("OK");
+JS
+    node "$tmp/check.mjs" "$BATS_TEST_DIRNAME/../web/app.js"
+    rm -rf "$tmp"
+}
+
+@test "geoip: formatGeoCompact uses provider_display and formatGeoTooltip shows all sources incl. WHOIS" {
+    command -v node &>/dev/null || skip "node not available"
+    local tmp
+    tmp=$(mktemp -d)
+    cat > "$tmp/check.mjs" <<'JS'
+import fs from "node:fs";
+const src = fs.readFileSync(process.argv[2], "utf8");
+const start = src.indexOf("const _GEO_SOURCE_LABELS");
+const end = src.indexOf("function renderEndpointInfo");
+if (start < 0 || end < 0) throw new Error("geo helper block not found");
+const block = src.slice(start, end);
+const esc = (s) => String(s);
+const fn = new Function("esc", block + "\nreturn { formatGeoCompact, formatGeoSourceLine, formatGeoTooltip };");
+const helpers = fn(esc);
+
+// Beeline IP with all 4 sources, including 2ip_whois enrichment
+const info = {
+  city: "Samara", country_code: "RU", flag: "\u{1f1f7}\u{1f1fa}",
+  provider: "BEE-AS", provider_display: "Beeline", asn: "AS16345",
+  confidence: "high", sources: ["2ip", "dbip", "ip-api"], updated_at: "2026-06-10T12:00:00Z",
+  source_details: {
+    "2ip": { city: "Samara", country_code: "RU", provider: "BEE-AS", provider_display: "Beeline", org: "BEE-AS", asn: "AS16345" },
+    "dbip": { city: "Samara", country_code: "RU", provider: "PJSC VimpelCom", provider_display: "PJSC VimpelCom", org: "PJSC VimpelCom", asn: "AS16345" },
+    "ip-api": { city: "Samara", country_code: "RU", provider: "Beeline", provider_display: "Beeline", org: "Beeline", asn: "AS16345" },
+    "2ip_whois": { provider: "BEELINE-BROADBAND", provider_display: "Beeline Broadband", org: "Dynamic IP Pool for Broadband Customers", asn: "AS16345", network: "128.70.0.0 - 128.71.255.255", route: "128.71.0.0/16", country_code: "RU", city: "", region: "" },
+  },
+};
+
+// Compact line: provider_display (Beeline), no AS16345, no raw "BEE-AS"
+const compact = helpers.formatGeoCompact(info);
+if (compact !== "\u{1f1f7}\u{1f1fa} Samara, RU · Beeline · 2IP") throw new Error("compact wrong: " + compact);
+if (compact.includes("AS16345")) throw new Error("compact must not include ASN: " + compact);
+if (compact.includes("BEE-AS")) throw new Error("compact must not include raw provider: " + compact);
+
+// Tooltip: all sources shown, 2ip shows "Beeline (BEE-AS)" since display differs from raw
+const tooltip = helpers.formatGeoTooltip(info);
+if (!tooltip.includes("2IP: Samara, RU · Beeline (BEE-AS) · AS16345")) throw new Error("2ip line wrong: " + tooltip);
+// dbip provider_display equals raw provider -> no parenthetical
+if (!tooltip.includes("DB-IP: Samara, RU · PJSC VimpelCom · AS16345")) throw new Error("dbip line wrong: " + tooltip);
+if (tooltip.includes("PJSC VimpelCom (PJSC VimpelCom)")) throw new Error("dbip line should not duplicate identical name: " + tooltip);
+if (!tooltip.includes("ip-api: Samara, RU · Beeline · AS16345")) throw new Error("ip-api line wrong: " + tooltip);
+// WHOIS line: provider · org · asn, no city/region
+if (!tooltip.includes("WHOIS: BEELINE-BROADBAND · Dynamic IP Pool for Broadband Customers · AS16345")) throw new Error("whois line wrong: " + tooltip);
+if (!tooltip.includes("Updated: 2026-06-10T12:00:00Z")) throw new Error("updated line missing: " + tooltip);
+
+// Order: 2IP, DB-IP, ip-api, WHOIS, Updated
+const lines = tooltip.split("\n");
+const idx2ip = lines.findIndex((l) => l.startsWith("2IP:"));
+const idxDbip = lines.findIndex((l) => l.startsWith("DB-IP:"));
+const idxIpapi = lines.findIndex((l) => l.startsWith("ip-api:"));
+const idxWhois = lines.findIndex((l) => l.startsWith("WHOIS:"));
+const idxUpdated = lines.findIndex((l) => l.startsWith("Updated:"));
+if (!(idx2ip < idxDbip && idxDbip < idxIpapi && idxIpapi < idxWhois && idxWhois < idxUpdated)) {
+  throw new Error("unexpected tooltip ordering: " + tooltip);
+}
 
 console.log("OK");
 JS
