@@ -484,14 +484,33 @@ function geoSourceLabel(name) {
   return _GEO_SOURCE_LABELS[name] || name;
 }
 
-function formatGeoConsensus(info) {
+// Order in which a single "best" source is picked for the compact card line
+const _GEO_SOURCE_PRIORITY = ["2ip", "dbip", "maxmind", "dbip_mmdb", "ipinfo", "ip-api", "cache"];
+
+function preferredGeoSource(info) {
+  if (!info) return null;
+  const details = (info.source_details && typeof info.source_details === "object") ? info.source_details : {};
+  for (const src of _GEO_SOURCE_PRIORITY) {
+    const detail = details[src];
+    if (detail && (detail.city || detail.country_code || detail.asn || detail.provider)) {
+      return { source: src, label: geoSourceLabel(src), detail };
+    }
+  }
+  return null;
+}
+
+function formatGeoCompact(info) {
   if (!info) return "";
-  const cc = info.country_code || "";
-  const city = info.city || "";
-  const asn = info.asn || "";
-  const conf = info.confidence || "";
+  const preferred = preferredGeoSource(info);
+  const detail = preferred ? preferred.detail : {};
+  const city = detail.city || info.city || "";
+  const cc = detail.country_code || info.country_code || "";
+  const prov = detail.provider || detail.org || info.provider || info.org || "";
   const location = [city, cc].filter(Boolean).join(", ");
-  return [location, asn, conf].filter(Boolean).join(" · ");
+  const parts = [location, prov, preferred ? preferred.label : ""].filter(Boolean);
+  if (!parts.length) return "";
+  const flag = info.flag || "";
+  return (flag ? flag + " " : "") + parts.join(" · ");
 }
 
 function formatGeoSourceLine(source, detail) {
@@ -510,8 +529,6 @@ function formatGeoSourceLine(source, detail) {
 function formatGeoTooltip(info) {
   if (!info) return "";
   const lines = [];
-  const consensus = formatGeoConsensus(info);
-  if (consensus) lines.push(`Consensus: ${consensus}`);
   const details = (info.source_details && typeof info.source_details === "object") ? info.source_details : {};
   const sources = Array.isArray(info.sources) && info.sources.length ? info.sources : [];
   for (const src of sources) {
@@ -523,15 +540,6 @@ function formatGeoTooltip(info) {
   return lines.join("\n");
 }
 
-function formatGeoSourcesCompact(info) {
-  if (!info) return "";
-  const sources = (Array.isArray(info.sources) && info.sources.length
-    ? info.sources
-    : (info.source && info.source !== "cache" ? [info.source] : [])
-  ).filter(s => s !== "cache");
-  return sources.map(geoSourceLabel).join(" + ");
-}
-
 // Keep geoTooltip as alias so existing callers and tests continue to work
 function geoTooltip(info) {
   return formatGeoTooltip(info);
@@ -541,23 +549,15 @@ function renderEndpointInfo(client) {
   const endpoint = client.endpoint || "";
   if (!endpoint || endpoint === "-") return "";
   const info = client.endpoint_info || {};
-  const flag = info.flag || "";
-  const city = info.city || "";
-  const cc = info.country_code || "";
-  const asn = info.asn || "";
-  const conf = info.confidence || "";
-  if (!flag && !city && !cc && !info.country && !info.provider) {
+  const compact = formatGeoCompact(info);
+  if (!compact) {
     return '<div class="endpoint-info text-xs text-[var(--muted)]">IP info: unknown</div>';
   }
-  const location = [city, cc].filter(Boolean).join(", ");
-  const mainParts = [location, asn, conf].filter(Boolean);
-  const mainText = (flag ? esc(flag) + " " : "") + esc(mainParts.join(" · "));
-  const sourcesCompact = formatGeoSourcesCompact(info);
   const tooltip = formatGeoTooltip(info);
+  const conf = info.confidence || "";
   const confClass = conf ? `geo-confidence-${conf}` : "";
   return `<div class="endpoint-geo${confClass ? " " + confClass : ""}" title="${esc(tooltip)}">` +
-    `<span class="endpoint-geo-main">${mainText}</span>` +
-    (sourcesCompact ? `<span class="endpoint-geo-sources">${esc(sourcesCompact)}</span>` : "") +
+    `<span class="endpoint-geo-main">${esc(compact)}</span>` +
     `</div>`;
 }
 
@@ -859,8 +859,7 @@ function renderNettestReports() {
     const latency = row.latency || {};
     const timeline = row.timeline_summary || {};
     const geo = row.geo || {};
-    const geoConsensusLine = (geo.flag ? geo.flag + " " : "") + (formatGeoConsensus(geo) || [geo.city, geo.region, geo.country_code || geo.country].filter(Boolean).join(", ") || "-");
-    const geoSourcesCompact = formatGeoSourcesCompact(geo);
+    const geoLine = formatGeoCompact(geo) || [geo.city, geo.region, geo.country_code || geo.country].filter(Boolean).join(", ") || "-";
     const geoTip = formatGeoTooltip(geo);
     const findings = Array.isArray(assessment.findings) ? assessment.findings.slice(0, 3) : [];
     const internalIp = row["vp" + "n_client_ip"] || row.client_ip || "-";
@@ -880,8 +879,7 @@ function renderNettestReports() {
             <span>Public ${esc(publicIp)}</span>
             <span>IPv6 leak ${leak.ipv6_leak_suspected ? "yes" : (leak.browser_public_ipv6 ? "no" : "unknown")}</span>
             <span>WebRTC ${leak.webrtc_ipv6_risk ? "risk" : "ok/unknown"}</span>
-            <span title="${esc(geoTip)}">${esc(geoConsensusLine)}</span>
-            ${geoSourcesCompact ? `<span class="endpoint-geo-sources" title="${esc(geoTip)}">${esc(geoSourcesCompact)}</span>` : ""}
+            <span title="${esc(geoTip)}">Geo: ${esc(geoLine)}</span>
           </div>
         </div>
         <div class="nettest-report-stats">
@@ -1176,8 +1174,7 @@ function renderNettestResult(result) {
         <div class="nettest-metrics">
           <span>${"VP" + "N"} IP ${esc(shortValue(result["vp" + "n_client_ip"] || result.client_ip))}</span>
           <span>Public ${esc(shortValue(result.public_ip))}</span>
-          <span title="${esc(formatGeoTooltip(result.geo))}">Geo ${esc((result.geo?.flag ? result.geo.flag + " " : "") + (formatGeoConsensus(result.geo || {}) || "-"))}</span>
-          ${formatGeoSourcesCompact(result.geo || {}) ? `<span class="endpoint-geo-sources" title="${esc(formatGeoTooltip(result.geo))}">${esc(formatGeoSourcesCompact(result.geo || {}))}</span>` : ""}
+          <span title="${esc(formatGeoTooltip(result.geo))}">Geo ${esc(formatGeoCompact(result.geo || {}) || "-")}</span>
         </div>
       ` : ""}
       <div class="nettest-metrics">

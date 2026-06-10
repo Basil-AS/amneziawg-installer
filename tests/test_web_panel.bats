@@ -1,6 +1,8 @@
 #!/usr/bin/env bats
 # shellcheck disable=SC2016
 
+bats_require_minimum_version 1.5.0
+
 @test "web/server.py compiles with Python stdlib" {
     command -v python3 &>/dev/null || skip "python3 not available"
     python3 -m py_compile "$BATS_TEST_DIRNAME/../web/server.py"
@@ -2820,13 +2822,14 @@ PY
     grep -qF 'geo.get("confidence"' "$BATS_TEST_DIRNAME/../web/server.py"
 }
 
-@test "geoip: app.js displays geo sources and confidence in tooltip" {
+@test "geoip: app.js displays per-source breakdown in tooltip without consensus" {
     grep -qF 'geoTooltip' "$BATS_TEST_DIRNAME/../web/app.js"
     grep -qF 'formatGeoTooltip' "$BATS_TEST_DIRNAME/../web/app.js"
-    grep -qF 'Consensus:' "$BATS_TEST_DIRNAME/../web/app.js"
     grep -qF 'formatGeoSourceLine' "$BATS_TEST_DIRNAME/../web/app.js"
     grep -qF 'endpoint-geo-main' "$BATS_TEST_DIRNAME/../web/app.js"
-    grep -qF 'endpoint-geo-sources' "$BATS_TEST_DIRNAME/../web/app.js"
+    run ! grep -qF 'Consensus:' "$BATS_TEST_DIRNAME/../web/app.js"
+    run ! grep -qF 'formatGeoConsensus' "$BATS_TEST_DIRNAME/../web/app.js"
+    run ! grep -qF 'formatGeoSourcesCompact' "$BATS_TEST_DIRNAME/../web/app.js"
 }
 
 @test "geoip: app.js has source label helper for 2IP/DB-IP/MaxMind" {
@@ -3109,7 +3112,7 @@ PY
     rm -rf "$tmp"
 }
 
-@test "geoip: app.js formatGeoTooltip renders Consensus and per-source lines" {
+@test "geoip: formatGeoCompact uses preferred source without ASN/confidence, formatGeoTooltip has no Consensus" {
     command -v node &>/dev/null || skip "node not available"
     local tmp
     tmp=$(mktemp -d)
@@ -3121,22 +3124,25 @@ const end = src.indexOf("function renderEndpointInfo");
 if (start < 0 || end < 0) throw new Error("geo helper block not found");
 const block = src.slice(start, end);
 const esc = (s) => String(s);
-const fn = new Function("esc", block + "\nreturn { geoSourceLabel, formatGeoConsensus, formatGeoSourceLine, formatGeoTooltip, formatGeoSourcesCompact, geoTooltip };");
+const fn = new Function("esc", block + "\nreturn { geoSourceLabel, preferredGeoSource, formatGeoCompact, formatGeoSourceLine, formatGeoTooltip, geoTooltip };");
 const helpers = fn(esc);
 
-// Single source (low confidence, e.g. ip-api only)
+// Single source (ip-api only)
 const single = {
   city: "Moscow", country_code: "RU", asn: "AS29233", flag: "\u{1f1f7}\u{1f1fa}",
   confidence: "low", sources: ["ip-api"], updated_at: "2026-06-09T22:28:00Z",
   source_details: { "ip-api": { city: "Moscow", country_code: "RU", provider: "UMOS", org: "UMOS", asn: "AS29233" } },
 };
+const singleCompact = helpers.formatGeoCompact(single);
+if (singleCompact !== "\u{1f1f7}\u{1f1fa} Moscow, RU · UMOS · ip-api") throw new Error("single compact wrong: " + singleCompact);
+const singleSegments = singleCompact.split(" · ");
+if (singleSegments.includes("AS29233") || singleSegments.includes("low")) throw new Error("single compact leaks asn/confidence: " + singleCompact);
 const singleTip = helpers.formatGeoTooltip(single);
-if (!singleTip.includes("Consensus: Moscow, RU · AS29233 · low")) throw new Error("single consensus line wrong: " + singleTip);
+if (singleTip.includes("Consensus")) throw new Error("tooltip should not include Consensus: " + singleTip);
 if (!singleTip.includes("ip-api: Moscow, RU · UMOS · AS29233")) throw new Error("single source line wrong: " + singleTip);
 if (!singleTip.includes("Updated: 2026-06-09T22:28:00Z")) throw new Error("updated line missing: " + singleTip);
-if (helpers.formatGeoSourcesCompact(single) !== "ip-api") throw new Error("single compact wrong: " + helpers.formatGeoSourcesCompact(single));
 
-// Two sources, high confidence
+// Two sources: 2ip preferred over dbip
 const two = {
   city: "Moscow", country_code: "RU", asn: "AS29233", flag: "\u{1f1f7}\u{1f1fa}",
   confidence: "high", sources: ["2ip", "dbip"], updated_at: "2026-06-09T22:28:00Z",
@@ -3145,25 +3151,40 @@ const two = {
     "dbip": { city: "Moscow", country_code: "RU", provider: "Moscow State University", org: "Moscow State University", asn: "AS29233" },
   },
 };
+const twoCompact = helpers.formatGeoCompact(two);
+if (twoCompact !== "\u{1f1f7}\u{1f1fa} Moscow, RU · IIP-NET-AS29233 · 2IP") throw new Error("two compact wrong: " + twoCompact);
+const twoSegments = twoCompact.split(" · ");
+if (twoSegments.includes("AS29233") || twoSegments.includes("high")) throw new Error("two compact leaks asn/confidence as standalone segment: " + twoCompact);
+if (helpers.preferredGeoSource(two).source !== "2ip") throw new Error("preferred source should be 2ip: " + JSON.stringify(helpers.preferredGeoSource(two)));
 const twoTip = helpers.formatGeoTooltip(two);
-if (!twoTip.includes("Consensus: Moscow, RU · AS29233 · high")) throw new Error("two consensus wrong: " + twoTip);
+if (twoTip.includes("Consensus")) throw new Error("two tooltip should not include Consensus: " + twoTip);
 if (!twoTip.includes("2IP: Moscow, RU · IIP-NET-AS29233 · AS29233")) throw new Error("2ip line wrong: " + twoTip);
 if (!twoTip.includes("DB-IP: Moscow, RU · Moscow State University · AS29233")) throw new Error("dbip line wrong: " + twoTip);
-if (helpers.formatGeoSourcesCompact(two) !== "2IP + DB-IP") throw new Error("two compact wrong: " + helpers.formatGeoSourcesCompact(two));
 
-// Three sources
+// Three sources: 2ip still preferred, ip-api still appears in tooltip
 const three = { ...two, sources: ["2ip", "dbip", "ip-api"], source_details: { ...two.source_details,
   "ip-api": { city: "Moscow", country_code: "RU", provider: "UMOS", org: "UMOS", asn: "AS29233" } } };
-if (helpers.formatGeoSourcesCompact(three) !== "2IP + DB-IP + ip-api") throw new Error("three compact wrong: " + helpers.formatGeoSourcesCompact(three));
+if (helpers.formatGeoCompact(three) !== twoCompact) throw new Error("three compact should still prefer 2ip: " + helpers.formatGeoCompact(three));
 const threeTip = helpers.formatGeoTooltip(three);
 if (!threeTip.includes("ip-api: Moscow, RU · UMOS · AS29233")) throw new Error("ip-api line missing: " + threeTip);
+
+// dbip-only: falls back to dbip when 2ip absent
+const dbipOnly = {
+  city: "Moscow", country_code: "RU", flag: "\u{1f1f7}\u{1f1fa}",
+  sources: ["dbip"], updated_at: "2026-06-10T08:21:25Z",
+  source_details: { "dbip": { city: "Moscow", country_code: "RU", provider: "Moscow State University", org: "Moscow State University", asn: "AS12925" } },
+};
+if (helpers.preferredGeoSource(dbipOnly).source !== "dbip") throw new Error("preferred source should fall back to dbip");
+if (helpers.formatGeoCompact(dbipOnly) !== "\u{1f1f7}\u{1f1fa} Moscow, RU · Moscow State University · DB-IP") throw new Error("dbip-only compact wrong: " + helpers.formatGeoCompact(dbipOnly));
 
 // geoTooltip alias must match formatGeoTooltip
 if (helpers.geoTooltip(two) !== helpers.formatGeoTooltip(two)) throw new Error("geoTooltip alias mismatch");
 
 // Empty/missing info handled gracefully
 if (helpers.formatGeoTooltip(null) !== "") throw new Error("null info should yield empty tooltip");
-if (helpers.formatGeoSourcesCompact({}) !== "") throw new Error("empty info should yield empty sources");
+if (helpers.formatGeoCompact(null) !== "") throw new Error("null info should yield empty compact line");
+if (helpers.formatGeoCompact({}) !== "") throw new Error("empty info should yield empty compact line");
+if (helpers.preferredGeoSource(null) !== null) throw new Error("null info should yield null preferred source");
 
 console.log("OK");
 JS
@@ -3171,7 +3192,7 @@ JS
     rm -rf "$tmp"
 }
 
-@test "geoip: renderEndpointInfo applies confidence class and compact sources" {
+@test "geoip: renderEndpointInfo shows city/provider/source, hides ASN and confidence" {
     command -v node &>/dev/null || skip "node not available"
     local tmp
     tmp=$(mktemp -d)
@@ -3198,23 +3219,44 @@ const client = {
   },
 };
 const html = helpers.renderEndpointInfo(client);
+
+// Visible compact line: city, country, provider, source label only
+const mainMatch = html.match(/<span class="endpoint-geo-main">([^<]*)<\/span>/);
+if (!mainMatch) throw new Error("missing main span: " + html);
+const mainText = mainMatch[1];
+if (!mainText.includes("Moscow, RU")) throw new Error("missing location: " + mainText);
+if (!mainText.includes("IIP-NET-AS29233")) throw new Error("missing provider: " + mainText);
+if (!mainText.includes("2IP")) throw new Error("missing source label: " + mainText);
+const mainSegments = mainText.split(" · ");
+if (mainSegments.includes("AS29233")) throw new Error("compact line must not show ASN as standalone segment: " + mainText);
+if (mainSegments.includes("high") || mainSegments.includes("medium") || mainSegments.includes("low")) throw new Error("compact line must not show confidence: " + mainText);
+if (mainText.includes("Consensus")) throw new Error("compact line must not show Consensus: " + mainText);
+
+// CSS confidence class is allowed to remain (styling only, not visible text)
 if (!html.includes("geo-confidence-high")) throw new Error("missing confidence class: " + html);
-if (!html.includes("endpoint-geo-main")) throw new Error("missing main span: " + html);
-if (!html.includes("endpoint-geo-sources")) throw new Error("missing sources span: " + html);
-if (!html.includes("2IP + DB-IP")) throw new Error("missing compact sources: " + html);
-if (!html.includes("Moscow, RU")) throw new Error("missing location: " + html);
-if (!html.includes("AS29233")) throw new Error("missing asn: " + html);
-if (!html.includes("Consensus:")) throw new Error("missing consensus in tooltip: " + html);
+
+// Tooltip: per-source breakdown with ASN, no Consensus
+const titleMatch = html.match(/title="([^"]*)"/);
+if (!titleMatch) throw new Error("missing title: " + html);
+const tooltip = titleMatch[1];
+if (!tooltip.includes("2IP: Moscow, RU · IIP-NET-AS29233 · AS29233")) throw new Error("tooltip missing 2ip line: " + tooltip);
+if (!tooltip.includes("DB-IP: Moscow, RU · Moscow State University · AS29233")) throw new Error("tooltip missing dbip line: " + tooltip);
+if (tooltip.includes("Consensus")) throw new Error("tooltip must not include Consensus: " + tooltip);
 if (html.includes("secrettoken") || html.toLowerCase().includes("token=")) throw new Error("token leaked: " + html);
 
-// Low confidence -> geo-confidence-low class
+// Single source (ip-api), low confidence
 const lowClient = { endpoint: "1.2.3.4:51820", endpoint_info: {
   city: "Moscow", country_code: "RU", asn: "AS29233", flag: "\u{1f1f7}\u{1f1fa}",
-  confidence: "low", sources: ["ip-api"], source_details: { "ip-api": { city: "Moscow", country_code: "RU", provider: "UMOS", org: "UMOS", asn: "AS29233" } },
+  confidence: "low", sources: ["ip-api"], updated_at: "2026-06-10T08:21:25Z",
+  source_details: { "ip-api": { city: "Moscow", country_code: "RU", provider: "UMOS", org: "UMOS", asn: "AS29233" } },
 }};
 const lowHtml = helpers.renderEndpointInfo(lowClient);
+const lowMainMatch = lowHtml.match(/<span class="endpoint-geo-main">([^<]*)<\/span>/);
+if (!lowMainMatch) throw new Error("missing main span (low): " + lowHtml);
+const lowMainText = lowMainMatch[1];
+if (!lowMainText.includes("ip-api")) throw new Error("missing ip-api source label: " + lowMainText);
+if (lowMainText.includes("AS29233") || lowMainText.includes("low")) throw new Error("low compact line leaks asn/confidence: " + lowMainText);
 if (!lowHtml.includes("geo-confidence-low")) throw new Error("missing low confidence class: " + lowHtml);
-if (!lowHtml.includes("ip-api")) throw new Error("missing ip-api source label: " + lowHtml);
 
 // No endpoint -> empty string
 if (helpers.renderEndpointInfo({ endpoint: "" }) !== "") throw new Error("empty endpoint should render nothing");
@@ -3229,12 +3271,12 @@ JS
     rm -rf "$tmp"
 }
 
-@test "geoip: nettest report row shows compact geo consensus and sources" {
-    grep -qF 'formatGeoConsensus(geo)' "$BATS_TEST_DIRNAME/../web/app.js"
-    grep -qF 'formatGeoSourcesCompact(geo)' "$BATS_TEST_DIRNAME/../web/app.js"
+@test "geoip: nettest report row and live result use compact geo without consensus" {
+    grep -qF 'formatGeoCompact(geo)' "$BATS_TEST_DIRNAME/../web/app.js"
     grep -qF 'formatGeoTooltip(geo)' "$BATS_TEST_DIRNAME/../web/app.js"
+    grep -qF 'formatGeoCompact(result.geo' "$BATS_TEST_DIRNAME/../web/app.js"
     grep -qF 'formatGeoTooltip(result.geo)' "$BATS_TEST_DIRNAME/../web/app.js"
-    grep -qF 'formatGeoSourcesCompact(result.geo' "$BATS_TEST_DIRNAME/../web/app.js"
+    grep -qF 'Geo: ${esc(geoLine)}' "$BATS_TEST_DIRNAME/../web/app.js"
 }
 
 @test "geoip: style.css defines compact endpoint-geo classes" {
