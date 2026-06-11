@@ -34,13 +34,13 @@ MANAGE_SCRIPT_PATH="$AWG_DIR/manage_amneziawg.sh"
 # are used first; remote download is allowed only with pinned SHA256 or explicit
 # AWG_ALLOW_UNVERIFIED_DOWNLOAD=1 for development.
 declare -A AWG_ASSET_SHA256=(
-    ["awg_common_en.sh"]="a2d9027dc7de0c5e694c54a958e0a08768104b90a95d236e23eb44f16dddd767"
-    ["manage_amneziawg_en.sh"]="4d6eeb84901efe3863cc48f9c34efce98fd59191e26238f7e638eaee6c0744cd"
-    ["web/server.py"]="ab6c7c950b15898c1733d1664dbc1571f140ac4dac2df023724fc37df9453066"
+    ["awg_common_en.sh"]="a140a78d065b4a8b1479138854dea033447e4f93e42086068bef19c553601e74"
+    ["manage_amneziawg_en.sh"]="4c5e12156177fc5a58957f45744b81abae85b1a778d45298c7742efb836f698a"
+    ["web/server.py"]="70e6622591cdbcc53e8048c87b92b9a18728e303988de8715c2728879fb09ac3"
     ["web/index.html"]="7c07ed1d1991e08c0f9fc31e86ed8eb2bba5fa96387088f1f18918396cf7e662"
-    ["web/app.js"]="ef964127866ecb0b67538aec0e135e71f4ede9a347263d8929d09841910d9b26"
+    ["web/app.js"]="6bce67155f487fad0119f2dd740d416e8a5dc87170b680474ec63b7e713965e5"
     ["web/awg_i1.js"]="c97a6ac6c4e4bd7ab24c37c45f451e364414f276441f8da1c0805d26013aaa03"
-    ["web/style.css"]="cdba7e14f9dce6261b246ba4ea866a0b7a4faca59ce00a2c23a2829028da4555"
+    ["web/style.css"]="77e97b8755613efe90ab2b8e59e453fdee4572b9fd6c094df03f25668e1cb2c1"
     ["web/favicon.svg"]="ae700ecb12dbf01403d0ed25247bac6b70f11201b094ee6c14b774b7fa533859"
     ["web/vendor/tailwindcss.js"]="176e894661aa9cdc9a5cba6c720044cbbf7b8bd80d1c9a142a7c24b1b6c50d15"
     ["web/vendor/apexcharts.min.js"]="a7400cd48b40b4f39d1c15137ae0cc8cbec31dc2b55a606640f1cd11912416dd"
@@ -4999,6 +4999,8 @@ EOF
     chmod 644 /etc/systemd/system/awg-web.service
     systemctl daemon-reload
     systemctl enable awg-web.service 2>/dev/null || log_warn "Failed to enable awg-web.service"
+    install_nginx_awg0_wait_dropin "${AWG_NGINX_WAIT_IFACE:-awg0}" "${AWG_NGINX_WAIT_IP:-${AWG_TUNNEL_SUBNET%/*}}" "${AWG_NGINX_WAIT_TIMEOUT:-90}" \
+        || log_warn "Failed to install nginx wait-for-awg0 drop-in"
     log "Web panel deployed."
     if [[ -n "${AWG_WEB_SUPER_TOKEN_ONCE:-}" ]]; then
         log "Web super token: generated; raw value printed to console and INSTALL_SUMMARY only."
