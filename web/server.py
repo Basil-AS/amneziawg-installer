@@ -114,12 +114,6 @@ NETTEST_MAX_DOWNLOAD_SIZE = 1024 * 1024
 NETTEST_MAX_UPLOAD_SIZE = 512 * 1024
 NETTEST_MAX_REPORT_JSON = 512 * 1024
 VPN_NETTEST_PORT = 8088
-CLIENT_LATENCY_CACHE_TTL = 30.0
-CLIENT_LATENCY_FORCE_MIN_INTERVAL = 10.0
-CLIENT_LATENCY_STALE_AFTER = 15 * 60
-CLIENT_LATENCY_MAX_SCAN = 20
-CLIENT_LATENCY_LOCK = threading.Lock()
-CLIENT_LATENCY_CACHE = {"ts": 0.0, "value": None}
 IP_INFO_CACHE_TTL = 30 * 24 * 3600
 IP_INFO_NEGATIVE_TTL = 3600
 IP_INFO_ERROR_CACHE_TTL = 30 * 60
@@ -4682,147 +4676,6 @@ def parse_stats_rows(raw_out):
     return out
 
 
-def vpn_ipv4_network():
-    cfg = parse_config()
-    try:
-        return ipaddress.ip_network(cfg.get("AWG_TUNNEL_SUBNET") or "10.9.9.1/24", strict=False)
-    except ValueError:
-        return ipaddress.ip_network("10.9.9.0/24", strict=False)
-
-
-def validate_vpn_latency_target(value, network=None):
-    network = network or vpn_ipv4_network()
-    try:
-        ip = ipaddress.ip_address(str(value or "").strip())
-    except ValueError as exc:
-        raise ValueError("invalid vpn ip") from exc
-    if ip.version != 4 or ip not in network:
-        raise ValueError("vpn ip outside subnet")
-    if ip == network.network_address or ip == network.broadcast_address:
-        raise ValueError("invalid vpn ip")
-    return str(ip)
-
-
-def parse_ping_output(stdout):
-    text = stdout or ""
-    loss_match = re.search(r"(\d+(?:\.\d+)?)%\s*packet loss", text)
-    loss = float(loss_match.group(1)) if loss_match else 100.0
-    rtt = None
-    rtt_match = re.search(r"(?:rtt|round-trip) [^=]+ = ([0-9.]+)/([0-9.]+)/([0-9.]+)", text)
-    if rtt_match:
-        rtt = float(rtt_match.group(2))
-    else:
-        samples = [float(item) for item in re.findall(r"time[=<]([0-9.]+)\s*ms", text)]
-        if samples:
-            rtt = sum(samples) / len(samples)
-    if rtt is None and loss >= 100:
-        return {"status": "timeout", "rtt_ms": None, "loss_pct": 100.0, "samples": 0, "label": "timeout"}
-    status = "ok" if rtt is not None else "timeout"
-    samples = len(re.findall(r"bytes from ", text)) or (0 if rtt is None else 1)
-    label = f"{round(rtt):.0f} ms" if rtt is not None else "timeout"
-    return {"status": status, "rtt_ms": round(rtt, 1) if rtt is not None else None, "loss_pct": loss, "samples": samples, "label": label}
-
-
-def ping_vpn_client(ip):
-    target = validate_vpn_latency_target(ip)
-    try:
-        p = subprocess.run(
-            ["ping", "-n", "-c", "3", "-W", "1", "-i", "0.2", target],
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            timeout=4,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return {"status": "timeout", "rtt_ms": None, "loss_pct": 100.0, "samples": 3, "label": "timeout"}
-    parsed = parse_ping_output(p.stdout)
-    if p.returncode != 0 and parsed["rtt_ms"] is None:
-        parsed.update({"status": "timeout", "label": "timeout"})
-    return parsed
-
-
-def client_latency_payload(force=False):
-    now = time.time()
-    with CLIENT_LATENCY_LOCK:
-        cached = CLIENT_LATENCY_CACHE.get("value")
-        if not force and cached and now - CLIENT_LATENCY_CACHE.get("ts", 0) <= CLIENT_LATENCY_CACHE_TTL:
-            return json.loads(json.dumps(cached))
-        if force and cached and now - CLIENT_LATENCY_CACHE.get("ts", 0) < CLIENT_LATENCY_FORCE_MIN_INTERVAL:
-            return json.loads(json.dumps(cached))
-
-        peers = parse_peers()
-        stats = client_stats_map()
-        network = vpn_ipv4_network()
-        clients = {}
-        scanned = 0
-        reachable = []
-        timeout_count = 0
-        stale_count = 0
-        high_count = 0
-        active_count = 0
-
-        for peer in peers:
-            name = peer.get("name") or peer.get("config_name") or ""
-            if not name:
-                continue
-            vpn_ip = peer.get("ipv4") or ""
-            row_stats = stats.get(name, {})
-            last = int(row_stats.get("latestHandshakeAt", row_stats.get("last_handshake", 0)) or 0)
-            age = None if last <= 0 else max(0, int(now - last))
-            base = {
-                "vpn_ip": vpn_ip,
-                "latest_handshake_age": age,
-                "rtt_ms": None,
-                "loss_pct": None,
-                "samples": 0,
-            }
-            try:
-                target = validate_vpn_latency_target(vpn_ip, network)
-            except ValueError:
-                base.update({"status": "unknown", "label": "unknown"})
-                clients[name] = base
-                continue
-            if age is None or age > CLIENT_LATENCY_STALE_AFTER:
-                stale_count += 1
-                base.update({"status": "stale", "label": "offline"})
-                clients[name] = base
-                continue
-            active_count += 1
-            if scanned >= CLIENT_LATENCY_MAX_SCAN:
-                base.update({"status": "skipped", "label": "queued"})
-                clients[name] = base
-                continue
-            scanned += 1
-            result = ping_vpn_client(target)
-            base.update(result)
-            clients[name] = base
-            if result.get("rtt_ms") is not None:
-                reachable.append(float(result["rtt_ms"]))
-                if float(result["rtt_ms"]) > 200:
-                    high_count += 1
-            elif result.get("status") == "timeout":
-                timeout_count += 1
-
-        payload = {
-            "timestamp": utc_now_iso(),
-            "ttl_seconds": int(CLIENT_LATENCY_CACHE_TTL),
-            "clients": clients,
-            "diagnostics": {
-                "active_peers": active_count,
-                "stale_peers": stale_count,
-                "reachable_clients": len(reachable),
-                "timeout_clients": timeout_count,
-                "high_latency_clients": high_count,
-                "average_rtt_ms": round(sum(reachable) / len(reachable), 1) if reachable else None,
-                "scanned_clients": scanned,
-                "scan_cap": CLIENT_LATENCY_MAX_SCAN,
-            },
-        }
-        CLIENT_LATENCY_CACHE["ts"] = now
-        CLIENT_LATENCY_CACHE["value"] = payload
-        return json.loads(json.dumps(payload))
-
-
 def refresh_client_stats():
     started = time.time()
     try:
@@ -5539,13 +5392,6 @@ class Handler(SimpleHTTPRequestHandler):
             if not self.require_super(auth):
                 return
             self.send_json(audit_client_state())
-            return
-        if u.path == "/api/clients/latency":
-            if not self.require_super(auth):
-                return
-            query = parse_qs(u.query)
-            force = (query.get("refresh") or query.get("force") or [""])[0] in ("1", "true", "yes")
-            self.send_json(client_latency_payload(force=force))
             return
         if u.path == "/api/clients":
             stats = client_stats_map()

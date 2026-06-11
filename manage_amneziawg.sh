@@ -1907,8 +1907,6 @@ usage() {
     echo "  web token reset-super Перегенерировать super token"
     echo "  web token check <token> Проверить token без вывода секрета"
     echo "  web token status Показать состояние token store без секретов"
-    echo "  web fix-nginx-startup Установить systemd drop-in: nginx ждёт awg0 10.9.9.1"
-    echo "  web nginx-wait-awg0   Алиас для web fix-nginx-startup"
     echo "  regen <имя>           Безопасно перегенерировать конфиг клиента с ротацией ключей"
     echo "  regenerate <имя>      Алиас для regen <имя>"
     echo "  client regenerate <имя> То же самое через client namespace"
@@ -2368,14 +2366,11 @@ case $COMMAND in
 
     web)
         _sub="${ARGS[0]:-}"
-        case "$_sub" in
-            fix-nginx-startup|nginx-wait-awg0)
-                safe_load_config "$CONFIG_FILE" 2>/dev/null || true
-                install_nginx_awg0_wait_dropin "${AWG_NGINX_WAIT_IFACE:-awg0}" "${AWG_NGINX_WAIT_IP:-${AWG_WEB_BIND:-${AWG_TUNNEL_SUBNET%/*}}}" "${AWG_NGINX_WAIT_TIMEOUT:-90}" || _cmd_rc=1
-                ;;
-            token)
-                _token_cmd="${ARGS[1]:-list}"
-                case "$_token_cmd" in
+        if [[ "$_sub" != "token" ]]; then
+            die "Использование: web token list|create [--client NAME] [--name ALIAS]|add [ALIAS]|revoke <hash>|rotate <hash>|reset-super|check <token>|status"
+        fi
+        _token_cmd="${ARGS[1]:-list}"
+        case "$_token_cmd" in
             list)
                 web_token_py "list" || _cmd_rc=1
                 ;;
@@ -2435,11 +2430,6 @@ case $COMMAND in
                 ;;
             *)
                 die "Неизвестная web token команда: $_token_cmd"
-                ;;
-                esac
-                ;;
-            *)
-                die "Использование: web token list|create [--client NAME] [--name ALIAS]|add [ALIAS]|revoke <hash>|rotate <hash>|reset-super|check <token>|status|fix-nginx-startup|nginx-wait-awg0"
                 ;;
         esac
         ;;

@@ -34,13 +34,13 @@ MANAGE_SCRIPT_PATH="$AWG_DIR/manage_amneziawg.sh"
 # используются первыми; remote download разрешён только с pinned SHA256 либо
 # при явном AWG_ALLOW_UNVERIFIED_DOWNLOAD=1 для разработки.
 declare -A AWG_ASSET_SHA256=(
-    ["awg_common.sh"]="b74c48047331a758add7b70e26fd937ac2c976fb076d6303c655e63e3df8b4b6"
-    ["manage_amneziawg.sh"]="c6527d63bdab55d09c5385af603a59cf5d3f76caf48fcb6ff2ad42a59b648f54"
-    ["web/server.py"]="70e6622591cdbcc53e8048c87b92b9a18728e303988de8715c2728879fb09ac3"
+    ["awg_common.sh"]="1f1db2c1ff9301d4d484f868459ee54cc8ccffe8d7f35124aae0348b4fe09f2e"
+    ["manage_amneziawg.sh"]="0de85e03ca6e815548c05c96f0a584b39f06e88f34a4726c40e0225f467f59d1"
+    ["web/server.py"]="ab6c7c950b15898c1733d1664dbc1571f140ac4dac2df023724fc37df9453066"
     ["web/index.html"]="7c07ed1d1991e08c0f9fc31e86ed8eb2bba5fa96387088f1f18918396cf7e662"
-    ["web/app.js"]="6bce67155f487fad0119f2dd740d416e8a5dc87170b680474ec63b7e713965e5"
+    ["web/app.js"]="ef964127866ecb0b67538aec0e135e71f4ede9a347263d8929d09841910d9b26"
     ["web/awg_i1.js"]="c97a6ac6c4e4bd7ab24c37c45f451e364414f276441f8da1c0805d26013aaa03"
-    ["web/style.css"]="77e97b8755613efe90ab2b8e59e453fdee4572b9fd6c094df03f25668e1cb2c1"
+    ["web/style.css"]="cdba7e14f9dce6261b246ba4ea866a0b7a4faca59ce00a2c23a2829028da4555"
     ["web/favicon.svg"]="ae700ecb12dbf01403d0ed25247bac6b70f11201b094ee6c14b774b7fa533859"
     ["web/vendor/tailwindcss.js"]="176e894661aa9cdc9a5cba6c720044cbbf7b8bd80d1c9a142a7c24b1b6c50d15"
     ["web/vendor/apexcharts.min.js"]="a7400cd48b40b4f39d1c15137ae0cc8cbec31dc2b55a606640f1cd11912416dd"
@@ -4983,8 +4983,6 @@ EOF
     chmod 644 /etc/systemd/system/awg-web.service
     systemctl daemon-reload
     systemctl enable awg-web.service 2>/dev/null || log_warn "Не удалось enable awg-web.service"
-    install_nginx_awg0_wait_dropin "${AWG_NGINX_WAIT_IFACE:-awg0}" "${AWG_NGINX_WAIT_IP:-${AWG_TUNNEL_SUBNET%/*}}" "${AWG_NGINX_WAIT_TIMEOUT:-90}" \
-        || log_warn "Не удалось установить nginx wait-for-awg0 drop-in"
     log "Веб-панель развёрнута."
     if [[ -n "${AWG_WEB_SUPER_TOKEN_ONCE:-}" ]]; then
         log "Web super token: generated; raw value printed to console and INSTALL_SUMMARY only."

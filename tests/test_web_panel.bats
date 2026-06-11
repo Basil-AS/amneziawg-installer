@@ -23,37 +23,6 @@ bats_require_minimum_version 1.5.0
     fi
 }
 
-@test "nginx startup drop-in helper waits for awg0 and preserves nginx syntax test" {
-    local tmp dropin
-    tmp=$(mktemp -d)
-    AWG_SYSTEMD_DIR="$tmp/systemd" AWG_SKIP_SYSTEMCTL=1 bash -c '
-        source "$1"
-        install_nginx_awg0_wait_dropin awg0 10.9.9.1 90
-    ' _ "$BATS_TEST_DIRNAME/../awg_common.sh"
-    dropin="$tmp/systemd/nginx.service.d/10-wait-awg0.conf"
-    [ -f "$dropin" ]
-    grep -qF 'After=network-online.target' "$dropin"
-    grep -qF 'Wants=network-online.target' "$dropin"
-    grep -qF 'Restart=on-failure' "$dropin"
-    grep -qF 'ip -4 addr show dev awg0' "$dropin"
-    grep -qF 'inet 10.9.9.1/' "$dropin"
-    grep -qF 'ExecStartPre=' "$dropin"
-    grep -qF "/usr/sbin/nginx -t -q -g 'daemon on; master_process on;'" "$dropin"
-    rm -rf "$tmp"
-}
-
-@test "installer and manage expose nginx wait-for-awg0 fix with RU/EN parity" {
-    for f in install_amneziawg.sh install_amneziawg_en.sh; do
-        grep -qF 'install_nginx_awg0_wait_dropin' "$BATS_TEST_DIRNAME/../$f"
-    done
-    for f in manage_amneziawg.sh manage_amneziawg_en.sh awg_common.sh awg_common_en.sh; do
-        grep -qF 'fix-nginx-startup' "$BATS_TEST_DIRNAME/../$f" || grep -qF 'install_nginx_awg0_wait_dropin' "$BATS_TEST_DIRNAME/../$f"
-        grep -qF 'nginx-wait-awg0' "$BATS_TEST_DIRNAME/../$f" || grep -qF '10-wait-awg0.conf' "$BATS_TEST_DIRNAME/../$f"
-    done
-    run bash -c 'git -C "$1" ls-files | grep -E '"'"'(^|/)(tokens\.json|geoip_providers\.json|ip_cache\.json|.*\.mmdb|.*\.key|.*\.pem|.*\.log)$'"'"'' _ "$BATS_TEST_DIRNAME/.."
-    [ "$status" -eq 1 ]
-}
-
 @test "installer writes root-only INSTALL_SUMMARY with URLs credentials options and backups" {
     local installer="$BATS_TEST_DIRNAME/../install_amneziawg.sh"
     local tmp server_conf summary backup_count
@@ -1138,26 +1107,11 @@ PY
 
 @test "web UI renders compact endpoint IP info under endpoint" {
     grep -qF 'function renderEndpointInfo(client)' "$BATS_TEST_DIRNAME/../web/app.js"
-    grep -qF 'Endpoint: ${esc(endpoint)}</span>' "$BATS_TEST_DIRNAME/../web/app.js"
+    grep -qF 'Endpoint: ${esc(endpoint)}</p>' "$BATS_TEST_DIRNAME/../web/app.js"
     grep -qF '${renderEndpointInfo(client)}' "$BATS_TEST_DIRNAME/../web/app.js"
     grep -qF 'endpoint-info' "$BATS_TEST_DIRNAME/../web/app.js"
     grep -qF 'endpoint-geo-main' "$BATS_TEST_DIRNAME/../web/app.js"
     grep -qF '.endpoint-geo-main' "$BATS_TEST_DIRNAME/../web/style.css"
-}
-
-@test "web UI exposes latency chip, tooltip, manual refresh, and idle-safe polling" {
-    local app="$BATS_TEST_DIRNAME/../web/app.js"
-    local css="$BATS_TEST_DIRNAME/../web/style.css"
-    grep -qF 'function renderLatencyChip(client)' "$app"
-    grep -qF 'ICMP latency from server to client' "$app"
-    grep -qF 'Timeout may mean client blocks ICMP or is asleep' "$app"
-    grep -qF '/api/clients/latency' "$app"
-    grep -qF 'CLIENT_LATENCY_POLL_MS = 60000' "$app"
-    grep -qF 'if (shouldPollHeavy()) await loadClientLatency()' "$app"
-    grep -qF 'Refresh latency' "$app"
-    grep -qF '${statusState.role === "super" ? renderLatencyChip(client) : ""}' "$app"
-    grep -qF '.latency-chip' "$css"
-    grep -qF '.client-network-diagnostics' "$css"
 }
 
 @test "WG Tunnel import links are authenticated, RBAC scoped, hashed, and raw no-store" {
@@ -2148,98 +2102,6 @@ assert payload["cache_ttl_seconds"] == 5.0
 assert "cpu" in payload and "memory" in payload and "disk" in payload
 assert "network" in payload and "process" in payload
 assert payload["request"]["client_ip"] == "127.0.0.1"
-PY
-    rm -rf "$tmp"
-}
-
-@test "client latency API is super-only, validates VPN IPs, parses ping, and caches" {
-    command -v python3 &>/dev/null || skip "python3 not available"
-    local tmp
-    tmp=$(mktemp -d)
-    mkdir -p "$tmp/web"
-    AWG_DIR="$tmp" SERVER_CONF_FILE="$tmp/awg0.conf" REPO_ROOT="$BATS_TEST_DIRNAME/.." python3 - <<'PY'
-import importlib.util
-import io
-import json
-import os
-import time
-from pathlib import Path
-
-spec = importlib.util.spec_from_file_location("panel_server", Path(os.environ["REPO_ROOT"]) / "web" / "server.py")
-server = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(server)
-
-super_token = "super-secret"
-user_token = "user-secret"
-server.write_tokens({
-    "super_token_hash": server.token_hash(super_token),
-    "users": {server.token_hash(user_token): {"name": "user", "clients": []}},
-})
-now = int(time.time())
-server.parse_config = lambda: {"AWG_TUNNEL_SUBNET": "10.9.9.1/24"}
-server.parse_peers = lambda: [
-    {"name": "phone", "ipv4": "10.9.9.12"},
-    {"name": "sleepy", "ipv4": "10.9.9.31"},
-    {"name": "bad", "ipv4": "8.8.8.8"},
-]
-server.client_stats_map = lambda force=False: {
-    "phone": {"last_handshake": now - 20},
-    "sleepy": {"last_handshake": now - 2000},
-}
-calls = []
-def fake_ping(ip):
-    calls.append(ip)
-    return {"status": "ok", "rtt_ms": 34.2, "loss_pct": 0, "samples": 3, "label": "34 ms"}
-server.ping_vpn_client = fake_ping
-
-parsed = server.parse_ping_output("3 packets transmitted, 3 received, 0% packet loss\nrtt min/avg/max/mdev = 31.0/34.2/38.0/1.0 ms")
-assert parsed["status"] == "ok" and parsed["rtt_ms"] == 34.2 and parsed["loss_pct"] == 0
-timeout = server.parse_ping_output("3 packets transmitted, 0 received, 100% packet loss")
-assert timeout["status"] == "timeout" and timeout["label"] == "timeout"
-for bad in ("8.8.8.8", "10.9.8.1", "10.9.9.12;touch /tmp/x"):
-    try:
-        server.validate_vpn_latency_target(bad)
-        raise AssertionError("bad target accepted")
-    except ValueError:
-        pass
-
-class Headers(dict):
-    def get(self, key, default=None):
-        return super().get(key, default)
-
-def make_handler(token):
-    h = object.__new__(server.Handler)
-    h.path = "/api/clients/latency"
-    h.client_address = ("127.0.0.1", 12345)
-    h.rfile = io.BytesIO()
-    h.wfile = io.BytesIO()
-    h.responses = []
-    h.headers_sent = []
-    h.headers = Headers({"Host": "127.0.0.1", "Authorization": f"Bearer {token}"})
-    h.send_response = lambda code: h.responses.append(code)
-    h.send_error = lambda code, *args, **kwargs: h.responses.append(code)
-    h.send_header = lambda key, value: h.headers_sent.append((key, value))
-    h.end_headers = lambda: None
-    return h
-
-handler = make_handler(user_token)
-handler.do_GET()
-assert handler.responses == [403]
-
-handler = make_handler(super_token)
-handler.do_GET()
-assert handler.responses == [200]
-payload = json.loads(handler.wfile.getvalue().decode())
-assert payload["ttl_seconds"] == 30
-assert payload["clients"]["phone"]["status"] == "ok"
-assert payload["clients"]["sleepy"]["status"] == "stale"
-assert payload["clients"]["sleepy"]["label"] == "offline"
-assert payload["clients"]["bad"]["status"] == "unknown"
-assert calls == ["10.9.9.12"]
-
-handler = make_handler(super_token)
-handler.do_GET()
-assert len(calls) == 1, "fresh cache should avoid a second ping scan"
 PY
     rm -rf "$tmp"
 }
