@@ -8,6 +8,8 @@ let trafficState = null;
 let webAccessPolicyState = null;
 let serverHealthState = null;
 let serverHealthHistoryState = null;
+let readinessState = null;
+let readinessLoadedAt = 0;
 let serverInfoState = null;
 let nettestContextState = null;
 let nettestReportsState = [];
@@ -37,6 +39,7 @@ const NETTEST_STALL_THRESHOLD = 3;
 const NETTEST_PING_SAMPLES = 30;
 const NETTEST_PING_INTERVAL_MS = 250;
 const NETTEST_TIMEOUT_MS = 1800;
+const WEBRTC_LEAK_TIMEOUT_MS = 2500;
 const previousRx = new Map();
 const previousTx = new Map();
 const previousSampleAt = new Map();
@@ -49,6 +52,64 @@ const CLIENT_ACTION_MENU_PORTAL_ID = "clientActionMenuPortal";
 const CLIENT_NAME_RE = /^[A-Za-z0-9_-]+$/;
 const CLIENT_NAME_HINT_RU = "Используйте только латиницу, цифры, дефис и подчёркивание: A-Z, a-z, 0-9, _ и -";
 const CLIENT_NAME_HINT_EN = "Use only Latin letters, digits, underscore and hyphen: A-Z, a-z, 0-9, _ and -";
+
+// --- Idle-aware polling ---------------------------------------------------
+// After PANEL_IDLE_AFTER_MS without user activity (or while the tab is
+// hidden), heavy polling (clients/geoip, server health, charts, nettest
+// reports/context) is paused to a rare heartbeat, and an in-progress
+// Network Tester run is stopped so it doesn't leave a stale active-test lock.
+const PANEL_IDLE_AFTER_MS = 10 * 60 * 1000;
+const PANEL_IDLE_HEARTBEAT_MS = 5 * 60 * 1000;
+let panelLastActivityAt = Date.now();
+let panelIdle = false;
+
+function markPanelActivity() {
+  panelLastActivityAt = Date.now();
+  if (panelIdle && !document.hidden) onPanelResume();
+}
+
+function isPanelIdle() {
+  if (document.hidden) return true;
+  return Date.now() - panelLastActivityAt > PANEL_IDLE_AFTER_MS;
+}
+
+function shouldPollHeavy() {
+  return Boolean(token) && !isNetworkTesterPage() && !isPanelIdle();
+}
+
+function updatePanelIdleNote() {
+  const note = document.querySelector("#panelIdleNote");
+  if (note) note.classList.toggle("hidden", !panelIdle);
+}
+
+// One-shot refresh + restart polling when the panel comes back from idle.
+function onPanelResume() {
+  const wasIdle = panelIdle;
+  panelIdle = false;
+  updatePanelIdleNote();
+  if (!wasIdle || isNetworkTesterPage() || !token || !statusState) return;
+  loadClients();
+  startClientPolling();
+  if (statusState.role === "super") {
+    loadServerHealth();
+    loadNettestReports();
+    startServerHealthPolling();
+  }
+}
+
+// Re-evaluate idle state; called from poll ticks and the Network Tester loop.
+function checkPanelIdle() {
+  const idleNow = isPanelIdle();
+  if (idleNow === panelIdle) return panelIdle;
+  panelIdle = idleNow;
+  updatePanelIdleNote();
+  if (!idleNow) onPanelResume();
+  return panelIdle;
+}
+
+["mousemove", "mousedown", "keydown", "scroll", "touchstart", "focus"].forEach(evt => {
+  document.addEventListener(evt, markPanelActivity, {passive: true});
+});
 
 const icons = {
   sun: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3v2.2M12 18.8V21M4.2 4.2l1.6 1.6M18.2 18.2l1.6 1.6M3 12h2.2M18.8 12H21M4.2 19.8l1.6-1.6M18.2 5.8l1.6-1.6"/><circle cx="12" cy="12" r="4"/></svg>',
@@ -833,6 +894,142 @@ function renderServerHealth() {
   const stamp = document.querySelector("#serverHealthUpdated");
   if (stamp) stamp.textContent = h.timestamp ? `Updated ${h.timestamp}` : "";
   renderHealthHistory();
+  renderNetworkExplain();
+}
+
+// Explain WARN/critical "Network" status: split observed drop/error counters
+// into likely vs. not-likely causes (WAN link, overlay link, real TCP loss,
+// IPv6 routing) plus follow-up commands to confirm.
+function renderNetworkExplain() {
+  const host = document.querySelector("#networkExplain");
+  if (!host || statusState?.role !== "super") return;
+  if (!serverHealthState) {
+    host.innerHTML = "";
+    return;
+  }
+  const network = serverHealthState.network || {};
+  const wanIface = network.wan_iface || "wan";
+  const overlayIface = network["vp" + "n_iface"] || "link";
+  const wanDrops = Number(network.wan_drops_delta || 0);
+  const overlayDrops = Number(network["vp" + "n_drops_delta"] || 0);
+  const qdiscDrops = Number(network.qdisc_drop_delta || 0);
+  const tcpRetrans = Number(network.tcp_retrans_delta || 0);
+  const tcpTimeouts = Number(network.tcp_timeout_delta || 0);
+  const ip6NoRoute = Number(network.ip6_no_route_delta || 0);
+  const errors = Number(network.errors_delta || 0);
+
+  const likely = [];
+  const notLikely = [];
+  const nextChecks = [];
+  const overlayLabel = "VP" + "N";
+
+  if (wanDrops > 0 || qdiscDrops > 0) {
+    likely.push(`WAN link (${wanIface}) drops: interface +${wanDrops}, qdisc +${qdiscDrops} - often queue/driver limits or upstream congestion.`);
+    nextChecks.push(`tc -s qdisc show dev ${wanIface}`);
+  } else {
+    notLikely.push(`WAN interface (${wanIface}) drops: none observed.`);
+  }
+
+  if (overlayDrops > 0) {
+    likely.push(`${overlayLabel} link (${overlayIface}) drops +${overlayDrops} - check the overlay MTU and client-side buffers.`);
+    nextChecks.push(`ip -s link show ${overlayIface}`);
+  } else {
+    notLikely.push(`${overlayLabel} link (${overlayIface}) drops: none observed.`);
+  }
+
+  if (tcpRetrans > 0 || tcpTimeouts > 0) {
+    likely.push(`Real packet loss: TCP retransmits +${tcpRetrans}, TCP timeouts +${tcpTimeouts}.`);
+    nextChecks.push("grep -i tcpext /proc/net/netstat");
+  } else {
+    notLikely.push("TCP retransmits/timeouts: none observed.");
+  }
+
+  if (ip6NoRoute > 0) {
+    likely.push(`IPv6 packets with no route +${ip6NoRoute} - expected if IPv6/AAAA is disabled, otherwise check the IPv6 default route.`);
+    nextChecks.push("ip -6 route show default");
+  } else {
+    notLikely.push("IPv6 'no route' drops: none observed.");
+  }
+
+  if (errors > 0) {
+    likely.push(`Interface errors +${errors} (CRC/frame, etc.) - check cabling/driver on ${wanIface}.`);
+    nextChecks.push(`ethtool -S ${wanIface} | grep -i err`);
+  }
+
+  const status = network.status || "unknown";
+  host.innerHTML = `
+    <details class="mt-3 rounded-md border border-[var(--line)] bg-[var(--soft)] px-3 py-2 text-xs text-[var(--muted)]"${status !== "ok" ? " open" : ""}>
+      <summary class="cursor-pointer font-medium text-[var(--text)]">Network drops &amp; errors explained ${healthBadge(status)}</summary>
+      <div class="mt-2 grid gap-1.5">
+        ${likely.length ? `<p class="font-semibold text-[var(--text)]">Likely</p><ul class="nettest-notes">${likely.map(t => `<li>${esc(t)}</li>`).join("")}</ul>` : ""}
+        ${notLikely.length ? `<p class="mt-1 font-semibold text-[var(--text)]">Not likely</p><ul class="nettest-notes">${notLikely.map(t => `<li>${esc(t)}</li>`).join("")}</ul>` : ""}
+        ${nextChecks.length ? `<p class="mt-1 font-semibold text-[var(--text)]">Next checks</p><ul class="nettest-notes">${nextChecks.map(t => `<li><code>${esc(t)}</code></li>`).join("")}</ul>` : ""}
+      </div>
+    </details>
+  `;
+}
+
+function renderReadinessRow(label, status, detail) {
+  return `
+    <div class="readiness-row">
+      <div class="readiness-row-head">
+        <span>${esc(label)}</span>
+        ${healthBadge(status || "unknown")}
+      </div>
+      ${detail ? `<p>${esc(detail)}</p>` : ""}
+    </div>
+  `;
+}
+
+// Readiness: kernel/crypto/virtualization/forwarding/buffers/offloads/
+// IPv6 routing/NDP proxy checks (server-cached for several minutes, so this
+// is refreshed on a slower cadence than health).
+function renderReadiness() {
+  const host = document.querySelector("#readinessGrid");
+  if (!host || statusState?.role !== "super") return;
+  if (!readinessState) {
+    host.innerHTML = `<p class="text-sm text-[var(--muted)]">${"VP" + "N"} readiness unavailable</p>`;
+    return;
+  }
+  const r = readinessState;
+  const kernel = r.kernel || {};
+  const crypto = r.crypto || {};
+  const virt = r.virtualization || {};
+  const ipFwd = r.ip_forwarding || {};
+  const udpBuf = r.udp_buffers || {};
+  const offloads = r.wan_offloads || {};
+  const ipv6Routing = r.ipv6_routing || {};
+  const ndp = r.ndp_proxy || {};
+  const cryptoFlags = (crypto.accelerated_flags || []).join(", ") || "none detected";
+  const offloadsList = Object.entries(offloads.offloads || {}).map(([k, v]) => `${k}=${v}`).join(", ") || "n/a";
+
+  host.innerHTML = `
+    ${renderReadinessRow("Kernel modules", kernel.status, `${kernel.detail || ""}${kernel.release ? ` (${kernel.release})` : ""}`)}
+    ${renderReadinessRow("Crypto features", crypto.status, `${crypto.detail || ""} - ${crypto.arch || "unknown"}: ${cryptoFlags}`)}
+    ${renderReadinessRow("Virtualization", virt.status, virt.type || "unknown")}
+    ${renderReadinessRow("IP forwarding", ipFwd.status, `IPv4 ${ipFwd.ipv4_forwarding ? "on" : "off"} · IPv6 ${ipFwd.ipv6_forwarding ? "on" : "off"}`)}
+    ${renderReadinessRow("UDP buffers", udpBuf.status, `rmem_max ${bytes(udpBuf.rmem_max || 0)} · wmem_max ${bytes(udpBuf.wmem_max || 0)} (recommended ≥ ${bytes(udpBuf.recommended_min || 0)})`)}
+    ${renderReadinessRow("WAN offloads", offloads.status, offloads.iface ? `${offloads.iface}: ${offloadsList}` : "n/a")}
+    ${renderReadinessRow("IPv6 routing", ipv6Routing.status, `${ipv6Routing.mode || "unknown"}${ipv6Routing.global_address ? " · global address present" : ""}`)}
+    ${renderReadinessRow("NDP proxy / ndppd", ndp.status, ndp.detail || "")}
+  `;
+  const stamp = document.querySelector("#readinessUpdated");
+  if (stamp) stamp.textContent = r.timestamp ? `Updated ${r.timestamp}` : "";
+}
+
+// Server-cached for cache_ttl_seconds (5-10 min); avoid re-fetching on every
+// 10s health poll by gating on a client-side minimum interval too.
+async function loadReadiness(force = false) {
+  if (statusState?.role !== "super") return;
+  if (!force && readinessState && Date.now() - readinessLoadedAt < 4 * 60 * 1000) return;
+  try {
+    readinessState = await api("/api/" + "vp" + "n-readiness");
+    readinessLoadedAt = Date.now();
+    renderReadiness();
+  } catch {
+    const host = document.querySelector("#readinessGrid");
+    if (host) host.innerHTML = `<p class="text-sm text-[var(--muted)]">${"VP" + "N"} readiness unavailable</p>`;
+  }
 }
 
 async function loadServerHealth() {
@@ -842,6 +1039,7 @@ async function loadServerHealth() {
     serverHealthState = await api("/api/server-health");
     renderServerHealth();
     await loadServerHealthHistory();
+    await loadReadiness();
   } catch {
     const host = document.querySelector("#serverHealthGrid");
     if (host) host.innerHTML = `<p class="text-sm text-[var(--muted)]">Health unavailable</p>`;
@@ -870,8 +1068,9 @@ function startServerHealthPolling() {
   stopServerHealthPolling();
   if (!token || statusState?.role !== "super") return;
   const tick = async () => {
-    await loadServerHealth();
-    healthTimer = setTimeout(tick, SERVER_HEALTH_POLL_MS);
+    checkPanelIdle();
+    if (shouldPollHeavy()) await loadServerHealth();
+    healthTimer = setTimeout(tick, panelIdle ? PANEL_IDLE_HEARTBEAT_MS : SERVER_HEALTH_POLL_MS);
   };
   healthTimer = setTimeout(tick, SERVER_HEALTH_POLL_MS);
 }
@@ -1016,9 +1215,14 @@ async function collectWebrtcCandidates() {
         if (isPrivateCandidate(addr)) priv.add(addr);
       }
     };
-    const offer = await pc.createOffer();
-    await pc.setLocalDescription(offer);
-    await sleep(1200);
+    // Bound the whole gathering step so a stuck createOffer/setLocalDescription
+    // can't leave the RTCPeerConnection (and this probe) running indefinitely.
+    const gather = (async () => {
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      await sleep(1200);
+    })();
+    await Promise.race([gather, sleep(WEBRTC_LEAK_TIMEOUT_MS)]);
   } catch {
     // Browsers may hide host candidates; keep this check best-effort.
   } finally {
@@ -1034,6 +1238,20 @@ async function collectWebrtcCandidates() {
 async function runLeakChecks(context) {
   const notes = [];
   const secureV6Key = "v" + "pn_ipv6";
+  if (isPanelIdle()) {
+    return {
+      browser_public_ipv4: "",
+      browser_public_ipv6: "",
+      server_public_ipv4: context?.server_public_ipv4 || "",
+      server_public_ipv6: context?.server_public_ipv6 || "",
+      [secureV6Key]: context?.[secureV6Key] || "",
+      ipv6_leak_suspected: false,
+      webrtc_available: false,
+      webrtc_ipv6_candidates: [],
+      webrtc_private_candidates: [],
+      notes: ["Skipped: tab inactive or idle"],
+    };
+  }
   let browser4 = "", browser6 = "";
   try {
     const data4 = await fetchJsonMaybe("https://api.ipify.org?format=json");
@@ -1287,7 +1505,7 @@ async function runNetworkTest() {
   stopNettest({reason: "restart"});
   nettestRunning = true;
   activeNettestController = new AbortController();
-  let reportSent = false;
+  let stopReason = "error";
   const durationSec = nettestDuration;
   const startBtn = document.querySelector("#startNettest");
   const statusEl = document.querySelector("#nettestStatus");
@@ -1324,8 +1542,15 @@ async function runNetworkTest() {
     const downloadProbes = [], uploadProbes = [];
     const probeEpochs = nettestProbeEpochs(durationSec);
     let nextEpochIdx = 0;
+    let stoppedIdle = false;
 
     while (Date.now() < deadline) {
+      if (checkPanelIdle()) {
+        stoppedIdle = true;
+        stopReason = "idle";
+        if (statusEl) statusEl.textContent = "Test stopped due to inactive tab.";
+        break;
+      }
       const elapsedSec = Math.floor((durationSec * 1000 - Math.max(0, deadline - Date.now())) / 1000);
       showLive(elapsedSec, successProbes, totalProbes, stallEvents);
 
@@ -1367,6 +1592,11 @@ async function runNetworkTest() {
       }
       totalProbes++;
       await sleep(NETTEST_PROBE_INTERVAL_MS);
+    }
+
+    if (stoppedIdle) {
+      showToast("Network test stopped due to inactive tab", "error");
+      return;
     }
 
     if (inStall && stallEvents.length > 0) {
@@ -1422,7 +1652,7 @@ async function runNetworkTest() {
       context: nettestContextState,
     };
     const saved = await apiNettest(`${nettestApiBase()}/report`, {method: "POST", body: JSON.stringify(report)});
-    reportSent = true;
+    stopReason = "report";
     renderNettestResult(saved.report || report);
     if (statusEl) statusEl.textContent = "Report saved.";
     if (statusState?.role === "super") await loadNettestReports();
@@ -1431,8 +1661,9 @@ async function runNetworkTest() {
     showToast(error.message || "Network test failed", "error");
   } finally {
     // On success the server already cleared the active-test lock via
-    // /report; otherwise best-effort cancel so a retry isn't blocked.
-    stopNettest({reason: reportSent ? "report" : "error"});
+    // /report; otherwise (including an idle-triggered stop) best-effort
+    // cancel so a retry isn't blocked by a stale active-test lock.
+    stopNettest({reason: stopReason});
     if (startBtn) startBtn.disabled = false;
   }
 }
@@ -1525,6 +1756,7 @@ async function renderPanel() {
         <button id="logout" class="${buttonClasses()}">${icon("logout")}<span>Logout</span></button>
       </div>
     </header>
+    <p id="panelIdleNote" class="hidden text-xs text-[var(--muted)]">Paused background refresh after 10 min idle</p>
 
     <section class="summary-cards mt-3">
       <div class="summary-card summary-card-narrow">
@@ -1584,7 +1816,15 @@ async function renderPanel() {
         <p id="serverHealthUpdated" class="text-xs text-[var(--muted)]"></p>
       </div>
       <div id="serverHealthGrid" class="server-health-grid mt-3"></div>
+      <div id="networkExplain"></div>
       <div id="serverHealthHistory" class="mt-3"></div>
+      <div class="mt-4">
+        <div class="flex flex-wrap items-center justify-between gap-3">
+          <p class="text-xs font-semibold uppercase text-[var(--muted)]">${"VP" + "N"} readiness</p>
+          <p id="readinessUpdated" class="text-xs text-[var(--muted)]"></p>
+        </div>
+        <div id="readinessGrid" class="readiness-grid mt-2"></div>
+      </div>
     </section>
 
     <section id="networkTesterPanel" class="mt-3 rounded-lg border border-[var(--line)] bg-[var(--panel)] p-4">
@@ -1787,6 +2027,7 @@ async function loadClients() {
 }
 
 function nextClientPollDelay() {
+  if (panelIdle) return PANEL_IDLE_HEARTBEAT_MS;
   return document.hidden ? HIDDEN_CLIENT_POLL_MS : ACTIVE_CLIENT_POLL_MS;
 }
 
@@ -1799,13 +2040,15 @@ function startClientPolling() {
   stopClientPolling();
   if (!token) return;
   const tick = async () => {
-    await loadClients();
+    checkPanelIdle();
+    if (shouldPollHeavy()) await loadClients();
     pollTimer = setTimeout(tick, nextClientPollDelay());
   };
   pollTimer = setTimeout(tick, nextClientPollDelay());
 }
 
 document.addEventListener("visibilitychange", () => {
+  markPanelActivity();
   if (isNetworkTesterPage()) return;
   if (token && statusState) startClientPolling();
   if (token && statusState?.role === "super") startServerHealthPolling();

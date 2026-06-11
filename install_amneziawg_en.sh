@@ -34,13 +34,13 @@ MANAGE_SCRIPT_PATH="$AWG_DIR/manage_amneziawg.sh"
 # are used first; remote download is allowed only with pinned SHA256 or explicit
 # AWG_ALLOW_UNVERIFIED_DOWNLOAD=1 for development.
 declare -A AWG_ASSET_SHA256=(
-    ["awg_common_en.sh"]="49afccc91f3dcb73e35f116a53759dddb44740bcb0c1558d2389dd9df61b7ed9"
+    ["awg_common_en.sh"]="a4b4249432e15aa1b668c747fb6351af14b7e3fc97d40ef42d1773a373bd32ff"
     ["manage_amneziawg_en.sh"]="3632fa40be5e351d77b220c14d99663244cbdce4446102462784c16f80218d7f"
-    ["web/server.py"]="8f6af8746a2100dc69685d7e6ea5187fb75156ed312c7f9fa49e386783ddcbab"
+    ["web/server.py"]="c0d7f8d7df627e238271f11727e049c5096297e86825170ef8fbc43522a8598b"
     ["web/index.html"]="7c07ed1d1991e08c0f9fc31e86ed8eb2bba5fa96387088f1f18918396cf7e662"
-    ["web/app.js"]="938c36a7b8cc72a9393cbdaafc7b80ffa4d75f6f2f54b3c0845b785af7ded40c"
+    ["web/app.js"]="4c981d2441f33da1d2ae17bc733ee1a32a15e2c5e4dbde5138a1bfb1ba223dff"
     ["web/awg_i1.js"]="c97a6ac6c4e4bd7ab24c37c45f451e364414f276441f8da1c0805d26013aaa03"
-    ["web/style.css"]="67d6b505f68bacdabdf1e2519633bf59458fd2dfe617505fe740a089124dd059"
+    ["web/style.css"]="cdba7e14f9dce6261b246ba4ea866a0b7a4faca59ce00a2c23a2829028da4555"
     ["web/favicon.svg"]="ae700ecb12dbf01403d0ed25247bac6b70f11201b094ee6c14b774b7fa533859"
     ["web/vendor/tailwindcss.js"]="176e894661aa9cdc9a5cba6c720044cbbf7b8bd80d1c9a142a7c24b1b6c50d15"
     ["web/vendor/apexcharts.min.js"]="a7400cd48b40b4f39d1c15137ae0cc8cbec31dc2b55a606640f1cd11912416dd"
@@ -5663,6 +5663,10 @@ step99_finish() {
     log "IMPORTANT:"
     print_summary_notice_block
     log " "
+    if declare -f print_vpn_readiness_checklist >/dev/null 2>&1; then
+        print_vpn_readiness_checklist
+        log " "
+    fi
     cleanup_apt
     log " "
 

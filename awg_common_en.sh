@@ -1092,6 +1092,143 @@ ensure_amneziawg_kernel_module() {
 }
 
 # ==============================================================================
+# VPN readiness diagnostic checklist
+# ==============================================================================
+
+# Prints a readiness checklist for AmneziaWG: kernel module, hardware crypto
+# acceleration, virtualization, IP forwarding, UDP buffers, WAN offloads,
+# IPv6 routing and NDP proxy (ndppd). Diagnostics only: never modifies the
+# host and always returns 0 so it cannot break the install flow (see
+# install_amneziawg_en.sh step99).
+print_vpn_readiness_checklist() {
+    log "--- AmneziaWG readiness check (VPN readiness) ---"
+
+    # 1. amneziawg/wireguard kernel module
+    local mods has_awg=0 has_wg=0
+    mods="$(lsmod 2>/dev/null | awk '{print $1}')"
+    { grep -qx 'amneziawg' <<<"$mods"; } && has_awg=1
+    [[ -d /sys/module/amneziawg ]] && has_awg=1
+    { grep -qx 'wireguard' <<<"$mods"; } && has_wg=1
+    [[ -d /sys/module/wireguard ]] && has_wg=1
+    if [[ "$has_awg" -eq 1 ]]; then
+        log "  [OK]   Kernel module: amneziawg loaded (kernel $(uname -r))"
+    elif [[ "$has_wg" -eq 1 ]]; then
+        log "  [OK]   Kernel module: wireguard loaded (kernel $(uname -r))"
+    else
+        log_warn "  [WARN] Kernel module: amneziawg/wireguard not found (a userspace implementation may be in use)"
+    fi
+
+    # 2. Hardware crypto acceleration (CPU flags)
+    local arch flags accel="" fast=0
+    arch="$(uname -m)"
+    flags=" $(awk -F: '/^(flags|Features)[[:space:]]*:/ {print $2; exit}' /proc/cpuinfo 2>/dev/null) "
+    case "$arch" in
+        x86_64|amd64|i386|i686)
+            for f in aes avx avx2 bmi2 adx rdrand pclmulqdq; do
+                [[ "$flags" == *" $f "* ]] && accel="${accel:+$accel }$f"
+            done
+            [[ "$flags" == *" aes "* && "$flags" == *" avx2 "* ]] && fast=1
+            ;;
+        arm*|aarch64)
+            for f in aes pmull sha1 sha2 asimd; do
+                [[ "$flags" == *" $f "* ]] && accel="${accel:+$accel }$f"
+            done
+            [[ "$flags" == *" aes "* && "$flags" == *" asimd "* ]] && fast=1
+            ;;
+    esac
+    if [[ "$fast" -eq 1 ]]; then
+        log "  [OK]   Crypto: hardware crypto acceleration available (${arch}: ${accel})"
+    elif [[ -n "$accel" ]]; then
+        log "  [INFO] Crypto: partial crypto acceleration (${arch}: ${accel})"
+    else
+        log_warn "  [WARN] Crypto: no hardware crypto acceleration detected (${arch}) — AmneziaWG will fall back to software crypto"
+    fi
+
+    # 3. Virtualization (informational)
+    local virt
+    virt="$(systemd-detect-virt 2>/dev/null || echo unknown)"
+    log "  [INFO] Virtualization: ${virt}"
+
+    # 4. IP forwarding (critical for VPN routing)
+    local v4fwd v6fwd
+    v4fwd="$(cat /proc/sys/net/ipv4/ip_forward 2>/dev/null || echo 0)"
+    v6fwd="$(cat /proc/sys/net/ipv6/conf/all/forwarding 2>/dev/null || echo 0)"
+    if [[ "$v4fwd" == "1" ]]; then
+        log "  [OK]   IP forwarding: IPv4 enabled (IPv6: $([[ "$v6fwd" == "1" ]] && echo on || echo off))"
+    else
+        log_error "  [FAIL] IP forwarding: net.ipv4.ip_forward=0 — VPN client traffic will not be routed"
+    fi
+
+    # 5. Kernel UDP buffers
+    local rmem wmem recommended=2500000
+    rmem="$(cat /proc/sys/net/core/rmem_max 2>/dev/null || echo 0)"
+    wmem="$(cat /proc/sys/net/core/wmem_max 2>/dev/null || echo 0)"
+    if [[ "$rmem" -ge "$recommended" && "$wmem" -ge "$recommended" ]]; then
+        log "  [OK]   UDP buffers: rmem_max=${rmem}, wmem_max=${wmem} (>= ${recommended})"
+    else
+        log_warn "  [WARN] UDP buffers: rmem_max=${rmem}, wmem_max=${wmem} (recommended >= ${recommended}) — throughput may suffer under load"
+    fi
+
+    # 6. WAN offloads (informational only — not treated as a problem)
+    local wan_iface offload_info
+    wan_iface="$(get_main_nic)"
+    if [[ -n "$wan_iface" ]] && command -v ethtool >/dev/null 2>&1; then
+        offload_info="$(ethtool -k "$wan_iface" 2>/dev/null | awk -F': ' '
+            /^(tcp-segmentation-offload|generic-segmentation-offload|generic-receive-offload|large-receive-offload|udp-fragmentation-offload)/ {
+                gsub(/[ \t].*/, "", $2); printf "%s=%s ", $1, $2
+            }')"
+        log "  [INFO] WAN offloads (${wan_iface}): ${offload_info:-n/a}"
+    else
+        log "  [INFO] WAN offloads: interface not detected or ethtool unavailable"
+    fi
+
+    # 7. IPv6 routing (informational)
+    local v6disabled has_global_v6=0 v6mode
+    v6disabled="$(cat /proc/sys/net/ipv6/conf/all/disable_ipv6 2>/dev/null || echo 0)"
+    if [[ -r /proc/net/if_inet6 ]]; then
+        while read -r _addr _idx _plen scope _flags name; do
+            if [[ "$scope" == "00" && "$name" != "lo" ]]; then
+                has_global_v6=1
+                break
+            fi
+        done < /proc/net/if_inet6
+    fi
+    if [[ "$v6disabled" != "1" && "$has_global_v6" -eq 1 ]]; then
+        v6mode="enabled"
+    else
+        v6mode="disabled"
+    fi
+    log "  [INFO] IPv6 routing: ${v6mode} (global address: $([[ "$has_global_v6" -eq 1 ]] && echo yes || echo no))"
+
+    # 8. NDP proxy (ndppd) — diagnostics only, never auto-installed
+    local ndppd_bin="" ndppd_conf=0 ndppd_enabled=0 has_default_v6route=0 ndppd_state
+    ndppd_bin="$(command -v ndppd || true)"
+    [[ -f /etc/ndppd.conf ]] && ndppd_conf=1
+    if command -v systemctl >/dev/null 2>&1; then
+        ndppd_state="$(systemctl is-enabled ndppd 2>/dev/null || true)"
+        [[ "$ndppd_state" == "enabled" || "$ndppd_state" == "static" ]] && ndppd_enabled=1
+    fi
+    if [[ -r /proc/net/ipv6_route ]] \
+        && grep -q '^00000000000000000000000000000000 ' /proc/net/ipv6_route 2>/dev/null; then
+        has_default_v6route=1
+    fi
+    if [[ "$v6mode" == "disabled" ]]; then
+        log "  [INFO] NDP proxy (ndppd): IPv6 is disabled — not applicable"
+    elif [[ "$has_global_v6" -eq 1 && "$has_default_v6route" -eq 0 ]]; then
+        if [[ -n "$ndppd_bin" && "$ndppd_conf" -eq 1 && "$ndppd_enabled" -eq 1 ]]; then
+            log "  [OK]   NDP proxy (ndppd): installed and enabled"
+        else
+            log_warn "  [WARN] NDP proxy (ndppd): a global IPv6 address is present without a default route — ndppd may be needed (not installed automatically)"
+        fi
+    else
+        log "  [INFO] NDP proxy (ndppd): a routed IPv6 prefix is present — not needed"
+    fi
+
+    log "--- End of AmneziaWG readiness check ---"
+    return 0
+}
+
+# ==============================================================================
 # Загрузка / сохранение параметров
 # ==============================================================================
 

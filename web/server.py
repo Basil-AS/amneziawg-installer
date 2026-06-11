@@ -8,6 +8,7 @@ import os
 import re
 import secrets
 import shlex
+import shutil
 import socket
 import ssl
 import subprocess
@@ -78,6 +79,14 @@ SERVER_HEALTH_CACHE = None
 SERVER_HEALTH_CACHE_TS = 0.0
 SERVER_HEALTH_PREV_CPU = None
 SERVER_HEALTH_PREV_NET = {}
+SERVER_HEALTH_PREV_COUNTERS = {}
+QDISC_CACHE_LOCK = threading.Lock()
+QDISC_CACHE = {"ts": 0.0, "dropped": None, "iface": ""}
+QDISC_CACHE_TTL = 60.0
+VPN_READINESS_CACHE_TTL = 300.0
+VPN_READINESS_LOCK = threading.Lock()
+VPN_READINESS_CACHE = None
+VPN_READINESS_CACHE_TS = 0.0
 SERVER_HEALTH_HISTORY_CACHE = {}
 SERVER_HEALTH_HISTORY_CACHE_TTL = 15.0
 SERVER_HEALTH_SAMPLE_INTERVAL = 10.0
@@ -855,6 +864,79 @@ def iface_delta(name, current):
     }
 
 
+def counter_value_delta(key, current_value):
+    global SERVER_HEALTH_PREV_COUNTERS
+    previous = SERVER_HEALTH_PREV_COUNTERS.get(key)
+    SERVER_HEALTH_PREV_COUNTERS[key] = current_value
+    if previous is None or current_value is None:
+        return 0
+    return max(0, int(current_value) - int(previous))
+
+
+def read_proc_net_table(path):
+    """Parse /proc/net/{snmp,netstat}-style tables into a flat Prefix+Field -> int dict."""
+    result = {}
+    lines = read_text_file(path).splitlines()
+    i = 0
+    while i + 1 < len(lines):
+        header = lines[i].split()
+        values = lines[i + 1].split()
+        if (
+            len(header) >= 2
+            and len(values) >= 2
+            and header[0] == values[0]
+            and header[0].endswith(":")
+        ):
+            prefix = header[0][:-1]
+            for key, val in zip(header[1:], values[1:]):
+                try:
+                    result[prefix + key] = int(val)
+                except ValueError:
+                    pass
+            i += 2
+        else:
+            i += 1
+    return result
+
+
+def read_snmp6_counters(path="/proc/net/snmp6"):
+    result = {}
+    for line in read_text_file(path).splitlines():
+        parts = line.split()
+        if len(parts) != 2:
+            continue
+        try:
+            result[parts[0]] = int(parts[1])
+        except ValueError:
+            continue
+    return result
+
+
+def qdisc_dropped(iface):
+    """Return the qdisc-level 'dropped' counter for iface, cached for QDISC_CACHE_TTL."""
+    global QDISC_CACHE
+    if not iface:
+        return None
+    now = time.time()
+    with QDISC_CACHE_LOCK:
+        if QDISC_CACHE["iface"] == iface and now - QDISC_CACHE["ts"] < QDISC_CACHE_TTL:
+            return QDISC_CACHE["dropped"]
+        dropped = None
+        try:
+            out = subprocess.run(
+                ["tc", "-s", "qdisc", "show", "dev", iface],
+                capture_output=True, text=True, timeout=2.0, check=False,
+            )
+            if out.returncode == 0:
+                match = re.search(r"dropped (\d+)", out.stdout)
+                if match:
+                    dropped = int(match.group(1))
+        except (OSError, subprocess.SubprocessError, ValueError):
+            dropped = None
+        QDISC_CACHE = {"ts": now, "dropped": dropped, "iface": iface}
+        return dropped
+
+
 def conntrack_health():
     count = read_int_file("/proc/sys/net/netfilter/nf_conntrack_count")
     max_count = read_int_file("/proc/sys/net/netfilter/nf_conntrack_max")
@@ -933,6 +1015,14 @@ def collect_server_health(force=False):
         drops_delta = wan_delta["drops_delta"] + vpn_delta["drops_delta"]
         errors_delta = wan_delta["errors_delta"] + vpn_delta["errors_delta"]
         network_status = "warn" if drops_delta or errors_delta else "ok"
+
+        snmp = read_proc_net_table("/proc/net/snmp")
+        netstat = read_proc_net_table("/proc/net/netstat")
+        snmp6 = read_snmp6_counters()
+        qdisc_drop_delta = counter_value_delta("qdisc_dropped", qdisc_dropped(wan_iface))
+        tcp_retrans_delta = counter_value_delta("tcp_retrans", snmp.get("TcpRetransSegs"))
+        tcp_timeout_delta = counter_value_delta("tcp_timeouts", netstat.get("TcpExtTCPTimeouts"))
+        ip6_no_route_delta = counter_value_delta("ip6_out_no_routes", snmp6.get("Ip6OutNoRoutes"))
         awg_status = "ok" if vpn_stats and vpn_stats.get("operstate") in {"up", "unknown"} else ("unknown" if not vpn_iface else "warn")
         cpu_status = status_from_percent(usage_percent, 75.0, 90.0) if usage_percent is not None else "ok"
         load_ratio = load["one"] / max(1, load["cpu_count"])
@@ -961,6 +1051,10 @@ def collect_server_health(force=False):
                 "vpn_drops_delta": vpn_delta["drops_delta"],
                 "drops_delta": drops_delta,
                 "errors_delta": errors_delta,
+                "qdisc_drop_delta": qdisc_drop_delta,
+                "tcp_retrans_delta": tcp_retrans_delta,
+                "tcp_timeout_delta": tcp_timeout_delta,
+                "ip6_no_route_delta": ip6_no_route_delta,
                 "status": network_status,
             },
             "conntrack": conntrack,
@@ -973,6 +1067,234 @@ def collect_server_health(force=False):
         }
         SERVER_HEALTH_CACHE = payload
         SERVER_HEALTH_CACHE_TS = now
+        return payload
+
+
+def read_cpu_flags():
+    for line in read_text_file("/proc/cpuinfo").splitlines():
+        if line.startswith("flags") or line.startswith("Features"):
+            _, _, rest = line.partition(":")
+            return set(rest.split())
+    return set()
+
+
+def kernel_module_check():
+    names = set()
+    for line in read_text_file("/proc/modules").splitlines():
+        parts = line.split()
+        if parts:
+            names.add(parts[0])
+    has_awg = "amneziawg" in names or Path("/sys/module/amneziawg").exists()
+    has_wg = "wireguard" in names or Path("/sys/module/wireguard").exists()
+    if has_awg or has_wg:
+        status = "ok"
+        detail = "amneziawg kernel module loaded" if has_awg else "wireguard kernel module loaded"
+    else:
+        status = "warn"
+        detail = "no amneziawg/wireguard kernel module detected (userspace implementation may be in use)"
+    return {
+        "status": status,
+        "amneziawg_loaded": has_awg,
+        "wireguard_loaded": has_wg,
+        "detail": detail,
+    }
+
+
+def crypto_features_check():
+    machine = os.uname().machine.lower()
+    flags = read_cpu_flags()
+    if machine in ("x86_64", "amd64", "i386", "i686"):
+        accel = {"aes", "avx", "avx2", "bmi2", "adx", "rdrand", "pclmulqdq"} & flags
+        fast = {"aes", "avx2"} <= flags
+    elif machine.startswith("arm") or machine.startswith("aarch64"):
+        accel = {"aes", "pmull", "sha1", "sha2", "asimd"} & flags
+        fast = {"aes", "asimd"} <= flags
+    else:
+        accel = set()
+        fast = False
+    status = "ok" if fast else ("info" if accel else "warn")
+    return {
+        "status": status,
+        "arch": machine,
+        "accelerated_flags": sorted(accel),
+        "detail": (
+            "hardware crypto acceleration available"
+            if fast
+            else "limited or no hardware crypto acceleration detected (AmneziaWG falls back to software crypto)"
+        ),
+    }
+
+
+def virtualization_check():
+    name = "unknown"
+    try:
+        out = subprocess.run(
+            ["systemd-detect-virt"], capture_output=True, text=True, timeout=2.0, check=False,
+        )
+        name = (out.stdout or "").strip() or "none"
+    except (OSError, subprocess.SubprocessError):
+        name = "unknown"
+    return {"status": "info", "type": name}
+
+
+def ip_forwarding_check():
+    v4 = read_text_file("/proc/sys/net/ipv4/ip_forward", "0").strip()
+    v6 = read_text_file("/proc/sys/net/ipv6/conf/all/forwarding", "0").strip()
+    status = "ok" if v4 == "1" else "critical"
+    return {
+        "status": status,
+        "ipv4_forwarding": v4 == "1",
+        "ipv6_forwarding": v6 == "1",
+    }
+
+
+def udp_buffer_check():
+    rmem = read_int_file("/proc/sys/net/core/rmem_max") or 0
+    wmem = read_int_file("/proc/sys/net/core/wmem_max") or 0
+    recommended = 2_500_000
+    status = "ok" if rmem >= recommended and wmem >= recommended else "warn"
+    return {
+        "status": status,
+        "rmem_max": rmem,
+        "wmem_max": wmem,
+        "recommended_min": recommended,
+    }
+
+
+def wan_offload_check(iface):
+    if not iface:
+        return {"status": "info", "iface": "", "offloads": {}}
+    offloads = {}
+    interesting = {
+        "tcp-segmentation-offload",
+        "generic-segmentation-offload",
+        "generic-receive-offload",
+        "large-receive-offload",
+        "udp-fragmentation-offload",
+    }
+    try:
+        out = subprocess.run(
+            ["ethtool", "-k", iface], capture_output=True, text=True, timeout=2.0, check=False,
+        )
+        for line in out.stdout.splitlines():
+            line = line.strip()
+            if ":" not in line:
+                continue
+            key, _, value = line.partition(":")
+            key = key.strip()
+            if key in interesting:
+                offloads[key] = value.strip().split()[0] if value.strip() else "unknown"
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return {"status": "info", "iface": iface, "offloads": offloads}
+
+
+def ipv6_routing_check():
+    disabled = read_text_file("/proc/sys/net/ipv6/conf/all/disable_ipv6", "0").strip() == "1"
+    has_global = False
+    for line in read_text_file("/proc/net/if_inet6").splitlines():
+        parts = line.split()
+        if len(parts) >= 6 and parts[3] == "00" and parts[5] != "lo":
+            has_global = True
+            break
+    mode = "enabled" if (not disabled and has_global) else "disabled"
+    return {"status": "info", "mode": mode, "global_address": has_global}
+
+
+def ipv6_default_route_present():
+    for line in read_text_file("/proc/net/ipv6_route").splitlines():
+        parts = line.split()
+        if parts and parts[0] == "00000000000000000000000000000000":
+            return True
+    return False
+
+
+def ndp_proxy_check(ipv6_mode, has_global_ipv6):
+    binary = shutil.which("ndppd")
+    config_exists = Path("/etc/ndppd.conf").exists()
+    enabled = False
+    try:
+        out = subprocess.run(
+            ["systemctl", "is-enabled", "ndppd"], capture_output=True, text=True, timeout=2.0, check=False,
+        )
+        enabled = (out.stdout or "").strip() in {"enabled", "static"}
+    except (OSError, subprocess.SubprocessError):
+        enabled = False
+
+    if ipv6_mode == "disabled":
+        return {
+            "status": "info",
+            "state": "not_needed",
+            "detail": "IPv6 is disabled on this host; NDP proxy is not applicable.",
+            "installed": bool(binary),
+            "configured": config_exists,
+        }
+
+    if has_global_ipv6 and not ipv6_default_route_present():
+        if binary and config_exists and enabled:
+            return {
+                "status": "ok",
+                "state": "configured",
+                "detail": "ndppd is installed and enabled.",
+                "installed": True,
+                "configured": True,
+            }
+        return {
+            "status": "warn",
+            "state": "may_be_needed",
+            "detail": "Global IPv6 address present without a default route; NDP proxy (ndppd) may be needed.",
+            "installed": bool(binary),
+            "configured": config_exists,
+        }
+
+    return {
+        "status": "info",
+        "state": "not_needed",
+        "detail": "A routed IPv6 prefix is present; NDP proxy is not needed.",
+        "installed": bool(binary),
+        "configured": config_exists,
+    }
+
+
+def vpn_readiness_payload(force=False):
+    global VPN_READINESS_CACHE, VPN_READINESS_CACHE_TS
+    now = time.time()
+    with VPN_READINESS_LOCK:
+        if not force and VPN_READINESS_CACHE and now - VPN_READINESS_CACHE_TS < VPN_READINESS_CACHE_TTL:
+            return VPN_READINESS_CACHE
+
+        wan_iface = detect_wan_iface()
+        kernel = kernel_module_check()
+        crypto = crypto_features_check()
+        virt = virtualization_check()
+        ip_fwd = ip_forwarding_check()
+        udp_buf = udp_buffer_check()
+        offloads = wan_offload_check(wan_iface)
+        ipv6_routing = ipv6_routing_check()
+        ndp = ndp_proxy_check(ipv6_routing["mode"], ipv6_routing["global_address"])
+
+        overall = combine_status(
+            kernel["status"],
+            ip_fwd["status"],
+            udp_buf["status"],
+            "ok" if crypto["status"] == "info" else crypto["status"],
+            "ok" if ndp["status"] == "info" else ndp["status"],
+        )
+        payload = {
+            "timestamp": utc_now_iso(),
+            "cache_ttl_seconds": VPN_READINESS_CACHE_TTL,
+            "status": overall,
+            "kernel": {"release": os.uname().release, **kernel},
+            "crypto": crypto,
+            "virtualization": virt,
+            "ip_forwarding": ip_fwd,
+            "udp_buffers": udp_buf,
+            "wan_offloads": offloads,
+            "ipv6_routing": ipv6_routing,
+            "ndp_proxy": ndp,
+        }
+        VPN_READINESS_CACHE = payload
+        VPN_READINESS_CACHE_TS = now
         return payload
 
 
@@ -1664,10 +1986,18 @@ def sanitize_leak_checks(value, context=None):
     webrtc_ipv6 = [str(item)[:120] for item in value.get("webrtc_ipv6_candidates", []) if isinstance(item, str)][:20]
     webrtc_private = [str(item)[:120] for item in value.get("webrtc_private_candidates", []) if isinstance(item, str)][:20]
     notes = [str(item)[:240] for item in value.get("notes", []) if isinstance(item, str)][:12]
+    ipv6_mode = str(context.get("ipv6_mode") or "")
     expected_v6 = {item for item in (server_public_ipv6, vpn_ipv6) if item and item not in {"-", "IPv6 disabled"}}
     ipv6_leak = bool(browser_ipv6 and (not expected_v6 or browser_ipv6 not in expected_v6))
+    webrtc_ipv6_risk = bool(webrtc_ipv6)
     if ipv6_leak:
         notes.append("Browser public IPv6 is visible and does not match the VPN/server IPv6 context.")
+        if ipv6_mode in {"", "legacy", "disabled"}:
+            notes.append("IPv4-only mode: AAAA disabled in AdGuard recommended to stop apps/browsers resolving non-VPN IPv6 addresses.")
+    if webrtc_ipv6_risk or webrtc_private:
+        notes.append("Disable WebRTC local IP exposure in browser (e.g. browser privacy/WebRTC settings) to stop ICE candidates revealing real addresses.")
+    if ipv6_leak or webrtc_ipv6_risk:
+        notes.append("Use VPN DNS for all queries (avoid system/public DNS fallbacks that can bypass the tunnel).")
     return {
         "browser_public_ipv4": browser_ipv4,
         "browser_public_ipv6": browser_ipv6,
@@ -1676,7 +2006,7 @@ def sanitize_leak_checks(value, context=None):
         "vpn_ipv6": vpn_ipv6,
         "ipv6_leak_suspected": ipv6_leak,
         "webrtc_available": bool(value.get("webrtc_available")),
-        "webrtc_ipv6_risk": bool(webrtc_ipv6),
+        "webrtc_ipv6_risk": webrtc_ipv6_risk,
         "webrtc_ipv6_candidates": webrtc_ipv6,
         "webrtc_private_candidates": webrtc_private,
         "notes": notes,
@@ -4549,6 +4879,11 @@ class Handler(SimpleHTTPRequestHandler):
                 self.send_json(server_health_history(range_key))
             except ValueError as exc:
                 self.send_json({"error": str(exc)}, 400)
+            return
+        if u.path == "/api/vpn-readiness":
+            if not self.require_super(auth):
+                return
+            self.send_json(vpn_readiness_payload())
             return
         if u.path == "/api/nettest/context":
             self.send_json(nettest_context_payload())
