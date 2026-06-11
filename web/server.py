@@ -5297,6 +5297,9 @@ def client_latency_payload(force=False):
                 if base.get("status") == "icmp_blocked_possible":
                     no_ping_count += 1
                     top_issues.append({"client": name, "type": "no_ping", "summary": "ICMP timeout with fresh handshake/traffic"})
+                elif base.get("status") == "idle":
+                    no_ping_count += 1
+                    top_issues.append({"client": name, "type": "idle_no_ping", "summary": "ICMP timeout with fresh handshake"})
                 else:
                     top_issues.append({"client": name, "type": "timeout", "summary": "ICMP timeout"})
             if shared_profile.get("severity") in {"suspected", "high"}:
