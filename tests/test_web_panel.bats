@@ -1152,7 +1152,11 @@ PY
     grep -qF 'latency check to' "$app"
     grep -qF 'device may sleep or block ping' "$app"
     grep -qF 'renderSharedProfileChip(client)' "$app"
+    grep -qF 'function renderPathChip(client)' "$app"
+    grep -qF 'clientPathState = {results: {}, running: {}}' "$app"
     grep -qF 'Client Network Overview' "$app"
+    grep -qF 'Path checked' "$app"
+    grep -qF 'Avg hops' "$app"
     grep -qF 'Network issues' "$app"
     grep -qF 'Check path' "$app"
     grep -qF '/api/clients/latency' "$app"
@@ -1160,9 +1164,11 @@ PY
     grep -qF 'CLIENT_LATENCY_POLL_MS = 60000' "$app"
     grep -qF 'if (shouldPollHeavy()) await loadClientLatency()' "$app"
     grep -qF 'Refresh latency' "$app"
-    grep -qF 'renderLatencyChip(client) + renderSharedProfileChip(client)' "$app"
+    grep -qF 'renderLatencyChip(client) + renderSharedProfileChip(client) + renderPathChip(client)' "$app"
+    grep -qF 'ICMP timeout does not necessarily mean offline' "$app"
     run ! grep -qF '☁' "$app"
     grep -qF '.latency-chip' "$css"
+    grep -qF '.path-chip' "$css"
     grep -qF 'font-weight:500' "$css"
     run ! grep -qF 'font-weight:800;line-height:1.2' "$css"
     grep -qF '.shared-profile-chip' "$css"
@@ -1223,18 +1229,52 @@ h.do_POST()
 assert h.responses == [200]
 payload = json.loads(h.wfile.getvalue().decode())
 assert payload["status"] == "unsupported"
+assert payload["method"] == "none"
+assert payload["hop_count"] is None
+assert payload["summary"] == "path check unavailable"
+assert payload["client"] == "phone"
+assert payload["vpn_ip"] == "10.9.9.12"
 
 h = make_handler(super_token)
 h.do_POST()
 payload = json.loads(h.wfile.getvalue().decode())
-assert payload["status"] == "rate_limited"
+assert payload["status"] == "blocked"
+assert payload["summary"] == "try later"
 
 h = make_handler(super_token, "/api/clients/bad/path-check")
 h.do_POST()
 assert h.responses[-1] in (400, 429)
 
 parsed = server.parse_path_check_output(" 1: 10.9.9.12 42.1ms reached", "10.9.9.12")
-assert parsed[0]["hop"] == 1 and parsed[0]["address"] == "10.9.9.12"
+assert parsed[0]["hop"] == 1 and parsed[0]["address"] == "10.9.9.12" and parsed[0]["raw"]
+parsed = server.parse_path_check_output(" 1  10.9.9.12  34.2 ms  34.3 ms", "10.9.9.12")
+assert parsed[0]["hop"] == 1 and parsed[0]["rtt_ms"] == 34.2
+parsed = server.parse_path_check_output(" 1: 10.9.9.12 42.1ms reached\n 1: 10.9.9.12 41.9ms reached", "10.9.9.12")
+assert len(parsed) == 1 and parsed[0]["hop"] == 1 and parsed[0]["rtt_ms"] == 41.9
+
+server.CLIENT_PATH_CHECK_LAST.clear()
+server.shutil.which = lambda name: "/usr/bin/tracepath" if name == "tracepath" else None
+calls = []
+class Proc:
+    returncode = 0
+    stdout = " 1: 10.9.9.12 35.1ms reached\n"
+    stderr = ""
+def fake_run(cmd, **kwargs):
+    calls.append((cmd, kwargs))
+    return Proc()
+server.subprocess.run = fake_run
+result = server.client_path_check("phone")
+assert result["status"] == "ok"
+assert result["method"] == "tracepath"
+assert result["hop_count"] == 1
+assert result["summary"] == "1 hop, 35 ms"
+assert calls[0][0] == ["tracepath", "-n", "-m", "8", "10.9.9.12"]
+assert "shell" not in calls[0][1]
+
+server.CLIENT_PATH_CHECK_LAST.clear()
+server.shutil.which = lambda name: "/usr/bin/traceroute" if name == "traceroute" else None
+result = server.client_path_check("phone")
+assert result["method"] == "traceroute"
 PY
     rm -rf "$tmp"
 }
@@ -2235,7 +2275,7 @@ PY
     command -v python3 &>/dev/null || skip "python3 not available"
     local tmp
     tmp=$(mktemp -d)
-    mkdir -p "$tmp/web"
+    mkdir -p "$tmp/web/nettest_reports"
     AWG_DIR="$tmp" SERVER_CONF_FILE="$tmp/awg0.conf" REPO_ROOT="$BATS_TEST_DIRNAME/.." python3 - <<'PY'
 import importlib.util
 import io
@@ -2255,23 +2295,32 @@ server.write_tokens({
     "users": {server.token_hash(user_token): {"name": "user", "clients": []}},
 })
 now = int(time.time())
+report = Path(os.environ["AWG_DIR"]) / "web" / "nettest_reports" / "nettest_nopinger.json"
+report.write_text(json.dumps({
+    "vpn_client_ip": "10.9.9.40",
+    "latency": {"avg_ms": 58, "loss_percent": 0, "samples": 5},
+    "stall_events": 0,
+}), encoding="utf-8")
 server.parse_config = lambda: {"AWG_TUNNEL_SUBNET": "10.9.9.1/24"}
 server.parse_peers = lambda: [
     {"name": "phone", "ipv4": "10.9.9.12"},
     {"name": "nopinger", "ipv4": "10.9.9.40"},
+    {"name": "noping", "ipv4": "10.9.9.41"},
     {"name": "sleepy", "ipv4": "10.9.9.31"},
     {"name": "bad", "ipv4": "8.8.8.8"},
 ]
 server.client_stats_map = lambda force=False: {
     "phone": {"last_handshake": now - 20, "rx": 150, "tx": 200, "endpoint": "198.51.100.10:50000"},
     "nopinger": {"last_handshake": now - 30, "rx": 300, "tx": 400, "endpoint": "198.51.100.20:50000"},
+    "noping": {"last_handshake": now - 40, "rx": 500, "tx": 600, "endpoint": "198.51.100.21:50000"},
     "sleepy": {"last_handshake": now - 2000},
 }
 server.CLIENT_TRANSFER_PREV["nopinger"] = {"rx": 1, "tx": 1, "ts": now - 60}
+server.CLIENT_TRANSFER_PREV["noping"] = {"rx": 1, "tx": 1, "ts": now - 60}
 calls = []
 def fake_ping(ip):
     calls.append(ip)
-    if ip == "10.9.9.40":
+    if ip in ("10.9.9.40", "10.9.9.41"):
         return {"status": "timeout", "rtt_ms": None, "loss_pct": 100, "samples": 0, "label": "timeout"}
     return {"status": "ok", "rtt_ms": 34.2, "loss_pct": 0, "samples": 3, "label": "34 ms"}
 server.ping_vpn_client = fake_ping
@@ -2318,18 +2367,23 @@ assert payload["ttl_seconds"] == 30
 assert payload["clients"]["phone"]["status"] == "ok"
 assert payload["clients"]["phone"]["connectivity"] == "online"
 assert payload["clients"]["phone"]["latency_method"] == "icmp"
-assert payload["clients"]["nopinger"]["status"] == "icmp_blocked_possible"
+assert payload["clients"]["nopinger"]["status"] == "ok"
 assert payload["clients"]["nopinger"]["connectivity"] == "online"
-assert payload["clients"]["nopinger"]["label"] == "no ping"
+assert payload["clients"]["nopinger"]["latency_method"] == "nettest"
+assert payload["clients"]["nopinger"]["label"] == "net 58 ms"
+assert payload["clients"]["nopinger"]["nettest_latency"]["source"] == "nettest"
+assert payload["clients"]["noping"]["status"] == "icmp_blocked_possible"
+assert payload["clients"]["noping"]["latency_method"] == "traffic"
+assert payload["clients"]["noping"]["label"] == "no ping"
 assert payload["clients"]["sleepy"]["status"] == "stale"
 assert payload["clients"]["sleepy"]["label"] == "offline"
 assert payload["clients"]["bad"]["status"] == "unknown"
 assert payload["overview"]["no_ping"] == 1
-assert calls == ["10.9.9.12", "10.9.9.40"]
+assert calls == ["10.9.9.12", "10.9.9.40", "10.9.9.41"]
 
 handler = make_handler(super_token)
 handler.do_GET()
-assert len(calls) == 2, "fresh cache should avoid a second ping scan"
+assert len(calls) == 3, "fresh cache should avoid a second ping scan"
 PY
     rm -rf "$tmp"
 }

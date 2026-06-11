@@ -128,8 +128,11 @@ CLIENT_ENDPOINT_HISTORY_RETENTION = 24 * 3600
 CLIENT_ENDPOINT_HISTORY_WRITE_INTERVAL = 30.0
 CLIENT_ENDPOINT_HISTORY_LAST_WRITE = 0.0
 CLIENT_PATH_CHECK_LOCK = threading.Lock()
+CLIENT_PATH_CHECK_SEM = threading.BoundedSemaphore(1)
 CLIENT_PATH_CHECK_LAST = {}
 CLIENT_PATH_CHECK_INTERVAL = 60.0
+CLIENT_PATH_CHECK_RESULTS = {}
+CLIENT_PATH_CHECK_RESULT_TTL = 3600
 IP_INFO_CACHE_TTL = 30 * 24 * 3600
 IP_INFO_NEGATIVE_TTL = 3600
 IP_INFO_ERROR_CACHE_TTL = 30 * 60
@@ -4957,13 +4960,23 @@ def recent_nettest_latency_by_vpn_ip(max_age=3600):
         latency = data.get("latency") if isinstance(data.get("latency"), dict) else {}
         avg = latency.get("avg_ms")
         if vpn_ip and avg is not None and vpn_ip not in out:
+            observed_at = path.stat().st_mtime
             out[vpn_ip] = {
                 "rtt_ms": round(float(avg), 1),
                 "loss_pct": float(latency.get("loss_percent") or 0),
                 "samples": int(latency.get("samples") or latency.get("ok") or 0),
-                "observed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(path.stat().st_mtime)),
+                "stalls": int(data.get("stall_events") or latency.get("stall_events") or data.get("stalls") or 0),
+                "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(observed_at)),
+                "observed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(observed_at)),
+                "age_sec": max(0, int(now - observed_at)),
+                "source": "nettest",
             }
     return out
+
+
+def recent_nettest_latency_for_client(client_name, vpn_ip, max_age_minutes=60):
+    del client_name
+    return recent_nettest_latency_by_vpn_ip(max_age=max_age_minutes * 60).get(vpn_ip)
 
 
 def connectivity_from_signals(age, transfer_active, ping_result, nettest_result=None):
@@ -4985,17 +4998,28 @@ def connectivity_from_signals(age, transfer_active, ping_result, nettest_result=
         return "stale", "unavailable", "low", "stale", "offline", notes
     if transfer_active:
         notes.append("traffic observed in last sample")
-    if nettest_result:
-        notes.append("recent browser network test available")
-        return "online", "nettest", "medium", ping_status, f"{round(float(nettest_result['rtt_ms'])):.0f} ms", notes
     if rtt is not None:
         notes.append("ICMP reachable")
         connectivity = "online"
         status = "high" if float(rtt) > 200 or float(loss or 0) >= 50 else "ok"
         return connectivity, "icmp", "high", status, f"{round(float(rtt)):.0f} ms", notes
-    if ping_status == "timeout" and (transfer_active or handshake_state == "fresh"):
-        notes.append("ICMP did not answer, but handshake/traffic is fresh; client may block ping or sleep")
-        return "online", "unavailable", "low", "icmp_blocked_possible", "no ping", notes
+    if nettest_result:
+        notes.append("recent browser network test available")
+        notes.append("ICMP did not answer; using browser-side network test as fallback")
+        net_rtt = float(nettest_result["rtt_ms"])
+        net_loss = float(nettest_result.get("loss_pct") or 0)
+        status = "high" if net_rtt > 200 or net_loss >= 50 else "ok"
+        return "online", "nettest", "medium", status, f"net {round(net_rtt):.0f} ms", notes
+    if ping_status == "timeout" and transfer_active:
+        notes.append("ICMP did not answer, but recent traffic suggests the client is online")
+        notes.append("client may block ICMP or sleep between checks")
+        return "online", "traffic", "low", "icmp_blocked_possible", "no ping", notes
+    if ping_status == "timeout" and handshake_state == "fresh":
+        notes.append("ICMP did not answer, but handshake is fresh; client is probably idle or blocks ICMP")
+        return "online", "handshake", "low", "idle", "idle", notes
+    if ping_status == "timeout" and handshake_state == "recent":
+        notes.append("ICMP did not answer, but handshake is recent; client may block ICMP or sleep")
+        return "online", "handshake", "low", "icmp_blocked_possible", "no ping", notes
     notes.append("ICMP timeout")
     return "unknown", "unavailable", "low", "timeout", "timeout", notes
 
@@ -5010,72 +5034,126 @@ def percentile(values, pct):
 
 def parse_path_check_output(stdout, target):
     hops = []
+    by_hop = {}
     for raw in (stdout or "").splitlines():
         line = raw.strip()
         if not line:
             continue
-        m = re.match(r"^\s*(\d+)[:\s]+(?:\?:\s+)?([0-9.]+|\*)", line)
+        m = re.match(r"^\s*(\d+)[:\s]+(?:\?:\s+)?(?:\[[^\]]+\]\s+)?([0-9.]+|\*)", line)
         if not m:
             continue
         hop = int(m.group(1))
         address = "" if m.group(2) == "*" else m.group(2)
         times = [float(x) for x in re.findall(r"([0-9]+(?:\.[0-9]+)?)\s*ms", line)]
-        hops.append({"hop": hop, "address": address, "rtt_ms": round(times[0], 1) if times else None})
+        by_hop[hop] = {"hop": hop, "address": address, "rtt_ms": round(times[0], 1) if times else None, "raw": line[:240]}
+    hops = [by_hop[key] for key in sorted(by_hop)]
     if not hops and target:
         m = re.search(r"([0-9]+(?:\.[0-9]+)?)\s*ms", stdout or "")
         if m:
-            hops.append({"hop": 1, "address": target, "rtt_ms": round(float(m.group(1)), 1)})
+            hops.append({"hop": 1, "address": target, "rtt_ms": round(float(m.group(1)), 1), "raw": (stdout or "").strip()[:240]})
     return hops
+
+
+def path_check_summary(status, hops):
+    if status == "unsupported":
+        return "path check unavailable"
+    if status in {"blocked", "rate_limited"}:
+        return "try later"
+    if status == "timeout":
+        return "path timeout"
+    if not hops:
+        return "path n/a"
+    count = len(hops)
+    last_rtt = next((item.get("rtt_ms") for item in reversed(hops) if item.get("rtt_ms") is not None), None)
+    suffix = f", {round(float(last_rtt)):.0f} ms" if last_rtt is not None else ""
+    return f"{count} hop{'s' if count != 1 else ''}{suffix}"
+
+
+def make_path_check_result(name, target, status, method="none", path=None, note="", retry_after=None):
+    path = path or []
+    result = {
+        "client": name,
+        "vpn_ip": target,
+        "timestamp": utc_now_iso(),
+        "status": status,
+        "method": method,
+        "hop_count": len(path) if path else None,
+        "hops": len(path) if path else None,
+        "path": path,
+        "summary": path_check_summary(status, path),
+        "note": note or "Path inside VPN may not represent the public Internet route.",
+    }
+    if retry_after is not None:
+        result["retry_after"] = max(1, int(retry_after))
+    return result
+
+
+def remember_path_check_result(name, result):
+    CLIENT_PATH_CHECK_RESULTS[name] = {"ts": time.time(), "value": json.loads(json.dumps(result))}
+    return result
+
+
+def recent_path_check_results(now=None):
+    now = now or time.time()
+    out = {}
+    for name, item in list(CLIENT_PATH_CHECK_RESULTS.items()):
+        if now - item.get("ts", 0) > CLIENT_PATH_CHECK_RESULT_TTL:
+            CLIENT_PATH_CHECK_RESULTS.pop(name, None)
+            continue
+        out[name] = json.loads(json.dumps(item.get("value") or {}))
+    return out
 
 
 def client_path_check(name):
     name = safe_name(name)
-    now = time.time()
-    with CLIENT_PATH_CHECK_LOCK:
-        last = CLIENT_PATH_CHECK_LAST.get(name, 0)
-        if now - last < CLIENT_PATH_CHECK_INTERVAL:
-            return {"status": "rate_limited", "retry_after": int(CLIENT_PATH_CHECK_INTERVAL - (now - last))}
-        CLIENT_PATH_CHECK_LAST[name] = now
     peer = next((item for item in parse_peers() if item.get("name") == name), None)
     if not peer:
         raise ValueError("unknown client")
     target = validate_vpn_latency_target(peer.get("ipv4") or "")
-    cmd = None
+    now = time.time()
+    with CLIENT_PATH_CHECK_LOCK:
+        last = CLIENT_PATH_CHECK_LAST.get(name, 0)
+        if now - last < CLIENT_PATH_CHECK_INTERVAL:
+            return make_path_check_result(
+                name,
+                target,
+                "blocked",
+                "none",
+                note="Path check is rate-limited per client.",
+                retry_after=CLIENT_PATH_CHECK_INTERVAL - (now - last),
+            )
+        CLIENT_PATH_CHECK_LAST[name] = now
+    method = "none"
     if shutil.which("tracepath"):
-        cmd = ["tracepath", "-n", "-m", "8", "-w", "1", target]
+        method = "tracepath"
+        cmd = ["tracepath", "-n", "-m", "8", target]
     elif shutil.which("traceroute"):
+        method = "traceroute"
         cmd = ["traceroute", "-n", "-m", "8", "-w", "1", target]
     else:
-        return {
-            "status": "unsupported",
-            "hops": None,
-            "path": [],
-            "note": "Path check needs tracepath or traceroute. Path inside VPN is often not a real internet hop count.",
-        }
+        return remember_path_check_result(name, make_path_check_result(
+            name,
+            target,
+            "unsupported",
+            "none",
+            note="tracepath/traceroute is not installed.",
+        ))
+    if not CLIENT_PATH_CHECK_SEM.acquire(blocking=False):
+        return make_path_check_result(name, target, "blocked", method, note="Another path check is already running.")
     try:
         p = subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=10)
     except subprocess.TimeoutExpired:
-        return {
-            "status": "timeout",
-            "hops": None,
-            "path": [],
-            "note": "Path check timed out. Path inside VPN is often not a real internet hop count.",
-        }
+        return remember_path_check_result(name, make_path_check_result(name, target, "timeout", method, note="Path check timed out. Path inside VPN may not represent the public Internet route."))
     except OSError:
-        return {
-            "status": "unsupported",
-            "hops": None,
-            "path": [],
-            "note": "Path check command is unavailable.",
-        }
+        return remember_path_check_result(name, make_path_check_result(name, target, "unsupported", "none", note="Path check command is unavailable."))
+    finally:
+        try:
+            CLIENT_PATH_CHECK_SEM.release()
+        except ValueError:
+            pass
     path = parse_path_check_output((p.stdout or "") + "\n" + (p.stderr or ""), target)
     status = "ok" if path else ("timeout" if p.returncode != 0 else "unknown")
-    return {
-        "status": status,
-        "hops": len(path) if path else None,
-        "path": path,
-        "note": "Path inside VPN is often not a real internet hop count.",
-    }
+    return remember_path_check_result(name, make_path_check_result(name, target, status, method, path, "Path inside VPN may not represent the public Internet route."))
 
 
 def client_latency_payload(force=False):
@@ -5092,10 +5170,15 @@ def client_latency_payload(force=False):
         endpoint_history = record_client_endpoint_history(peers, stats, now)
         history_clients = endpoint_history.get("clients", {}) if isinstance(endpoint_history, dict) else {}
         nettest_latency = recent_nettest_latency_by_vpn_ip()
+        path_results = recent_path_check_results(now)
         network = vpn_ipv4_network()
         clients = {}
         scanned = 0
         reachable = []
+        path_hops = []
+        path_checked_count = 0
+        path_timeout_count = 0
+        path_unsupported = False
         no_ping_count = 0
         timeout_count = 0
         stale_count = 0
@@ -5145,6 +5228,16 @@ def client_latency_payload(force=False):
                 "ping_status": "unknown",
                 "notes": [],
             }
+            if name in path_results:
+                base["path_check"] = path_results[name]
+                path_checked_count += 1
+                path_status = path_results[name].get("status")
+                if path_status == "timeout":
+                    path_timeout_count += 1
+                if path_status == "unsupported":
+                    path_unsupported = True
+                if path_results[name].get("hop_count") is not None:
+                    path_hops.append(int(path_results[name].get("hop_count") or 0))
             try:
                 target = validate_vpn_latency_target(vpn_ip, network)
             except ValueError:
@@ -5179,6 +5272,7 @@ def client_latency_payload(force=False):
             connectivity, method, confidence, ping_status, label, notes = connectivity_from_signals(age, transfer_active, result, nettest_result)
             if nettest_result:
                 base["nettest_latency"] = nettest_result
+            if nettest_result and method == "nettest":
                 base["rtt_ms"] = nettest_result["rtt_ms"]
                 base["loss_pct"] = nettest_result["loss_pct"]
                 base["samples"] = nettest_result["samples"]
@@ -5221,6 +5315,10 @@ def client_latency_payload(force=False):
                 "high_latency_clients": high_count,
                 "shared_profile_suspected": shared_count,
                 "endpoint_flapping_clients": flapping_count,
+                "path_checked_clients": path_checked_count,
+                "average_hops": round(sum(path_hops) / len(path_hops), 1) if path_hops else None,
+                "path_timeout_clients": path_timeout_count,
+                "path_unsupported": path_unsupported,
                 "average_rtt_ms": round(sum(reachable) / len(reachable), 1) if reachable else None,
                 "p95_rtt_ms": percentile(reachable, 95),
                 "scanned_clients": scanned,
@@ -5235,6 +5333,10 @@ def client_latency_payload(force=False):
                 "stale": stale_count,
                 "shared_profile_suspected": shared_count,
                 "endpoint_flapping": flapping_count,
+                "path_checked": path_checked_count,
+                "avg_hops": round(sum(path_hops) / len(path_hops), 1) if path_hops else None,
+                "path_timeout": path_timeout_count,
+                "path_unsupported": path_unsupported,
                 "avg_rtt_ms": round(sum(reachable) / len(reachable), 1) if reachable else None,
                 "p95_rtt_ms": percentile(reachable, 95),
                 "top_issues": top_issues[:8],

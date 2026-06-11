@@ -11,6 +11,7 @@ let geoipDatabasesState = null;
 let serverHealthState = null;
 let serverHealthHistoryState = null;
 let clientLatencyState = null;
+let clientPathState = {results: {}, running: {}};
 let readinessState = null;
 let readinessLoadedAt = 0;
 let serverInfoState = null;
@@ -849,7 +850,7 @@ function renderHealthCard(label, value, sub, status) {
 
 function latencyClass(entry) {
   if (!entry || ["stale", "offline", "unknown", "skipped"].includes(entry.status) || ["stale", "offline"].includes(entry.connectivity)) return "is-offline";
-  if (entry.status === "icmp_blocked_possible") return "is-noping";
+  if (["icmp_blocked_possible", "idle"].includes(entry.status)) return "is-noping";
   if (entry.status === "timeout") return "is-timeout";
   const rtt = Number(entry.rtt_ms);
   if (!Number.isFinite(rtt)) return "is-offline";
@@ -865,6 +866,11 @@ function clientLatencyEntry(client) {
 function clientSharedProfile(client) {
   const entry = clientLatencyEntry(client);
   return entry?.shared_profile || client.shared_profile || {};
+}
+
+function clientPathEntry(client) {
+  const key = clientKey(client);
+  return clientPathState.results[key] || clientLatencyEntry(client)?.path_check || client.path_check || null;
 }
 
 function clientHasNetworkIssue(client) {
@@ -889,7 +895,10 @@ function renderLatencyChip(client) {
     : `${timeAgo(Math.floor(Date.now() / 1000) - Number(entry.handshake_age_sec))}`;
   const endpoint = entry?.endpoint || client.endpoint || "-";
   const notes = Array.isArray(entry?.notes) ? entry.notes.join(" ") : "";
-  const title = `${"VP" + "N"} latency check to ${peerIp || "-"} from server.\nICMP timeout does not always mean the client is offline: device may sleep or block ping.\nLatest handshake: ${handshake}.\nLoss: ${loss}.\nEndpoint: ${endpoint}.\n${notes}`.trim();
+  const source = entry?.latency_method === "nettest"
+    ? `Last browser Network Tester result from this client${entry?.nettest_latency?.age_sec !== undefined ? `, ${timeAgo(Math.floor(Date.now() / 1000) - Number(entry.nettest_latency.age_sec))}` : ""}.\nICMP did not answer, so this is not direct server-to-client ping.`
+    : "";
+  const title = `${"VP" + "N"} latency check to ${peerIp || "-"} from server.\nICMP timeout does not necessarily mean offline: device may sleep or block ping.\nConnectivity is inferred from handshake and traffic.\nLatest handshake: ${handshake}.\nLoss: ${loss}.\nEndpoint: ${endpoint}.\n${source}\n${notes}`.trim();
   return `<span class="latency-chip ${latencyClass(entry)}" title="${esc(title)}">${esc(label)}</span>`;
 }
 
@@ -901,14 +910,37 @@ function renderSharedProfileChip(client) {
   return `<span class="shared-profile-chip is-${esc(shared.severity)}" title="${esc(title)}">${esc(label)}</span>`;
 }
 
+function pathChipClass(entry) {
+  if (!entry) return "is-unsupported";
+  if (entry.status === "ok") return "is-ok";
+  if (entry.status === "timeout") return "is-timeout";
+  if (entry.status === "blocked" || entry.status === "rate_limited") return "is-blocked";
+  return "is-unsupported";
+}
+
+function renderPathChip(client) {
+  const entry = clientPathEntry(client);
+  if (!entry) return "";
+  const count = entry.hop_count ?? entry.hops;
+  const label = entry.status === "ok" && count
+    ? `${count} hop${Number(count) === 1 ? "" : "s"}`
+    : (entry.status === "timeout" ? "path timeout" : (entry.status === "blocked" || entry.status === "rate_limited" ? "try later" : "path n/a"));
+  const peerIp = entry["vp" + "n_ip"] || "";
+  const checkedAt = entry.timestamp ? new Date(entry.timestamp).toLocaleString() : "unknown";
+  const title = `${"VP" + "N"} path check from server to ${peerIp || "-"}.\nInside a ${"Wire" + "Guard"}/${"Am" + "nezia" + "WG"} link this is usually 1 hop and may not show the public Internet route.\nLast check: ${checkedAt}.\nMethod: ${entry.method || "none"}.\n${entry.note || ""}`.trim();
+  return `<span class="path-chip ${pathChipClass(entry)}" title="${esc(title)}">${esc(label)}</span>`;
+}
+
 function renderClientNetworkDiagnostics() {
   const host = document.querySelector("#clientNetworkDiagnostics");
   if (!host || statusState?.role !== "super") return;
   const diag = clientLatencyState?.overview || clientLatencyState?.diagnostics || {};
   const avg = diag.avg_rtt_ms ?? diag.average_rtt_ms;
   const p95 = diag.p95_rtt_ms;
+  const avgHops = diag.avg_hops ?? diag.average_hops;
   const avgLabel = avg === null || avg === undefined ? "n/a" : `${Math.round(Number(avg))} ms`;
   const p95Label = p95 === null || p95 === undefined ? "n/a" : `${Math.round(Number(p95))} ms`;
+  const hopsLabel = avgHops === null || avgHops === undefined ? "n/a" : `${Number(avgHops).toFixed(Number(avgHops) % 1 ? 1 : 0)}`;
   const issues = Array.isArray(diag.top_issues) ? diag.top_issues.slice(0, 5) : [];
   host.innerHTML = `
     <div class="client-network-diagnostics">
@@ -924,6 +956,10 @@ function renderClientNetworkDiagnostics() {
         <div>Stale: <strong>${esc(diag.stale ?? diag.stale_peers ?? "-")}</strong></div>
         <div>Shared suspected: <strong>${esc(diag.shared_profile_suspected ?? "-")}</strong></div>
         <div>Endpoint flapping: <strong>${esc(diag.endpoint_flapping ?? diag.endpoint_flapping_clients ?? "-")}</strong></div>
+        <div>Path checked: <strong>${esc(diag.path_checked ?? diag.path_checked_clients ?? 0)}</strong></div>
+        <div>Avg hops: <strong>${esc(hopsLabel)}</strong></div>
+        <div>Path timeout: <strong>${esc(diag.path_timeout ?? diag.path_timeout_clients ?? 0)}</strong></div>
+        <div>Path unsupported: <strong>${esc((diag.path_unsupported ?? false) ? "yes" : "no")}</strong></div>
         <div>Avg RTT: <strong>${esc(avgLabel)}</strong></div>
         <div>P95 RTT: <strong>${esc(p95Label)}</strong></div>
       </div>
@@ -2718,7 +2754,7 @@ function renderClients() {
                 ${ipv6 ? `<span class="min-w-0 max-w-full truncate font-mono text-xs" title="${esc(ipv6)}">${esc(ipv6)}</span>` : ""}
               </div>
               <p class="mt-1 text-xs text-[var(--muted)]">${active ? "Active recently" : "No recent traffic"} · Last seen ${esc(timeAgo(client.latestHandshakeAt || client.last_handshake))}</p>
-              <p class="mt-1 flex min-w-0 flex-wrap items-center gap-2 text-xs text-[var(--muted)]"><span class="truncate">Endpoint: ${esc(endpoint)}</span>${statusState.role === "super" ? renderLatencyChip(client) + renderSharedProfileChip(client) : ""}</p>
+              <p class="mt-1 flex min-w-0 flex-wrap items-center gap-2 text-xs text-[var(--muted)]"><span class="truncate">Endpoint: ${esc(endpoint)}</span>${statusState.role === "super" ? renderLatencyChip(client) + renderSharedProfileChip(client) + renderPathChip(client) : ""}</p>
               ${renderEndpointInfo(client)}
               ${portMarkup ? `<div class="mt-2">${portMarkup}</div>` : ""}
             </div>
@@ -2743,7 +2779,7 @@ function renderClients() {
               ${renderMenuItem("copy-config", "copy", "Copy profile")}
               ${renderMenuItem("copy-uri", "link", "Copy URI")}
               ${renderMenuItem("copy-access-link", "link", "Copy access link")}
-              ${isAdmin ? renderMenuItem("path-check", "search", "Check path") : ""}
+              ${isAdmin ? renderMenuItem("path-check", "search", clientPathState.running[clientKey(client)] ? "checking..." : "Check path") : ""}
               <button type="button" data-action="regenerate-config" class="client-menu-item text-amber-700">${icon("refresh")}<span>Regenerate</span></button>
               ${renderMenuItem("toggle", "power", client.disabled ? "Enable client" : "Disable client")}
               ${renderMenuItem("toggle-ports", "shield", "Port details / toggle", shieldClass)}
@@ -2994,17 +3030,30 @@ async function clientAction(name, action) {
 }
 
 async function checkClientPath(name) {
-  const result = await api(`/api/clients/${encodeURIComponent(name)}/path-check`, {method: "POST", body: "{}"});
-  const path = Array.isArray(result.path) ? result.path : [];
-  const lines = path.map(row => `Hop ${row.hop}: ${row.address || "*"}${row.rtt_ms === null || row.rtt_ms === undefined ? "" : ` · ${row.rtt_ms} ms`}`);
-  showModal(`Path check: ${name}`, `
-    <div class="grid gap-3 text-sm">
-      <p class="text-[var(--muted)]">${esc(result.note || "Path inside secure link is often not a real internet hop count.")}</p>
-      <p><strong>Status:</strong> ${esc(result.status || "unknown")}${result.hops ? ` · Path: ${esc(result.hops)} hop${Number(result.hops) === 1 ? "" : "s"}` : ""}</p>
-      ${lines.length ? `<pre class="rounded-md bg-[var(--soft)] p-3 text-xs">${esc(lines.join("\n"))}</pre>` : ""}
-      ${result.retry_after ? `<p class="text-xs text-[var(--muted)]">Rate limited. Try again in ${esc(result.retry_after)}s.</p>` : ""}
-    </div>
-  `);
+  if (clientPathState.running[name]) return;
+  clientPathState.running[name] = true;
+  renderClients();
+  try {
+    const result = await api(`/api/clients/${encodeURIComponent(name)}/path-check`, {method: "POST", body: "{}"});
+    clientPathState.results[name] = result;
+    const path = Array.isArray(result.path) ? result.path : [];
+    const count = result.hop_count ?? result.hops;
+    const lines = path.map(row => `Hop ${row.hop}: ${row.address || "*"}${row.rtt_ms === null || row.rtt_ms === undefined ? "" : ` · ${row.rtt_ms} ms`}${row.raw ? `\n  ${row.raw}` : ""}`);
+    const retry = result.retry_after ? `<p class="text-xs text-[var(--muted)]">Rate limited. Try again in ${esc(result.retry_after)}s.</p>` : "";
+    if (result.retry_after) showToast("Path check is rate-limited; try later", "error");
+    showModal(`Path check: ${name}`, `
+      <div class="grid gap-3 text-sm">
+        <p class="text-[var(--muted)]">${esc(result.note || "Path inside secure link may not represent the public Internet route.")}</p>
+        <p><strong>Status:</strong> ${esc(result.status || "unknown")}${count ? ` · Path: ${esc(count)} hop${Number(count) === 1 ? "" : "s"}` : ""}${result.method ? ` · Method: ${esc(result.method)}` : ""}</p>
+        ${result.summary ? `<p><strong>Summary:</strong> ${esc(result.summary)}</p>` : ""}
+        ${lines.length ? `<pre class="rounded-md bg-[var(--soft)] p-3 text-xs">${esc(lines.join("\n"))}</pre>` : ""}
+        ${retry}
+      </div>
+    `);
+  } finally {
+    delete clientPathState.running[name];
+    renderClients();
+  }
 }
 
 async function regenerateConfig(name) {
