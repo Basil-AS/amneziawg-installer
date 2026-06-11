@@ -741,6 +741,7 @@ function ownerTokenLabel(item) {
 function clientMatchesOwnerFilter(client, filter = ownerFilter) {
   const assigned = assignedUserTokens(client);
   if (!filter || filter.mode === "all") return true;
+  if (filter.mode === "network") return clientHasNetworkIssue(client);
   if (filter.mode === "unassigned") return assigned.length === 0;
   if (filter.mode === "assigned") return assigned.length > 0;
   if (filter.mode === "token") {
@@ -754,7 +755,9 @@ function ownerFilterOptions() {
   const tokens = new Map();
   let assigned = 0;
   let unassigned = 0;
+  let network = 0;
   latestClients.forEach(client => {
+    if (clientHasNetworkIssue(client)) network += 1;
     const items = assignedUserTokens(client);
     if (items.length) assigned += 1;
     else unassigned += 1;
@@ -775,12 +778,13 @@ function ownerFilterOptions() {
     all: latestClients.length,
     assigned,
     unassigned,
+    network,
     tokens: Array.from(tokens.values()).sort((a, b) => a.label.localeCompare(b.label)),
   };
 }
 
 function normalizeOwnerFilter(options) {
-  if (!ownerFilter || !["all", "unassigned", "assigned", "token"].includes(ownerFilter.mode)) {
+  if (!ownerFilter || !["all", "unassigned", "assigned", "token", "network"].includes(ownerFilter.mode)) {
     ownerFilter = {mode: "all", tokens: []};
   }
   if (ownerFilter.mode !== "token") return;
@@ -805,6 +809,7 @@ function renderOwnerFilter() {
       ${filterButton("all", "All", options.all)}
       ${filterButton("unassigned", "Unassigned", options.unassigned)}
       ${filterButton("assigned", "Assigned", options.assigned)}
+      ${filterButton("network", "Network issues", options.network)}
       ${options.tokens.map(item => filterButton("token", item.label, item.count, item.key)).join("")}
     </div>
   `;
@@ -843,7 +848,8 @@ function renderHealthCard(label, value, sub, status) {
 }
 
 function latencyClass(entry) {
-  if (!entry || ["stale", "unknown", "skipped"].includes(entry.status)) return "is-offline";
+  if (!entry || ["stale", "offline", "unknown", "skipped"].includes(entry.status) || ["stale", "offline"].includes(entry.connectivity)) return "is-offline";
+  if (entry.status === "icmp_blocked_possible") return "is-noping";
   if (entry.status === "timeout") return "is-timeout";
   const rtt = Number(entry.rtt_ms);
   if (!Number.isFinite(rtt)) return "is-offline";
@@ -852,37 +858,76 @@ function latencyClass(entry) {
   return "is-poor";
 }
 
+function clientLatencyEntry(client) {
+  return clientLatencyState?.clients?.[clientKey(client)] || null;
+}
+
+function clientSharedProfile(client) {
+  const entry = clientLatencyEntry(client);
+  return entry?.shared_profile || client.shared_profile || {};
+}
+
+function clientHasNetworkIssue(client) {
+  const entry = clientLatencyEntry(client);
+  const shared = clientSharedProfile(client);
+  return Boolean(
+    ["timeout", "icmp_blocked_possible", "high", "stale", "offline"].includes(entry?.status) ||
+    ["stale", "offline", "unknown"].includes(entry?.connectivity) ||
+    Number(entry?.rtt_ms) > 200 ||
+    ["watch", "suspected", "high"].includes(shared?.severity)
+  );
+}
+
 function renderLatencyChip(client) {
   const key = clientKey(client);
-  const entry = clientLatencyState?.clients?.[key];
+  const entry = clientLatencyEntry(client);
   const peerIp = entry?.["vp" + "n_ip"] || client.ipv4 || client.ip || "";
   const label = entry?.label || "unknown";
   const loss = entry?.loss_pct === null || entry?.loss_pct === undefined ? "n/a" : `${Number(entry.loss_pct).toFixed(0)}%`;
-  const handshake = entry?.latest_handshake_age === null || entry?.latest_handshake_age === undefined
+  const handshake = entry?.handshake_age_sec === null || entry?.handshake_age_sec === undefined
     ? "never"
-    : `${timeAgo(Math.floor(Date.now() / 1000) - Number(entry.latest_handshake_age))}`;
-  const title = `${"VP" + "N"} ICMP latency from server to client ${peerIp || "-"}. Timeout may mean client blocks ICMP or is asleep. Latest handshake: ${handshake}. Loss: ${loss}.`;
-  return `<span class="latency-chip ${latencyClass(entry)}" title="${esc(title)}"><span aria-hidden="true">☁</span> ${esc(label)}</span>`;
+    : `${timeAgo(Math.floor(Date.now() / 1000) - Number(entry.handshake_age_sec))}`;
+  const endpoint = entry?.endpoint || client.endpoint || "-";
+  const notes = Array.isArray(entry?.notes) ? entry.notes.join(" ") : "";
+  const title = `${"VP" + "N"} latency check to ${peerIp || "-"} from server.\nICMP timeout does not always mean the client is offline: device may sleep or block ping.\nLatest handshake: ${handshake}.\nLoss: ${loss}.\nEndpoint: ${endpoint}.\n${notes}`.trim();
+  return `<span class="latency-chip ${latencyClass(entry)}" title="${esc(title)}">${esc(label)}</span>`;
+}
+
+function renderSharedProfileChip(client) {
+  const shared = clientSharedProfile(client);
+  if (!["watch", "suspected", "high"].includes(shared?.severity)) return "";
+  const label = shared.severity === "watch" ? "endpoint flip" : "shared?";
+  const title = `This profile may be used on multiple devices.\n${"Wire" + "Guard"} keeps only one active endpoint per peer, so devices can steal the session from each other.\nObserved ${shared.endpoint_changes_10m || 0} endpoint changes between ${shared.distinct_endpoint_ips_10m || 0} public IPs in 10 minutes.\n${shared.summary || ""}`;
+  return `<span class="shared-profile-chip is-${esc(shared.severity)}" title="${esc(title)}">${esc(label)}</span>`;
 }
 
 function renderClientNetworkDiagnostics() {
   const host = document.querySelector("#clientNetworkDiagnostics");
   if (!host || statusState?.role !== "super") return;
-  const diag = clientLatencyState?.diagnostics || {};
-  const avg = diag.average_rtt_ms === null || diag.average_rtt_ms === undefined ? "n/a" : `${Math.round(Number(diag.average_rtt_ms))} ms`;
+  const diag = clientLatencyState?.overview || clientLatencyState?.diagnostics || {};
+  const avg = diag.avg_rtt_ms ?? diag.average_rtt_ms;
+  const p95 = diag.p95_rtt_ms;
+  const avgLabel = avg === null || avg === undefined ? "n/a" : `${Math.round(Number(avg))} ms`;
+  const p95Label = p95 === null || p95 === undefined ? "n/a" : `${Math.round(Number(p95))} ms`;
+  const issues = Array.isArray(diag.top_issues) ? diag.top_issues.slice(0, 5) : [];
   host.innerHTML = `
     <div class="client-network-diagnostics">
       <div class="flex flex-wrap items-center justify-between gap-2">
-        <p class="text-xs font-semibold uppercase text-[var(--muted)]">Client network diagnostics</p>
+        <p class="text-xs font-semibold uppercase text-[var(--muted)]">Client Network Overview</p>
         <button type="button" id="refreshLatency" class="${buttonClasses("h-8 px-2 text-xs")}">${icon("refresh")}<span>Refresh latency</span></button>
       </div>
       <div class="nettest-metrics">
-        <div>stale peers: <strong>${esc(diag.stale_peers ?? "-")}</strong></div>
-        <div>active peers: <strong>${esc(diag.active_peers ?? "-")}</strong></div>
-        <div>avg reachable ping: <strong>${esc(avg)}</strong></div>
-        <div>timeouts: <strong>${esc(diag.timeout_clients ?? "-")}</strong></div>
-        <div>high latency: <strong>${esc(diag.high_latency_clients ?? "-")}</strong></div>
+        <div>Active: <strong>${esc(diag.active ?? diag.active_peers ?? "-")}</strong></div>
+        <div>Reachable: <strong>${esc(diag.reachable ?? diag.reachable_clients ?? "-")}</strong></div>
+        <div>No ping: <strong>${esc(diag.no_ping ?? diag.no_ping_clients ?? "-")}</strong></div>
+        <div>High latency: <strong>${esc(diag.high_latency ?? diag.high_latency_clients ?? "-")}</strong></div>
+        <div>Stale: <strong>${esc(diag.stale ?? diag.stale_peers ?? "-")}</strong></div>
+        <div>Shared suspected: <strong>${esc(diag.shared_profile_suspected ?? "-")}</strong></div>
+        <div>Endpoint flapping: <strong>${esc(diag.endpoint_flapping ?? diag.endpoint_flapping_clients ?? "-")}</strong></div>
+        <div>Avg RTT: <strong>${esc(avgLabel)}</strong></div>
+        <div>P95 RTT: <strong>${esc(p95Label)}</strong></div>
       </div>
+      ${issues.length ? `<div class="mt-2 text-xs text-[var(--muted)]"><span class="font-medium text-[var(--text)]">Top issues</span><ol class="mt-1 grid gap-1">${issues.map((item, idx) => `<li>${idx + 1}. ${esc(item.client || "-")} — ${esc(item.summary || item.type || "issue")}</li>`).join("")}</ol></div>` : ""}
     </div>
   `;
   const btn = document.querySelector("#refreshLatency");
@@ -2673,7 +2718,7 @@ function renderClients() {
                 ${ipv6 ? `<span class="min-w-0 max-w-full truncate font-mono text-xs" title="${esc(ipv6)}">${esc(ipv6)}</span>` : ""}
               </div>
               <p class="mt-1 text-xs text-[var(--muted)]">${active ? "Active recently" : "No recent traffic"} · Last seen ${esc(timeAgo(client.latestHandshakeAt || client.last_handshake))}</p>
-              <p class="mt-1 flex min-w-0 flex-wrap items-center gap-2 text-xs text-[var(--muted)]"><span class="truncate">Endpoint: ${esc(endpoint)}</span>${statusState.role === "super" ? renderLatencyChip(client) : ""}</p>
+              <p class="mt-1 flex min-w-0 flex-wrap items-center gap-2 text-xs text-[var(--muted)]"><span class="truncate">Endpoint: ${esc(endpoint)}</span>${statusState.role === "super" ? renderLatencyChip(client) + renderSharedProfileChip(client) : ""}</p>
               ${renderEndpointInfo(client)}
               ${portMarkup ? `<div class="mt-2">${portMarkup}</div>` : ""}
             </div>
@@ -2698,6 +2743,7 @@ function renderClients() {
               ${renderMenuItem("copy-config", "copy", "Copy profile")}
               ${renderMenuItem("copy-uri", "link", "Copy URI")}
               ${renderMenuItem("copy-access-link", "link", "Copy access link")}
+              ${isAdmin ? renderMenuItem("path-check", "search", "Check path") : ""}
               <button type="button" data-action="regenerate-config" class="client-menu-item text-amber-700">${icon("refresh")}<span>Regenerate</span></button>
               ${renderMenuItem("toggle", "power", client.disabled ? "Enable client" : "Disable client")}
               ${renderMenuItem("toggle-ports", "shield", "Port details / toggle", shieldClass)}
@@ -2908,6 +2954,7 @@ async function clientAction(name, action) {
     if (action === "copy-uri") return copyUri(name);
     if (action === "copy-access-link") return copyAccessLink(name);
     if (action === "regenerate-config") return regenerateConfig(name);
+    if (action === "path-check") return checkClientPath(name);
     if (action === "toggle") {
       await api(`/api/clients/${encodeURIComponent(name)}/toggle`, {method: "POST", body: "{}"});
       showToast("Client toggled");
@@ -2944,6 +2991,20 @@ async function clientAction(name, action) {
   } catch (error) {
     showToast("Failed", "error");
   }
+}
+
+async function checkClientPath(name) {
+  const result = await api(`/api/clients/${encodeURIComponent(name)}/path-check`, {method: "POST", body: "{}"});
+  const path = Array.isArray(result.path) ? result.path : [];
+  const lines = path.map(row => `Hop ${row.hop}: ${row.address || "*"}${row.rtt_ms === null || row.rtt_ms === undefined ? "" : ` · ${row.rtt_ms} ms`}`);
+  showModal(`Path check: ${name}`, `
+    <div class="grid gap-3 text-sm">
+      <p class="text-[var(--muted)]">${esc(result.note || "Path inside secure link is often not a real internet hop count.")}</p>
+      <p><strong>Status:</strong> ${esc(result.status || "unknown")}${result.hops ? ` · Path: ${esc(result.hops)} hop${Number(result.hops) === 1 ? "" : "s"}` : ""}</p>
+      ${lines.length ? `<pre class="rounded-md bg-[var(--soft)] p-3 text-xs">${esc(lines.join("\n"))}</pre>` : ""}
+      ${result.retry_after ? `<p class="text-xs text-[var(--muted)]">Rate limited. Try again in ${esc(result.retry_after)}s.</p>` : ""}
+    </div>
+  `);
 }
 
 async function regenerateConfig(name) {

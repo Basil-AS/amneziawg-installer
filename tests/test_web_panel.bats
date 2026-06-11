@@ -1149,15 +1149,94 @@ PY
     local app="$BATS_TEST_DIRNAME/../web/app.js"
     local css="$BATS_TEST_DIRNAME/../web/style.css"
     grep -qF 'function renderLatencyChip(client)' "$app"
-    grep -qF 'ICMP latency from server to client' "$app"
-    grep -qF 'Timeout may mean client blocks ICMP or is asleep' "$app"
+    grep -qF 'latency check to' "$app"
+    grep -qF 'device may sleep or block ping' "$app"
+    grep -qF 'renderSharedProfileChip(client)' "$app"
+    grep -qF 'Client Network Overview' "$app"
+    grep -qF 'Network issues' "$app"
+    grep -qF 'Check path' "$app"
     grep -qF '/api/clients/latency' "$app"
+    grep -qF '/path-check' "$app"
     grep -qF 'CLIENT_LATENCY_POLL_MS = 60000' "$app"
     grep -qF 'if (shouldPollHeavy()) await loadClientLatency()' "$app"
     grep -qF 'Refresh latency' "$app"
-    grep -qF '${statusState.role === "super" ? renderLatencyChip(client) : ""}' "$app"
+    grep -qF 'renderLatencyChip(client) + renderSharedProfileChip(client)' "$app"
+    run ! grep -qF '☁' "$app"
     grep -qF '.latency-chip' "$css"
+    grep -qF 'font-weight:500' "$css"
+    run ! grep -qF 'font-weight:800;line-height:1.2' "$css"
+    grep -qF '.shared-profile-chip' "$css"
     grep -qF '.client-network-diagnostics' "$css"
+}
+
+@test "client path check is super-only, validates VPN targets, rate-limited, and handles unsupported tools" {
+    command -v python3 &>/dev/null || skip "python3 not available"
+    local tmp
+    tmp=$(mktemp -d)
+    mkdir -p "$tmp/web"
+    AWG_DIR="$tmp" SERVER_CONF_FILE="$tmp/awg0.conf" REPO_ROOT="$BATS_TEST_DIRNAME/.." python3 - <<'PY'
+import importlib.util
+import io
+import json
+import os
+from pathlib import Path
+
+spec = importlib.util.spec_from_file_location("panel_server", Path(os.environ["REPO_ROOT"]) / "web" / "server.py")
+server = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(server)
+
+super_token = "super-secret"
+user_token = "user-secret"
+server.write_tokens({
+    "super_token_hash": server.token_hash(super_token),
+    "users": {server.token_hash(user_token): {"name": "user", "clients": []}},
+})
+server.parse_config = lambda: {"AWG_TUNNEL_SUBNET": "10.9.9.1/24"}
+server.parse_peers = lambda: [{"name": "phone", "ipv4": "10.9.9.12"}, {"name": "bad", "ipv4": "8.8.8.8"}]
+server.shutil.which = lambda name: None
+
+class Headers(dict):
+    def get(self, key, default=None):
+        return super().get(key, default)
+
+def make_handler(token, path="/api/clients/phone/path-check"):
+    h = object.__new__(server.Handler)
+    h.path = path
+    h.client_address = ("127.0.0.1", 12345)
+    h.rfile = io.BytesIO(b"{}")
+    h.wfile = io.BytesIO()
+    h.responses = []
+    h.headers_sent = []
+    h.headers = Headers({"Host": "127.0.0.1", "Authorization": f"Bearer {token}", "Content-Length": "2"})
+    h.send_response = lambda code: h.responses.append(code)
+    h.send_error = lambda code, *args, **kwargs: h.responses.append(code)
+    h.send_header = lambda key, value: h.headers_sent.append((key, value))
+    h.end_headers = lambda: None
+    return h
+
+h = make_handler(user_token)
+h.do_POST()
+assert h.responses == [403]
+
+h = make_handler(super_token)
+h.do_POST()
+assert h.responses == [200]
+payload = json.loads(h.wfile.getvalue().decode())
+assert payload["status"] == "unsupported"
+
+h = make_handler(super_token)
+h.do_POST()
+payload = json.loads(h.wfile.getvalue().decode())
+assert payload["status"] == "rate_limited"
+
+h = make_handler(super_token, "/api/clients/bad/path-check")
+h.do_POST()
+assert h.responses[-1] in (400, 429)
+
+parsed = server.parse_path_check_output(" 1: 10.9.9.12 42.1ms reached", "10.9.9.12")
+assert parsed[0]["hop"] == 1 and parsed[0]["address"] == "10.9.9.12"
+PY
+    rm -rf "$tmp"
 }
 
 @test "WG Tunnel import links are authenticated, RBAC scoped, hashed, and raw no-store" {
@@ -2179,16 +2258,21 @@ now = int(time.time())
 server.parse_config = lambda: {"AWG_TUNNEL_SUBNET": "10.9.9.1/24"}
 server.parse_peers = lambda: [
     {"name": "phone", "ipv4": "10.9.9.12"},
+    {"name": "nopinger", "ipv4": "10.9.9.40"},
     {"name": "sleepy", "ipv4": "10.9.9.31"},
     {"name": "bad", "ipv4": "8.8.8.8"},
 ]
 server.client_stats_map = lambda force=False: {
-    "phone": {"last_handshake": now - 20},
+    "phone": {"last_handshake": now - 20, "rx": 150, "tx": 200, "endpoint": "198.51.100.10:50000"},
+    "nopinger": {"last_handshake": now - 30, "rx": 300, "tx": 400, "endpoint": "198.51.100.20:50000"},
     "sleepy": {"last_handshake": now - 2000},
 }
+server.CLIENT_TRANSFER_PREV["nopinger"] = {"rx": 1, "tx": 1, "ts": now - 60}
 calls = []
 def fake_ping(ip):
     calls.append(ip)
+    if ip == "10.9.9.40":
+        return {"status": "timeout", "rtt_ms": None, "loss_pct": 100, "samples": 0, "label": "timeout"}
     return {"status": "ok", "rtt_ms": 34.2, "loss_pct": 0, "samples": 3, "label": "34 ms"}
 server.ping_vpn_client = fake_ping
 
@@ -2232,14 +2316,66 @@ assert handler.responses == [200]
 payload = json.loads(handler.wfile.getvalue().decode())
 assert payload["ttl_seconds"] == 30
 assert payload["clients"]["phone"]["status"] == "ok"
+assert payload["clients"]["phone"]["connectivity"] == "online"
+assert payload["clients"]["phone"]["latency_method"] == "icmp"
+assert payload["clients"]["nopinger"]["status"] == "icmp_blocked_possible"
+assert payload["clients"]["nopinger"]["connectivity"] == "online"
+assert payload["clients"]["nopinger"]["label"] == "no ping"
 assert payload["clients"]["sleepy"]["status"] == "stale"
 assert payload["clients"]["sleepy"]["label"] == "offline"
 assert payload["clients"]["bad"]["status"] == "unknown"
-assert calls == ["10.9.9.12"]
+assert payload["overview"]["no_ping"] == 1
+assert calls == ["10.9.9.12", "10.9.9.40"]
 
 handler = make_handler(super_token)
 handler.do_GET()
-assert len(calls) == 1, "fresh cache should avoid a second ping scan"
+assert len(calls) == 2, "fresh cache should avoid a second ping scan"
+PY
+    rm -rf "$tmp"
+}
+
+@test "client endpoint history prunes old entries and detects shared profile flips" {
+    command -v python3 &>/dev/null || skip "python3 not available"
+    local tmp
+    tmp=$(mktemp -d)
+    mkdir -p "$tmp/web"
+    AWG_DIR="$tmp" SERVER_CONF_FILE="$tmp/awg0.conf" REPO_ROOT="$BATS_TEST_DIRNAME/.." python3 - <<'PY'
+import importlib.util
+import os
+import time
+from pathlib import Path
+
+spec = importlib.util.spec_from_file_location("panel_server", Path(os.environ["REPO_ROOT"]) / "web" / "server.py")
+server = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(server)
+
+now = int(time.time())
+data = {"clients": {"old": [{"observed_at": now - 90000, "endpoint_ip": "1.1.1.1"}], "fresh": [{"observed_at": now, "endpoint_ip": "1.1.1.1"}]}}
+pruned = server.prune_endpoint_history(data, now)
+assert "old" not in pruned["clients"]
+assert "fresh" in pruned["clients"]
+
+stable = [{"observed_at": now - 100, "endpoint_ip": "198.51.100.1"}, {"observed_at": now - 10, "endpoint_ip": "198.51.100.1"}]
+assert server.shared_profile_detection(stable, now)["severity"] == "none"
+watch = [{"observed_at": now - 100, "endpoint_ip": "198.51.100.1"}, {"observed_at": now - 10, "endpoint_ip": "198.51.100.2"}]
+assert server.shared_profile_detection(watch, now)["severity"] == "watch"
+flip = [
+    {"observed_at": now - 500, "endpoint_ip": "198.51.100.1"},
+    {"observed_at": now - 400, "endpoint_ip": "198.51.100.2"},
+    {"observed_at": now - 300, "endpoint_ip": "198.51.100.1"},
+    {"observed_at": now - 200, "endpoint_ip": "198.51.100.2"},
+]
+assert server.shared_profile_detection(flip, now)["severity"] == "suspected"
+high = [
+    {"observed_at": now - 500, "endpoint_ip": "198.51.100.1", "geo": {"asn": "AS1", "country": "FI"}},
+    {"observed_at": now - 400, "endpoint_ip": "198.51.100.2", "geo": {"asn": "AS2", "country": "DE"}},
+    {"observed_at": now - 300, "endpoint_ip": "198.51.100.1", "geo": {"asn": "AS1", "country": "FI"}},
+    {"observed_at": now - 200, "endpoint_ip": "198.51.100.2", "geo": {"asn": "AS2", "country": "DE"}},
+]
+detected = server.shared_profile_detection(high, now)
+assert detected["severity"] == "high"
+assert detected["distinct_endpoint_ips_10m"] == 2
+assert detected["endpoint_changes_10m"] >= 3
 PY
     rm -rf "$tmp"
 }

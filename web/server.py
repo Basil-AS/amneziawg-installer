@@ -120,6 +120,16 @@ CLIENT_LATENCY_STALE_AFTER = 15 * 60
 CLIENT_LATENCY_MAX_SCAN = 20
 CLIENT_LATENCY_LOCK = threading.Lock()
 CLIENT_LATENCY_CACHE = {"ts": 0.0, "value": None}
+CLIENT_TRANSFER_PREV = {}
+CLIENT_ENDPOINT_HISTORY_FILE = WEB_DIR / "client_endpoint_history.json"
+CLIENT_ENDPOINT_HISTORY_LOCK = threading.Lock()
+CLIENT_ENDPOINT_HISTORY_MAX = 100
+CLIENT_ENDPOINT_HISTORY_RETENTION = 24 * 3600
+CLIENT_ENDPOINT_HISTORY_WRITE_INTERVAL = 30.0
+CLIENT_ENDPOINT_HISTORY_LAST_WRITE = 0.0
+CLIENT_PATH_CHECK_LOCK = threading.Lock()
+CLIENT_PATH_CHECK_LAST = {}
+CLIENT_PATH_CHECK_INTERVAL = 60.0
 IP_INFO_CACHE_TTL = 30 * 24 * 3600
 IP_INFO_NEGATIVE_TTL = 3600
 IP_INFO_ERROR_CACHE_TTL = 30 * 60
@@ -4741,6 +4751,333 @@ def ping_vpn_client(ip):
     return parsed
 
 
+def public_key_fingerprint(value):
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:12]
+
+
+def load_client_endpoint_history():
+    try:
+        if CLIENT_ENDPOINT_HISTORY_FILE.exists():
+            data = json.loads(CLIENT_ENDPOINT_HISTORY_FILE.read_text(encoding="utf-8"))
+            if isinstance(data, dict) and isinstance(data.get("clients"), dict):
+                return data
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+        pass
+    return {"clients": {}}
+
+
+def prune_endpoint_history(data, now=None):
+    now = now or time.time()
+    cutoff = now - CLIENT_ENDPOINT_HISTORY_RETENTION
+    clients = data.setdefault("clients", {})
+    for name in list(clients):
+        rows = clients.get(name)
+        if not isinstance(rows, list):
+            clients.pop(name, None)
+            continue
+        clean = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            observed = float(row.get("observed_at") or 0)
+            if observed >= cutoff:
+                clean.append(row)
+        if clean:
+            clients[name] = clean[-CLIENT_ENDPOINT_HISTORY_MAX:]
+        else:
+            clients.pop(name, None)
+    return data
+
+
+def write_client_endpoint_history(data):
+    WEB_DIR.mkdir(parents=True, exist_ok=True)
+    tmp = CLIENT_ENDPOINT_HISTORY_FILE.with_name(f"{CLIENT_ENDPOINT_HISTORY_FILE.name}.tmp.{os.getpid()}")
+    tmp.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, CLIENT_ENDPOINT_HISTORY_FILE)
+    os.chmod(CLIENT_ENDPOINT_HISTORY_FILE, 0o600)
+
+
+def endpoint_geo_snapshot(endpoint_ip):
+    if not endpoint_ip:
+        return {}
+    try:
+        cache = load_ip_info_cache()
+        entry = cache.get(endpoint_ip) if isinstance(cache, dict) else None
+        info = entry.get("info") if isinstance(entry, dict) else None
+        if not isinstance(info, dict):
+            return {}
+        return {
+            "asn": str(info.get("asn") or info.get("asn_id") or ""),
+            "country": str(info.get("country_code") or info.get("country") or ""),
+            "city": str(info.get("city") or ""),
+            "provider": str(info.get("provider") or info.get("org") or ""),
+        }
+    except Exception:
+        return {}
+
+
+def record_client_endpoint_history(peers, stats, now=None, force=False):
+    global CLIENT_ENDPOINT_HISTORY_LAST_WRITE
+    now = now or time.time()
+    changed = False
+    with CLIENT_ENDPOINT_HISTORY_LOCK:
+        data = prune_endpoint_history(load_client_endpoint_history(), now)
+        clients = data.setdefault("clients", {})
+        for peer in peers:
+            name = peer.get("name") or peer.get("config_name") or ""
+            if not name:
+                continue
+            row_stats = stats.get(name, {}) if isinstance(stats, dict) else {}
+            endpoint = row_stats.get("endpoint") or ""
+            endpoint_ip, endpoint_port = split_endpoint(endpoint)
+            last_handshake = int(row_stats.get("latestHandshakeAt", row_stats.get("last_handshake", 0)) or 0)
+            rx = int(row_stats.get("rx") or 0)
+            tx = int(row_stats.get("tx") or 0)
+            if not endpoint_ip and not last_handshake:
+                continue
+            rows = clients.setdefault(name, [])
+            last = rows[-1] if rows else {}
+            fp = public_key_fingerprint(peer.get("public_key", ""))
+            observation = {
+                "observed_at": int(now),
+                "endpoint_ip": endpoint_ip,
+                "endpoint_port": endpoint_port,
+                "latest_handshake": last_handshake,
+                "rx": rx,
+                "tx": tx,
+                "public_key_fp": fp,
+            }
+            geo = endpoint_geo_snapshot(endpoint_ip)
+            if geo:
+                observation["geo"] = geo
+            meaningful_change = (
+                not rows
+                or last.get("endpoint_ip") != endpoint_ip
+                or last.get("endpoint_port") != endpoint_port
+                or int(last.get("latest_handshake") or 0) != last_handshake
+                or int(last.get("rx") or 0) != rx
+                or int(last.get("tx") or 0) != tx
+            )
+            if meaningful_change:
+                rows.append(observation)
+                clients[name] = rows[-CLIENT_ENDPOINT_HISTORY_MAX:]
+                changed = True
+        if changed and (force or now - CLIENT_ENDPOINT_HISTORY_LAST_WRITE >= CLIENT_ENDPOINT_HISTORY_WRITE_INTERVAL):
+            write_client_endpoint_history(data)
+            CLIENT_ENDPOINT_HISTORY_LAST_WRITE = now
+        return data
+
+
+def shared_profile_detection(history_rows, now=None):
+    now = now or time.time()
+    rows = [row for row in (history_rows or []) if isinstance(row, dict) and now - float(row.get("observed_at") or 0) <= 30 * 60]
+    rows.sort(key=lambda row: float(row.get("observed_at") or 0))
+    recent10 = [row for row in rows if now - float(row.get("observed_at") or 0) <= 10 * 60]
+    base = {
+        "severity": "none",
+        "distinct_endpoint_ips_10m": 0,
+        "endpoint_changes_10m": 0,
+        "distinct_asns_10m": 0,
+        "last_change_at": "",
+        "summary": "",
+        "evidence": [],
+    }
+    if len(recent10) < 2:
+        return base
+    ips = [row.get("endpoint_ip") or "" for row in recent10 if row.get("endpoint_ip")]
+    distinct_ips = sorted(set(ips))
+    changes = 0
+    last_change = 0
+    flip_chain = []
+    prev_ip = None
+    for row in recent10:
+        ip = row.get("endpoint_ip") or ""
+        if not ip:
+            continue
+        if prev_ip and ip != prev_ip:
+            changes += 1
+            last_change = int(row.get("observed_at") or 0)
+            flip_chain.append(ip)
+        prev_ip = ip
+    asns = set()
+    countries = set()
+    for row in recent10:
+        geo = row.get("geo") if isinstance(row.get("geo"), dict) else {}
+        if geo.get("asn"):
+            asns.add(str(geo["asn"]))
+        if geo.get("country"):
+            countries.add(str(geo["country"]))
+    severity = "none"
+    summary = ""
+    evidence = []
+    if len(distinct_ips) >= 2 and changes >= 3 and (len(asns) >= 2 or len(countries) >= 2):
+        severity = "high"
+        summary = "Likely same profile on multiple devices: endpoint alternates across networks."
+        evidence.append("different ASNs/countries observed")
+    elif len(distinct_ips) >= 2 and changes >= 3:
+        severity = "suspected"
+        summary = f"Possible same config on multiple devices: endpoint alternated between {len(distinct_ips)} public IPs."
+    elif len(distinct_ips) >= 2 and changes >= 1:
+        severity = "watch"
+        summary = "Endpoint changed recently; watch for repeated flips."
+    if changes:
+        chain = [ips[0]] + flip_chain
+        evidence.insert(0, " -> ".join(chain[-5:]))
+    base.update({
+        "severity": severity,
+        "distinct_endpoint_ips_10m": len(distinct_ips),
+        "endpoint_changes_10m": changes,
+        "distinct_asns_10m": len(asns),
+        "last_change_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(last_change)) if last_change else "",
+        "summary": summary,
+        "evidence": evidence,
+    })
+    return base
+
+
+def recent_nettest_latency_by_vpn_ip(max_age=3600):
+    now = time.time()
+    out = {}
+    try:
+        paths = sorted(NETTEST_REPORT_DIR.glob("nettest_*.json"), key=lambda item: item.stat().st_mtime, reverse=True)[:50]
+    except OSError:
+        return out
+    for path in paths:
+        try:
+            if now - path.stat().st_mtime > max_age:
+                continue
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+            continue
+        vpn_ip = str(data.get("vpn_client_ip") or data.get("network_context", {}).get("vpn_client_ip") or "")
+        latency = data.get("latency") if isinstance(data.get("latency"), dict) else {}
+        avg = latency.get("avg_ms")
+        if vpn_ip and avg is not None and vpn_ip not in out:
+            out[vpn_ip] = {
+                "rtt_ms": round(float(avg), 1),
+                "loss_pct": float(latency.get("loss_percent") or 0),
+                "samples": int(latency.get("samples") or latency.get("ok") or 0),
+                "observed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(path.stat().st_mtime)),
+            }
+    return out
+
+
+def connectivity_from_signals(age, transfer_active, ping_result, nettest_result=None):
+    notes = []
+    ping_status = (ping_result or {}).get("status") or "unknown"
+    rtt = (ping_result or {}).get("rtt_ms")
+    loss = (ping_result or {}).get("loss_pct")
+    if age is None:
+        notes.append("no handshake observed")
+        return "offline", "unavailable", "low", "never", "offline", notes
+    if age < 180:
+        handshake_state = "fresh"
+        notes.append("fresh handshake")
+    elif age < CLIENT_LATENCY_STALE_AFTER:
+        handshake_state = "recent"
+        notes.append("recent handshake")
+    else:
+        notes.append("stale handshake")
+        return "stale", "unavailable", "low", "stale", "offline", notes
+    if transfer_active:
+        notes.append("traffic observed in last sample")
+    if nettest_result:
+        notes.append("recent browser network test available")
+        return "online", "nettest", "medium", ping_status, f"{round(float(nettest_result['rtt_ms'])):.0f} ms", notes
+    if rtt is not None:
+        notes.append("ICMP reachable")
+        connectivity = "online"
+        status = "high" if float(rtt) > 200 or float(loss or 0) >= 50 else "ok"
+        return connectivity, "icmp", "high", status, f"{round(float(rtt)):.0f} ms", notes
+    if ping_status == "timeout" and (transfer_active or handshake_state == "fresh"):
+        notes.append("ICMP did not answer, but handshake/traffic is fresh; client may block ping or sleep")
+        return "online", "unavailable", "low", "icmp_blocked_possible", "no ping", notes
+    notes.append("ICMP timeout")
+    return "unknown", "unavailable", "low", "timeout", "timeout", notes
+
+
+def percentile(values, pct):
+    if not values:
+        return None
+    ordered = sorted(float(v) for v in values)
+    idx = min(len(ordered) - 1, max(0, int(round((pct / 100.0) * (len(ordered) - 1)))))
+    return round(ordered[idx], 1)
+
+
+def parse_path_check_output(stdout, target):
+    hops = []
+    for raw in (stdout or "").splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        m = re.match(r"^\s*(\d+)[:\s]+(?:\?:\s+)?([0-9.]+|\*)", line)
+        if not m:
+            continue
+        hop = int(m.group(1))
+        address = "" if m.group(2) == "*" else m.group(2)
+        times = [float(x) for x in re.findall(r"([0-9]+(?:\.[0-9]+)?)\s*ms", line)]
+        hops.append({"hop": hop, "address": address, "rtt_ms": round(times[0], 1) if times else None})
+    if not hops and target:
+        m = re.search(r"([0-9]+(?:\.[0-9]+)?)\s*ms", stdout or "")
+        if m:
+            hops.append({"hop": 1, "address": target, "rtt_ms": round(float(m.group(1)), 1)})
+    return hops
+
+
+def client_path_check(name):
+    name = safe_name(name)
+    now = time.time()
+    with CLIENT_PATH_CHECK_LOCK:
+        last = CLIENT_PATH_CHECK_LAST.get(name, 0)
+        if now - last < CLIENT_PATH_CHECK_INTERVAL:
+            return {"status": "rate_limited", "retry_after": int(CLIENT_PATH_CHECK_INTERVAL - (now - last))}
+        CLIENT_PATH_CHECK_LAST[name] = now
+    peer = next((item for item in parse_peers() if item.get("name") == name), None)
+    if not peer:
+        raise ValueError("unknown client")
+    target = validate_vpn_latency_target(peer.get("ipv4") or "")
+    cmd = None
+    if shutil.which("tracepath"):
+        cmd = ["tracepath", "-n", "-m", "8", "-w", "1", target]
+    elif shutil.which("traceroute"):
+        cmd = ["traceroute", "-n", "-m", "8", "-w", "1", target]
+    else:
+        return {
+            "status": "unsupported",
+            "hops": None,
+            "path": [],
+            "note": "Path check needs tracepath or traceroute. Path inside VPN is often not a real internet hop count.",
+        }
+    try:
+        p = subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=10)
+    except subprocess.TimeoutExpired:
+        return {
+            "status": "timeout",
+            "hops": None,
+            "path": [],
+            "note": "Path check timed out. Path inside VPN is often not a real internet hop count.",
+        }
+    except OSError:
+        return {
+            "status": "unsupported",
+            "hops": None,
+            "path": [],
+            "note": "Path check command is unavailable.",
+        }
+    path = parse_path_check_output((p.stdout or "") + "\n" + (p.stderr or ""), target)
+    status = "ok" if path else ("timeout" if p.returncode != 0 else "unknown")
+    return {
+        "status": status,
+        "hops": len(path) if path else None,
+        "path": path,
+        "note": "Path inside VPN is often not a real internet hop count.",
+    }
+
+
 def client_latency_payload(force=False):
     now = time.time()
     with CLIENT_LATENCY_LOCK:
@@ -4752,14 +5089,21 @@ def client_latency_payload(force=False):
 
         peers = parse_peers()
         stats = client_stats_map()
+        endpoint_history = record_client_endpoint_history(peers, stats, now)
+        history_clients = endpoint_history.get("clients", {}) if isinstance(endpoint_history, dict) else {}
+        nettest_latency = recent_nettest_latency_by_vpn_ip()
         network = vpn_ipv4_network()
         clients = {}
         scanned = 0
         reachable = []
+        no_ping_count = 0
         timeout_count = 0
         stale_count = 0
         high_count = 0
         active_count = 0
+        shared_count = 0
+        flapping_count = 0
+        top_issues = []
 
         for peer in peers:
             name = peer.get("name") or peer.get("config_name") or ""
@@ -4769,12 +5113,37 @@ def client_latency_payload(force=False):
             row_stats = stats.get(name, {})
             last = int(row_stats.get("latestHandshakeAt", row_stats.get("last_handshake", 0)) or 0)
             age = None if last <= 0 else max(0, int(now - last))
+            rx = int(row_stats.get("rx") or 0)
+            tx = int(row_stats.get("tx") or 0)
+            prev_transfer = CLIENT_TRANSFER_PREV.get(name)
+            transfer_active = bool(prev_transfer and (rx > prev_transfer.get("rx", 0) or tx > prev_transfer.get("tx", 0)))
+            CLIENT_TRANSFER_PREV[name] = {"rx": rx, "tx": tx, "ts": now}
+            endpoint = row_stats.get("endpoint") or ""
+            endpoint_ip, endpoint_port = split_endpoint(endpoint)
+            shared_profile = shared_profile_detection(history_clients.get(name, []), now)
+            if shared_profile.get("severity") in {"suspected", "high"}:
+                shared_count += 1
+            if shared_profile.get("severity") in {"watch", "suspected", "high"}:
+                flapping_count += 1
             base = {
                 "vpn_ip": vpn_ip,
                 "latest_handshake_age": age,
+                "handshake_age_sec": age,
+                "endpoint": endpoint,
+                "endpoint_ip": endpoint_ip,
+                "endpoint_port": endpoint_port,
+                "public_key_fp": public_key_fingerprint(peer.get("public_key", "")),
+                "transfer_active": transfer_active,
+                "endpoint_changed_recently": shared_profile.get("severity") in {"watch", "suspected", "high"},
+                "shared_profile": shared_profile,
                 "rtt_ms": None,
                 "loss_pct": None,
                 "samples": 0,
+                "connectivity": "unknown",
+                "latency_method": "unavailable",
+                "latency_confidence": "low",
+                "ping_status": "unknown",
+                "notes": [],
             }
             try:
                 target = validate_vpn_latency_target(vpn_ip, network)
@@ -4784,7 +5153,18 @@ def client_latency_payload(force=False):
                 continue
             if age is None or age > CLIENT_LATENCY_STALE_AFTER:
                 stale_count += 1
-                base.update({"status": "stale", "label": "offline"})
+                connectivity, method, confidence, ping_status, label, notes = connectivity_from_signals(age, transfer_active, None)
+                base.update({
+                    "status": ping_status,
+                    "connectivity": connectivity,
+                    "latency_method": method,
+                    "latency_confidence": confidence,
+                    "ping_status": ping_status,
+                    "label": label,
+                    "notes": notes,
+                })
+                if shared_profile.get("severity") in {"suspected", "high"}:
+                    top_issues.append({"client": name, "type": "shared_profile", "severity": shared_profile.get("severity"), "summary": shared_profile.get("summary")})
                 clients[name] = base
                 continue
             active_count += 1
@@ -4795,13 +5175,38 @@ def client_latency_payload(force=False):
             scanned += 1
             result = ping_vpn_client(target)
             base.update(result)
+            nettest_result = nettest_latency.get(target)
+            connectivity, method, confidence, ping_status, label, notes = connectivity_from_signals(age, transfer_active, result, nettest_result)
+            if nettest_result:
+                base["nettest_latency"] = nettest_result
+                base["rtt_ms"] = nettest_result["rtt_ms"]
+                base["loss_pct"] = nettest_result["loss_pct"]
+                base["samples"] = nettest_result["samples"]
+            base.update({
+                "status": ping_status,
+                "connectivity": connectivity,
+                "latency_method": method,
+                "latency_confidence": confidence,
+                "ping_status": result.get("status", "unknown"),
+                "label": label,
+                "notes": notes,
+            })
             clients[name] = base
-            if result.get("rtt_ms") is not None:
-                reachable.append(float(result["rtt_ms"]))
-                if float(result["rtt_ms"]) > 200:
+            if base.get("rtt_ms") is not None:
+                rtt = float(base["rtt_ms"])
+                reachable.append(rtt)
+                if rtt > 200:
                     high_count += 1
+                    top_issues.append({"client": name, "type": "high_latency", "rtt_ms": round(rtt, 1), "loss_pct": base.get("loss_pct"), "summary": f"{round(rtt):.0f} ms"})
             elif result.get("status") == "timeout":
                 timeout_count += 1
+                if base.get("status") == "icmp_blocked_possible":
+                    no_ping_count += 1
+                    top_issues.append({"client": name, "type": "no_ping", "summary": "ICMP timeout with fresh handshake/traffic"})
+                else:
+                    top_issues.append({"client": name, "type": "timeout", "summary": "ICMP timeout"})
+            if shared_profile.get("severity") in {"suspected", "high"}:
+                top_issues.append({"client": name, "type": "shared_profile", "severity": shared_profile.get("severity"), "summary": shared_profile.get("summary")})
 
         payload = {
             "timestamp": utc_now_iso(),
@@ -4811,11 +5216,28 @@ def client_latency_payload(force=False):
                 "active_peers": active_count,
                 "stale_peers": stale_count,
                 "reachable_clients": len(reachable),
+                "no_ping_clients": no_ping_count,
                 "timeout_clients": timeout_count,
                 "high_latency_clients": high_count,
+                "shared_profile_suspected": shared_count,
+                "endpoint_flapping_clients": flapping_count,
                 "average_rtt_ms": round(sum(reachable) / len(reachable), 1) if reachable else None,
+                "p95_rtt_ms": percentile(reachable, 95),
                 "scanned_clients": scanned,
                 "scan_cap": CLIENT_LATENCY_MAX_SCAN,
+                "top_issues": top_issues[:8],
+            },
+            "overview": {
+                "active": active_count,
+                "reachable": len(reachable),
+                "no_ping": no_ping_count,
+                "high_latency": high_count,
+                "stale": stale_count,
+                "shared_profile_suspected": shared_count,
+                "endpoint_flapping": flapping_count,
+                "avg_rtt_ms": round(sum(reachable) / len(reachable), 1) if reachable else None,
+                "p95_rtt_ms": percentile(reachable, 95),
+                "top_issues": top_issues[:8],
             },
         }
         CLIENT_LATENCY_CACHE["ts"] = now
@@ -5549,6 +5971,8 @@ class Handler(SimpleHTTPRequestHandler):
             return
         if u.path == "/api/clients":
             stats = client_stats_map()
+            endpoint_history = record_client_endpoint_history(parse_peers(), stats)
+            history_clients = endpoint_history.get("clients", {}) if isinstance(endpoint_history, dict) else {}
             history = load_traffic_history()
             visible = self.visible_peers(auth)
             all_peers = parse_peers()
@@ -5590,6 +6014,8 @@ class Handler(SimpleHTTPRequestHandler):
                 endpoint_ip, endpoint_port = split_endpoint(item["endpoint"])
                 item["endpoint_ip"] = endpoint_ip
                 item["endpoint_port"] = endpoint_port
+                item["public_key_fp"] = public_key_fingerprint(peer.get("public_key", ""))
+                item["shared_profile"] = shared_profile_detection(history_clients.get(peer["name"], []))
                 if endpoint_ip:
                     item["endpoint_info"] = lookup_endpoint_ip_info(endpoint_ip, allow_refresh=endpoint_lookup_budget > 0)
                     if item["endpoint_info"].get("source") == "provider":
@@ -5674,6 +6100,15 @@ class Handler(SimpleHTTPRequestHandler):
         if auth is None:
             return
         try:
+            m = re.match(r"^/api/clients/([^/]+)/path-check$", u.path)
+            if m:
+                if not self.require_super(auth):
+                    return
+                try:
+                    self.send_json(client_path_check(unquote(m.group(1))))
+                except ValueError as exc:
+                    self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+                return
             if u.path == "/api/nettest/upload":
                 test_id = clean_nettest_id(self.headers.get("X-Nettest-Id", ""))
                 client_ctx = request_client_context(self)
