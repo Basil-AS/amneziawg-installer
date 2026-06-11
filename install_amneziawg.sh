@@ -34,16 +34,17 @@ MANAGE_SCRIPT_PATH="$AWG_DIR/manage_amneziawg.sh"
 # используются первыми; remote download разрешён только с pinned SHA256 либо
 # при явном AWG_ALLOW_UNVERIFIED_DOWNLOAD=1 для разработки.
 declare -A AWG_ASSET_SHA256=(
-    ["awg_common.sh"]="570406300cdc19d15bcc7cea491b3819a990d594961555b1e9c1fac70df01090"
-    ["manage_amneziawg.sh"]="4906b48b40ad461d92dc64f91f8753fc0d7c8aff4768c18485c448ca64af154e"
-    ["web/server.py"]="c0d7f8d7df627e238271f11727e049c5096297e86825170ef8fbc43522a8598b"
+    ["awg_common.sh"]="1f1db2c1ff9301d4d484f868459ee54cc8ccffe8d7f35124aae0348b4fe09f2e"
+    ["manage_amneziawg.sh"]="0de85e03ca6e815548c05c96f0a584b39f06e88f34a4726c40e0225f467f59d1"
+    ["web/server.py"]="ab6c7c950b15898c1733d1664dbc1571f140ac4dac2df023724fc37df9453066"
     ["web/index.html"]="7c07ed1d1991e08c0f9fc31e86ed8eb2bba5fa96387088f1f18918396cf7e662"
-    ["web/app.js"]="4c981d2441f33da1d2ae17bc733ee1a32a15e2c5e4dbde5138a1bfb1ba223dff"
+    ["web/app.js"]="ef964127866ecb0b67538aec0e135e71f4ede9a347263d8929d09841910d9b26"
     ["web/awg_i1.js"]="c97a6ac6c4e4bd7ab24c37c45f451e364414f276441f8da1c0805d26013aaa03"
     ["web/style.css"]="cdba7e14f9dce6261b246ba4ea866a0b7a4faca59ce00a2c23a2829028da4555"
     ["web/favicon.svg"]="ae700ecb12dbf01403d0ed25247bac6b70f11201b094ee6c14b774b7fa533859"
     ["web/vendor/tailwindcss.js"]="176e894661aa9cdc9a5cba6c720044cbbf7b8bd80d1c9a142a7c24b1b6c50d15"
     ["web/vendor/apexcharts.min.js"]="a7400cd48b40b4f39d1c15137ae0cc8cbec31dc2b55a606640f1cd11912416dd"
+    ["scripts/update_geoip_dbs.py"]="e912ecc497df2b0aaa02bace2a8e0707d5263b4165b5f8c4ea09962db5517bee"
 )
 
 # Флаги CLI
@@ -57,6 +58,7 @@ CLI_P2P_BASE_PORT=""; CLI_P2P_PORTS_PER_CLIENT=""
 CLI_FULLCONE_NAT=0; CLI_WEB_PORT=""; CLI_WEB_BIND=""; CLI_DISABLE_WEB=0
 CLI_WEB_CERT_MODE=""; CLI_WEB_DOMAIN=""; CLI_WEB_CERT_FILE=""; CLI_WEB_KEY_FILE=""; CLI_WEB_CERT_PROVIDER=""; CLI_WEB_LE_EMAIL=""; CLI_WEB_CERT_FALLBACK=""
 CLI_ENABLE_ADGUARD=0; CLI_DISABLE_ADGUARD=0; CLI_ADGUARD_PORT=""; CLI_DNS_MODE=""
+CLI_ENABLE_GEOIP_AUTO_UPDATE=0
 CLI_WIRESOCK_HINTS=""; CLI_WIRESOCK_ID=""; CLI_WIRESOCK_IP=""; CLI_WIRESOCK_IB=""
 CLI_SERVER_NAME=""
 CLI_PRESET=""; CLI_JC=""; CLI_JMIN=""; CLI_JMAX=""
@@ -136,6 +138,7 @@ while [[ $# -gt 0 ]]; do
         --enable-adguard) CLI_ENABLE_ADGUARD=1 ;;
         --disable-adguard) CLI_DISABLE_ADGUARD=1 ;;
         --adguard-port=*) CLI_ADGUARD_PORT="${1#*=}" ;;
+        --enable-geoip-auto-update) CLI_ENABLE_GEOIP_AUTO_UPDATE=1 ;;
         --dns-mode=*)    CLI_DNS_MODE="${1#*=}" ;;
         --wiresock-hints=*) CLI_WIRESOCK_HINTS="${1#*=}" ;;
         --disable-wiresock-hints) CLI_WIRESOCK_HINTS="off" ;;
@@ -362,6 +365,8 @@ show_help() {
   --enable-adguard      Установить AdGuard Home (по умолчанию включено)
   --disable-adguard     Не устанавливать AdGuard Home и использовать системный DNS
   --adguard-port=PORT   HTTP-порт AdGuard Home на localhost/VPN (умолч. 3000)
+  --enable-geoip-auto-update
+                        Включить еженедельный systemd-таймер автообновления GeoIP MMDB баз
   --dns-mode=MODE       DNS для клиентов: adguard, system или custom
   --wiresock-hints=MODE WireSock hints: off, auto, mobile, quic или dns (умолч. quic)
   --disable-wiresock-hints
@@ -4143,6 +4148,7 @@ step5_download_scripts() {
 
     _deploy_asset "awg_common.sh" "$COMMON_SCRIPT_PATH" 700
     _deploy_asset "manage_amneziawg.sh" "$MANAGE_SCRIPT_PATH" 700
+    _deploy_asset "scripts/update_geoip_dbs.py" "$AWG_DIR/scripts/update_geoip_dbs.py" 755
 
     log "Шаг 5 завершен."
     update_state 6
@@ -5087,6 +5093,10 @@ step6_generate_configs() {
     generate_firewall_scripts || log_warn "Не удалось обновить firewall/P2P hook-скрипты."
     setup_ndppd_config
     deploy_web_panel
+
+    if [[ "$CLI_ENABLE_GEOIP_AUTO_UPDATE" -eq 1 ]]; then
+        geoip_auto_update_enable || log_warn "Не удалось включить автообновление GeoIP баз."
+    fi
 
     # Установка прав доступа
     secure_files

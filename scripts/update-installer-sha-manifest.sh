@@ -40,7 +40,8 @@ for asset in \
     web/style.css \
     web/favicon.svg \
     web/vendor/tailwindcss.js \
-    web/vendor/apexcharts.min.js
+    web/vendor/apexcharts.min.js \
+    scripts/update_geoip_dbs.py
 do
     digest="$(sha "$asset")"
     replace_sha install_amneziawg.sh "$asset" "$digest"

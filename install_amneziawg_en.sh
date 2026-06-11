@@ -34,16 +34,17 @@ MANAGE_SCRIPT_PATH="$AWG_DIR/manage_amneziawg.sh"
 # are used first; remote download is allowed only with pinned SHA256 or explicit
 # AWG_ALLOW_UNVERIFIED_DOWNLOAD=1 for development.
 declare -A AWG_ASSET_SHA256=(
-    ["awg_common_en.sh"]="a4b4249432e15aa1b668c747fb6351af14b7e3fc97d40ef42d1773a373bd32ff"
-    ["manage_amneziawg_en.sh"]="3632fa40be5e351d77b220c14d99663244cbdce4446102462784c16f80218d7f"
-    ["web/server.py"]="c0d7f8d7df627e238271f11727e049c5096297e86825170ef8fbc43522a8598b"
+    ["awg_common_en.sh"]="a2d9027dc7de0c5e694c54a958e0a08768104b90a95d236e23eb44f16dddd767"
+    ["manage_amneziawg_en.sh"]="4d6eeb84901efe3863cc48f9c34efce98fd59191e26238f7e638eaee6c0744cd"
+    ["web/server.py"]="ab6c7c950b15898c1733d1664dbc1571f140ac4dac2df023724fc37df9453066"
     ["web/index.html"]="7c07ed1d1991e08c0f9fc31e86ed8eb2bba5fa96387088f1f18918396cf7e662"
-    ["web/app.js"]="4c981d2441f33da1d2ae17bc733ee1a32a15e2c5e4dbde5138a1bfb1ba223dff"
+    ["web/app.js"]="ef964127866ecb0b67538aec0e135e71f4ede9a347263d8929d09841910d9b26"
     ["web/awg_i1.js"]="c97a6ac6c4e4bd7ab24c37c45f451e364414f276441f8da1c0805d26013aaa03"
     ["web/style.css"]="cdba7e14f9dce6261b246ba4ea866a0b7a4faca59ce00a2c23a2829028da4555"
     ["web/favicon.svg"]="ae700ecb12dbf01403d0ed25247bac6b70f11201b094ee6c14b774b7fa533859"
     ["web/vendor/tailwindcss.js"]="176e894661aa9cdc9a5cba6c720044cbbf7b8bd80d1c9a142a7c24b1b6c50d15"
     ["web/vendor/apexcharts.min.js"]="a7400cd48b40b4f39d1c15137ae0cc8cbec31dc2b55a606640f1cd11912416dd"
+    ["scripts/update_geoip_dbs.py"]="e912ecc497df2b0aaa02bace2a8e0707d5263b4165b5f8c4ea09962db5517bee"
 )
 
 # CLI flags
@@ -57,6 +58,7 @@ CLI_P2P_BASE_PORT=""; CLI_P2P_PORTS_PER_CLIENT=""
 CLI_FULLCONE_NAT=0; CLI_WEB_PORT=""; CLI_WEB_BIND=""; CLI_DISABLE_WEB=0
 CLI_WEB_CERT_MODE=""; CLI_WEB_DOMAIN=""; CLI_WEB_CERT_FILE=""; CLI_WEB_KEY_FILE=""; CLI_WEB_CERT_PROVIDER=""; CLI_WEB_LE_EMAIL=""; CLI_WEB_CERT_FALLBACK=""
 CLI_ENABLE_ADGUARD=0; CLI_DISABLE_ADGUARD=0; CLI_ADGUARD_PORT=""; CLI_DNS_MODE=""
+CLI_ENABLE_GEOIP_AUTO_UPDATE=0
 CLI_WIRESOCK_HINTS=""; CLI_WIRESOCK_ID=""; CLI_WIRESOCK_IP=""; CLI_WIRESOCK_IB=""
 CLI_SERVER_NAME=""
 CLI_PRESET=""; CLI_JC=""; CLI_JMIN=""; CLI_JMAX=""
@@ -136,6 +138,7 @@ while [[ $# -gt 0 ]]; do
         --enable-adguard) CLI_ENABLE_ADGUARD=1 ;;
         --disable-adguard) CLI_DISABLE_ADGUARD=1 ;;
         --adguard-port=*) CLI_ADGUARD_PORT="${1#*=}" ;;
+        --enable-geoip-auto-update) CLI_ENABLE_GEOIP_AUTO_UPDATE=1 ;;
         --dns-mode=*)    CLI_DNS_MODE="${1#*=}" ;;
         --wiresock-hints=*) CLI_WIRESOCK_HINTS="${1#*=}" ;;
         --disable-wiresock-hints) CLI_WIRESOCK_HINTS="off" ;;
@@ -365,6 +368,8 @@ Options:
   --enable-adguard      Install AdGuard Home and give clients DNS 10.9.9.1
   --disable-adguard     Do not install AdGuard Home and use system DNS
   --adguard-port=PORT   AdGuard Home HTTP port on localhost/VPN (default 3000)
+  --enable-geoip-auto-update
+                        Enable a weekly systemd timer that auto-updates GeoIP MMDB databases
   --dns-mode=MODE       Client DNS mode: adguard, system, or custom
   --wiresock-hints=MODE WireSock hints: off, auto, mobile, quic, or dns (default: quic)
   --disable-wiresock-hints
@@ -4159,6 +4164,7 @@ step5_download_scripts() {
 
     _deploy_asset "awg_common_en.sh" "$COMMON_SCRIPT_PATH" 700
     _deploy_asset "manage_amneziawg_en.sh" "$MANAGE_SCRIPT_PATH" 700
+    _deploy_asset "scripts/update_geoip_dbs.py" "$AWG_DIR/scripts/update_geoip_dbs.py" 755
 
     log "Step 5 completed."
     update_state 6
@@ -5104,6 +5110,10 @@ step6_generate_configs() {
     generate_firewall_scripts || log_warn "Failed to update firewall/P2P hook scripts."
     setup_ndppd_config
     deploy_web_panel
+
+    if [[ "$CLI_ENABLE_GEOIP_AUTO_UPDATE" -eq 1 ]]; then
+        geoip_auto_update_enable || log_warn "Failed to enable GeoIP database auto-update."
+    fi
 
     # Set file permissions
     secure_files

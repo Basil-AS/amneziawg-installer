@@ -210,6 +210,230 @@ awg_ipv6_leak_block_enabled() {
         [[ "${AWG_IPV6_LEAK_PROTECTION:-warn}" == "block" ]]
 }
 
+# ------------------------------------------------------------------------------
+# NDP proxy (ndppd) helpers
+#
+# Used when an IPv6 prefix from the provider is on-link on the WAN interface
+# rather than routed to the server: VPN clients behind awg0 then need an NDP
+# proxy on the WAN interface to answer Neighbor Solicitations for their
+# addresses. These helpers are pure diagnostics/config-generation; they never
+# install or start anything by themselves.
+# ------------------------------------------------------------------------------
+
+NDPPD_CONF_FILE="${NDPPD_CONF_FILE:-/etc/ndppd.conf}"
+IF_INET6_FILE="${IF_INET6_FILE:-/proc/net/if_inet6}"
+
+if ! declare -f die >/dev/null 2>&1; then
+    die() { log_error "$1"; exit 1; }
+fi
+
+# True if the host has at least one global-scope IPv6 address (any iface).
+host_has_global_ipv6() {
+    [[ -r "$IF_INET6_FILE" ]] || return 1
+    awk '$4=="00"{found=1} END{exit !found}' "$IF_INET6_FILE"
+}
+
+# Validate that $1 is a syntactically valid IPv6 CIDR (e.g. 2001:db8::/64).
+validate_ipv6_cidr() {
+    local value="$1"
+    [[ -n "$value" ]] || return 1
+    command -v python3 &>/dev/null || return 1
+    python3 - "$value" <<'PY' 2>/dev/null
+import ipaddress
+import sys
+
+try:
+    net = ipaddress.ip_network(sys.argv[1], strict=True)
+except ValueError:
+    sys.exit(1)
+sys.exit(0 if net.version == 6 else 1)
+PY
+}
+
+# Detect the VPN tunnel interface name (awg0/wg0).
+get_vpn_nic() {
+    if [[ -e /sys/class/net/awg0 ]]; then
+        echo "awg0"
+    elif [[ -e /sys/class/net/wg0 ]]; then
+        echo "wg0"
+    else
+        echo "awg0"
+    fi
+}
+
+# Classify the IPv6/NDP situation of this host into one of:
+#   ipv6_disabled                    - no global IPv6 address; ndppd not applicable
+#   ipv6_prefix_onlink_needs_ndp_proxy - AWG_IPV6_MODE=ndp: provider prefix is on-link, ndppd needed
+#   ipv6_prefix_routed_to_server     - AWG_IPV6_MODE=routed/nat66: prefix routed to server, ndppd not needed
+#   ipv6_public_single_address_only  - global address present, no AWG IPv6 prefix configured
+#   ipv6_unknown_manual_review        - global address + prefix configured but mode unclear
+ipv6_ndp_state() {
+    if [[ "${DISABLE_IPV6:-0}" == "1" ]] || ! host_has_global_ipv6; then
+        echo "ipv6_disabled"
+        return 0
+    fi
+    case "$(awg_ipv6_mode)" in
+        ndp) echo "ipv6_prefix_onlink_needs_ndp_proxy" ;;
+        routed|nat66) echo "ipv6_prefix_routed_to_server" ;;
+        *)
+            if [[ -n "${AWG_IPV6_SUBNET:-}" ]]; then
+                echo "ipv6_unknown_manual_review"
+            else
+                echo "ipv6_public_single_address_only"
+            fi
+            ;;
+    esac
+}
+
+# Generate $NDPPD_CONF_FILE for a given (or configured) IPv6 prefix.
+# Refuses when IPv6 is unavailable on the host or the prefix is invalid.
+ipv6_ndp_generate_config() {
+    local prefix="${1:-${AWG_IPV6_SUBNET:-}}"
+    if [[ -z "$prefix" ]]; then
+        die "IPv6 prefix not specified and AWG_IPV6_SUBNET is empty. Provide a prefix explicitly."
+    fi
+    validate_ipv6_cidr "$prefix" || die "Invalid IPv6 CIDR prefix: $prefix"
+    if [[ "${DISABLE_IPV6:-0}" == "1" ]] || ! host_has_global_ipv6; then
+        die "No global IPv6 address detected on this host; refusing to configure ndppd."
+    fi
+    local wan vpn
+    wan="$(get_main_nic)"
+    [[ -n "$wan" ]] || wan="eth0"
+    vpn="$(get_vpn_nic)"
+    if [[ -f "$NDPPD_CONF_FILE" ]]; then
+        cp -a "$NDPPD_CONF_FILE" "${NDPPD_CONF_FILE}.bak.$(date +%Y%m%d-%H%M%S)" || die "Failed to backup $NDPPD_CONF_FILE"
+    fi
+    cat > "$NDPPD_CONF_FILE" << EOF
+# Managed by AmneziaWG Web Panel. Manual changes may be overwritten.
+route_ttl 30000
+proxy ${wan} {
+    router yes
+    timeout 500
+    ttl 30000
+    rule ${prefix} {
+        iface ${vpn}
+    }
+}
+EOF
+    chmod 644 "$NDPPD_CONF_FILE"
+    log "ndppd config generated: proxy ${wan} { rule ${prefix} { iface ${vpn} } } -> $NDPPD_CONF_FILE"
+}
+
+# Enable and start ndppd. Installs the package if missing. Refuses when
+# IPv6 is unavailable on the host (never auto-installs in that case).
+ipv6_ndp_enable() {
+    if [[ "${DISABLE_IPV6:-0}" == "1" ]] || ! host_has_global_ipv6; then
+        die "No global IPv6 address detected; ndppd is not applicable on this host."
+    fi
+    [[ -f "$NDPPD_CONF_FILE" ]] || die "ndppd config not found at $NDPPD_CONF_FILE; run 'ipv6 ndp generate' first."
+    if ! command -v ndppd &>/dev/null; then
+        DEBIAN_FRONTEND=noninteractive apt-get update -qq 2>/dev/null || true
+        DEBIAN_FRONTEND=noninteractive apt-get install -y ndppd || die "Failed to install ndppd package"
+    fi
+    systemctl enable --now ndppd || die "Failed to enable/start ndppd"
+    log "ndppd enabled and started."
+}
+
+# Disable and stop ndppd. Always allowed (cleanup must work even if IPv6
+# is no longer available).
+ipv6_ndp_disable() {
+    systemctl disable --now ndppd 2>/dev/null || true
+    log "ndppd disabled."
+}
+
+# Restart ndppd using the existing config file.
+ipv6_ndp_restart() {
+    [[ -f "$NDPPD_CONF_FILE" ]] || die "ndppd config not found at $NDPPD_CONF_FILE; run 'ipv6 ndp generate' first."
+    systemctl restart ndppd || die "Failed to restart ndppd"
+    log "ndppd restarted."
+}
+
+# Print a human-readable NDP proxy status summary.
+ipv6_ndp_print_status() {
+    log "IPv6 NDP state: $(ipv6_ndp_state)"
+    log "ndppd binary: $(command -v ndppd || echo 'not installed')"
+    if [[ -f "$NDPPD_CONF_FILE" ]]; then
+        log "ndppd config: $NDPPD_CONF_FILE"
+    else
+        log "ndppd config: absent"
+    fi
+    local _ndppd_active
+    _ndppd_active="$(systemctl is-active ndppd 2>/dev/null)"
+    log "ndppd active: ${_ndppd_active:-inactive}"
+    log "proxy_ndp sysctl: $(cat /proc/sys/net/ipv6/conf/all/proxy_ndp 2>/dev/null || echo 'unknown')"
+}
+
+# ------------------------------------------------------------------------------
+# GeoIP database auto-update (scripts/update_geoip_dbs.py)
+#
+# Downloads free MaxMind GeoLite2 (ASN/City/Country) and DB-IP city-lite MMDB
+# files into $AWG_DIR/geoip/. update-dbs runs the downloader once; the
+# auto-update helpers install/enable/disable a weekly systemd timer that
+# repeats it. Never enabled implicitly - only via explicit admin action.
+# ------------------------------------------------------------------------------
+
+GEOIP_UPDATE_SCRIPT="${GEOIP_UPDATE_SCRIPT:-$AWG_DIR/scripts/update_geoip_dbs.py}"
+GEOIP_TIMER_UNIT_FILE="${GEOIP_TIMER_UNIT_FILE:-/etc/systemd/system/awg-geoip-update.timer}"
+GEOIP_SERVICE_UNIT_FILE="${GEOIP_SERVICE_UNIT_FILE:-/etc/systemd/system/awg-geoip-update.service}"
+
+# Run the GeoIP MMDB downloader once.
+geoip_update_dbs() {
+    [[ -f "$GEOIP_UPDATE_SCRIPT" ]] || die "GeoIP updater script not found: $GEOIP_UPDATE_SCRIPT"
+    command -v python3 &>/dev/null || die "python3 is required to run the GeoIP updater"
+    python3 "$GEOIP_UPDATE_SCRIPT" --awg-dir "$AWG_DIR"
+}
+
+# Write the systemd service+timer units for the weekly GeoIP DB auto-update.
+geoip_auto_update_install_units() {
+    [[ -f "$GEOIP_UPDATE_SCRIPT" ]] || die "GeoIP updater script not found: $GEOIP_UPDATE_SCRIPT"
+    cat > "$GEOIP_SERVICE_UNIT_FILE" << EOF
+[Unit]
+Description=Update AmneziaWG Web Panel GeoIP MMDB databases
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 ${GEOIP_UPDATE_SCRIPT} --awg-dir ${AWG_DIR}
+EOF
+    cat > "$GEOIP_TIMER_UNIT_FILE" << EOF
+[Unit]
+Description=Weekly AmneziaWG Web Panel GeoIP MMDB database update
+
+[Timer]
+OnCalendar=weekly
+Persistent=true
+RandomizedDelaySec=3600
+
+[Install]
+WantedBy=timers.target
+EOF
+    chmod 644 "$GEOIP_SERVICE_UNIT_FILE" "$GEOIP_TIMER_UNIT_FILE"
+    systemctl daemon-reload 2>/dev/null || true
+}
+
+# Install the units (if needed) and enable+start the weekly timer.
+geoip_auto_update_enable() {
+    geoip_auto_update_install_units
+    systemctl enable --now awg-geoip-update.timer || die "Failed to enable awg-geoip-update.timer"
+    log "GeoIP DB auto-update enabled (weekly timer)."
+}
+
+# Disable and stop the weekly timer. Always allowed, even if never enabled.
+geoip_auto_update_disable() {
+    systemctl disable --now awg-geoip-update.timer 2>/dev/null || true
+    log "GeoIP DB auto-update disabled."
+}
+
+# Print the current auto-update timer status.
+geoip_auto_update_status() {
+    local _timer_enabled _timer_active
+    _timer_enabled="$(systemctl is-enabled awg-geoip-update.timer 2>/dev/null)"
+    _timer_active="$(systemctl is-active awg-geoip-update.timer 2>/dev/null)"
+    log "GeoIP auto-update timer: ${_timer_enabled:-disabled}"
+    log "GeoIP auto-update active: ${_timer_active:-inactive}"
+}
+
 awg_p2p_enabled() {
     _awg_bool "${AWG_P2P_ENABLED:-0}"
 }

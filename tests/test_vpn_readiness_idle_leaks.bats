@@ -236,7 +236,7 @@ PY
     grep -qF '"VP" + "N"} readiness' "$app"
 }
 
-@test "app.js: network drops/errors explanation renders likely/not-likely/next-checks" {
+@test "app.js: network drops/errors explanation renders likely/not-likely/scale/action" {
     local app="$BATS_TEST_DIRNAME/../web/app.js"
     grep -qF 'function renderNetworkExplain()' "$app"
     grep -qF 'id="networkExplain"' "$app"
@@ -247,7 +247,10 @@ PY
     grep -qF 'tcp_timeout_delta' <<<"$block"
     grep -qF 'ip6_no_route_delta' <<<"$block"
     grep -qiF 'likely' <<<"$block"
-    grep -qiF 'next' <<<"$block"
+    grep -qF '>Scale<' <<<"$block"
+    grep -qF '>Action<' <<<"$block"
+    grep -qF 'dropsSampleBtn' <<<"$block"
+    grep -qF '/api/server-health/drops-sample' <<<"$block"
 }
 
 @test "style.css: readiness-grid styles are present" {

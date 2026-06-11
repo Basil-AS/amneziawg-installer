@@ -1879,11 +1879,20 @@ usage() {
     echo "  p2p remove <имя> <порт> Удалить P2P порт клиента"
     echo "  ipv6 status           Показать режим IPv6"
     echo "  ipv6 upgrade          Выдать IPv6/P2P metadata существующим клиентам"
+    echo "  ipv6 ndp status       Показать диагностику NDP proxy (ndppd)"
+    echo "  ipv6 ndp generate [PREFIX]  Сгенерировать /etc/ndppd.conf для PREFIX (или AWG_IPV6_SUBNET)"
+    echo "  ipv6 ndp enable       Установить (если нужно), enable+start ndppd"
+    echo "  ipv6 ndp disable      Disable+stop ndppd"
+    echo "  ipv6 ndp restart      Перезапустить ndppd"
     echo "  dns status            Показать режим DNS и статус AdGuard Home"
     echo "  dns restart           Синхронизировать клиентов и перезапустить AdGuard Home"
     echo "  dns sync-clients      Синхронизировать клиентов в AdGuard Home"
     echo "  dns logs              Показать последние логи AdGuard Home"
     echo "  dns set-mode <режим>  Сменить DNS: adguard, system или custom [DNS]"
+    echo "  geoip update-dbs      Скачать/обновить GeoIP MMDB базы (MaxMind GeoLite2, DB-IP)"
+    echo "  geoip auto-update enable   Включить еженедельное автообновление GeoIP баз"
+    echo "  geoip auto-update disable  Выключить автообновление GeoIP баз"
+    echo "  geoip auto-update status   Показать статус таймера автообновления GeoIP баз"
     echo "  set-name \"ИМЯ\"       Сменить имя сервера и перегенерировать клиентов"
     echo "  server rotate-profile --preset mobile|default"
     echo "                        Ротировать H/S/J/I1 AWG profile и перегенерировать клиентов"
@@ -2224,6 +2233,30 @@ case $COMMAND in
                 log "IPv6 mode: ${AWG_IPV6_MODE:-legacy}"
                 log "IPv6 subnet: ${AWG_IPV6_SUBNET:-}"
                 log "NDP proxy: ${AWG_IPV6_NDP_PROXY:-0}"
+                log "NDP state: $(ipv6_ndp_state)"
+                ;;
+            ndp)
+                _ndp_sub="${ARGS[1]:-status}"
+                case "$_ndp_sub" in
+                    status)
+                        ipv6_ndp_print_status
+                        ;;
+                    generate)
+                        ipv6_ndp_generate_config "${ARGS[2]:-}"
+                        ;;
+                    enable)
+                        ipv6_ndp_enable
+                        ;;
+                    disable)
+                        ipv6_ndp_disable
+                        ;;
+                    restart)
+                        ipv6_ndp_restart
+                        ;;
+                    *)
+                        die "Неизвестная ipv6 ndp команда: $_ndp_sub"
+                        ;;
+                esac
                 ;;
             upgrade)
                 if [[ "${AWG_IPV6_ENABLED:-0}" != "1" || -z "${AWG_IPV6_SUBNET:-}" ]]; then
@@ -2283,6 +2316,40 @@ case $COMMAND in
                 ;;
             *)
                 die "Неизвестная dns команда: $_sub"
+                ;;
+        esac
+        ;;
+
+    geoip)
+        _sub="${ARGS[0]:-update-dbs}"
+        case "$_sub" in
+            update-dbs)
+                if geoip_update_dbs; then
+                    log "GeoIP базы обновлены."
+                else
+                    log_warn "Не удалось обновить одну или несколько GeoIP баз."
+                    _cmd_rc=1
+                fi
+                ;;
+            auto-update)
+                _au_sub="${ARGS[1]:-status}"
+                case "$_au_sub" in
+                    enable)
+                        geoip_auto_update_enable || _cmd_rc=1
+                        ;;
+                    disable)
+                        geoip_auto_update_disable || _cmd_rc=1
+                        ;;
+                    status)
+                        geoip_auto_update_status
+                        ;;
+                    *)
+                        die "Неизвестная geoip auto-update команда: $_au_sub"
+                        ;;
+                esac
+                ;;
+            *)
+                die "Неизвестная geoip команда: $_sub"
                 ;;
         esac
         ;;

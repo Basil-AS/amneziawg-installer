@@ -119,6 +119,27 @@ IP_INFO_NEGATIVE_TTL = 3600
 IP_INFO_ERROR_CACHE_TTL = 30 * 60
 IP_INFO_LOOKUP_TIMEOUT = 3.0
 GEOIP_PROVIDERS_FILE = WEB_DIR / "geoip_providers.json"
+GEOIP_PROVIDERS_LOCK = threading.RLock()
+GEOIP_TOKEN_MASK = "********"
+GEOIP_PROVIDER_NAMES = {"2ip", "2ip_whois", "ipinfo", "maxmind", "dbip_mmdb", "dbip", "ip-api"}
+GEOIP_PROVIDER_FIELDS = {
+    "enabled": bool,
+    "token": str,
+    "base_url": str,
+    "mmdb_path": str,
+    "city_mmdb_path": str,
+    "asn_mmdb_path": str,
+    "allow_free": bool,
+    "only_on_refresh": bool,
+}
+GEOIP_DATABASE_NAMES = {"maxmind_asn", "maxmind_city", "maxmind_country", "dbip_city_lite"}
+GEOIP_DB_FILES = {
+    "maxmind_asn": "GeoLite2-ASN.mmdb",
+    "maxmind_city": "GeoLite2-City.mmdb",
+    "maxmind_country": "GeoLite2-Country.mmdb",
+    "dbip_city_lite": "dbip-city-lite.mmdb",
+}
+GEOIP_TEST_IP = "8.8.8.8"
 SERVER_NAME_RE = re.compile(r"^[\w .,!?\-()]{1,128}$", re.UNICODE)
 DELETED_TRAFFIC_KEY = "_deleted_clients_total"
 PANEL_TITLE = "AmneziaWG Panel"
@@ -841,7 +862,7 @@ def read_iface_stats(iface):
     stats_dir = Path("/sys/class/net") / iface / "statistics"
     if not stats_dir.exists():
         return None
-    keys = ("rx_bytes", "tx_bytes", "rx_dropped", "tx_dropped", "rx_errors", "tx_errors")
+    keys = ("rx_bytes", "tx_bytes", "rx_packets", "tx_packets", "rx_dropped", "tx_dropped", "rx_errors", "tx_errors")
     out = {}
     for key in keys:
         value = read_int_file(stats_dir / key)
@@ -850,17 +871,37 @@ def read_iface_stats(iface):
     return out
 
 
+def pct(numerator, denominator, digits=2):
+    """Return numerator/denominator as a percentage rounded to `digits`, or
+    None if the denominator is not a positive number."""
+    try:
+        denominator = float(denominator)
+        numerator = float(numerator)
+    except (TypeError, ValueError):
+        return None
+    if denominator <= 0:
+        return None
+    return round(100.0 * numerator / denominator, digits)
+
+
 def iface_delta(name, current):
     global SERVER_HEALTH_PREV_NET
     previous = SERVER_HEALTH_PREV_NET.get(name) if current else None
     SERVER_HEALTH_PREV_NET[name] = dict(current or {})
     if not current or not previous:
-        return {"drops_delta": 0, "errors_delta": 0}
+        return {"drops_delta": 0, "errors_delta": 0, "packets_delta": 0, "drop_pct": None, "error_pct": None}
     drop_keys = ("rx_dropped", "tx_dropped")
     error_keys = ("rx_errors", "tx_errors")
+    packet_keys = ("rx_packets", "tx_packets")
+    drops_delta = sum(max(0, int(current.get(k, 0)) - int(previous.get(k, 0))) for k in drop_keys)
+    errors_delta = sum(max(0, int(current.get(k, 0)) - int(previous.get(k, 0))) for k in error_keys)
+    packets_delta = sum(max(0, int(current.get(k, 0)) - int(previous.get(k, 0))) for k in packet_keys)
     return {
-        "drops_delta": sum(max(0, int(current.get(k, 0)) - int(previous.get(k, 0))) for k in drop_keys),
-        "errors_delta": sum(max(0, int(current.get(k, 0)) - int(previous.get(k, 0))) for k in error_keys),
+        "drops_delta": drops_delta,
+        "errors_delta": errors_delta,
+        "packets_delta": packets_delta,
+        "drop_pct": pct(drops_delta, packets_delta + drops_delta),
+        "error_pct": pct(errors_delta, packets_delta + errors_delta),
     }
 
 
@@ -912,16 +953,18 @@ def read_snmp6_counters(path="/proc/net/snmp6"):
     return result
 
 
-def qdisc_dropped(iface):
-    """Return the qdisc-level 'dropped' counter for iface, cached for QDISC_CACHE_TTL."""
+def qdisc_stats(iface):
+    """Return {"dropped": int|None, "sent_packets": int|None} from `tc -s qdisc`
+    for iface, cached for QDISC_CACHE_TTL."""
     global QDISC_CACHE
     if not iface:
-        return None
+        return {"dropped": None, "sent_packets": None}
     now = time.time()
     with QDISC_CACHE_LOCK:
         if QDISC_CACHE["iface"] == iface and now - QDISC_CACHE["ts"] < QDISC_CACHE_TTL:
-            return QDISC_CACHE["dropped"]
+            return {"dropped": QDISC_CACHE["dropped"], "sent_packets": QDISC_CACHE.get("sent_packets")}
         dropped = None
+        sent_packets = None
         try:
             out = subprocess.run(
                 ["tc", "-s", "qdisc", "show", "dev", iface],
@@ -931,10 +974,19 @@ def qdisc_dropped(iface):
                 match = re.search(r"dropped (\d+)", out.stdout)
                 if match:
                     dropped = int(match.group(1))
+                match = re.search(r"Sent \d+ bytes (\d+) pkt", out.stdout)
+                if match:
+                    sent_packets = int(match.group(1))
         except (OSError, subprocess.SubprocessError, ValueError):
             dropped = None
-        QDISC_CACHE = {"ts": now, "dropped": dropped, "iface": iface}
-        return dropped
+            sent_packets = None
+        QDISC_CACHE = {"ts": now, "dropped": dropped, "sent_packets": sent_packets, "iface": iface}
+        return {"dropped": dropped, "sent_packets": sent_packets}
+
+
+def qdisc_dropped(iface):
+    """Return the qdisc-level 'dropped' counter for iface, cached for QDISC_CACHE_TTL."""
+    return qdisc_stats(iface)["dropped"]
 
 
 def conntrack_health():
@@ -1019,10 +1071,18 @@ def collect_server_health(force=False):
         snmp = read_proc_net_table("/proc/net/snmp")
         netstat = read_proc_net_table("/proc/net/netstat")
         snmp6 = read_snmp6_counters()
-        qdisc_drop_delta = counter_value_delta("qdisc_dropped", qdisc_dropped(wan_iface))
+        wan_qdisc = qdisc_stats(wan_iface)
+        qdisc_drop_delta = counter_value_delta("qdisc_dropped", wan_qdisc["dropped"])
+        qdisc_sent_delta = counter_value_delta("qdisc_sent_packets", wan_qdisc["sent_packets"])
         tcp_retrans_delta = counter_value_delta("tcp_retrans", snmp.get("TcpRetransSegs"))
+        tcp_segs_out_delta = counter_value_delta("tcp_segs_out", snmp.get("TcpOutSegs"))
         tcp_timeout_delta = counter_value_delta("tcp_timeouts", netstat.get("TcpExtTCPTimeouts"))
         ip6_no_route_delta = counter_value_delta("ip6_out_no_routes", snmp6.get("Ip6OutNoRoutes"))
+        ip6_out_requests_delta = counter_value_delta("ip6_out_requests", snmp6.get("Ip6OutRequests"))
+        qdisc_drop_pct = pct(qdisc_drop_delta, qdisc_drop_delta + qdisc_sent_delta)
+        tcp_retrans_pct = pct(tcp_retrans_delta, tcp_segs_out_delta)
+        tcp_timeout_pct = pct(tcp_timeout_delta, tcp_segs_out_delta)
+        ip6_no_route_pct = pct(ip6_no_route_delta, ip6_no_route_delta + ip6_out_requests_delta)
         awg_status = "ok" if vpn_stats and vpn_stats.get("operstate") in {"up", "unknown"} else ("unknown" if not vpn_iface else "warn")
         cpu_status = status_from_percent(usage_percent, 75.0, 90.0) if usage_percent is not None else "ok"
         load_ratio = load["one"] / max(1, load["cpu_count"])
@@ -1048,13 +1108,28 @@ def collect_server_health(force=False):
                 "wan": wan_stats or {},
                 "vpn": vpn_stats or {},
                 "wan_drops_delta": wan_delta["drops_delta"],
+                "wan_packets_delta": wan_delta["packets_delta"],
+                "wan_drop_pct": wan_delta["drop_pct"],
+                "wan_errors_delta": wan_delta["errors_delta"],
+                "wan_error_pct": wan_delta["error_pct"],
                 "vpn_drops_delta": vpn_delta["drops_delta"],
+                "vpn_packets_delta": vpn_delta["packets_delta"],
+                "vpn_drop_pct": vpn_delta["drop_pct"],
+                "vpn_errors_delta": vpn_delta["errors_delta"],
+                "vpn_error_pct": vpn_delta["error_pct"],
                 "drops_delta": drops_delta,
                 "errors_delta": errors_delta,
                 "qdisc_drop_delta": qdisc_drop_delta,
+                "qdisc_sent_delta": qdisc_sent_delta,
+                "qdisc_drop_pct": qdisc_drop_pct,
                 "tcp_retrans_delta": tcp_retrans_delta,
+                "tcp_retrans_pct": tcp_retrans_pct,
                 "tcp_timeout_delta": tcp_timeout_delta,
+                "tcp_timeout_pct": tcp_timeout_pct,
+                "tcp_segs_out_delta": tcp_segs_out_delta,
                 "ip6_no_route_delta": ip6_no_route_delta,
+                "ip6_no_route_pct": ip6_no_route_pct,
+                "ip6_out_requests_delta": ip6_out_requests_delta,
                 "status": network_status,
             },
             "conntrack": conntrack,
@@ -1068,6 +1143,112 @@ def collect_server_health(force=False):
         SERVER_HEALTH_CACHE = payload
         SERVER_HEALTH_CACHE_TS = now
         return payload
+
+
+def raw_drop_counters():
+    """Read a raw, point-in-time snapshot of drop/error/retransmit counters,
+    independent of the SERVER_HEALTH_PREV_* delta-tracking globals so it can
+    be used for an isolated before/after sample."""
+    wan_iface = detect_wan_iface()
+    vpn_iface = detect_vpn_iface()
+    wan_stats = read_iface_stats(wan_iface) or {}
+    vpn_stats = read_iface_stats(vpn_iface) or {}
+    snmp = read_proc_net_table("/proc/net/snmp")
+    netstat = read_proc_net_table("/proc/net/netstat")
+    snmp6 = read_snmp6_counters()
+    qdisc = qdisc_stats(wan_iface)
+    return {
+        "timestamp": utc_now_iso(),
+        "wan_iface": wan_iface,
+        "vpn_iface": vpn_iface,
+        "wan_rx_dropped": int(wan_stats.get("rx_dropped", 0)),
+        "wan_tx_dropped": int(wan_stats.get("tx_dropped", 0)),
+        "wan_rx_errors": int(wan_stats.get("rx_errors", 0)),
+        "wan_tx_errors": int(wan_stats.get("tx_errors", 0)),
+        "wan_rx_packets": int(wan_stats.get("rx_packets", 0)),
+        "wan_tx_packets": int(wan_stats.get("tx_packets", 0)),
+        "vpn_rx_dropped": int(vpn_stats.get("rx_dropped", 0)),
+        "vpn_tx_dropped": int(vpn_stats.get("tx_dropped", 0)),
+        "vpn_rx_errors": int(vpn_stats.get("rx_errors", 0)),
+        "vpn_tx_errors": int(vpn_stats.get("tx_errors", 0)),
+        "vpn_rx_packets": int(vpn_stats.get("rx_packets", 0)),
+        "vpn_tx_packets": int(vpn_stats.get("tx_packets", 0)),
+        "qdisc_dropped": qdisc["dropped"] or 0,
+        "qdisc_sent_packets": qdisc["sent_packets"] or 0,
+        "tcp_retrans_segs": int(snmp.get("TcpRetransSegs", 0) or 0),
+        "tcp_out_segs": int(snmp.get("TcpOutSegs", 0) or 0),
+        "tcp_timeouts": int(netstat.get("TcpExtTCPTimeouts", 0) or 0),
+        "ip6_out_no_routes": int(snmp6.get("Ip6OutNoRoutes", 0) or 0),
+        "ip6_out_requests": int(snmp6.get("Ip6OutRequests", 0) or 0),
+    }
+
+
+def drops_sample_report(before, after, duration_seconds):
+    """Build a before/after delta + percentage report from two raw_drop_counters() snapshots."""
+    wan_drops_before = before["wan_rx_dropped"] + before["wan_tx_dropped"]
+    wan_drops_after = after["wan_rx_dropped"] + after["wan_tx_dropped"]
+    wan_packets_before = before["wan_rx_packets"] + before["wan_tx_packets"]
+    wan_packets_after = after["wan_rx_packets"] + after["wan_tx_packets"]
+    wan_errors_before = before["wan_rx_errors"] + before["wan_tx_errors"]
+    wan_errors_after = after["wan_rx_errors"] + after["wan_tx_errors"]
+
+    vpn_drops_before = before["vpn_rx_dropped"] + before["vpn_tx_dropped"]
+    vpn_drops_after = after["vpn_rx_dropped"] + after["vpn_tx_dropped"]
+    vpn_packets_before = before["vpn_rx_packets"] + before["vpn_tx_packets"]
+    vpn_packets_after = after["vpn_rx_packets"] + after["vpn_tx_packets"]
+    vpn_errors_before = before["vpn_rx_errors"] + before["vpn_tx_errors"]
+    vpn_errors_after = after["vpn_rx_errors"] + after["vpn_tx_errors"]
+
+    wan_drops_delta = max(0, wan_drops_after - wan_drops_before)
+    wan_packets_delta = max(0, wan_packets_after - wan_packets_before)
+    wan_errors_delta = max(0, wan_errors_after - wan_errors_before)
+    vpn_drops_delta = max(0, vpn_drops_after - vpn_drops_before)
+    vpn_packets_delta = max(0, vpn_packets_after - vpn_packets_before)
+    vpn_errors_delta = max(0, vpn_errors_after - vpn_errors_before)
+    qdisc_drop_delta = max(0, after["qdisc_dropped"] - before["qdisc_dropped"])
+    qdisc_sent_delta = max(0, after["qdisc_sent_packets"] - before["qdisc_sent_packets"])
+    tcp_retrans_delta = max(0, after["tcp_retrans_segs"] - before["tcp_retrans_segs"])
+    tcp_out_segs_delta = max(0, after["tcp_out_segs"] - before["tcp_out_segs"])
+    tcp_timeout_delta = max(0, after["tcp_timeouts"] - before["tcp_timeouts"])
+    ip6_no_route_delta = max(0, after["ip6_out_no_routes"] - before["ip6_out_no_routes"])
+    ip6_out_requests_delta = max(0, after["ip6_out_requests"] - before["ip6_out_requests"])
+
+    return {
+        "duration_seconds": duration_seconds,
+        "before": before,
+        "after": after,
+        "wan": {
+            "drops_delta": wan_drops_delta,
+            "packets_delta": wan_packets_delta,
+            "drop_pct": pct(wan_drops_delta, wan_drops_delta + wan_packets_delta),
+            "errors_delta": wan_errors_delta,
+            "error_pct": pct(wan_errors_delta, wan_errors_delta + wan_packets_delta),
+        },
+        "vpn": {
+            "drops_delta": vpn_drops_delta,
+            "packets_delta": vpn_packets_delta,
+            "drop_pct": pct(vpn_drops_delta, vpn_drops_delta + vpn_packets_delta),
+            "errors_delta": vpn_errors_delta,
+            "error_pct": pct(vpn_errors_delta, vpn_errors_delta + vpn_packets_delta),
+        },
+        "qdisc": {
+            "drop_delta": qdisc_drop_delta,
+            "sent_delta": qdisc_sent_delta,
+            "drop_pct": pct(qdisc_drop_delta, qdisc_drop_delta + qdisc_sent_delta),
+        },
+        "tcp": {
+            "retrans_delta": tcp_retrans_delta,
+            "timeout_delta": tcp_timeout_delta,
+            "out_segs_delta": tcp_out_segs_delta,
+            "retrans_pct": pct(tcp_retrans_delta, tcp_out_segs_delta),
+            "timeout_pct": pct(tcp_timeout_delta, tcp_out_segs_delta),
+        },
+        "ipv6": {
+            "no_route_delta": ip6_no_route_delta,
+            "out_requests_delta": ip6_out_requests_delta,
+            "no_route_pct": pct(ip6_no_route_delta, ip6_no_route_delta + ip6_out_requests_delta),
+        },
+    }
 
 
 def read_cpu_flags():
@@ -1209,6 +1390,46 @@ def ipv6_default_route_present():
     return False
 
 
+def validate_ipv6_prefix(value):
+    """Validate an IPv6 CIDR prefix (e.g. '2001:db8:abcd::/64'). Returns the
+    normalized string form, or raises ValueError."""
+    value = str(value or "").strip()
+    if not value:
+        raise ValueError("IPv6 prefix is required")
+    try:
+        net = ipaddress.ip_network(value, strict=True)
+    except ValueError as exc:
+        raise ValueError(f"invalid IPv6 prefix: {exc}") from exc
+    if net.version != 6:
+        raise ValueError("prefix must be an IPv6 network")
+    return str(net)
+
+
+def ipv6_ndp_state(ipv6_routing, cfg):
+    """Classify the IPv6/NDP situation of this host. See manage_amneziawg.sh
+    ipv6_ndp_state() for the matching shell-side classification."""
+    if ipv6_routing.get("mode") == "disabled" or not ipv6_routing.get("global_address"):
+        return "ipv6_disabled"
+    mode = str(cfg.get("AWG_IPV6_MODE_EFFECTIVE") or cfg.get("AWG_IPV6_MODE") or "legacy").lower()
+    if mode == "ndp":
+        return "ipv6_prefix_onlink_needs_ndp_proxy"
+    if mode in ("routed", "nat66"):
+        return "ipv6_prefix_routed_to_server"
+    if cfg.get("AWG_IPV6_SUBNET"):
+        return "ipv6_unknown_manual_review"
+    return "ipv6_public_single_address_only"
+
+
+def ndppd_service_active():
+    try:
+        out = subprocess.run(
+            ["systemctl", "is-active", "ndppd"], capture_output=True, text=True, timeout=2.0, check=False,
+        )
+        return (out.stdout or "").strip() == "active"
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
 def ndp_proxy_check(ipv6_mode, has_global_ipv6):
     binary = shutil.which("ndppd")
     config_exists = Path("/etc/ndppd.conf").exists()
@@ -1272,6 +1493,13 @@ def vpn_readiness_payload(force=False):
         offloads = wan_offload_check(wan_iface)
         ipv6_routing = ipv6_routing_check()
         ndp = ndp_proxy_check(ipv6_routing["mode"], ipv6_routing["global_address"])
+        cfg = parse_config()
+        ndp["mode"] = ipv6_ndp_state(ipv6_routing, cfg)
+        ndp["wan_iface"] = wan_iface
+        ndp["vpn_iface"] = detect_vpn_iface()
+        ndp["prefix"] = cfg.get("AWG_IPV6_SUBNET") or ""
+        ndp["proxy_ndp_sysctl"] = read_text_file("/proc/sys/net/ipv6/conf/all/proxy_ndp", "0").strip()
+        ndp["ndppd_active"] = ndppd_service_active()
 
         overall = combine_status(
             kernel["status"],
@@ -1405,6 +1633,22 @@ def start_server_health_collector():
             return
         SERVER_HEALTH_COLLECTOR_STARTED = True
     threading.Thread(target=health_collector_loop, name="health-history", daemon=True).start()
+
+
+def clear_health_history():
+    """Delete all stored server load/health history samples and the cached
+    history responses. Returns the number of sample files removed."""
+    count = 0
+    if HEALTH_HISTORY_DIR.exists():
+        for path in HEALTH_HISTORY_DIR.glob("samples-*.jsonl"):
+            try:
+                path.unlink()
+                count += 1
+            except OSError:
+                continue
+    with SERVER_HEALTH_LOCK:
+        SERVER_HEALTH_HISTORY_CACHE.clear()
+    return count
 
 
 def read_health_samples(range_seconds):
@@ -2199,6 +2443,33 @@ def list_nettest_reports(limit=30):
     return rows
 
 
+def delete_nettest_report(filename):
+    """Delete a single nettest report file by name. Returns True if a file was
+    removed, False if it did not exist. Raises ValueError on an invalid name."""
+    name = str(filename or "")
+    if not re.match(r"^nettest_[A-Za-z0-9_.-]+\.json$", name):
+        raise ValueError("invalid report filename")
+    path = NETTEST_REPORT_DIR / name
+    if not path.is_file():
+        return False
+    path.unlink()
+    return True
+
+
+def delete_all_nettest_reports():
+    """Delete every saved nettest report. Returns the number of files removed."""
+    count = 0
+    if not NETTEST_REPORT_DIR.exists():
+        return count
+    for path in NETTEST_REPORT_DIR.glob("nettest_*.json"):
+        try:
+            path.unlink()
+            count += 1
+        except OSError:
+            continue
+    return count
+
+
 def is_vpn_internal_nettest(handler):
     """Return True only when request arrives via the VPN-only nginx listener."""
     socket_ip = handler.client_address[0] if getattr(handler, "client_address", None) else ""
@@ -2913,6 +3184,165 @@ def load_geoip_providers_config():
 
 def _geoip_provider_cfg(name):
     return load_geoip_providers_config().get("providers", {}).get(name, {})
+
+
+def _clean_geoip_provider_entry(entry):
+    """Whitelist-filter a single provider config entry to known fields/types."""
+    if not isinstance(entry, dict):
+        return {}
+    clean = {}
+    for key, value in entry.items():
+        expected = GEOIP_PROVIDER_FIELDS.get(key)
+        if expected is None:
+            continue
+        if expected is bool:
+            clean[key] = bool(value)
+        elif expected is str and isinstance(value, str):
+            clean[key] = value.strip()[:500]
+    return clean
+
+
+def _clean_geoip_database_entry(entry):
+    """Whitelist-filter a single database override entry (URL only)."""
+    if not isinstance(entry, dict):
+        return {}
+    clean = {}
+    url = entry.get("url")
+    if isinstance(url, str) and url.strip():
+        clean["url"] = url.strip()[:500]
+    return clean
+
+
+def geoip_providers_config_for_admin():
+    """Return providers+databases config for the admin UI, with tokens masked."""
+    cfg = load_geoip_providers_config()
+    providers = {}
+    for name, pcfg in (cfg.get("providers") or {}).items():
+        if name not in GEOIP_PROVIDER_NAMES:
+            continue
+        entry = _clean_geoip_provider_entry(pcfg)
+        if "token" in entry:
+            entry["has_token"] = bool(entry["token"])
+            entry["token"] = GEOIP_TOKEN_MASK if entry["token"] else ""
+        providers[name] = entry
+    databases = {}
+    for name, dcfg in (cfg.get("databases") or {}).items():
+        if name not in GEOIP_DATABASE_NAMES:
+            continue
+        databases[name] = _clean_geoip_database_entry(dcfg)
+    return {"providers": providers, "databases": databases}
+
+
+def write_geoip_providers_config(new_data):
+    """Validate and atomically write geoip_providers.json. Tokens equal to
+    GEOIP_TOKEN_MASK are treated as "keep existing value" so the masked
+    placeholder returned by GET never overwrites a real token."""
+    if not isinstance(new_data, dict):
+        raise ValueError("invalid geoip providers payload")
+    with GEOIP_PROVIDERS_LOCK:
+        current = load_geoip_providers_config()
+        cur_providers = current.get("providers") or {}
+        new_providers = {}
+        for name, pcfg in (new_data.get("providers") or {}).items():
+            if name not in GEOIP_PROVIDER_NAMES:
+                continue
+            entry = _clean_geoip_provider_entry(pcfg)
+            if entry.get("token") == GEOIP_TOKEN_MASK:
+                entry["token"] = (cur_providers.get(name) or {}).get("token", "")
+            new_providers[name] = entry
+        new_databases = {}
+        databases_in = new_data.get("databases")
+        if isinstance(databases_in, dict):
+            for name, dcfg in databases_in.items():
+                if name not in GEOIP_DATABASE_NAMES:
+                    continue
+                cleaned = _clean_geoip_database_entry(dcfg)
+                if cleaned:
+                    new_databases[name] = cleaned
+        else:
+            new_databases = {
+                name: dcfg for name, dcfg in (current.get("databases") or {}).items()
+                if name in GEOIP_DATABASE_NAMES
+            }
+        out = {"providers": new_providers, "databases": new_databases}
+        WEB_DIR.mkdir(parents=True, exist_ok=True)
+        tmp = GEOIP_PROVIDERS_FILE.with_name(f"{GEOIP_PROVIDERS_FILE.name}.tmp.{os.getpid()}")
+        tmp.write_text(json.dumps(out, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, GEOIP_PROVIDERS_FILE)
+        os.chmod(GEOIP_PROVIDERS_FILE, 0o600)
+        return out
+
+
+def geoip_test_provider(name):
+    """Run a live test lookup for a single configured provider against
+    GEOIP_TEST_IP. Returns {"ok": True, "result": {...}} or {"ok": False, "error": ...}."""
+    fetchers = {
+        "2ip": _fetch_2ip_provider,
+        "2ip_whois": _fetch_2ip_whois_provider,
+        "ipinfo": _fetch_ipinfo_provider,
+        "dbip": _fetch_dbip_provider,
+        "dbip_mmdb": _fetch_dbip_mmdb_provider,
+        "maxmind": _fetch_mmdb_provider,
+        "ip-api": _fetch_ipapi_provider,
+    }
+    fetcher = fetchers.get(name)
+    if fetcher is None:
+        return {"ok": False, "error": "unknown provider"}
+    try:
+        result = fetcher(GEOIP_TEST_IP)
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+    if result is None:
+        return {"ok": False, "error": "no result (disabled, missing token, or lookup failed)"}
+    return {"ok": True, "result": result}
+
+
+def geoip_databases_status():
+    """Return on-disk MMDB file status (size/mtime/sha256/source) plus the
+    weekly auto-update timer status."""
+    geoip_dir = AWG_DIR / "geoip"
+    versions_file = geoip_dir / "geoip_db_versions.json"
+    try:
+        versions = json.loads(versions_file.read_text(encoding="utf-8"))
+        if not isinstance(versions, dict):
+            versions = {}
+    except (OSError, ValueError):
+        versions = {}
+    databases = {}
+    for name, filename in GEOIP_DB_FILES.items():
+        entry = dict(versions.get(name, {}))
+        path = geoip_dir / filename
+        if path.exists():
+            st = path.stat()
+            entry["present"] = True
+            entry["size_bytes"] = st.st_size
+            entry["mtime"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(st.st_mtime))
+        else:
+            entry["present"] = False
+        databases[name] = entry
+    return {"databases": databases, "auto_update": geoip_auto_update_timer_status()}
+
+
+def geoip_auto_update_timer_status():
+    """Query systemd directly for the awg-geoip-update.timer state."""
+    def _systemctl(args):
+        try:
+            p = subprocess.run(
+                ["systemctl", *args, "awg-geoip-update.timer"],
+                capture_output=True, text=True, timeout=10,
+            )
+            return p.stdout.strip()
+        except Exception:
+            return ""
+    enabled_state = _systemctl(["is-enabled"]) or "unknown"
+    active_state = _systemctl(["is-active"]) or "unknown"
+    return {
+        "enabled": enabled_state == "enabled",
+        "active": active_state == "active",
+        "enabled_state": enabled_state,
+        "active_state": active_state,
+    }
 
 
 def _fetch_2ip_provider(ip):
@@ -4939,6 +5369,16 @@ class Handler(SimpleHTTPRequestHandler):
                 return
             self.send_json(geoip_providers_status())
             return
+        if u.path == "/api/geoip/providers":
+            if not self.require_super(auth):
+                return
+            self.send_json(geoip_providers_config_for_admin())
+            return
+        if u.path == "/api/geoip/databases/status":
+            if not self.require_super(auth):
+                return
+            self.send_json(geoip_databases_status())
+            return
         if u.path == "/api/help/clients":
             self.send_json({"groups": HELP_CLIENT_GROUPS})
             return
@@ -5123,6 +5563,20 @@ class Handler(SimpleHTTPRequestHandler):
                     audit_log(f"nettest: cancelled by client actor_fp={auth_fingerprint(auth)} test_id={test_id}")
                 self.send_json({"ok": True})
                 return
+            if u.path == "/api/server-health/drops-sample":
+                if not self.require_super(auth):
+                    return
+                body = json_body_from_handler(self, 1024)
+                try:
+                    duration = int(body.get("duration_seconds", 60))
+                except (TypeError, ValueError):
+                    duration = 60
+                duration = max(1, min(60, duration))
+                before = raw_drop_counters()
+                time.sleep(duration)
+                after = raw_drop_counters()
+                self.send_json(drops_sample_report(before, after, duration))
+                return
             if u.path == "/api/geoip/refresh":
                 if not self.require_super(auth):
                     return
@@ -5146,6 +5600,37 @@ class Handler(SimpleHTTPRequestHandler):
                         pass
                 info = lookup_ip_enriched(validated_ip, multi_source=True, force_refresh=True, want_whois=True)
                 self.send_json({"ok": True, "ip": validated_ip, "info": info})
+                return
+            if u.path == "/api/geoip/providers/test":
+                if not self.require_super(auth):
+                    return
+                body = json_body_from_handler(self, 1024)
+                name = str(body.get("provider") or "").strip()
+                if name not in GEOIP_PROVIDER_NAMES:
+                    self.send_json({"error": "unknown provider"}, 400)
+                    return
+                self.send_json(geoip_test_provider(name))
+                return
+            if u.path == "/api/geoip/databases/update":
+                if not self.require_super(auth):
+                    return
+                p = run_manage("geoip", "update-dbs", timeout=300)
+                if p.returncode == 0:
+                    self.send_json({"ok": True, "message": "GeoIP databases updated", "stdout": p.stdout, **geoip_databases_status()})
+                    return
+                self.send_json({"error": "geoip update-dbs failed", "stdout": p.stdout, "stderr": p.stderr, **geoip_databases_status()}, 500)
+                return
+            if u.path == "/api/geoip/auto-update":
+                if not self.require_super(auth):
+                    return
+                body = json_body_from_handler(self, 1024)
+                enable = bool(body.get("enabled"))
+                action = "enable" if enable else "disable"
+                p = run_manage("geoip", "auto-update", action, timeout=60)
+                if p.returncode == 0:
+                    self.send_json({"ok": True, "auto_update": geoip_auto_update_timer_status()})
+                    return
+                self.send_json({"error": f"geoip auto-update {action} failed", "stderr": p.stderr}, 500)
                 return
             body = self.json_body()
             if u.path == "/api/clients":
@@ -5227,6 +5712,49 @@ class Handler(SimpleHTTPRequestHandler):
                     self.send_json({"ok": True, "preset": preset, "message": "Server AWG profile rotated"})
                     return
                 self.send_json({"error": "rotate-profile failed"}, 500)
+                return
+            elif u.path == "/api/ipv6/ndp/generate":
+                if not self.require_super(auth):
+                    return
+                cfg = parse_config()
+                prefix = body.get("prefix") or cfg.get("AWG_IPV6_SUBNET") or ""
+                try:
+                    prefix = validate_ipv6_prefix(prefix)
+                except ValueError as exc:
+                    self.send_json({"error": str(exc)}, 400)
+                    return
+                p = run_manage("ipv6", "ndp", "generate", prefix, timeout=60)
+                if p.returncode == 0:
+                    self.send_json({"ok": True, "prefix": prefix, "message": "ndppd config generated"})
+                    return
+                self.send_json({"error": "ndp generate failed", "stderr": p.stderr}, 500)
+                return
+            elif u.path == "/api/ipv6/ndp/enable":
+                if not self.require_super(auth):
+                    return
+                p = run_manage("ipv6", "ndp", "enable", timeout=180)
+                if p.returncode == 0:
+                    self.send_json({"ok": True, "message": "ndppd enabled"})
+                    return
+                self.send_json({"error": "ndp enable failed", "stderr": p.stderr}, 500)
+                return
+            elif u.path == "/api/ipv6/ndp/disable":
+                if not self.require_super(auth):
+                    return
+                p = run_manage("ipv6", "ndp", "disable", timeout=60)
+                if p.returncode == 0:
+                    self.send_json({"ok": True, "message": "ndppd disabled"})
+                    return
+                self.send_json({"error": "ndp disable failed", "stderr": p.stderr}, 500)
+                return
+            elif u.path == "/api/ipv6/ndp/restart":
+                if not self.require_super(auth):
+                    return
+                p = run_manage("ipv6", "ndp", "restart", timeout=60)
+                if p.returncode == 0:
+                    self.send_json({"ok": True, "message": "ndppd restarted"})
+                    return
+                self.send_json({"error": "ndp restart failed", "stderr": p.stderr}, 500)
                 return
             elif u.path == "/api/dns/restart":
                 if not self.require_super(auth):
@@ -5347,6 +5875,13 @@ class Handler(SimpleHTTPRequestHandler):
                 write_access_policy(policy)
                 self.send_json({"ok": True, **self.web_access_policy_payload(policy)})
                 return
+            if u.path == "/api/geoip/providers":
+                if not self.require_super(auth):
+                    return
+                body = self.json_body()
+                write_geoip_providers_config(body)
+                self.send_json({"ok": True, **geoip_providers_config_for_admin()})
+                return
             name_update = re.match(r"^/api/tokens/([^/]+)/name$", u.path)
             clients_update = re.match(r"^/api/tokens/([^/]+)/clients$", u.path)
             m = name_update or clients_update
@@ -5381,6 +5916,44 @@ class Handler(SimpleHTTPRequestHandler):
             return
         u = urlparse(self.path)
         try:
+            m = re.match(r"^/api/nettest/reports/([^/]+)$", u.path)
+            if m:
+                if not self.require_super(auth):
+                    return
+                filename = m.group(1)
+                try:
+                    deleted = delete_nettest_report(filename)
+                except ValueError as exc:
+                    self.send_json({"error": str(exc)}, 400)
+                    return
+                if not deleted:
+                    self.send_json({"error": "report not found"}, 404)
+                    return
+                audit_log(f"Deleted network test report filename={filename} actor_role={auth.get('role')} actor_fp={auth_fingerprint(auth)}")
+                self.send_json({"ok": True})
+                return
+            if u.path == "/api/nettest/reports":
+                if not self.require_super(auth):
+                    return
+                body = self.json_body()
+                if body.get("confirm") != "DELETE ALL NETTEST REPORTS":
+                    self.send_json({"error": "confirmation required"}, 400)
+                    return
+                count = delete_all_nettest_reports()
+                audit_log(f"Deleted all network test reports count={count} actor_role={auth.get('role')} actor_fp={auth_fingerprint(auth)}")
+                self.send_json({"ok": True, "deleted": count})
+                return
+            if u.path == "/api/server-health/history":
+                if not self.require_super(auth):
+                    return
+                body = self.json_body()
+                if body.get("confirm") != "CLEAR LOAD STATISTICS":
+                    self.send_json({"error": "confirmation required"}, 400)
+                    return
+                count = clear_health_history()
+                audit_log(f"Cleared server load statistics files={count} actor_role={auth.get('role')} actor_fp={auth_fingerprint(auth)}")
+                self.send_json({"ok": True, "deleted": count})
+                return
             m = re.match(r"^/api/clients/([^/]+)$", u.path)
             if m:
                 name = safe_name(m.group(1))

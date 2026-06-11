@@ -6,6 +6,8 @@ let statusState = null;
 let resolverState = null;
 let trafficState = null;
 let webAccessPolicyState = null;
+let geoipProvidersState = null;
+let geoipDatabasesState = null;
 let serverHealthState = null;
 let serverHealthHistoryState = null;
 let readinessState = null;
@@ -80,6 +82,7 @@ function shouldPollHeavy() {
 function updatePanelIdleNote() {
   const note = document.querySelector("#panelIdleNote");
   if (note) note.classList.toggle("hidden", !panelIdle);
+  updateConnectionPill();
 }
 
 // One-shot refresh + restart polling when the panel comes back from idle.
@@ -110,6 +113,46 @@ function checkPanelIdle() {
 ["mousemove", "mousedown", "keydown", "scroll", "touchstart", "focus"].forEach(evt => {
   document.addEventListener(evt, markPanelActivity, {passive: true});
 });
+
+// ---------------------------------------------------------------------------
+// Header connection status pill: Online / Updating... / Paused / Offline /
+// Reconnecting..., derived from in-flight api() calls, fetch-level
+// connectivity (apiConnectivityOk), the browser's online/offline events, and
+// the existing idle/paused state above.
+// ---------------------------------------------------------------------------
+const CONNECTION_PILL_BASE = "connection-status-pill inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-xs font-medium";
+const CONNECTION_STATE_INFO = {
+  online: {label: "Online", className: "border-green-600/30 bg-green-500/10 text-green-700 dark:text-green-400"},
+  updating: {label: "Updating...", className: "border-[var(--accent)]/30 bg-[var(--accent)]/10 text-[var(--accent)] animate-pulse"},
+  paused: {label: "Paused", className: "border-[var(--line)] bg-[var(--soft)] text-[var(--muted)]"},
+  offline: {label: "Offline", className: "border-[var(--danger)]/30 bg-[var(--danger)]/10 text-[var(--danger)]"},
+  reconnecting: {label: "Reconnecting...", className: "border-amber-500/30 bg-amber-500/10 text-amber-600 animate-pulse"},
+};
+
+let apiInFlightCount = 0;
+let apiConnectivityOk = true;
+let connectionState = "online";
+
+function computeConnectionState() {
+  if (!navigator.onLine) return "offline";
+  if (!apiConnectivityOk) return "reconnecting";
+  if (apiInFlightCount > 0) return "updating";
+  if (panelIdle) return "paused";
+  return "online";
+}
+
+function updateConnectionPill() {
+  connectionState = computeConnectionState();
+  const pill = document.querySelector("#connectionStatusPill");
+  if (!pill) return;
+  const info = CONNECTION_STATE_INFO[connectionState] || CONNECTION_STATE_INFO.online;
+  pill.textContent = info.label;
+  pill.className = `${CONNECTION_PILL_BASE} ${info.className}`;
+  pill.title = `Connection: ${info.label}`;
+}
+
+window.addEventListener("online", updateConnectionPill);
+window.addEventListener("offline", updateConnectionPill);
 
 const icons = {
   sun: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3v2.2M12 18.8V21M4.2 4.2l1.6 1.6M18.2 18.2l1.6 1.6M3 12h2.2M18.8 12H21M4.2 19.8l1.6-1.6M18.2 5.8l1.6-1.6"/><circle cx="12" cy="12" r="4"/></svg>',
@@ -192,13 +235,24 @@ function showToast(msg, type = "success") {
 async function api(path, opt = {}) {
   const headers = Object.assign({"Authorization": "Bearer " + token}, opt.headers || {});
   if (opt.body && !(opt.body instanceof FormData)) headers["Content-Type"] = "application/json";
-  const response = await fetch(path, Object.assign({}, opt, {headers}));
-  if (!response.ok) {
-    const text = await response.text();
-    throw new Error(text || response.statusText);
+  apiInFlightCount += 1;
+  updateConnectionPill();
+  try {
+    const response = await fetch(path, Object.assign({}, opt, {headers}));
+    apiConnectivityOk = true;
+    if (!response.ok) {
+      const text = await response.text();
+      throw new Error(text || response.statusText);
+    }
+    const ctype = response.headers.get("content-type") || "";
+    return ctype.includes("application/json") ? response.json() : response.blob();
+  } catch (error) {
+    if (error instanceof TypeError) apiConnectivityOk = false;
+    throw error;
+  } finally {
+    apiInFlightCount = Math.max(0, apiInFlightCount - 1);
+    updateConnectionPill();
   }
-  const ctype = response.headers.get("content-type") || "";
-  return ctype.includes("application/json") ? response.json() : response.blob();
 }
 
 async function copyText(value) {
@@ -289,13 +343,24 @@ async function apiNettest(path, opt = {}) {
   if (isDirectNettestMode()) {
     const headers = Object.assign({}, opt.headers || {});
     if (opt.body && !(opt.body instanceof FormData)) headers["Content-Type"] = "application/json";
-    const response = await fetch(path, Object.assign({}, opt, {headers}));
-    if (!response.ok) {
-      const text = await response.text();
-      throw new Error(text || response.statusText);
+    apiInFlightCount += 1;
+    updateConnectionPill();
+    try {
+      const response = await fetch(path, Object.assign({}, opt, {headers}));
+      apiConnectivityOk = true;
+      if (!response.ok) {
+        const text = await response.text();
+        throw new Error(text || response.statusText);
+      }
+      const ctype = response.headers.get("content-type") || "";
+      return ctype.includes("application/json") ? response.json() : response.blob();
+    } catch (error) {
+      if (error instanceof TypeError) apiConnectivityOk = false;
+      throw error;
+    } finally {
+      apiInFlightCount = Math.max(0, apiInFlightCount - 1);
+      updateConnectionPill();
     }
-    const ctype = response.headers.get("content-type") || "";
-    return ctype.includes("application/json") ? response.json() : response.blob();
   }
   return api(path, opt);
 }
@@ -815,8 +880,9 @@ function renderHealthHistory() {
     const active = range === serverHealthRange;
     return `<button type="button" data-health-range="${esc(range)}" class="health-range-chip ${active ? "is-active" : ""}">${esc(range)}</button>`;
   }).join("");
+  const clearButton = `<button type="button" id="clearHealthHistory" class="${buttonClasses("h-8 px-2 text-xs ml-auto")}">${icon("trash")}<span>Clear load statistics</span></button>`;
   if (!serverHealthHistoryState) {
-    host.innerHTML = `<div class="health-range-row">${ranges}</div><p class="mt-2 text-sm text-[var(--muted)]">History is warming up.</p>`;
+    host.innerHTML = `<div class="health-range-row items-center">${ranges}${clearButton}</div><p class="mt-2 text-sm text-[var(--muted)]">History is warming up.</p>`;
     bindHealthRangeButtons();
     return;
   }
@@ -831,7 +897,7 @@ function renderHealthHistory() {
   const counts = summary.counts || {};
   const notes = Array.isArray(summary.notes) ? summary.notes : [];
   host.innerHTML = `
-    <div class="health-range-row">${ranges}</div>
+    <div class="health-range-row items-center">${ranges}${clearButton}</div>
     <div class="health-history-summary">
       <div><span>CPU</span><strong>avg ${formatPercent(cpu.avg, 1)} · peak ${formatPercent(cpu.max, 1)}</strong></div>
       <div><span>RAM</span><strong>avg ${formatPercent(memory.avg_used_percent, 0)} · peak ${formatPercent(memory.max_used_percent, 0)}</strong><em>min avail ${bytes(memory.min_available_bytes || 0)}</em></div>
@@ -857,6 +923,27 @@ function bindHealthRangeButtons() {
       await loadServerHealthHistory();
     };
   });
+  const clearButton = document.querySelector("#clearHealthHistory");
+  if (clearButton) clearButton.onclick = clearLoadStatistics;
+}
+
+async function clearLoadStatistics() {
+  const ok = await confirmTypedModal(
+    "Clear load statistics",
+    "This permanently deletes all stored server load/health history samples. Live monitoring continues afterward, starting from a clean history.",
+    "CLEAR LOAD STATISTICS",
+    "Clear statistics"
+  );
+  if (!ok) return;
+  try {
+    await api("/api/server-health/history", {method: "DELETE", body: JSON.stringify({confirm: "CLEAR LOAD STATISTICS"})});
+    serverHealthHistoryState = null;
+    renderHealthHistory();
+    await loadServerHealthHistory();
+    showToast("Load statistics cleared");
+  } catch {
+    showToast("Failed to clear load statistics", "error");
+  }
 }
 
 function renderServerHealth() {
@@ -897,9 +984,20 @@ function renderServerHealth() {
   renderNetworkExplain();
 }
 
+// Format "X / Y (Z%)" for a delta over its total (delta + remaining), or
+// just "X" if the percentage cannot be computed.
+function formatDropScale(label, deltaValue, pctValue, totalValue) {
+  const delta = Number(deltaValue || 0);
+  if (pctValue === null || pctValue === undefined || totalValue === null || totalValue === undefined) {
+    return `${label}: +${delta}`;
+  }
+  const total = Number(totalValue || 0);
+  return `${label}: ${delta} / ${total} (${formatPercent(pctValue, 2)})`;
+}
+
 // Explain WARN/critical "Network" status: split observed drop/error counters
 // into likely vs. not-likely causes (WAN link, overlay link, real TCP loss,
-// IPv6 routing) plus follow-up commands to confirm.
+// IPv6 routing), the scale of each as "X / Y (Z%)", and follow-up actions.
 function renderNetworkExplain() {
   const host = document.querySelector("#networkExplain");
   if (!host || statusState?.role !== "super") return;
@@ -920,41 +1018,53 @@ function renderNetworkExplain() {
 
   const likely = [];
   const notLikely = [];
-  const nextChecks = [];
+  const scale = [];
+  const action = [];
   const overlayLabel = "VP" + "N";
+
+  const wanPackets = Number(network.wan_packets_delta || 0);
+  const overlayPackets = Number(network["vp" + "n_packets_delta"] || 0);
+  scale.push(formatDropScale(`WAN (${wanIface}) drops`, wanDrops, network.wan_drop_pct, wanDrops + wanPackets));
+  scale.push(formatDropScale(`${overlayLabel} (${overlayIface}) drops`, overlayDrops, network["vp" + "n_drop_pct"], overlayDrops + overlayPackets));
+  scale.push(formatDropScale(`Qdisc (${wanIface}) drops`, qdiscDrops, network.qdisc_drop_pct, qdiscDrops + Number(network.qdisc_sent_delta || 0)));
+  scale.push(formatDropScale("TCP retransmits", tcpRetrans, network.tcp_retrans_pct, network.tcp_segs_out_delta));
+  scale.push(formatDropScale("TCP timeouts", tcpTimeouts, network.tcp_timeout_pct, network.tcp_segs_out_delta));
+  scale.push(formatDropScale("IPv6 no-route", ip6NoRoute, network.ip6_no_route_pct, ip6NoRoute + Number(network.ip6_out_requests_delta || 0)));
 
   if (wanDrops > 0 || qdiscDrops > 0) {
     likely.push(`WAN link (${wanIface}) drops: interface +${wanDrops}, qdisc +${qdiscDrops} - often queue/driver limits or upstream congestion.`);
-    nextChecks.push(`tc -s qdisc show dev ${wanIface}`);
+    action.push(`tc -s qdisc show dev ${wanIface}`);
   } else {
     notLikely.push(`WAN interface (${wanIface}) drops: none observed.`);
   }
 
   if (overlayDrops > 0) {
     likely.push(`${overlayLabel} link (${overlayIface}) drops +${overlayDrops} - check the overlay MTU and client-side buffers.`);
-    nextChecks.push(`ip -s link show ${overlayIface}`);
+    action.push(`ip -s link show ${overlayIface}`);
   } else {
     notLikely.push(`${overlayLabel} link (${overlayIface}) drops: none observed.`);
   }
 
   if (tcpRetrans > 0 || tcpTimeouts > 0) {
     likely.push(`Real packet loss: TCP retransmits +${tcpRetrans}, TCP timeouts +${tcpTimeouts}.`);
-    nextChecks.push("grep -i tcpext /proc/net/netstat");
+    action.push("grep -i tcpext /proc/net/netstat");
   } else {
     notLikely.push("TCP retransmits/timeouts: none observed.");
   }
 
   if (ip6NoRoute > 0) {
     likely.push(`IPv6 packets with no route +${ip6NoRoute} - expected if IPv6/AAAA is disabled, otherwise check the IPv6 default route.`);
-    nextChecks.push("ip -6 route show default");
+    action.push("ip -6 route show default");
   } else {
     notLikely.push("IPv6 'no route' drops: none observed.");
   }
 
   if (errors > 0) {
     likely.push(`Interface errors +${errors} (CRC/frame, etc.) - check cabling/driver on ${wanIface}.`);
-    nextChecks.push(`ethtool -S ${wanIface} | grep -i err`);
+    action.push(`ethtool -S ${wanIface} | grep -i err`);
   }
+
+  action.push("Run a 60-second before/after sample for a clean delta.");
 
   const status = network.status || "unknown";
   host.innerHTML = `
@@ -963,10 +1073,44 @@ function renderNetworkExplain() {
       <div class="mt-2 grid gap-1.5">
         ${likely.length ? `<p class="font-semibold text-[var(--text)]">Likely</p><ul class="nettest-notes">${likely.map(t => `<li>${esc(t)}</li>`).join("")}</ul>` : ""}
         ${notLikely.length ? `<p class="mt-1 font-semibold text-[var(--text)]">Not likely</p><ul class="nettest-notes">${notLikely.map(t => `<li>${esc(t)}</li>`).join("")}</ul>` : ""}
-        ${nextChecks.length ? `<p class="mt-1 font-semibold text-[var(--text)]">Next checks</p><ul class="nettest-notes">${nextChecks.map(t => `<li><code>${esc(t)}</code></li>`).join("")}</ul>` : ""}
+        ${scale.length ? `<p class="mt-1 font-semibold text-[var(--text)]">Scale</p><ul class="nettest-notes">${scale.map(t => `<li>${esc(t)}</li>`).join("")}</ul>` : ""}
+        ${action.length ? `<p class="mt-1 font-semibold text-[var(--text)]">Action</p><ul class="nettest-notes">${action.map(t => `<li><code>${esc(t)}</code></li>`).join("")}</ul>` : ""}
+      </div>
+      <div class="mt-2">
+        <button type="button" id="dropsSampleBtn" class="btn-secondary h-8 rounded px-3 text-xs font-semibold">${icon("refresh")} 60s before/after sample</button>
+        <div id="dropsSampleResult" class="mt-2"></div>
       </div>
     </details>
   `;
+  const sampleBtn = document.querySelector("#dropsSampleBtn");
+  if (sampleBtn) {
+    sampleBtn.onclick = async () => {
+      const resultEl = document.querySelector("#dropsSampleResult");
+      sampleBtn.disabled = true;
+      const original = sampleBtn.innerHTML;
+      sampleBtn.innerHTML = "Sampling for 60s...";
+      if (resultEl) resultEl.innerHTML = "";
+      try {
+        const report = await api("/api/server-health/drops-sample", {method: "POST", body: JSON.stringify({duration_seconds: 60})});
+        if (resultEl) {
+          const lines = [
+            formatDropScale(`WAN drops`, report.wan.drops_delta, report.wan.drop_pct, report.wan.drops_delta + report.wan.packets_delta),
+            formatDropScale(`${overlayLabel} drops`, report["vp" + "n"].drops_delta, report["vp" + "n"].drop_pct, report["vp" + "n"].drops_delta + report["vp" + "n"].packets_delta),
+            formatDropScale("Qdisc drops", report.qdisc.drop_delta, report.qdisc.drop_pct, report.qdisc.drop_delta + report.qdisc.sent_delta),
+            formatDropScale("TCP retransmits", report.tcp.retrans_delta, report.tcp.retrans_pct, report.tcp.out_segs_delta),
+            formatDropScale("TCP timeouts", report.tcp.timeout_delta, report.tcp.timeout_pct, report.tcp.out_segs_delta),
+            formatDropScale("IPv6 no-route", report.ipv6.no_route_delta, report.ipv6.no_route_pct, report.ipv6.no_route_delta + report.ipv6.out_requests_delta),
+          ];
+          resultEl.innerHTML = `<p class="font-semibold text-[var(--text)]">Sample over ${report.duration_seconds}s</p><ul class="nettest-notes">${lines.map(t => `<li>${esc(t)}</li>`).join("")}</ul>`;
+        }
+      } catch (err) {
+        if (resultEl) resultEl.innerHTML = `<p class="text-[var(--danger)]">${esc(err.message || String(err))}</p>`;
+      } finally {
+        sampleBtn.disabled = false;
+        sampleBtn.innerHTML = original;
+      }
+    };
+  }
 }
 
 function renderReadinessRow(label, status, detail) {
@@ -1017,6 +1161,147 @@ function renderReadiness() {
   if (stamp) stamp.textContent = r.timestamp ? `Updated ${r.timestamp}` : "";
 }
 
+const NDP_MODE_LABELS = {
+  ipv6_disabled: "IPv6 is disabled on this host - NDP proxy is not applicable.",
+  ipv6_public_single_address_only: `A single public IPv6 address is present; no ${"VP" + "N"} prefix is configured for NDP proxy.`,
+  ipv6_prefix_routed_to_server: "An IPv6 prefix is routed to this server - NDP proxy is not needed.",
+  ipv6_prefix_onlink_needs_ndp_proxy: `The IPv6 prefix is on-link on the WAN interface - clients behind the ${"VP" + "N"} need an NDP proxy.`,
+  ipv6_unknown_manual_review: "IPv6 routing mode could not be classified automatically - manual review required.",
+};
+
+function ndpProxyStatus(ndp) {
+  const mode = ndp.mode || "ipv6_unknown_manual_review";
+  if (mode === "ipv6_prefix_onlink_needs_ndp_proxy") {
+    if (ndp.ndppd_active && ndp.configured) return {text: "Enabled", status: "ok"};
+    if ((ndp.installed || ndp.configured) && !ndp.ndppd_active) return {text: "Misconfigured", status: "warn"};
+    return {text: "Needed", status: "warn"};
+  }
+  if (mode === "ipv6_unknown_manual_review") return {text: "Manual review required", status: "warn"};
+  return {text: "Not needed", status: "info"};
+}
+
+// IPv6 / NDP proxy (ndppd) admin panel. Super-only. Diagnostics always
+// rendered; management buttons are hidden when IPv6 is disabled on the host.
+function renderNdpProxyPanel() {
+  const host = document.querySelector("#ndpProxyPanel");
+  if (!host || statusState?.role !== "super") return;
+  const r = readinessState;
+  if (!r) {
+    host.innerHTML = "";
+    return;
+  }
+  const ndp = r.ndp_proxy || {};
+  const mode = ndp.mode || "ipv6_unknown_manual_review";
+  const summary = ndpProxyStatus(ndp);
+  const needsPrefixInput = !ndp.prefix && mode !== "ipv6_disabled";
+  const canManage = mode !== "ipv6_disabled";
+
+  host.innerHTML = `
+    <div class="rounded-md border border-[var(--line)] bg-[var(--soft)] p-3">
+      <div class="flex flex-wrap items-center justify-between gap-2">
+        <p class="text-xs font-semibold uppercase text-[var(--muted)]">IPv6 / NDP Proxy</p>
+        ${healthBadge(summary.status)}<span class="text-sm font-medium">${esc(summary.text)}</span>
+      </div>
+      <p class="mt-1 text-xs text-[var(--muted)]">${esc(NDP_MODE_LABELS[mode] || "")}</p>
+      <div class="mt-2 grid gap-1 text-xs text-[var(--muted)] sm:grid-cols-2">
+        <div>WAN iface: <span class="text-[var(--text)]">${esc(ndp.wan_iface || "-")}</span></div>
+        <div>${"VP" + "N"} iface: <span class="text-[var(--text)]">${esc(ndp["vp" + "n_iface"] || "-")}</span></div>
+        <div>Prefix: <span class="text-[var(--text)]">${esc(ndp.prefix || "(not configured)")}</span></div>
+        <div>proxy_ndp sysctl: <span class="text-[var(--text)]">${esc(ndp.proxy_ndp_sysctl ?? "-")}</span></div>
+        <div>ndppd installed: <span class="text-[var(--text)]">${ndp.installed ? "yes" : "no"}</span></div>
+        <div>ndppd active: <span class="text-[var(--text)]">${ndp.ndppd_active ? "yes" : "no"}</span></div>
+      </div>
+      ${canManage ? `
+        ${needsPrefixInput ? `
+          <p class="mt-3 rounded-md border border-amber-500/50 bg-amber-500/10 p-2 text-xs text-[var(--text)]">Manual IPv6 prefix required - enter the provider's IPv6 prefix (e.g. 2001:db8:abcd::/64) before generating an ndppd config.</p>
+          <input id="ndpPrefixInput" type="text" placeholder="2001:db8:abcd::/64" class="mt-2 w-full rounded-md border border-[var(--line)] bg-[var(--panel)] px-2 py-1 text-sm">
+        ` : ""}
+        <div class="mt-3 flex flex-wrap gap-2">
+          <button id="ndpGenerate" class="${buttonClasses()}">${icon("refresh")}<span>Generate ndppd config</span></button>
+          <button id="ndpEnable" class="${buttonClasses("border-amber-600 text-amber-700")}">${icon("power")}<span>Enable ndppd</span></button>
+          <button id="ndpRestart" class="${buttonClasses()}">${icon("refresh")}<span>Restart ndppd</span></button>
+          <button id="ndpDisable" class="${buttonClasses("border-[var(--danger)] text-[var(--danger)]")}">${icon("trash")}<span>Disable ndppd</span></button>
+        </div>
+      ` : ""}
+    </div>
+  `;
+
+  if (!canManage) return;
+
+  document.querySelector("#ndpGenerate").onclick = async () => {
+    const prefixInput = document.querySelector("#ndpPrefixInput");
+    const prefix = prefixInput ? prefixInput.value.trim() : (ndp.prefix || "");
+    if (!prefix) {
+      showToast("IPv6 prefix is required", "error");
+      return;
+    }
+    const ok = await confirmModal(
+      "Generate ndppd config",
+      `Generate /etc/ndppd.conf for prefix ${prefix} on ${ndp.wan_iface || "WAN"} -> ${ndp["vp" + "n_iface"] || ("VP" + "N")}? Any existing config is backed up first.`,
+      "Generate",
+      false
+    );
+    if (!ok) return;
+    try {
+      await api("/api/ipv6/ndp/generate", {method: "POST", body: JSON.stringify({prefix})});
+      showToast("ndppd config generated");
+      await loadReadiness(true);
+      renderNdpProxyPanel();
+    } catch {
+      showToast("Failed to generate ndppd config", "error");
+    }
+  };
+
+  document.querySelector("#ndpEnable").onclick = async () => {
+    const ok = await confirmModal(
+      "Enable ndppd",
+      "DANGER: this installs (if missing) and starts the ndppd NDP proxy service using /etc/ndppd.conf. Make sure the config matches your IPv6 prefix.",
+      "Enable",
+      true
+    );
+    if (!ok) return;
+    try {
+      await api("/api/ipv6/ndp/enable", {method: "POST", body: "{}"});
+      showToast("ndppd enabled");
+      await loadReadiness(true);
+      renderNdpProxyPanel();
+    } catch {
+      showToast("Failed to enable ndppd", "error");
+    }
+  };
+
+  document.querySelector("#ndpRestart").onclick = async () => {
+    const ok = await confirmModal("Restart ndppd", "Restart the ndppd service?", "Restart", false);
+    if (!ok) return;
+    try {
+      await api("/api/ipv6/ndp/restart", {method: "POST", body: "{}"});
+      showToast("ndppd restarted");
+      await loadReadiness(true);
+      renderNdpProxyPanel();
+    } catch {
+      showToast("Failed to restart ndppd", "error");
+    }
+  };
+
+  document.querySelector("#ndpDisable").onclick = async () => {
+    const ok = await confirmModal(
+      "Disable ndppd",
+      "DANGER: this stops and disables the ndppd service. IPv6 clients relying on the NDP proxy will lose IPv6 connectivity.",
+      "Disable",
+      true
+    );
+    if (!ok) return;
+    try {
+      await api("/api/ipv6/ndp/disable", {method: "POST", body: "{}"});
+      showToast("ndppd disabled");
+      await loadReadiness(true);
+      renderNdpProxyPanel();
+    } catch {
+      showToast("Failed to disable ndppd", "error");
+    }
+  };
+}
+
 // Server-cached for cache_ttl_seconds (5-10 min); avoid re-fetching on every
 // 10s health poll by gating on a client-side minimum interval too.
 async function loadReadiness(force = false) {
@@ -1026,6 +1311,7 @@ async function loadReadiness(force = false) {
     readinessState = await api("/api/" + "vp" + "n-readiness");
     readinessLoadedAt = Date.now();
     renderReadiness();
+    renderNdpProxyPanel();
   } catch {
     const host = document.querySelector("#readinessGrid");
     if (host) host.innerHTML = `<p class="text-sm text-[var(--muted)]">${"VP" + "N"} readiness unavailable</p>`;
@@ -1095,12 +1381,13 @@ function renderNettestReports() {
     const leak = row.leak_checks || {};
     const longestStall = Number(timeline.longest_stall_ms || 0);
     return `
-      <div class="nettest-report-row">
+      <div class="nettest-report-row" data-report-filename="${esc(row.filename || "")}">
         <div>
           <div class="flex flex-wrap items-center gap-2">
             <span class="font-semibold">${esc(row.network_type || "-")}</span>
             <span class="text-[var(--muted)]">${esc(row.created_at || "")}</span>
             ${healthBadge(assessment.quality || "unknown")}
+            <button type="button" class="delete-nettest-report ml-auto ${buttonClasses("h-7 px-2 text-xs")}">${icon("trash")}<span>Delete</span></button>
           </div>
           <div class="nettest-report-meta">
             <span>${"VP" + "N"} IP ${esc(internalIp)}</span>
@@ -1120,6 +1407,48 @@ function renderNettestReports() {
       </div>
     `;
   }).join("");
+
+  host.querySelectorAll("[data-report-filename]").forEach(row => {
+    const filename = row.dataset.reportFilename;
+    if (!filename) return;
+    row.querySelector(".delete-nettest-report").onclick = () => deleteNettestReport(filename);
+  });
+}
+
+async function deleteNettestReport(filename) {
+  const ok = await confirmModal(
+    "Delete report",
+    `Permanently delete this saved network test report (${filename})?`,
+    "Delete",
+    true
+  );
+  if (!ok) return;
+  try {
+    await api(`/api/nettest/reports/${encodeURIComponent(filename)}`, {method: "DELETE"});
+    nettestReportsState = nettestReportsState.filter(row => row.filename !== filename);
+    renderNettestReports();
+    showToast("Report deleted");
+  } catch {
+    showToast("Failed to delete report", "error");
+  }
+}
+
+async function clearAllNettestReports() {
+  const ok = await confirmTypedModal(
+    "Clear all reports",
+    "This permanently deletes every saved network test report. This cannot be undone.",
+    "DELETE ALL NETTEST REPORTS",
+    "Delete all"
+  );
+  if (!ok) return;
+  try {
+    const res = await api("/api/nettest/reports", {method: "DELETE", body: JSON.stringify({confirm: "DELETE ALL NETTEST REPORTS"})});
+    nettestReportsState = [];
+    renderNettestReports();
+    showToast(`Deleted ${res.deleted ?? 0} report(s)`);
+  } catch {
+    showToast("Failed to clear reports", "error");
+  }
 }
 
 function renderNettestContext() {
@@ -1744,7 +2073,10 @@ async function renderPanel() {
         <div class="grid h-11 w-11 place-items-center rounded-lg bg-[var(--accent)] text-lg font-black text-white">${esc(statusState.short_label || "C")}</div>
         <div>
           <h1 class="text-xl font-semibold leading-tight">${esc(statusState.display_name || statusState.server_name || "Control")}</h1>
-          <p class="text-sm text-[var(--muted)]">v${esc(statusState.version)} · ${esc(statusState.fork)} · ${esc(statusState.role)}</p>
+          <p class="flex flex-wrap items-center gap-2 text-sm text-[var(--muted)]">
+            <span>v${esc(statusState.version)} · ${esc(statusState.fork)} · ${esc(statusState.role)}</span>
+            <span id="connectionStatusPill" class="${CONNECTION_PILL_BASE} ${CONNECTION_STATE_INFO.online.className}">${CONNECTION_STATE_INFO.online.label}</span>
+          </p>
         </div>
       </div>
       <div class="flex flex-wrap items-center gap-2">
@@ -1825,6 +2157,7 @@ async function renderPanel() {
         </div>
         <div id="readinessGrid" class="readiness-grid mt-2"></div>
       </div>
+      <div id="ndpProxyPanel" class="mt-4"></div>
     </section>
 
     <section id="networkTesterPanel" class="mt-3 rounded-lg border border-[var(--line)] bg-[var(--panel)] p-4">
@@ -1839,7 +2172,13 @@ async function renderPanel() {
       <div id="nettestContext" class="mt-3"></div>
       <p id="nettestStatus" class="mt-3 text-sm text-[var(--muted)]">Ready.</p>
       <div id="nettestResult" class="mt-3"></div>
-      <div id="nettestReports" class="mt-3 ${statusState.role === "super" ? "" : "hidden"}"></div>
+      <div class="mt-3 ${statusState.role === "super" ? "" : "hidden"}">
+        <div class="flex flex-wrap items-center justify-between gap-2">
+          <p class="text-xs font-semibold uppercase text-[var(--muted)]">Saved reports</p>
+          <button id="clearNettestReports" class="${buttonClasses("h-8 px-2 text-xs")}">${icon("trash")}<span>Clear all reports</span></button>
+        </div>
+        <div id="nettestReports" class="mt-2"></div>
+      </div>
     </section>
 
     <section id="accessPanel" class="mt-3 rounded-lg border border-[var(--line)] bg-[var(--panel)] p-4 ${statusState.role === "super" ? "" : "hidden"}">
@@ -1866,6 +2205,18 @@ async function renderPanel() {
         </div>
       </div>
       <div id="webAccessPolicyForm" class="mt-4"></div>
+    </section>
+
+    <section id="geoipPanel" class="mt-3 rounded-lg border border-[var(--line)] bg-[var(--panel)] p-4 ${statusState.role === "super" ? "" : "hidden"}">
+      <div class="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h2 class="text-base font-semibold">GeoIP Sources</h2>
+          <p class="text-sm text-[var(--muted)]">Lookup providers, tokens, and local MMDB databases.</p>
+        </div>
+        <button id="saveGeoipProviders" class="${primaryButtonClasses()}">${icon("save")}<span>Save</span></button>
+      </div>
+      <div id="geoipProvidersForm" class="mt-4"></div>
+      <div id="geoipDatabasesPanel" class="mt-4"></div>
     </section>
 
     <section id="advancedPanel" class="mt-3 rounded-lg border border-[var(--line)] bg-[var(--panel)] p-4 ${statusState.role === "super" ? "" : "hidden"}">
@@ -1906,6 +2257,8 @@ async function renderPanel() {
     document.querySelector("#testWebAccessPolicy").onclick = () => submitWebAccessPolicy("test");
     document.querySelector("#saveWebAccessPolicy").onclick = () => submitWebAccessPolicy("save");
     document.querySelector("#saveRestartWebAccessPolicy").onclick = () => submitWebAccessPolicy("save-restart");
+    document.querySelector("#saveGeoipProviders").onclick = saveGeoipProviders;
+    document.querySelector("#clearNettestReports").onclick = clearAllNettestReports;
   }
   if (nettestPage) {
     for (const selector of [
@@ -1924,6 +2277,7 @@ async function renderPanel() {
     }
     document.querySelector("#addClient")?.classList.add("hidden");
   }
+  updateConnectionPill();
   await loadAll();
   if (!nettestPage) {
     startClientPolling();
@@ -1951,7 +2305,7 @@ async function loadAll() {
   }
   renderNettestContext();
   if (statusState.role === "super") {
-    await Promise.all([loadTokens(), loadWebAccessPolicy(), loadServerHealth(), loadNettestReports()]);
+    await Promise.all([loadTokens(), loadWebAccessPolicy(), loadServerHealth(), loadNettestReports(), loadGeoipAdmin()]);
   }
 }
 
@@ -3048,6 +3402,215 @@ async function submitWebAccessPolicy(action) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// GeoIP sources admin: providers/tokens (PUT /api/geoip/providers), live
+// "Test" lookups, and local MMDB database status/update/auto-update.
+// ---------------------------------------------------------------------------
+
+const GEOIP_PROVIDER_INFO = [
+  {name: "maxmind", label: "MaxMind GeoLite2 (local MMDB)", kind: "mmdb"},
+  {name: "dbip_mmdb", label: "DB-IP City Lite (local MMDB)", kind: "mmdb"},
+  {name: "2ip", label: "2ip.io", kind: "token"},
+  {name: "2ip_whois", label: "2ip.io WHOIS (refresh only)", kind: "token-refresh"},
+  {name: "ipinfo", label: "ipinfo.io", kind: "token"},
+  {name: "dbip", label: "DB-IP API", kind: "token-allowfree"},
+  {name: "ip-api", label: "ip-api.com (free, no token)", kind: "free"},
+];
+
+async function loadGeoipAdmin() {
+  try {
+    [geoipProvidersState, geoipDatabasesState] = await Promise.all([
+      api("/api/geoip/providers"),
+      api("/api/geoip/databases/status"),
+    ]);
+    renderGeoipProviders();
+    renderGeoipDatabases();
+  } catch {
+    showToast("Could not load GeoIP configuration", "error");
+  }
+}
+
+const GEOIP_TOKEN_MASK = "********";
+
+function renderGeoipProviders() {
+  const host = document.querySelector("#geoipProvidersForm");
+  if (!host || !geoipProvidersState) return;
+  const providers = geoipProvidersState.providers || {};
+  host.innerHTML = `
+    <div class="grid gap-2">
+      ${GEOIP_PROVIDER_INFO.map(info => {
+        const cfg = providers[info.name] || {};
+        const tokenValue = cfg.has_token ? GEOIP_TOKEN_MASK : "";
+        return `
+        <div class="rounded-md border border-[var(--line)] bg-[var(--soft)] p-3" data-geoip-provider="${info.name}">
+          <div class="flex flex-wrap items-center justify-between gap-2">
+            <label class="flex items-center gap-2 text-sm font-medium">
+              <input type="checkbox" class="geoip-enabled accent-[var(--accent)]" ${cfg.enabled ? "checked" : ""}>
+              <span>${esc(info.label)}</span>
+            </label>
+            <div class="flex items-center gap-2">
+              <span class="geoip-test-result text-xs text-[var(--muted)]"></span>
+              <button type="button" class="geoip-test ${buttonClasses("h-8 px-2 text-xs")}">${icon("shield")}<span>Test</span></button>
+            </div>
+          </div>
+          ${info.kind === "token" || info.kind === "token-refresh" || info.kind === "token-allowfree" ? `
+            <label class="mt-2 block text-xs">
+              <span class="mb-1 block text-[var(--muted)]">API token${cfg.has_token ? " (set - leave as-is to keep)" : ""}</span>
+              <input type="password" class="geoip-token h-9 w-full rounded-md border border-[var(--line)] bg-[var(--panel)] px-2 font-mono text-xs text-[var(--text)] outline-none focus:border-[var(--accent)]" placeholder="${cfg.has_token ? "" : "no token configured"}" value="${esc(tokenValue)}">
+            </label>
+          ` : ""}
+          ${info.kind === "token-allowfree" ? `
+            <label class="mt-2 flex items-center gap-2 text-xs">
+              <input type="checkbox" class="geoip-allow-free accent-[var(--accent)]" ${cfg.allow_free ? "checked" : ""}>
+              <span>Allow free (no-token) DB-IP API endpoint</span>
+            </label>
+          ` : ""}
+          ${info.kind === "token-refresh" ? `
+            <label class="mt-2 flex items-center gap-2 text-xs">
+              <input type="checkbox" class="geoip-only-refresh accent-[var(--accent)]" ${cfg.only_on_refresh !== false ? "checked" : ""}>
+              <span>Only run on manual "Refresh" (avoid rate limits)</span>
+            </label>
+          ` : ""}
+          ${info.kind === "mmdb" ? `<p class="mt-1 text-xs text-[var(--muted)]">Database file managed below.</p>` : ""}
+        </div>`;
+      }).join("")}
+    </div>
+  `;
+
+  host.querySelectorAll("[data-geoip-provider]").forEach(row => {
+    const name = row.dataset.geoipProvider;
+    row.querySelector(".geoip-test").onclick = async () => {
+      const resultEl = row.querySelector(".geoip-test-result");
+      resultEl.textContent = "Testing...";
+      try {
+        const res = await api("/api/geoip/providers/test", {method: "POST", body: JSON.stringify({provider: name})});
+        if (res.ok) {
+          const r = res.result || {};
+          resultEl.textContent = `OK: ${[r.country, r.city, r.asn].filter(Boolean).join(", ") || "(no data)"}`;
+          resultEl.className = "geoip-test-result text-xs text-green-700";
+        } else {
+          resultEl.textContent = `Failed: ${res.error || "unknown error"}`;
+          resultEl.className = "geoip-test-result text-xs text-[var(--danger)]";
+        }
+      } catch {
+        resultEl.textContent = "Test request failed";
+        resultEl.className = "geoip-test-result text-xs text-[var(--danger)]";
+      }
+    };
+  });
+}
+
+function readGeoipProvidersForm() {
+  const host = document.querySelector("#geoipProvidersForm");
+  const providers = {};
+  host.querySelectorAll("[data-geoip-provider]").forEach(row => {
+    const name = row.dataset.geoipProvider;
+    const entry = {enabled: row.querySelector(".geoip-enabled").checked};
+    const tokenInput = row.querySelector(".geoip-token");
+    if (tokenInput) entry.token = tokenInput.value;
+    const allowFree = row.querySelector(".geoip-allow-free");
+    if (allowFree) entry.allow_free = allowFree.checked;
+    const onlyRefresh = row.querySelector(".geoip-only-refresh");
+    if (onlyRefresh) entry.only_on_refresh = onlyRefresh.checked;
+    providers[name] = entry;
+  });
+  return providers;
+}
+
+async function saveGeoipProviders() {
+  const providers = readGeoipProvidersForm();
+  try {
+    geoipProvidersState = await api("/api/geoip/providers", {method: "PUT", body: JSON.stringify({providers})});
+    renderGeoipProviders();
+    showToast("GeoIP providers saved");
+  } catch {
+    showToast("Failed to save GeoIP providers", "error");
+  }
+}
+
+function formatBytes(bytes) {
+  const n = Number(bytes || 0);
+  if (n <= 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB"];
+  let i = 0, v = n;
+  while (v >= 1024 && i < units.length - 1) { v /= 1024; i += 1; }
+  return `${v.toFixed(v >= 10 || i === 0 ? 0 : 1)} ${units[i]}`;
+}
+
+const GEOIP_DB_LABELS = {
+  maxmind_asn: "MaxMind GeoLite2 ASN",
+  maxmind_city: "MaxMind GeoLite2 City",
+  maxmind_country: "MaxMind GeoLite2 Country",
+  dbip_city_lite: "DB-IP City Lite",
+};
+
+function renderGeoipDatabases() {
+  const host = document.querySelector("#geoipDatabasesPanel");
+  if (!host || !geoipDatabasesState) return;
+  const databases = geoipDatabasesState.databases || {};
+  const auto = geoipDatabasesState.auto_update || {};
+  host.innerHTML = `
+    <div class="flex flex-wrap items-center justify-between gap-2">
+      <p class="text-xs font-semibold uppercase text-[var(--muted)]">MMDB databases</p>
+      <div class="flex flex-wrap gap-2">
+        <button id="geoipUpdateDbs" class="${buttonClasses("h-8 px-3 text-xs")}">${icon("refresh")}<span>Update now</span></button>
+        <button id="geoipAutoUpdateToggle" class="${buttonClasses("h-8 px-3 text-xs")}">${icon("power")}<span>${auto.enabled ? "Disable" : "Enable"} weekly auto-update</span></button>
+      </div>
+    </div>
+    <div class="mt-2 grid gap-2 sm:grid-cols-2">
+      ${Object.entries(GEOIP_DB_LABELS).map(([name, label]) => {
+        const db = databases[name] || {};
+        return `
+        <div class="rounded-md border border-[var(--line)] bg-[var(--soft)] p-2 text-xs text-[var(--muted)]">
+          <p class="font-medium text-[var(--text)]">${esc(label)}</p>
+          ${db.present ? `
+            <p>Size: ${formatBytes(db.size_bytes)} - Updated: ${esc(db.downloaded_at || db.mtime || "-")}</p>
+            <p class="break-all">sha256: ${esc((db.sha256 || "").slice(0, 16))}...</p>
+          ` : `<p>${db.last_error ? `Error: ${esc(db.last_error)}` : "Not downloaded yet"}</p>`}
+        </div>`;
+      }).join("")}
+    </div>
+    <p class="mt-2 text-xs text-[var(--muted)]">Weekly auto-update timer: <span class="font-medium text-[var(--text)]">${auto.enabled ? "enabled" : "disabled"}</span> (${esc(auto.active_state || "unknown")})</p>
+  `;
+
+  document.querySelector("#geoipUpdateDbs").onclick = async () => {
+    const btn = document.querySelector("#geoipUpdateDbs");
+    btn.disabled = true;
+    btn.innerHTML = `${icon("refresh")}<span>Updating...</span>`;
+    try {
+      const res = await api("/api/geoip/databases/update", {method: "POST", body: "{}"});
+      geoipDatabasesState = {databases: res.databases, auto_update: res.auto_update};
+      renderGeoipDatabases();
+      showToast(res.ok ? "GeoIP databases updated" : "GeoIP database update finished with errors", res.ok ? "success" : "error");
+    } catch {
+      showToast("Failed to update GeoIP databases", "error");
+      btn.disabled = false;
+      btn.innerHTML = `${icon("refresh")}<span>Update now</span>`;
+    }
+  };
+
+  document.querySelector("#geoipAutoUpdateToggle").onclick = async () => {
+    const enable = !auto.enabled;
+    const ok = await confirmModal(
+      enable ? "Enable weekly GeoIP auto-update" : "Disable weekly GeoIP auto-update",
+      enable
+        ? "Install and enable a weekly systemd timer that downloads fresh GeoIP MMDB databases."
+        : "Disable and stop the weekly GeoIP database auto-update timer.",
+      enable ? "Enable" : "Disable",
+      false
+    );
+    if (!ok) return;
+    try {
+      const res = await api("/api/geoip/auto-update", {method: "POST", body: JSON.stringify({enabled: enable})});
+      geoipDatabasesState.auto_update = res.auto_update;
+      renderGeoipDatabases();
+      showToast(`GeoIP auto-update ${enable ? "enabled" : "disabled"}`);
+    } catch {
+      showToast("Failed to change GeoIP auto-update", "error");
+    }
+  };
+}
+
 function confirmDialogOnEnter(dialog, onConfirm) {
   dialog.addEventListener("keydown", event => {
     if (event.key !== "Enter" || event.target instanceof HTMLTextAreaElement) return;
@@ -3152,19 +3715,50 @@ function rotateProfileModal() {
           </label>
         </fieldset>
         <p class="mt-3 rounded-md border border-amber-500/50 bg-amber-500/10 p-3 text-xs text-[var(--text)]">This does not rotate keys, IPs, port rules, RBAC, expiry, or traffic history.</p>
+        <label class="mt-3 flex cursor-pointer items-start gap-2 text-xs text-[var(--text)]">
+          <input type="checkbox" id="rotateProfileAck" class="mt-0.5 accent-[var(--accent)]">
+          <span>I understand this regenerates the profile for <strong>all clients</strong> and existing access links will stop working until reimported.</span>
+        </label>
+        <label class="mt-2 block text-xs">
+          <span class="mb-1 block text-[var(--muted)]">Type <span class="font-mono font-semibold text-[var(--text)]">ROTATE</span> to confirm</span>
+          <input type="text" id="rotateProfileConfirmText" class="h-9 w-full rounded-md border border-[var(--line)] bg-[var(--soft)] px-2 font-mono text-sm text-[var(--text)] outline-none focus:border-[var(--accent)]" autocomplete="off" spellcheck="false">
+        </label>
         <div class="mt-4 flex flex-wrap justify-end gap-2">
-          <button value="cancel" class="${buttonClasses()}">Cancel</button>
-          <button value="ok" class="${buttonClasses("border-amber-600 bg-amber-500 text-white")}">Rotate profile</button>
+          <button type="button" value="cancel" class="${buttonClasses()}">Cancel</button>
+          <button type="button" value="ok" id="rotateProfileConfirmButton" class="${buttonClasses("border-amber-600 bg-amber-500 text-white")} disabled:opacity-50" disabled>Rotate profile</button>
         </div>
       </form>
     `;
     document.body.appendChild(dialog);
+    const ack = dialog.querySelector("#rotateProfileAck");
+    const confirmText = dialog.querySelector("#rotateProfileConfirmText");
+    const confirmButton = dialog.querySelector("#rotateProfileConfirmButton");
+    const cancelButton = dialog.querySelector('button[value="cancel"]');
+    const updateEnabled = () => {
+      confirmButton.disabled = !(ack.checked && confirmText.value === "ROTATE");
+    };
+    ack.addEventListener("change", updateEnabled);
+    confirmText.addEventListener("input", updateEnabled);
+    confirmText.addEventListener("keydown", evt => {
+      if (evt.key === "Enter" && !confirmButton.disabled) dialog.close("ok");
+    });
+    let resolved = false;
+    const finish = preset => {
+      if (resolved) return;
+      resolved = true;
+      dialog.close();
+      resolve(preset);
+    };
+    cancelButton.onclick = () => finish(null);
+    confirmButton.onclick = () => {
+      if (confirmButton.disabled) return;
+      const preset = dialog.querySelector("input[name='rotatePreset']:checked")?.value;
+      finish(["mobile", "default"].includes(preset) ? preset : null);
+    };
     dialog.addEventListener("close", () => {
-      const preset = dialog.returnValue === "ok" ? dialog.querySelector("input[name='rotatePreset']:checked")?.value : null;
       dialog.remove();
-      resolve(["mobile", "default"].includes(preset) ? preset : null);
+      finish(null);
     }, {once: true});
-    confirmDialogOnEnter(dialog, () => dialog.close("ok"));
     dialog.showModal();
   });
 }
@@ -3240,6 +3834,50 @@ function confirmModal(title, message, confirmLabel = "Continue", danger = true) 
   });
 }
 
+function confirmTypedModal(title, message, requiredText, confirmLabel = "Confirm") {
+  return new Promise(resolve => {
+    const dialog = document.createElement("dialog");
+    dialog.className = "w-[min(420px,calc(100vw-32px))] rounded-lg border border-[var(--line)] bg-[var(--panel)] p-0 text-[var(--text)] shadow-xl backdrop:bg-black/55";
+    dialog.innerHTML = `
+      <form method="dialog" class="p-4">
+        <h2 class="mb-2 text-base font-semibold">${esc(title)}</h2>
+        <p class="text-sm text-[var(--muted)]">${esc(message)}</p>
+        <p class="mt-2 text-xs text-[var(--muted)]">Type <span class="font-mono font-semibold text-[var(--text)]">${esc(requiredText)}</span> to confirm.</p>
+        <input type="text" class="confirm-typed-input mt-2 h-9 w-full rounded-md border border-[var(--line)] bg-[var(--soft)] px-2 font-mono text-sm text-[var(--text)] outline-none focus:border-[var(--accent)]" autocomplete="off" spellcheck="false">
+        <div class="mt-4 flex justify-end gap-2">
+          <button type="button" value="cancel" class="${buttonClasses()}">Cancel</button>
+          <button type="button" value="ok" class="confirm-typed-ok ${buttonClasses("border-[var(--danger)] bg-[var(--danger)] text-white")} disabled:opacity-50" disabled>${esc(confirmLabel)}</button>
+        </div>
+      </form>
+    `;
+    document.body.appendChild(dialog);
+    const input = dialog.querySelector(".confirm-typed-input");
+    const okBtn = dialog.querySelector(".confirm-typed-ok");
+    const cancelBtn = dialog.querySelector('button[value="cancel"]');
+    let resolved = false;
+    const finish = ok => {
+      if (resolved) return;
+      resolved = true;
+      dialog.close();
+      resolve(ok);
+    };
+    input.oninput = () => {
+      okBtn.disabled = input.value !== requiredText;
+    };
+    input.addEventListener("keydown", evt => {
+      if (evt.key === "Enter" && !okBtn.disabled) finish(true);
+    });
+    cancelBtn.onclick = () => finish(false);
+    okBtn.onclick = () => { if (!okBtn.disabled) finish(true); };
+    dialog.addEventListener("close", () => {
+      dialog.remove();
+      finish(false);
+    }, {once: true});
+    dialog.showModal();
+    setTimeout(() => input.focus(), 0);
+  });
+}
+
 async function renderDirectNettest() {
   app.innerHTML = `
     <header class="flex flex-col gap-4 py-4 sm:flex-row sm:items-center sm:justify-between">
@@ -3247,7 +3885,10 @@ async function renderDirectNettest() {
         <div class="grid h-11 w-11 place-items-center rounded-lg bg-[var(--accent)] text-lg font-black text-white">NT</div>
         <div>
           <h1 class="text-xl font-semibold leading-tight">Network Tester</h1>
-          <p class="text-sm text-[var(--muted)]">Quality check — no login required</p>
+          <p class="flex flex-wrap items-center gap-2 text-sm text-[var(--muted)]">
+            <span>Quality check — no login required</span>
+            <span id="connectionStatusPill" class="${CONNECTION_PILL_BASE} ${CONNECTION_STATE_INFO.online.className}">${CONNECTION_STATE_INFO.online.label}</span>
+          </p>
         </div>
       </div>
       <div class="flex flex-wrap items-center gap-2">
@@ -3269,6 +3910,7 @@ async function renderDirectNettest() {
     </section>
   `;
   document.querySelector("#themeToggle").onclick = () => setTheme(document.documentElement.dataset.theme === "dark" ? "light" : "dark");
+  updateConnectionPill();
   try {
     nettestContextState = await apiNettest(`${nettestApiBase()}/context`);
   } catch {
