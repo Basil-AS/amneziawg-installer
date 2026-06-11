@@ -41,6 +41,42 @@ awg_mktemp() {
     echo "$f"
 }
 
+install_nginx_awg0_wait_dropin() {
+    local iface="${1:-${AWG_NGINX_WAIT_IFACE:-awg0}}"
+    local bind_ip="${2:-${AWG_NGINX_WAIT_IP:-${AWG_WEB_BIND:-10.9.9.1}}}"
+    local timeout="${3:-${AWG_NGINX_WAIT_TIMEOUT:-90}}"
+    local systemd_dir="${AWG_SYSTEMD_DIR:-/etc/systemd/system}"
+    local dropin_dir="${NGINX_SYSTEMD_DROPIN_DIR:-$systemd_dir/nginx.service.d}"
+    local dropin_file="$dropin_dir/10-wait-awg0.conf"
+    local tmp
+
+    [[ "$iface" =~ ^[A-Za-z0-9_.:-]+$ ]] || { log_error "Некорректный VPN interface для nginx wait drop-in: $iface"; return 1; }
+    [[ "$bind_ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || { log_error "Некорректный IPv4 bind address для nginx wait drop-in: $bind_ip"; return 1; }
+    [[ "$timeout" =~ ^[0-9]+$ && "$timeout" -ge 1 && "$timeout" -le 600 ]] || { log_error "Некорректный timeout для nginx wait drop-in: $timeout"; return 1; }
+
+    mkdir -p "$dropin_dir" || { log_error "Ошибка создания $dropin_dir"; return 1; }
+    tmp="$(mktemp "$dropin_dir/.10-wait-awg0.conf.XXXXXX")" || return 1
+    _AWG_TEMP_FILES+=("$tmp")
+    cat > "$tmp" <<EOF
+[Unit]
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Restart=on-failure
+RestartSec=5s
+ExecStartPre=
+ExecStartPre=/bin/sh -c 'for i in \$(seq 1 ${timeout}); do ip -4 addr show dev ${iface} 2>/dev/null | grep -q "inet ${bind_ip}/" && exit 0; sleep 1; done; echo "${iface} ${bind_ip} not ready"; exit 1'
+ExecStartPre=/usr/sbin/nginx -t -q -g 'daemon on; master_process on;'
+EOF
+    chmod 644 "$tmp" || { rm -f "$tmp"; return 1; }
+    mv -f "$tmp" "$dropin_file" || { rm -f "$tmp"; return 1; }
+    if [[ -z "${AWG_SKIP_SYSTEMCTL:-}" ]]; then
+        systemctl daemon-reload || { log_error "systemctl daemon-reload failed after nginx wait drop-in"; return 1; }
+    fi
+    log "nginx systemd drop-in installed: $dropin_file (wait ${iface} ${bind_ip}, ${timeout}s)"
+}
+
 # --- Заглушки для логирования (переопределяются вызывающим скриптом) ---
 if ! declare -f log >/dev/null 2>&1; then
     log()       { echo "[INFO] $1"; }

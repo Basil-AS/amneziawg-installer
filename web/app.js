@@ -10,6 +10,7 @@ let geoipProvidersState = null;
 let geoipDatabasesState = null;
 let serverHealthState = null;
 let serverHealthHistoryState = null;
+let clientLatencyState = null;
 let readinessState = null;
 let readinessLoadedAt = 0;
 let serverInfoState = null;
@@ -21,8 +22,10 @@ let ownerFilter = {mode: "all", tokens: []};
 let helpClientGroups = null;
 let pollTimer = null;
 let healthTimer = null;
+let latencyTimer = null;
 let pollInFlight = false;
 let healthInFlight = false;
+let latencyInFlight = false;
 let nettestRunning = false;
 let activeNettestController = null;
 let currentNettestRun = null;
@@ -33,6 +36,7 @@ let serverHealthRange = localStorage.getItem("serverHealthRange") || "1h";
 const ACTIVE_CLIENT_POLL_MS = 5000;
 const HIDDEN_CLIENT_POLL_MS = 30000;
 const SERVER_HEALTH_POLL_MS = 10000;
+const CLIENT_LATENCY_POLL_MS = 60000;
 const SERVER_HEALTH_RANGES = ["10m", "1h", "6h", "12h", "24h", "3d", "7d", "30d"];
 const NETTEST_DURATIONS = {30: "Quick 30 s", 180: "Standard 3 min", 600: "Long 10 min"};
 const NETTEST_PROBE_INTERVAL_MS = 1000;
@@ -95,8 +99,10 @@ function onPanelResume() {
   startClientPolling();
   if (statusState.role === "super") {
     loadServerHealth();
+    loadClientLatency();
     loadNettestReports();
     startServerHealthPolling();
+    startClientLatencyPolling();
   }
 }
 
@@ -836,6 +842,53 @@ function renderHealthCard(label, value, sub, status) {
   `;
 }
 
+function latencyClass(entry) {
+  if (!entry || ["stale", "unknown", "skipped"].includes(entry.status)) return "is-offline";
+  if (entry.status === "timeout") return "is-timeout";
+  const rtt = Number(entry.rtt_ms);
+  if (!Number.isFinite(rtt)) return "is-offline";
+  if (rtt < 80) return "is-good";
+  if (rtt <= 200) return "is-warn";
+  return "is-poor";
+}
+
+function renderLatencyChip(client) {
+  const key = clientKey(client);
+  const entry = clientLatencyState?.clients?.[key];
+  const peerIp = entry?.["vp" + "n_ip"] || client.ipv4 || client.ip || "";
+  const label = entry?.label || "unknown";
+  const loss = entry?.loss_pct === null || entry?.loss_pct === undefined ? "n/a" : `${Number(entry.loss_pct).toFixed(0)}%`;
+  const handshake = entry?.latest_handshake_age === null || entry?.latest_handshake_age === undefined
+    ? "never"
+    : `${timeAgo(Math.floor(Date.now() / 1000) - Number(entry.latest_handshake_age))}`;
+  const title = `${"VP" + "N"} ICMP latency from server to client ${peerIp || "-"}. Timeout may mean client blocks ICMP or is asleep. Latest handshake: ${handshake}. Loss: ${loss}.`;
+  return `<span class="latency-chip ${latencyClass(entry)}" title="${esc(title)}"><span aria-hidden="true">☁</span> ${esc(label)}</span>`;
+}
+
+function renderClientNetworkDiagnostics() {
+  const host = document.querySelector("#clientNetworkDiagnostics");
+  if (!host || statusState?.role !== "super") return;
+  const diag = clientLatencyState?.diagnostics || {};
+  const avg = diag.average_rtt_ms === null || diag.average_rtt_ms === undefined ? "n/a" : `${Math.round(Number(diag.average_rtt_ms))} ms`;
+  host.innerHTML = `
+    <div class="client-network-diagnostics">
+      <div class="flex flex-wrap items-center justify-between gap-2">
+        <p class="text-xs font-semibold uppercase text-[var(--muted)]">Client network diagnostics</p>
+        <button type="button" id="refreshLatency" class="${buttonClasses("h-8 px-2 text-xs")}">${icon("refresh")}<span>Refresh latency</span></button>
+      </div>
+      <div class="nettest-metrics">
+        <div>stale peers: <strong>${esc(diag.stale_peers ?? "-")}</strong></div>
+        <div>active peers: <strong>${esc(diag.active_peers ?? "-")}</strong></div>
+        <div>avg reachable ping: <strong>${esc(avg)}</strong></div>
+        <div>timeouts: <strong>${esc(diag.timeout_clients ?? "-")}</strong></div>
+        <div>high latency: <strong>${esc(diag.high_latency_clients ?? "-")}</strong></div>
+      </div>
+    </div>
+  `;
+  const btn = document.querySelector("#refreshLatency");
+  if (btn) btn.onclick = () => loadClientLatency(true);
+}
+
 function renderServerInfo() {
   const linksHost = document.querySelector("#metricLinks");
   const addressHost = document.querySelector("#metricAddresses");
@@ -981,7 +1034,39 @@ function renderServerHealth() {
   const stamp = document.querySelector("#serverHealthUpdated");
   if (stamp) stamp.textContent = h.timestamp ? `Updated ${h.timestamp}` : "";
   renderHealthHistory();
+  renderClientNetworkDiagnostics();
   renderNetworkExplain();
+}
+
+async function loadClientLatency(force = false) {
+  if (statusState?.role !== "super" || latencyInFlight || isNetworkTesterPage() || isPanelIdle()) return;
+  latencyInFlight = true;
+  try {
+    clientLatencyState = await api(`/api/clients/latency${force ? "?refresh=1" : ""}`);
+    renderClientNetworkDiagnostics();
+    renderClients();
+  } catch {
+    clientLatencyState = null;
+    renderClientNetworkDiagnostics();
+  } finally {
+    latencyInFlight = false;
+  }
+}
+
+function stopClientLatencyPolling() {
+  if (latencyTimer) clearTimeout(latencyTimer);
+  latencyTimer = null;
+}
+
+function startClientLatencyPolling() {
+  stopClientLatencyPolling();
+  if (!token || statusState?.role !== "super") return;
+  const tick = async () => {
+    checkPanelIdle();
+    if (shouldPollHeavy()) await loadClientLatency();
+    latencyTimer = setTimeout(tick, panelIdle ? PANEL_IDLE_HEARTBEAT_MS : CLIENT_LATENCY_POLL_MS);
+  };
+  latencyTimer = setTimeout(tick, CLIENT_LATENCY_POLL_MS);
 }
 
 // Format "X / Y (Z%)" for a delta over its total (delta + remaining), or
@@ -2148,6 +2233,7 @@ async function renderPanel() {
         <p id="serverHealthUpdated" class="text-xs text-[var(--muted)]"></p>
       </div>
       <div id="serverHealthGrid" class="server-health-grid mt-3"></div>
+      <div id="clientNetworkDiagnostics" class="mt-3"></div>
       <div id="networkExplain"></div>
       <div id="serverHealthHistory" class="mt-3"></div>
       <div class="mt-4">
@@ -2282,6 +2368,7 @@ async function renderPanel() {
   if (!nettestPage) {
     startClientPolling();
     startServerHealthPolling();
+    startClientLatencyPolling();
   }
 }
 
@@ -2305,7 +2392,7 @@ async function loadAll() {
   }
   renderNettestContext();
   if (statusState.role === "super") {
-    await Promise.all([loadTokens(), loadWebAccessPolicy(), loadServerHealth(), loadNettestReports(), loadGeoipAdmin()]);
+    await Promise.all([loadTokens(), loadWebAccessPolicy(), loadServerHealth(), loadClientLatency(), loadNettestReports(), loadGeoipAdmin()]);
   }
 }
 
@@ -2405,7 +2492,10 @@ document.addEventListener("visibilitychange", () => {
   markPanelActivity();
   if (isNetworkTesterPage()) return;
   if (token && statusState) startClientPolling();
-  if (token && statusState?.role === "super") startServerHealthPolling();
+  if (token && statusState?.role === "super") {
+    startServerHealthPolling();
+    startClientLatencyPolling();
+  }
 });
 
 function renderTraffic() {
@@ -2583,7 +2673,7 @@ function renderClients() {
                 ${ipv6 ? `<span class="min-w-0 max-w-full truncate font-mono text-xs" title="${esc(ipv6)}">${esc(ipv6)}</span>` : ""}
               </div>
               <p class="mt-1 text-xs text-[var(--muted)]">${active ? "Active recently" : "No recent traffic"} · Last seen ${esc(timeAgo(client.latestHandshakeAt || client.last_handshake))}</p>
-              <p class="mt-1 truncate text-xs text-[var(--muted)]">Endpoint: ${esc(endpoint)}</p>
+              <p class="mt-1 flex min-w-0 flex-wrap items-center gap-2 text-xs text-[var(--muted)]"><span class="truncate">Endpoint: ${esc(endpoint)}</span>${statusState.role === "super" ? renderLatencyChip(client) : ""}</p>
               ${renderEndpointInfo(client)}
               ${portMarkup ? `<div class="mt-2">${portMarkup}</div>` : ""}
             </div>
