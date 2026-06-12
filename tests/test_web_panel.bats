@@ -1538,7 +1538,15 @@ PY
     grep -qF 'Download .conf' "$app"
     grep -qF 'Copy profile' "$app"
     grep -qF 'Show QR' "$app"
-    grep -qF 'Copy URI' "$app"
+    grep -qF 'COPY_WG_TUN_LABEL' "$app"
+    grep -qF 'COPY_AM_KEY_LABEL' "$app"
+    grep -qF 'PORT_FWD_SNAT_HELP' "$app"
+    if grep -qF 'Copy access link' "$app"; then
+        fail "old access-link copy label must not remain"
+    fi
+    if grep -qF 'Copy URI' "$app"; then
+        fail "old URI copy label must not remain"
+    fi
     grep -qF 'aria-label' "$app"
     grep -qF 'navigator.clipboard?.writeText' "$app"
     grep -qF 'document.execCommand("copy")' "$app"

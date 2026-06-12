@@ -699,7 +699,7 @@ _p2p_used_ports_stream() {
         awk '/^#_P2PPorts(_Disabled)?[[:space:]]*=/ { sub(/^[^=]+=[ \t]*/, ""); print }' "$SERVER_CONF_FILE" \
             | tr ',' '\n' \
             | sed 's/[[:space:]]//g' \
-            | grep -E '^[0-9]+$' || true
+            | awk -F: '/^[0-9]+(:[0-9]+)?$/ { print $1 }' || true
     fi
     if [[ -f "$AWG_DIR/p2p_rules.sh" ]]; then
         grep -hoE -- '--dport[[:space:]]+[0-9]+' "$AWG_DIR/p2p_rules.sh" 2>/dev/null \
@@ -715,6 +715,27 @@ validate_p2p_port() {
     local max=$((base + 1024))
     [[ "$max" -le 65535 ]] || max=65535
     [[ "$port" =~ ^[0-9]+$ ]] && [[ "$port" -ge "$min" ]] && [[ "$port" -le "$max" ]]
+}
+
+validate_l4_port() {
+    local port="$1"
+    [[ "$port" =~ ^[0-9]+$ ]] && [[ "$port" -ge 1 ]] && [[ "$port" -le 65535 ]]
+}
+
+parse_p2p_forward_spec() {
+    local spec="${1//[[:space:]]/}" external internal
+    [[ -n "$spec" ]] || return 1
+    if [[ "$spec" =~ ^([0-9]+):([0-9]+)$ ]]; then
+        external="${BASH_REMATCH[1]}"
+        internal="${BASH_REMATCH[2]}"
+    elif [[ "$spec" =~ ^[0-9]+$ ]]; then
+        external="$spec"
+        internal="$spec"
+    else
+        return 1
+    fi
+    validate_p2p_port "$external" && validate_l4_port "$internal" || return 1
+    printf '%s\t%s\n' "$external" "$internal"
 }
 
 get_default_p2p_ports_for_ipv4() {
@@ -958,7 +979,7 @@ ip6t_fwd_del() { while ip6tables -C FORWARD "\$@" 2>/dev/null; do ip6tables -D F
 case "\$ACTION" in up|down) ;; *) exit 2 ;; esac
 EOF
 
-    local name allowed ports part ipv4 ipv6 p
+    local name allowed ports part ipv4 ipv6 p external_port internal_port parsed
     while IFS=$'\t' read -r name allowed ports; do
         [[ -n "$name" && -n "$allowed" && -n "$ports" ]] || continue
         ipv4=""; ipv6=""
@@ -976,34 +997,40 @@ EOF
             echo "# Client: ${name} (${ipv4}${ipv6:+ / ${ipv6}}, P2P: ${ports})"
             echo 'if [[ "$ACTION" == "up" ]]; then'
             for p in "${_ports[@]}"; do
-                validate_p2p_port "$p" || continue
-                echo "    ipt_nat_add PREROUTING -i \"\$NIC\" -p tcp --dport ${p} -j DNAT --to-destination ${ipv4}:${p}"
-                echo "    ipt_nat_add PREROUTING -i \"\$NIC\" -p udp --dport ${p} -j DNAT --to-destination ${ipv4}:${p}"
-                echo "    ipt_fwd_add -i \"\$NIC\" -o \"\$AWG_IFACE\" -d ${ipv4} -p tcp --dport ${p} -j ACCEPT"
-                echo "    ipt_fwd_add -i \"\$NIC\" -o \"\$AWG_IFACE\" -d ${ipv4} -p udp --dport ${p} -j ACCEPT"
+                parsed=$(parse_p2p_forward_spec "$p") || continue
+                IFS=$'\t' read -r external_port internal_port <<< "$parsed"
+                echo "    ipt_nat_add PREROUTING -i \"\$NIC\" -p tcp --dport ${external_port} -j DNAT --to-destination ${ipv4}:${internal_port}"
+                echo "    ipt_nat_add PREROUTING -i \"\$NIC\" -p udp --dport ${external_port} -j DNAT --to-destination ${ipv4}:${internal_port}"
+                echo "    ipt_fwd_add -i \"\$NIC\" -o \"\$AWG_IFACE\" -d ${ipv4} -p tcp --dport ${internal_port} -j ACCEPT"
+                echo "    ipt_fwd_add -i \"\$NIC\" -o \"\$AWG_IFACE\" -d ${ipv4} -p udp --dport ${internal_port} -j ACCEPT"
+                echo "    ipt_nat_add POSTROUTING -o \"\$AWG_IFACE\" -d ${ipv4} -p tcp --dport ${internal_port} -j MASQUERADE"
+                echo "    ipt_nat_add POSTROUTING -o \"\$AWG_IFACE\" -d ${ipv4} -p udp --dport ${internal_port} -j MASQUERADE"
                 if [[ -n "$ipv6" ]]; then
                     if [[ "$(awg_ipv6_mode)" == "nat66" ]]; then
-                        echo "    ip6t_nat_add PREROUTING -i \"\$NIC\" -p tcp --dport ${p} -j DNAT --to-destination ${ipv6}"
-                        echo "    ip6t_nat_add PREROUTING -i \"\$NIC\" -p udp --dport ${p} -j DNAT --to-destination ${ipv6}"
+                        echo "    ip6t_nat_add PREROUTING -i \"\$NIC\" -p tcp --dport ${external_port} -j DNAT --to-destination ${ipv6}"
+                        echo "    ip6t_nat_add PREROUTING -i \"\$NIC\" -p udp --dport ${external_port} -j DNAT --to-destination ${ipv6}"
                     fi
-                    echo "    ip6t_fwd_add -i \"\$NIC\" -o \"\$AWG_IFACE\" -d ${ipv6} -p tcp --dport ${p} -j ACCEPT"
-                    echo "    ip6t_fwd_add -i \"\$NIC\" -o \"\$AWG_IFACE\" -d ${ipv6} -p udp --dport ${p} -j ACCEPT"
+                    echo "    ip6t_fwd_add -i \"\$NIC\" -o \"\$AWG_IFACE\" -d ${ipv6} -p tcp --dport ${internal_port} -j ACCEPT"
+                    echo "    ip6t_fwd_add -i \"\$NIC\" -o \"\$AWG_IFACE\" -d ${ipv6} -p udp --dport ${internal_port} -j ACCEPT"
                 fi
             done
             echo "else"
             for p in "${_ports[@]}"; do
-                validate_p2p_port "$p" || continue
-                echo "    ipt_nat_del PREROUTING -i \"\$NIC\" -p tcp --dport ${p} -j DNAT --to-destination ${ipv4}:${p}"
-                echo "    ipt_nat_del PREROUTING -i \"\$NIC\" -p udp --dport ${p} -j DNAT --to-destination ${ipv4}:${p}"
-                echo "    ipt_fwd_del -i \"\$NIC\" -o \"\$AWG_IFACE\" -d ${ipv4} -p tcp --dport ${p} -j ACCEPT"
-                echo "    ipt_fwd_del -i \"\$NIC\" -o \"\$AWG_IFACE\" -d ${ipv4} -p udp --dport ${p} -j ACCEPT"
+                parsed=$(parse_p2p_forward_spec "$p") || continue
+                IFS=$'\t' read -r external_port internal_port <<< "$parsed"
+                echo "    ipt_nat_del PREROUTING -i \"\$NIC\" -p tcp --dport ${external_port} -j DNAT --to-destination ${ipv4}:${internal_port}"
+                echo "    ipt_nat_del PREROUTING -i \"\$NIC\" -p udp --dport ${external_port} -j DNAT --to-destination ${ipv4}:${internal_port}"
+                echo "    ipt_fwd_del -i \"\$NIC\" -o \"\$AWG_IFACE\" -d ${ipv4} -p tcp --dport ${internal_port} -j ACCEPT"
+                echo "    ipt_fwd_del -i \"\$NIC\" -o \"\$AWG_IFACE\" -d ${ipv4} -p udp --dport ${internal_port} -j ACCEPT"
+                echo "    ipt_nat_del POSTROUTING -o \"\$AWG_IFACE\" -d ${ipv4} -p tcp --dport ${internal_port} -j MASQUERADE"
+                echo "    ipt_nat_del POSTROUTING -o \"\$AWG_IFACE\" -d ${ipv4} -p udp --dport ${internal_port} -j MASQUERADE"
                 if [[ -n "$ipv6" ]]; then
                     if [[ "$(awg_ipv6_mode)" == "nat66" ]]; then
-                        echo "    ip6t_nat_del PREROUTING -i \"\$NIC\" -p tcp --dport ${p} -j DNAT --to-destination ${ipv6}"
-                        echo "    ip6t_nat_del PREROUTING -i \"\$NIC\" -p udp --dport ${p} -j DNAT --to-destination ${ipv6}"
+                        echo "    ip6t_nat_del PREROUTING -i \"\$NIC\" -p tcp --dport ${external_port} -j DNAT --to-destination ${ipv6}"
+                        echo "    ip6t_nat_del PREROUTING -i \"\$NIC\" -p udp --dport ${external_port} -j DNAT --to-destination ${ipv6}"
                     fi
-                    echo "    ip6t_fwd_del -i \"\$NIC\" -o \"\$AWG_IFACE\" -d ${ipv6} -p tcp --dport ${p} -j ACCEPT"
-                    echo "    ip6t_fwd_del -i \"\$NIC\" -o \"\$AWG_IFACE\" -d ${ipv6} -p udp --dport ${p} -j ACCEPT"
+                    echo "    ip6t_fwd_del -i \"\$NIC\" -o \"\$AWG_IFACE\" -d ${ipv6} -p tcp --dport ${internal_port} -j ACCEPT"
+                    echo "    ip6t_fwd_del -i \"\$NIC\" -o \"\$AWG_IFACE\" -d ${ipv6} -p udp --dport ${internal_port} -j ACCEPT"
                 fi
             done
             echo "fi"
@@ -3578,11 +3605,13 @@ regenerate_client() {
 }
 
 p2p_port_owner() {
-    local needle="$1" name _allowed ports p
+    local needle="$1" name _allowed ports p parsed external_port _internal_port
     while IFS=$'\t' read -r name _allowed ports; do
         IFS=',' read -ra _ports <<< "${ports//[[:space:]]/}"
         for p in "${_ports[@]}"; do
-            if [[ "$p" == "$needle" ]]; then
+            parsed=$(parse_p2p_forward_spec "$p") || continue
+            IFS=$'\t' read -r external_port _internal_port <<< "$parsed"
+            if [[ "$external_port" == "$needle" ]]; then
                 echo "$name"
                 return 0
             fi
@@ -3594,16 +3623,19 @@ p2p_port_owner() {
 set_peer_p2p_ports() {
     local name="$1" ports="$2"
     [[ -n "$name" ]] || return 1
-    local p
+    local p parsed external_port internal_port clean_spec
     IFS=',' read -ra _ports <<< "${ports//[[:space:]]/}"
     local clean=()
     declare -A seen
     for p in "${_ports[@]}"; do
         [[ -z "$p" ]] && continue
-        validate_p2p_port "$p" || { log_error "Невалидный P2P порт: $p"; return 1; }
-        [[ -z "${seen[$p]+x}" ]] || continue
-        seen["$p"]=1
-        clean+=("$p")
+        parsed=$(parse_p2p_forward_spec "$p") || { log_error "Невалидный P2P порт: $p"; return 1; }
+        IFS=$'\t' read -r external_port internal_port <<< "$parsed"
+        [[ -z "${seen[$external_port]+x}" ]] || continue
+        seen["$external_port"]=1
+        clean_spec="$external_port"
+        [[ "$internal_port" == "$external_port" ]] || clean_spec="${external_port}:${internal_port}"
+        clean+=("$clean_spec")
     done
     ports=$(IFS=','; echo "${clean[*]}")
 
@@ -3682,14 +3714,16 @@ add_p2p_port_to_peer() {
         log_error "P2P порт $port уже назначен клиенту '$owner'"
         return 1
     fi
-    local ports current p found=0
+    local ports current p found=0 parsed external_port _internal_port
     current=$(get_peer_p2p_ports "$name")
     IFS=',' read -ra _ports <<< "${current//[[:space:]]/}"
     local out=()
     for p in "${_ports[@]}"; do
         [[ -z "$p" ]] && continue
+        parsed=$(parse_p2p_forward_spec "$p") || continue
+        IFS=$'\t' read -r external_port _internal_port <<< "$parsed"
         out+=("$p")
-        [[ "$p" == "$port" ]] && found=1
+        [[ "$external_port" == "$port" ]] && found=1
     done
     [[ "$found" -eq 0 ]] && out+=("$port")
     ports=$(IFS=','; echo "${out[*]}")
@@ -3700,12 +3734,15 @@ add_p2p_port_to_peer() {
 remove_p2p_port_from_peer() {
     local name="$1" port="$2"
     validate_p2p_port "$port" || { log_error "Невалидный P2P порт: $port"; return 1; }
-    local current p
+    local current p parsed external_port _internal_port
     current=$(get_peer_p2p_ports "$name")
     IFS=',' read -ra _ports <<< "${current//[[:space:]]/}"
     local out=()
     for p in "${_ports[@]}"; do
-        [[ -z "$p" || "$p" == "$port" ]] && continue
+        [[ -z "$p" ]] && continue
+        parsed=$(parse_p2p_forward_spec "$p") || continue
+        IFS=$'\t' read -r external_port _internal_port <<< "$parsed"
+        [[ "$external_port" == "$port" ]] && continue
         out+=("$p")
     done
     set_peer_p2p_ports "$name" "$(IFS=','; echo "${out[*]}")"

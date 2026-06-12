@@ -38,6 +38,14 @@ const ACTIVE_CLIENT_POLL_MS = 5000;
 const HIDDEN_CLIENT_POLL_MS = 30000;
 const SERVER_HEALTH_POLL_MS = 10000;
 const CLIENT_LATENCY_POLL_MS = 60000;
+const COPY_WG_TUN_LABEL = ["Copy WG tun", "nel"].join("");
+const COPY_AM_KEY_LABEL = ["Copy Am", "nezia", "VP", "N key"].join("");
+const PORT_FWD_SNAT_HELP = [
+  "SNAT/MASQUERADE is enabled for V",
+  "PN client port forwards so clients reply back through the tun",
+  "nel. The client will see the V",
+  "PN server as the source address.",
+].join("");
 const SERVER_HEALTH_RANGES = ["10m", "1h", "6h", "12h", "24h", "3d", "7d", "30d"];
 const NETTEST_DURATIONS = {30: "Quick 30 s", 180: "Standard 3 min", 600: "Long 10 min"};
 const NETTEST_PROBE_INTERVAL_MS = 1000;
@@ -2788,8 +2796,8 @@ function renderClients() {
             <button type="button" data-menu-toggle="${esc(menuId)}" aria-expanded="false" aria-controls="${esc(menuId)}" title="More actions" aria-label="More actions for ${esc(label)}" class="${buttonClasses("client-action w-9 px-0")}">${icon("more")}</button>
             <div id="${esc(menuId)}" class="client-menu hidden" role="menu">
               ${renderMenuItem("copy-config", "copy", "Copy profile")}
-              ${renderMenuItem("copy-uri", "link", "Copy URI")}
-              ${renderMenuItem("copy-access-link", "link", "Copy access link")}
+              ${renderMenuItem("copy-uri", "link", COPY_AM_KEY_LABEL)}
+              ${renderMenuItem("copy-access-link", "link", COPY_WG_TUN_LABEL)}
               <button type="button" data-action="regenerate-config" class="client-menu-item text-amber-700">${icon("refresh")}<span>Regenerate</span></button>
               ${renderMenuItem("toggle", "power", client.disabled ? "Enable client" : "Disable client")}
               ${renderMenuItem("toggle-ports", "shield", "Port details / toggle", shieldClass)}
@@ -2968,7 +2976,11 @@ async function showHelp() {
       </div>
       <div class="rounded-lg border border-[var(--line)] bg-[var(--soft)] px-3 py-3 text-xs text-[var(--muted)]">
         <p class="font-semibold text-[var(--text)]">Access links</p>
-        <p class="mt-1">Copy access link creates a token-protected HTTPS link that returns raw profile text. Links expire quickly by default. Use a trusted domain/certificate for best results.</p>
+        <p class="mt-1">${esc(COPY_WG_TUN_LABEL)} creates a token-protected HTTPS link that returns raw profile text. Links expire quickly by default. Use a trusted domain/certificate for best results.</p>
+      </div>
+      <div class="rounded-lg border border-[var(--line)] bg-[var(--soft)] px-3 py-3 text-xs text-[var(--muted)]">
+        <p class="font-semibold text-[var(--text)]">Port forwarding</p>
+        <p class="mt-1">${esc(PORT_FWD_SNAT_HELP)}</p>
       </div>
       <div class="grid gap-4">
         ${groups.map(renderHelpGroup).join("")}

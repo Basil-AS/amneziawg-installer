@@ -49,6 +49,38 @@ CONF
     grep -q "20009" "$AWG_DIR/p2p_rules.sh"
 }
 
+@test "enabled p2p metadata renders DNAT, FORWARD, and targeted client SNAT" {
+    create_server_config
+    cat >> "$SERVER_CONF_FILE" << 'CONF'
+
+[Peer]
+#_Name = p2p_client
+PublicKey = TESTPUBKEY_p2p_client
+#_P2PPorts = 20009,20265:22
+AllowedIPs = 10.9.9.9/32
+CONF
+
+    run generate_firewall_scripts "eth0"
+    [ "$status" -eq 0 ]
+    local rules="$AWG_DIR/p2p_rules.sh"
+    grep -qF "ipt_nat_add PREROUTING -i \"\$NIC\" -p tcp --dport 20009 -j DNAT --to-destination 10.9.9.9:20009" "$rules"
+    grep -qF "ipt_nat_add PREROUTING -i \"\$NIC\" -p udp --dport 20009 -j DNAT --to-destination 10.9.9.9:20009" "$rules"
+    grep -qF "ipt_fwd_add -i \"\$NIC\" -o \"\$AWG_IFACE\" -d 10.9.9.9 -p tcp --dport 20009 -j ACCEPT" "$rules"
+    grep -qF "ipt_fwd_add -i \"\$NIC\" -o \"\$AWG_IFACE\" -d 10.9.9.9 -p udp --dport 20009 -j ACCEPT" "$rules"
+    grep -qF "ipt_nat_add POSTROUTING -o \"\$AWG_IFACE\" -d 10.9.9.9 -p tcp --dport 20009 -j MASQUERADE" "$rules"
+    grep -qF "ipt_nat_add POSTROUTING -o \"\$AWG_IFACE\" -d 10.9.9.9 -p udp --dport 20009 -j MASQUERADE" "$rules"
+    grep -qF "ipt_nat_add PREROUTING -i \"\$NIC\" -p tcp --dport 20265 -j DNAT --to-destination 10.9.9.9:22" "$rules"
+    grep -qF "ipt_fwd_add -i \"\$NIC\" -o \"\$AWG_IFACE\" -d 10.9.9.9 -p tcp --dport 22 -j ACCEPT" "$rules"
+    grep -qF "ipt_nat_add POSTROUTING -o \"\$AWG_IFACE\" -d 10.9.9.9 -p tcp --dport 22 -j MASQUERADE" "$rules"
+    grep -qF "ipt_nat_del POSTROUTING -o \"\$AWG_IFACE\" -d 10.9.9.9 -p tcp --dport 22 -j MASQUERADE" "$rules"
+    if grep -qF "test-snat" "$rules"; then
+        fail "temporary test-snat rules must not be generated"
+    fi
+    if grep -qF "ipt_nat_add POSTROUTING -o \"\$AWG_IFACE\" -j MASQUERADE" "$rules"; then
+        fail "p2p rules must not add broad awg0 masquerade"
+    fi
+}
+
 @test "add_peer: rejects duplicate name" {
     create_server_config
     add_test_peer "existing" "10.9.9.2"
