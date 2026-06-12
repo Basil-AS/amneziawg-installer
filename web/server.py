@@ -132,7 +132,7 @@ CLIENT_PATH_CHECK_SEM = threading.BoundedSemaphore(1)
 CLIENT_PATH_CHECK_LAST = {}
 CLIENT_PATH_CHECK_INTERVAL = 60.0
 CLIENT_PATH_CHECK_RESULTS = {}
-CLIENT_PATH_CHECK_RESULT_TTL = 600
+CLIENT_PATH_CHECK_RESULT_TTL = 3600
 IP_INFO_CACHE_TTL = 30 * 24 * 3600
 IP_INFO_NEGATIVE_TTL = 3600
 IP_INFO_ERROR_CACHE_TTL = 30 * 60
@@ -5054,35 +5054,10 @@ def parse_path_check_output(stdout, target):
     return hops
 
 
-PUBLIC_ENDPOINT_PATH_NOTE = "Public endpoint path shows route to the client's NAT/carrier endpoint, not necessarily the device itself."
-TUNNEL_PATH_NOTE = "Tunnel path checks the private VPN IP. It is usually 1 hop and does not show the public Internet route."
-
-
-def validate_public_endpoint_path_target(ip):
-    try:
-        parsed = ipaddress.ip_address(str(ip).strip())
-    except ValueError as exc:
-        raise ValueError("invalid endpoint IP") from exc
-    if parsed.version != 4:
-        raise ValueError("IPv6 endpoint path is unsupported")
-    if (
-        parsed.is_loopback
-        or parsed.is_link_local
-        or parsed.is_multicast
-        or parsed.is_private
-        or parsed.is_unspecified
-        or parsed.is_reserved
-    ):
-        raise ValueError("unsafe endpoint IP")
-    return str(parsed)
-
-
 def path_check_summary(status, hops):
-    if status == "no_endpoint":
-        return "no endpoint"
     if status == "unsupported":
-        return "path n/a"
-    if status in {"blocked", "rate_limited", "stale"}:
+        return "path check unavailable"
+    if status in {"blocked", "rate_limited"}:
         return "try later"
     if status == "timeout":
         return "path timeout"
@@ -5090,19 +5065,15 @@ def path_check_summary(status, hops):
         return "path n/a"
     count = len(hops)
     last_rtt = next((item.get("rtt_ms") for item in reversed(hops) if item.get("rtt_ms") is not None), None)
-    suffix = f", last {round(float(last_rtt)):.0f} ms" if last_rtt is not None else ""
+    suffix = f", {round(float(last_rtt)):.0f} ms" if last_rtt is not None else ""
     return f"{count} hop{'s' if count != 1 else ''}{suffix}"
 
 
-def make_path_check_result(name, target, status, method="none", path=None, note="", retry_after=None, target_type="endpoint", vpn_ip="", endpoint="", endpoint_stale=False):
+def make_path_check_result(name, target, status, method="none", path=None, note="", retry_after=None):
     path = path or []
     result = {
         "client": name,
-        "target_type": target_type,
-        "target_ip": target,
-        "vpn_ip": vpn_ip or (target if target_type == "tunnel" else ""),
-        "endpoint": endpoint,
-        "endpoint_stale": bool(endpoint_stale),
+        "vpn_ip": target,
         "timestamp": utc_now_iso(),
         "status": status,
         "method": method,
@@ -5110,7 +5081,7 @@ def make_path_check_result(name, target, status, method="none", path=None, note=
         "hops": len(path) if path else None,
         "path": path,
         "summary": path_check_summary(status, path),
-        "note": note or (TUNNEL_PATH_NOTE if target_type == "tunnel" else PUBLIC_ENDPOINT_PATH_NOTE),
+        "note": note or "Path inside VPN may not represent the public Internet route.",
     }
     if retry_after is not None:
         result["retry_after"] = max(1, int(retry_after))
@@ -5118,8 +5089,7 @@ def make_path_check_result(name, target, status, method="none", path=None, note=
 
 
 def remember_path_check_result(name, result):
-    if result.get("target_type") == "endpoint":
-        CLIENT_PATH_CHECK_RESULTS[name] = {"ts": time.time(), "value": json.loads(json.dumps(result))}
+    CLIENT_PATH_CHECK_RESULTS[name] = {"ts": time.time(), "value": json.loads(json.dumps(result))}
     return result
 
 
@@ -5134,58 +5104,32 @@ def recent_path_check_results(now=None):
     return out
 
 
-def client_path_check(name, target_type="endpoint"):
+def client_path_check(name):
     name = safe_name(name)
-    target_type = (target_type or "endpoint").strip().lower()
-    if target_type not in {"endpoint", "tunnel"}:
-        raise ValueError("invalid path target")
     peer = next((item for item in parse_peers() if item.get("name") == name), None)
     if not peer:
         raise ValueError("unknown client")
-    vpn_ip = peer.get("ipv4") or ""
-    row_stats = client_stats_map().get(name, {})
-    endpoint = row_stats.get("endpoint") or ""
-    endpoint_ip, _endpoint_port = split_endpoint(endpoint)
-    last = int(row_stats.get("latestHandshakeAt", row_stats.get("last_handshake", 0)) or 0)
-    age = None if last <= 0 else max(0, int(time.time() - last))
-    endpoint_stale = bool(age is None or age > CLIENT_LATENCY_STALE_AFTER)
-    if target_type == "tunnel":
-        target = validate_vpn_latency_target(vpn_ip)
-        max_hops = "8"
-        note = TUNNEL_PATH_NOTE
-    else:
-        if not endpoint_ip:
-            return make_path_check_result(name, "", "no_endpoint", "none", note="Client has no current public endpoint.", target_type=target_type, vpn_ip=vpn_ip, endpoint="")
-        target = validate_public_endpoint_path_target(endpoint_ip)
-        max_hops = "16"
-        note = PUBLIC_ENDPOINT_PATH_NOTE
-        if endpoint_stale:
-            note += " Endpoint may be stale because latest handshake is old."
+    target = validate_vpn_latency_target(peer.get("ipv4") or "")
     now = time.time()
-    rate_key = f"{name}:{target_type}"
     with CLIENT_PATH_CHECK_LOCK:
-        last_check = CLIENT_PATH_CHECK_LAST.get(rate_key, 0)
-        if now - last_check < CLIENT_PATH_CHECK_INTERVAL:
+        last = CLIENT_PATH_CHECK_LAST.get(name, 0)
+        if now - last < CLIENT_PATH_CHECK_INTERVAL:
             return make_path_check_result(
                 name,
                 target,
                 "blocked",
                 "none",
                 note="Path check is rate-limited per client.",
-                retry_after=CLIENT_PATH_CHECK_INTERVAL - (now - last_check),
-                target_type=target_type,
-                vpn_ip=vpn_ip,
-                endpoint=endpoint,
-                endpoint_stale=endpoint_stale,
+                retry_after=CLIENT_PATH_CHECK_INTERVAL - (now - last),
             )
-        CLIENT_PATH_CHECK_LAST[rate_key] = now
+        CLIENT_PATH_CHECK_LAST[name] = now
     method = "none"
     if shutil.which("tracepath"):
         method = "tracepath"
-        cmd = ["tracepath", "-n", "-m", max_hops, target]
+        cmd = ["tracepath", "-n", "-m", "8", target]
     elif shutil.which("traceroute"):
         method = "traceroute"
-        cmd = ["traceroute", "-n", "-m", max_hops, "-w", "1", target]
+        cmd = ["traceroute", "-n", "-m", "8", "-w", "1", target]
     else:
         return remember_path_check_result(name, make_path_check_result(
             name,
@@ -5193,19 +5137,15 @@ def client_path_check(name, target_type="endpoint"):
             "unsupported",
             "none",
             note="tracepath/traceroute is not installed.",
-            target_type=target_type,
-            vpn_ip=vpn_ip,
-            endpoint=endpoint,
-            endpoint_stale=endpoint_stale,
         ))
     if not CLIENT_PATH_CHECK_SEM.acquire(blocking=False):
-        return make_path_check_result(name, target, "blocked", method, note="Another path check is already running.", target_type=target_type, vpn_ip=vpn_ip, endpoint=endpoint, endpoint_stale=endpoint_stale)
+        return make_path_check_result(name, target, "blocked", method, note="Another path check is already running.")
     try:
         p = subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=10)
     except subprocess.TimeoutExpired:
-        return remember_path_check_result(name, make_path_check_result(name, target, "timeout", method, note=f"Path check timed out. {note}", target_type=target_type, vpn_ip=vpn_ip, endpoint=endpoint, endpoint_stale=endpoint_stale))
+        return remember_path_check_result(name, make_path_check_result(name, target, "timeout", method, note="Path check timed out. Path inside VPN may not represent the public Internet route."))
     except OSError:
-        return remember_path_check_result(name, make_path_check_result(name, target, "unsupported", "none", note="Path check command is unavailable.", target_type=target_type, vpn_ip=vpn_ip, endpoint=endpoint, endpoint_stale=endpoint_stale))
+        return remember_path_check_result(name, make_path_check_result(name, target, "unsupported", "none", note="Path check command is unavailable."))
     finally:
         try:
             CLIENT_PATH_CHECK_SEM.release()
@@ -5213,7 +5153,7 @@ def client_path_check(name, target_type="endpoint"):
             pass
     path = parse_path_check_output((p.stdout or "") + "\n" + (p.stderr or ""), target)
     status = "ok" if path else ("timeout" if p.returncode != 0 else "unknown")
-    return remember_path_check_result(name, make_path_check_result(name, target, status, method, path, note, target_type=target_type, vpn_ip=vpn_ip, endpoint=endpoint, endpoint_stale=endpoint_stale))
+    return remember_path_check_result(name, make_path_check_result(name, target, status, method, path, "Path inside VPN may not represent the public Internet route."))
 
 
 def client_latency_payload(force=False):
@@ -6270,8 +6210,7 @@ class Handler(SimpleHTTPRequestHandler):
                 if not self.require_super(auth):
                     return
                 try:
-                    body = json_body_from_handler(self, 1024)
-                    self.send_json(client_path_check(unquote(m.group(1)), str(body.get("target") or "endpoint")))
+                    self.send_json(client_path_check(unquote(m.group(1))))
                 except ValueError as exc:
                     self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
                 return

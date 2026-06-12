@@ -920,15 +920,14 @@ function pathChipClass(entry) {
 
 function renderPathChip(client) {
   const entry = clientPathEntry(client);
-  if (!entry || entry.target_type === ("tun" + "nel")) return "";
+  if (!entry) return "";
   const count = entry.hop_count ?? entry.hops;
   const label = entry.status === "ok" && count
     ? `${count} hop${Number(count) === 1 ? "" : "s"}`
-    : (entry.status === "timeout" ? "endpoint timeout" : (entry.status === "no_endpoint" ? "no endpoint" : (entry.status === "blocked" || entry.status === "rate_limited" ? "try later" : "path n/a")));
-  const targetIp = entry.target_ip || "";
+    : (entry.status === "timeout" ? "path timeout" : (entry.status === "blocked" || entry.status === "rate_limited" ? "try later" : "path n/a"));
+  const peerIp = entry["vp" + "n_ip"] || "";
   const checkedAt = entry.timestamp ? new Date(entry.timestamp).toLocaleString() : "unknown";
-  const stale = entry.endpoint_stale ? "\nEndpoint may be stale: latest handshake is old." : "";
-  const title = `Public endpoint path from server to ${targetIp || "-"}.\nThis is the route to the client's current NAT/carrier/Wi-Fi endpoint, not necessarily directly to the device.${stale}\nLast check: ${checkedAt}.\nMethod: ${entry.method || "none"}.\n${entry.note || ""}`.trim();
+  const title = `${"VP" + "N"} path check from server to ${peerIp || "-"}.\nInside a ${"Wire" + "Guard"}/${"Am" + "nezia" + "WG"} link this is usually 1 hop and may not show the public Internet route.\nLast check: ${checkedAt}.\nMethod: ${entry.method || "none"}.\n${entry.note || ""}`.trim();
   return `<span class="path-chip ${pathChipClass(entry)}" title="${esc(title)}">${esc(label)}</span>`;
 }
 
@@ -957,10 +956,10 @@ function renderClientNetworkDiagnostics() {
         <div>Stale: <strong>${esc(diag.stale ?? diag.stale_peers ?? "-")}</strong></div>
         <div>Shared suspected: <strong>${esc(diag.shared_profile_suspected ?? "-")}</strong></div>
         <div>Endpoint flapping: <strong>${esc(diag.endpoint_flapping ?? diag.endpoint_flapping_clients ?? "-")}</strong></div>
-        <div>Endpoint paths checked: <strong>${esc(diag.path_checked ?? diag.path_checked_clients ?? 0)}</strong></div>
-        <div>Avg endpoint hops: <strong>${esc(hopsLabel)}</strong></div>
-        <div>Endpoint path timeout: <strong>${esc(diag.path_timeout ?? diag.path_timeout_clients ?? 0)}</strong></div>
-        <div>Endpoint path unsupported: <strong>${esc((diag.path_unsupported ?? false) ? "yes" : "no")}</strong></div>
+        <div>Path checked: <strong>${esc(diag.path_checked ?? diag.path_checked_clients ?? 0)}</strong></div>
+        <div>Avg hops: <strong>${esc(hopsLabel)}</strong></div>
+        <div>Path timeout: <strong>${esc(diag.path_timeout ?? diag.path_timeout_clients ?? 0)}</strong></div>
+        <div>Path unsupported: <strong>${esc((diag.path_unsupported ?? false) ? "yes" : "no")}</strong></div>
         <div>Avg RTT: <strong>${esc(avgLabel)}</strong></div>
         <div>P95 RTT: <strong>${esc(p95Label)}</strong></div>
       </div>
@@ -2780,8 +2779,7 @@ function renderClients() {
               ${renderMenuItem("copy-config", "copy", "Copy profile")}
               ${renderMenuItem("copy-uri", "link", "Copy URI")}
               ${renderMenuItem("copy-access-link", "link", "Copy access link")}
-              ${isAdmin ? renderMenuItem("path-check", "search", clientPathState.running[`${clientKey(client)}:endpoint`] ? "checking..." : "Check endpoint path") : ""}
-              ${isAdmin ? renderMenuItem("path-check-tun", "search", `${"Check tun" + "nel path"}`) : ""}
+              ${isAdmin ? renderMenuItem("path-check", "search", clientPathState.running[clientKey(client)] ? "checking..." : "Check path") : ""}
               <button type="button" data-action="regenerate-config" class="client-menu-item text-amber-700">${icon("refresh")}<span>Regenerate</span></button>
               ${renderMenuItem("toggle", "power", client.disabled ? "Enable client" : "Disable client")}
               ${renderMenuItem("toggle-ports", "shield", "Port details / toggle", shieldClass)}
@@ -2992,8 +2990,7 @@ async function clientAction(name, action) {
     if (action === "copy-uri") return copyUri(name);
     if (action === "copy-access-link") return copyAccessLink(name);
     if (action === "regenerate-config") return regenerateConfig(name);
-    if (action === "path-check") return checkClientPath(name, "endpoint");
-    if (action === "path-check-tun") return checkClientPath(name, "tun" + "nel");
+    if (action === "path-check") return checkClientPath(name);
     if (action === "toggle") {
       await api(`/api/clients/${encodeURIComponent(name)}/toggle`, {method: "POST", body: "{}"});
       showToast("Client toggled");
@@ -3032,32 +3029,29 @@ async function clientAction(name, action) {
   }
 }
 
-async function checkClientPath(name, target = "endpoint") {
-  const runKey = `${name}:${target}`;
-  if (clientPathState.running[runKey]) return;
-  clientPathState.running[runKey] = true;
+async function checkClientPath(name) {
+  if (clientPathState.running[name]) return;
+  clientPathState.running[name] = true;
   renderClients();
   try {
-    const result = await api(`/api/clients/${encodeURIComponent(name)}/path-check`, {method: "POST", body: JSON.stringify({target})});
-    if (result.target_type !== ("tun" + "nel")) clientPathState.results[name] = result;
+    const result = await api(`/api/clients/${encodeURIComponent(name)}/path-check`, {method: "POST", body: "{}"});
+    clientPathState.results[name] = result;
     const path = Array.isArray(result.path) ? result.path : [];
     const count = result.hop_count ?? result.hops;
     const lines = path.map(row => `Hop ${row.hop}: ${row.address || "*"}${row.rtt_ms === null || row.rtt_ms === undefined ? "" : ` · ${row.rtt_ms} ms`}${row.raw ? `\n  ${row.raw}` : ""}`);
     const retry = result.retry_after ? `<p class="text-xs text-[var(--muted)]">Rate limited. Try again in ${esc(result.retry_after)}s.</p>` : "";
     if (result.retry_after) showToast("Path check is rate-limited; try later", "error");
-    const kind = result.target_type === ("tun" + "nel") ? `${"Tun" + "nel"} path` : "Endpoint path";
-    showModal(`${kind}: ${name}`, `
+    showModal(`Path check: ${name}`, `
       <div class="grid gap-3 text-sm">
-        <p class="text-[var(--muted)]">${esc(result.note || "Public endpoint path shows route to the client NAT/carrier endpoint, not necessarily the device itself.")}</p>
+        <p class="text-[var(--muted)]">${esc(result.note || "Path inside secure link may not represent the public Internet route.")}</p>
         <p><strong>Status:</strong> ${esc(result.status || "unknown")}${count ? ` · Path: ${esc(count)} hop${Number(count) === 1 ? "" : "s"}` : ""}${result.method ? ` · Method: ${esc(result.method)}` : ""}</p>
-        <p class="text-xs text-[var(--muted)]">Target: ${esc(result.target_ip || result["vp" + "n_ip"] || "-")}${result.endpoint ? ` · Endpoint: ${esc(result.endpoint)}` : ""}</p>
         ${result.summary ? `<p><strong>Summary:</strong> ${esc(result.summary)}</p>` : ""}
         ${lines.length ? `<pre class="rounded-md bg-[var(--soft)] p-3 text-xs">${esc(lines.join("\n"))}</pre>` : ""}
         ${retry}
       </div>
     `);
   } finally {
-    delete clientPathState.running[runKey];
+    delete clientPathState.running[name];
     renderClients();
   }
 }

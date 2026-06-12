@@ -1155,13 +1155,10 @@ PY
     grep -qF 'function renderPathChip(client)' "$app"
     grep -qF 'clientPathState = {results: {}, running: {}}' "$app"
     grep -qF 'Client Network Overview' "$app"
-    grep -qF 'Endpoint paths checked' "$app"
-    grep -qF 'Avg endpoint hops' "$app"
+    grep -qF 'Path checked' "$app"
+    grep -qF 'Avg hops' "$app"
     grep -qF 'Network issues' "$app"
-    grep -qF 'Check endpoint path' "$app"
-    grep -qF '"Check tun" + "nel path"' "$app"
-    grep -qF 'Public endpoint path from server to' "$app"
-    grep -qF 'NAT/carrier/Wi-Fi endpoint' "$app"
+    grep -qF 'Check path' "$app"
     grep -qF '/api/clients/latency' "$app"
     grep -qF '/path-check' "$app"
     grep -qF 'CLIENT_LATENCY_POLL_MS = 60000' "$app"
@@ -1201,32 +1198,22 @@ server.write_tokens({
     "users": {server.token_hash(user_token): {"name": "user", "clients": []}},
 })
 server.parse_config = lambda: {"AWG_TUNNEL_SUBNET": "10.9.9.1/24"}
-server.parse_peers = lambda: [
-    {"name": "phone", "ipv4": "10.9.9.12"},
-    {"name": "bad", "ipv4": "10.9.9.13"},
-    {"name": "noep", "ipv4": "10.9.9.14"},
-]
-server.client_stats_map = lambda force=False: {
-    "phone": {"endpoint": "8.8.8.8:53123", "last_handshake": int(server.time.time()) - 20},
-    "bad": {"endpoint": "127.0.0.1:12345", "last_handshake": int(server.time.time()) - 20},
-    "noep": {"endpoint": "", "last_handshake": 0},
-}
+server.parse_peers = lambda: [{"name": "phone", "ipv4": "10.9.9.12"}, {"name": "bad", "ipv4": "8.8.8.8"}]
 server.shutil.which = lambda name: None
 
 class Headers(dict):
     def get(self, key, default=None):
         return super().get(key, default)
 
-def make_handler(token, path="/api/clients/phone/path-check", body=None):
-    body_bytes = json.dumps(body or {}).encode()
+def make_handler(token, path="/api/clients/phone/path-check"):
     h = object.__new__(server.Handler)
     h.path = path
     h.client_address = ("127.0.0.1", 12345)
-    h.rfile = io.BytesIO(body_bytes)
+    h.rfile = io.BytesIO(b"{}")
     h.wfile = io.BytesIO()
     h.responses = []
     h.headers_sent = []
-    h.headers = Headers({"Host": "127.0.0.1", "Authorization": f"Bearer {token}", "Content-Length": str(len(body_bytes))})
+    h.headers = Headers({"Host": "127.0.0.1", "Authorization": f"Bearer {token}", "Content-Length": "2"})
     h.send_response = lambda code: h.responses.append(code)
     h.send_error = lambda code, *args, **kwargs: h.responses.append(code)
     h.send_header = lambda key, value: h.headers_sent.append((key, value))
@@ -1244,12 +1231,9 @@ payload = json.loads(h.wfile.getvalue().decode())
 assert payload["status"] == "unsupported"
 assert payload["method"] == "none"
 assert payload["hop_count"] is None
-assert payload["summary"] == "path n/a"
+assert payload["summary"] == "path check unavailable"
 assert payload["client"] == "phone"
 assert payload["vpn_ip"] == "10.9.9.12"
-assert payload["target_type"] == "endpoint"
-assert payload["target_ip"] == "8.8.8.8"
-assert payload["endpoint"] == "8.8.8.8:53123"
 
 h = make_handler(super_token)
 h.do_POST()
@@ -1259,17 +1243,7 @@ assert payload["summary"] == "try later"
 
 h = make_handler(super_token, "/api/clients/bad/path-check")
 h.do_POST()
-assert h.responses[-1] == 400
-
-h = make_handler(super_token, "/api/clients/noep/path-check")
-h.do_POST()
-payload = json.loads(h.wfile.getvalue().decode())
-assert payload["status"] == "no_endpoint"
-assert payload["summary"] == "no endpoint"
-
-h = make_handler(super_token, "/api/clients/phone/path-check", {"target": "8.8.8.8"})
-h.do_POST()
-assert h.responses[-1] == 400
+assert h.responses[-1] in (400, 429)
 
 parsed = server.parse_path_check_output(" 1: 10.9.9.12 42.1ms reached", "10.9.9.12")
 assert parsed[0]["hop"] == 1 and parsed[0]["address"] == "10.9.9.12" and parsed[0]["raw"]
@@ -1293,24 +1267,14 @@ result = server.client_path_check("phone")
 assert result["status"] == "ok"
 assert result["method"] == "tracepath"
 assert result["hop_count"] == 1
-assert result["target_type"] == "endpoint"
-assert result["target_ip"] == "8.8.8.8"
-assert result["summary"] == "1 hop, last 35 ms"
-assert calls[0][0] == ["tracepath", "-n", "-m", "16", "8.8.8.8"]
+assert result["summary"] == "1 hop, 35 ms"
+assert calls[0][0] == ["tracepath", "-n", "-m", "8", "10.9.9.12"]
 assert "shell" not in calls[0][1]
 
 server.CLIENT_PATH_CHECK_LAST.clear()
 server.shutil.which = lambda name: "/usr/bin/traceroute" if name == "traceroute" else None
 result = server.client_path_check("phone")
 assert result["method"] == "traceroute"
-assert calls[-1][0] == ["traceroute", "-n", "-m", "16", "-w", "1", "8.8.8.8"]
-
-server.CLIENT_PATH_CHECK_LAST.clear()
-server.shutil.which = lambda name: "/usr/bin/tracepath" if name == "tracepath" else None
-result = server.client_path_check("phone", "tunnel")
-assert result["target_type"] == "tunnel"
-assert result["target_ip"] == "10.9.9.12"
-assert calls[-1][0] == ["tracepath", "-n", "-m", "8", "10.9.9.12"]
 PY
     rm -rf "$tmp"
 }
