@@ -11,7 +11,7 @@ let geoipDatabasesState = null;
 let serverHealthState = null;
 let serverHealthHistoryState = null;
 let clientLatencyState = null;
-let clientPathState = {results: {}, running: {}};
+let clientPathState = {results: {}, running: {}, batchRunning: false, batchSummary: null};
 let readinessState = null;
 let readinessLoadedAt = 0;
 let serverInfoState = null;
@@ -928,7 +928,7 @@ function renderPathChip(client) {
   const targetIp = entry.target_ip || "";
   const checkedAt = entry.timestamp ? new Date(entry.timestamp).toLocaleString() : "unknown";
   const stale = entry.endpoint_stale ? "\nEndpoint may be stale: latest handshake is old." : "";
-  const title = `Public endpoint path from server to ${targetIp || "-"}.\nThis is the route to the client's current NAT/carrier/Wi-Fi endpoint, not necessarily directly to the device.${stale}\nLast check: ${checkedAt}.\nMethod: ${entry.method || "none"}.\n${entry.note || ""}`.trim();
+  const title = `Public endpoint path from server to ${targetIp || "-"}.\nThis is the route to the client's current NAT/carrier/Wi-Fi endpoint, not necessarily directly to the device.\nEndpoint path timeout does not mean the client is offline. Some networks block tracepath/traceroute probes.${stale}\nLast check: ${checkedAt}.\nMethod: ${entry.method || "none"}.\n${entry.note || ""}`.trim();
   return `<span class="path-chip ${pathChipClass(entry)}" title="${esc(title)}">${esc(label)}</span>`;
 }
 
@@ -943,11 +943,19 @@ function renderClientNetworkDiagnostics() {
   const p95Label = p95 === null || p95 === undefined ? "n/a" : `${Math.round(Number(p95))} ms`;
   const hopsLabel = avgHops === null || avgHops === undefined ? "n/a" : `${Number(avgHops).toFixed(Number(avgHops) % 1 ? 1 : 0)}`;
   const issues = Array.isArray(diag.top_issues) ? diag.top_issues.slice(0, 5) : [];
+  const batch = clientPathState.batchSummary;
+  const batchText = clientPathState.batchRunning
+    ? "Checking endpoint paths..."
+    : (batch ? `Endpoint paths checked ${batch.checked || 0}/${batch.total_candidates || 0}` : "");
   host.innerHTML = `
     <div class="client-network-diagnostics">
       <div class="flex flex-wrap items-center justify-between gap-2">
         <p class="text-xs font-semibold uppercase text-[var(--muted)]">Client Network Overview</p>
-        <button type="button" id="refreshLatency" class="${buttonClasses("h-8 px-2 text-xs")}">${icon("refresh")}<span>Refresh latency</span></button>
+        <div class="flex flex-wrap items-center justify-end gap-2">
+          ${batchText ? `<span class="text-xs text-[var(--muted)]">${esc(batchText)}</span>` : ""}
+          <button type="button" id="checkEndpointPaths" class="${buttonClasses("h-8 px-2 text-xs")}" ${clientPathState.batchRunning ? "disabled" : ""}>${icon("search")}<span>${clientPathState.batchRunning ? "Checking..." : "Check endpoint paths"}</span></button>
+          <button type="button" id="refreshLatency" class="${buttonClasses("h-8 px-2 text-xs")}">${icon("refresh")}<span>Refresh latency</span></button>
+        </div>
       </div>
       <div class="nettest-metrics">
         <div>Active: <strong>${esc(diag.active ?? diag.active_peers ?? "-")}</strong></div>
@@ -969,6 +977,8 @@ function renderClientNetworkDiagnostics() {
   `;
   const btn = document.querySelector("#refreshLatency");
   if (btn) btn.onclick = () => loadClientLatency(true);
+  const pathBtn = document.querySelector("#checkEndpointPaths");
+  if (pathBtn) pathBtn.onclick = () => checkEndpointPaths();
 }
 
 function renderServerInfo() {
@@ -2780,8 +2790,6 @@ function renderClients() {
               ${renderMenuItem("copy-config", "copy", "Copy profile")}
               ${renderMenuItem("copy-uri", "link", "Copy URI")}
               ${renderMenuItem("copy-access-link", "link", "Copy access link")}
-              ${isAdmin ? renderMenuItem("path-check", "search", clientPathState.running[`${clientKey(client)}:endpoint`] ? "checking..." : "Check endpoint path") : ""}
-              ${isAdmin ? renderMenuItem("path-check-tun", "search", `${"Check tun" + "nel path"}`) : ""}
               <button type="button" data-action="regenerate-config" class="client-menu-item text-amber-700">${icon("refresh")}<span>Regenerate</span></button>
               ${renderMenuItem("toggle", "power", client.disabled ? "Enable client" : "Disable client")}
               ${renderMenuItem("toggle-ports", "shield", "Port details / toggle", shieldClass)}
@@ -2992,8 +3000,6 @@ async function clientAction(name, action) {
     if (action === "copy-uri") return copyUri(name);
     if (action === "copy-access-link") return copyAccessLink(name);
     if (action === "regenerate-config") return regenerateConfig(name);
-    if (action === "path-check") return checkClientPath(name, "endpoint");
-    if (action === "path-check-tun") return checkClientPath(name, "tun" + "nel");
     if (action === "toggle") {
       await api(`/api/clients/${encodeURIComponent(name)}/toggle`, {method: "POST", body: "{}"});
       showToast("Client toggled");
@@ -3029,6 +3035,30 @@ async function clientAction(name, action) {
     }
   } catch (error) {
     showToast("Failed", "error");
+  }
+}
+
+async function checkEndpointPaths() {
+  if (clientPathState.batchRunning) return;
+  clientPathState.batchRunning = true;
+  clientPathState.batchSummary = null;
+  renderClientNetworkDiagnostics();
+  try {
+    const result = await api("/api/clients/path-check", {method: "POST", body: JSON.stringify({target: "endpoint", scope: "active"})});
+    clientPathState.batchSummary = result;
+    const results = result.results || {};
+    Object.keys(results).forEach(name => {
+      if (results[name]?.target_type !== ("tun" + "nel")) clientPathState.results[name] = results[name];
+    });
+    if (result.retry_after) showToast(`Endpoint path scan is rate-limited; try again in ${result.retry_after}s`, "error");
+    else showToast(`Endpoint paths checked ${result.checked || 0}/${result.total_candidates || 0}`);
+    await loadClientLatency(true);
+    renderClients();
+  } catch (error) {
+    showToast("Endpoint path scan failed", "error");
+  } finally {
+    clientPathState.batchRunning = false;
+    renderClientNetworkDiagnostics();
   }
 }
 

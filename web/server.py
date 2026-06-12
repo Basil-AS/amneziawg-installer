@@ -130,9 +130,15 @@ CLIENT_ENDPOINT_HISTORY_LAST_WRITE = 0.0
 CLIENT_PATH_CHECK_LOCK = threading.Lock()
 CLIENT_PATH_CHECK_SEM = threading.BoundedSemaphore(1)
 CLIENT_PATH_CHECK_LAST = {}
-CLIENT_PATH_CHECK_INTERVAL = 60.0
+CLIENT_PATH_CHECK_INTERVAL = 600.0
 CLIENT_PATH_CHECK_RESULTS = {}
 CLIENT_PATH_CHECK_RESULT_TTL = 600
+CLIENT_PATH_BATCH_LOCK = threading.Lock()
+CLIENT_PATH_BATCH_LAST = 0.0
+CLIENT_PATH_BATCH_COOLDOWN = 300.0
+CLIENT_PATH_BATCH_MAX_CLIENTS = 20
+CLIENT_PATH_BATCH_MAX_DURATION = 60.0
+CLIENT_PATH_BATCH_STALE_AFTER = 900
 IP_INFO_CACHE_TTL = 30 * 24 * 3600
 IP_INFO_NEGATIVE_TTL = 3600
 IP_INFO_ERROR_CACHE_TTL = 30 * 60
@@ -5216,6 +5222,123 @@ def client_path_check(name, target_type="endpoint"):
     return remember_path_check_result(name, make_path_check_result(name, target, status, method, path, note, target_type=target_type, vpn_ip=vpn_ip, endpoint=endpoint, endpoint_stale=endpoint_stale))
 
 
+def batch_client_path_check(target_type="endpoint", scope="active"):
+    global CLIENT_PATH_BATCH_LAST
+    target_type = (target_type or "endpoint").strip().lower()
+    scope = (scope or "active").strip().lower()
+    if target_type != "endpoint":
+        raise ValueError("invalid batch path target")
+    if scope != "active":
+        raise ValueError("invalid batch path scope")
+
+    if not CLIENT_PATH_BATCH_LOCK.acquire(blocking=False):
+        return {
+            "status": "running",
+            "timestamp": utc_now_iso(),
+            "target": target_type,
+            "scope": scope,
+            "checked": 0,
+            "skipped": 0,
+            "total_candidates": 0,
+            "results": {},
+            "skipped_clients": {},
+            "retry_after": 30,
+        }
+
+    results = {}
+    skipped = {}
+    try:
+        now = time.time()
+        with CLIENT_PATH_CHECK_LOCK:
+            if now - CLIENT_PATH_BATCH_LAST < CLIENT_PATH_BATCH_COOLDOWN:
+                retry = CLIENT_PATH_BATCH_COOLDOWN - (now - CLIENT_PATH_BATCH_LAST)
+                return {
+                    "status": "rate_limited",
+                    "timestamp": utc_now_iso(),
+                    "target": target_type,
+                    "scope": scope,
+                    "checked": 0,
+                    "skipped": 0,
+                    "total_candidates": 0,
+                    "results": {},
+                    "skipped_clients": {},
+                    "retry_after": max(1, int(retry)),
+                }
+            CLIENT_PATH_BATCH_LAST = now
+
+        peers = parse_peers()
+        stats = client_stats_map(force=True)
+        cached = recent_path_check_results(now)
+        started = time.time()
+        candidates = []
+
+        for peer in peers:
+            name = peer.get("name") or peer.get("config_name") or ""
+            if not name:
+                continue
+            row_stats = stats.get(name, {})
+            endpoint = row_stats.get("endpoint") or ""
+            endpoint_ip, _endpoint_port = split_endpoint(endpoint)
+            last = int(row_stats.get("latestHandshakeAt", row_stats.get("last_handshake", 0)) or 0)
+            age = None if last <= 0 else max(0, int(now - last))
+            if not endpoint_ip:
+                skipped[name] = "no_endpoint"
+                continue
+            if age is None or age > CLIENT_PATH_BATCH_STALE_AFTER:
+                skipped[name] = "stale"
+                continue
+            try:
+                validate_public_endpoint_path_target(endpoint_ip)
+            except ValueError as exc:
+                skipped[name] = str(exc)
+                continue
+            candidates.append(name)
+
+        total_candidates = len(candidates)
+        for name in candidates[:CLIENT_PATH_BATCH_MAX_CLIENTS]:
+            cached_result = cached.get(name)
+            if cached_result:
+                results[name] = cached_result
+                continue
+            if time.time() - started > CLIENT_PATH_BATCH_MAX_DURATION:
+                skipped[name] = "time_budget"
+                continue
+            with CLIENT_PATH_CHECK_LOCK:
+                last_check = CLIENT_PATH_CHECK_LAST.get(f"{name}:endpoint", 0)
+            if now - last_check < CLIENT_PATH_CHECK_INTERVAL:
+                skipped[name] = "cooldown"
+                continue
+            try:
+                results[name] = client_path_check(name, "endpoint")
+            except ValueError as exc:
+                skipped[name] = str(exc)
+        for name in candidates[CLIENT_PATH_BATCH_MAX_CLIENTS:]:
+            skipped[name] = "scan_limit"
+
+        status = "ok"
+        if skipped and results:
+            status = "partial"
+        elif skipped and not results:
+            status = "partial"
+        return {
+            "status": status,
+            "timestamp": utc_now_iso(),
+            "target": target_type,
+            "scope": scope,
+            "checked": len(results),
+            "skipped": len(skipped),
+            "total_candidates": total_candidates,
+            "max_clients": CLIENT_PATH_BATCH_MAX_CLIENTS,
+            "results": results,
+            "skipped_clients": skipped,
+        }
+    finally:
+        try:
+            CLIENT_PATH_BATCH_LOCK.release()
+        except RuntimeError:
+            pass
+
+
 def client_latency_payload(force=False):
     now = time.time()
     with CLIENT_LATENCY_LOCK:
@@ -6265,6 +6388,15 @@ class Handler(SimpleHTTPRequestHandler):
         if auth is None:
             return
         try:
+            if u.path == "/api/clients/path-check":
+                if not self.require_super(auth):
+                    return
+                try:
+                    body = json_body_from_handler(self, 1024)
+                    self.send_json(batch_client_path_check(str(body.get("target") or "endpoint"), str(body.get("scope") or "active")))
+                except ValueError as exc:
+                    self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+                return
             m = re.match(r"^/api/clients/([^/]+)/path-check$", u.path)
             if m:
                 if not self.require_super(auth):

@@ -1153,15 +1153,20 @@ PY
     grep -qF 'device may sleep or block ping' "$app"
     grep -qF 'renderSharedProfileChip(client)' "$app"
     grep -qF 'function renderPathChip(client)' "$app"
-    grep -qF 'clientPathState = {results: {}, running: {}}' "$app"
+    grep -qF 'clientPathState = {results: {}, running: {}, batchRunning: false, batchSummary: null}' "$app"
     grep -qF 'Client Network Overview' "$app"
     grep -qF 'Endpoint paths checked' "$app"
     grep -qF 'Avg endpoint hops' "$app"
     grep -qF 'Network issues' "$app"
-    grep -qF 'Check endpoint path' "$app"
-    grep -qF '"Check tun" + "nel path"' "$app"
+    grep -qF 'Check endpoint paths' "$app"
+    grep -qF 'Checking endpoint paths...' "$app"
+    grep -qF 'Endpoint paths checked ${batch.checked || 0}/${batch.total_candidates || 0}' "$app"
+    grep -qF '"/api/clients/path-check"' "$app"
+    run ! grep -qF 'renderMenuItem("path-check"' "$app"
+    run ! grep -qF 'data-action="path-check"' "$app"
     grep -qF 'Public endpoint path from server to' "$app"
     grep -qF 'NAT/carrier/Wi-Fi endpoint' "$app"
+    grep -qF 'Endpoint path timeout does not mean the client is offline' "$app"
     grep -qF '/api/clients/latency' "$app"
     grep -qF '/path-check' "$app"
     grep -qF 'CLIENT_LATENCY_POLL_MS = 60000' "$app"
@@ -1205,11 +1210,13 @@ server.parse_peers = lambda: [
     {"name": "phone", "ipv4": "10.9.9.12"},
     {"name": "bad", "ipv4": "10.9.9.13"},
     {"name": "noep", "ipv4": "10.9.9.14"},
+    {"name": "stale", "ipv4": "10.9.9.15"},
 ]
 server.client_stats_map = lambda force=False: {
     "phone": {"endpoint": "8.8.8.8:53123", "last_handshake": int(server.time.time()) - 20},
     "bad": {"endpoint": "127.0.0.1:12345", "last_handshake": int(server.time.time()) - 20},
     "noep": {"endpoint": "", "last_handshake": 0},
+    "stale": {"endpoint": "8.8.4.4:54321", "last_handshake": int(server.time.time()) - 3600},
 }
 server.shutil.which = lambda name: None
 
@@ -1270,6 +1277,48 @@ assert payload["summary"] == "no endpoint"
 h = make_handler(super_token, "/api/clients/phone/path-check", {"target": "8.8.8.8"})
 h.do_POST()
 assert h.responses[-1] == 400
+
+server.CLIENT_PATH_BATCH_LAST = 0
+server.CLIENT_PATH_CHECK_LAST.clear()
+h = make_handler(user_token, "/api/clients/path-check")
+h.do_POST()
+assert h.responses == [403]
+
+h = make_handler(super_token, "/api/clients/path-check", {"target": "8.8.8.8"})
+h.do_POST()
+assert h.responses[-1] == 400
+
+h = make_handler(super_token, "/api/clients/path-check", {"target": "endpoint", "scope": "all"})
+h.do_POST()
+assert h.responses[-1] == 400
+
+h = make_handler(super_token, "/api/clients/path-check")
+h.do_POST()
+payload = json.loads(h.wfile.getvalue().decode())
+assert payload["status"] in {"ok", "partial"}
+assert payload["target"] == "endpoint"
+assert payload["scope"] == "active"
+assert payload["checked"] == 1
+assert payload["total_candidates"] == 1
+assert payload["max_clients"] == 20
+assert payload["results"]["phone"]["target_ip"] == "8.8.8.8"
+assert payload["skipped_clients"]["bad"] == "unsafe endpoint IP"
+assert payload["skipped_clients"]["noep"] == "no_endpoint"
+assert payload["skipped_clients"]["stale"] == "stale"
+
+h = make_handler(super_token, "/api/clients/path-check")
+h.do_POST()
+payload = json.loads(h.wfile.getvalue().decode())
+assert payload["status"] == "rate_limited"
+assert payload["retry_after"] > 0
+
+server.CLIENT_PATH_BATCH_LAST = 0
+assert server.CLIENT_PATH_BATCH_LOCK.acquire(blocking=False)
+try:
+    result = server.batch_client_path_check()
+    assert result["status"] == "running"
+finally:
+    server.CLIENT_PATH_BATCH_LOCK.release()
 
 parsed = server.parse_path_check_output(" 1: 10.9.9.12 42.1ms reached", "10.9.9.12")
 assert parsed[0]["hop"] == 1 and parsed[0]["address"] == "10.9.9.12" and parsed[0]["raw"]
