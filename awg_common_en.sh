@@ -318,6 +318,12 @@ get_vpn_nic() {
     fi
 }
 
+awg_peer_ipv6_routes() {
+    local conf="${1:-${SERVER_CONF_FILE:-/etc/amnezia/amneziawg/awg0.conf}}"
+    [[ -f "$conf" ]] || return 0
+    awk '/^AllowedIPs[[:space:]]*=/{gsub(/,/, " "); for (i=1; i<=NF; i++) if ($i ~ /^[0-9A-Fa-f:]+\/128$/) print $i}' "$conf"
+}
+
 get_wan_ipv6_prefixes() {
     local wan="${1:-$(get_main_nic)}"
     [[ -n "$wan" ]] || return 1
@@ -499,20 +505,39 @@ ipv6_ndp_generate_config() {
     if [[ -f "$NDPPD_CONF_FILE" ]]; then
         cp -a "$NDPPD_CONF_FILE" "${NDPPD_CONF_FILE}.bak.$(date +%Y%m%d-%H%M%S)" || die "Failed to backup $NDPPD_CONF_FILE"
     fi
-    cat > "$NDPPD_CONF_FILE" << EOF
+    {
+        cat << EOF
 # Managed by AmneziaWG installer. Manual changes may be overwritten.
-route_ttl 30000
+route-ttl 30000
 proxy ${wan} {
     router yes
     timeout 500
     ttl 30000
+EOF
+        local peer_route peer_ip wrote_peer_rules=0
+        while IFS= read -r peer_route; do
+            [[ -n "$peer_route" ]] || continue
+            peer_ip="${peer_route%/128}"
+            wrote_peer_rules=1
+            cat << EOF
+    rule ${peer_ip} {
+        static
+    }
+EOF
+        done < <(awg_peer_ipv6_routes)
+        if [[ "$wrote_peer_rules" -eq 0 ]]; then
+            cat << EOF
     rule ${prefix} {
         iface ${vpn}
     }
+EOF
+        fi
+        cat << EOF
 }
 EOF
+    } > "$NDPPD_CONF_FILE"
     chmod 644 "$NDPPD_CONF_FILE"
-    log "ndppd config generated: proxy ${wan} { rule ${prefix} { iface ${vpn} } } -> $NDPPD_CONF_FILE"
+    log "ndppd config generated for ${prefix} on ${wan} -> $NDPPD_CONF_FILE"
 }
 
 ipv6_ndp_write_systemd_dropin() {
@@ -1184,7 +1209,9 @@ if [[ "\$IPV6_ENABLED" == "1" ]]; then
         ip6tables -A FORWARD -i "\$NIC" -o "\$AWG_IFACE" -m state --state NEW -j DROP
     if [[ "\$IPV6_MODE" == "ndp" ]]; then
         while IFS= read -r route; do
-            [[ -n "\$route" ]] && ip -6 route replace "\$route" dev "\$AWG_IFACE"
+            [[ -n "\$route" ]] || continue
+            ip -6 route replace "\$route" dev "\$AWG_IFACE"
+            ip -6 neigh replace proxy "\${route%/128}" dev "\$NIC" 2>/dev/null || true
         done < <(ndp_peer_ipv6_routes)
     fi
 fi
@@ -1228,7 +1255,9 @@ del_ipt FORWARD -o "\$AWG_IFACE" -m state --state RELATED,ESTABLISHED -j ACCEPT
 if [[ "\$IPV6_ENABLED" == "1" ]]; then
     if [[ "\$IPV6_MODE" == "ndp" ]]; then
         while IFS= read -r route; do
-            [[ -n "\$route" ]] && ip -6 route del "\$route" dev "\$AWG_IFACE" 2>/dev/null || true
+            [[ -n "\$route" ]] || continue
+            ip -6 route del "\$route" dev "\$AWG_IFACE" 2>/dev/null || true
+            ip -6 neigh del proxy "\${route%/128}" dev "\$NIC" 2>/dev/null || true
         done < <(ndp_peer_ipv6_routes)
     fi
     del_ip6t FORWARD -i "\$AWG_IFACE" -j ACCEPT

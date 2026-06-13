@@ -119,6 +119,29 @@ EOF
     grep -qF "iface awg0" "$NDPPD_CONF_FILE"
 }
 
+@test "ipv6_ndp_generate_config: writes static /128 rules for existing NDP peers" {
+    command -v python3 &>/dev/null || skip "python3 not available"
+    setup_wan_mock
+    write_if_inet6 "$TEST_DIR/if_inet6" "00"
+    export IF_INET6_FILE="$TEST_DIR/if_inet6"
+    export NDPPD_CONF_FILE="$TEST_DIR/ndppd.conf"
+    create_server_config
+    cat >> "$SERVER_CONF_FILE" <<'EOF'
+
+[Peer]
+#_Name = bsl_phone
+PublicKey = PUB
+AllowedIPs = 10.9.9.4/32, 2a09:9340:808:4::103/128
+EOF
+    ipv6_ndp_generate_config "2a09:9340:808:4::/64"
+    grep -qF "proxy ens1 {" "$NDPPD_CONF_FILE"
+    grep -qF "rule 2a09:9340:808:4::103 {" "$NDPPD_CONF_FILE"
+    grep -qF "static" "$NDPPD_CONF_FILE"
+    if grep -qF "iface awg0" "$NDPPD_CONF_FILE"; then
+        fail "existing peer /128 rules must use static, not iface awg0"
+    fi
+}
+
 @test "is_prefix_onlink_on_wan: same WAN /64 is on-link, different prefix is not" {
     command -v python3 &>/dev/null || skip "python3 not available"
     mkdir -p "$TEST_DIR/bin"
@@ -307,7 +330,9 @@ EOF
     [ "$status" -eq 0 ]
     grep -qF 'ndp_peer_ipv6_routes' "$AWG_DIR/postup.sh"
     grep -qF 'ip -6 route replace "$route" dev "$AWG_IFACE"' "$AWG_DIR/postup.sh"
+    grep -qF 'ip -6 neigh replace proxy "${route%/128}" dev "$NIC"' "$AWG_DIR/postup.sh"
     grep -qF 'ip -6 route del "$route" dev "$AWG_IFACE"' "$AWG_DIR/postdown.sh"
+    grep -qF 'ip -6 neigh del proxy "${route%/128}" dev "$NIC"' "$AWG_DIR/postdown.sh"
     run bash -n "$AWG_DIR/postup.sh"
     [ "$status" -eq 0 ]
     run bash -n "$AWG_DIR/postdown.sh"
