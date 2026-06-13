@@ -1149,6 +1149,7 @@ IPV6_ENABLED="${AWG_IPV6_ENABLED:-0}"
 IPV6_MODE="${AWG_IPV6_MODE:-legacy}"
 IPV6_SUBNET="${AWG_IPV6_SUBNET:-}"
 P2P_RULES="${p2p}"
+SERVER_CONF_FILE="${SERVER_CONF_FILE:-/etc/amnezia/amneziawg/awg0.conf}"
 
 case "\$IPV6_MODE" in
     native) IPV6_MODE="ndp" ;;
@@ -1159,6 +1160,10 @@ ipt_add() { local table="\$1" chain="\$2"; shift 2; iptables -t "\$table" -C "\$
 ipt_ins() { local chain="\$1"; shift; iptables -C "\$chain" "\$@" 2>/dev/null || iptables -I "\$chain" "\$@"; }
 ip6t_add() { local table="\$1" chain="\$2"; shift 2; ip6tables -t "\$table" -C "\$chain" "\$@" 2>/dev/null || ip6tables -t "\$table" -A "\$chain" "\$@"; }
 ip6t_ins() { local chain="\$1"; shift; ip6tables -C "\$chain" "\$@" 2>/dev/null || ip6tables -I "\$chain" "\$@"; }
+ndp_peer_ipv6_routes() {
+    [[ -f "\$SERVER_CONF_FILE" ]] || return 0
+    awk '/^AllowedIPs[[:space:]]*=/{gsub(/,/, " "); for (i=1; i<=NF; i++) if (\$i ~ /^[0-9A-Fa-f:]+\\/128$/) print \$i}' "\$SERVER_CONF_FILE"
+}
 
 if [[ "\$FULLCONE" == "1" ]]; then
     if ! ipt_add nat POSTROUTING -o "\$NIC" -j FULLCONENAT; then
@@ -1184,6 +1189,11 @@ if [[ "\$IPV6_ENABLED" == "1" ]]; then
         ip6tables -C FORWARD -i "\$NIC" -o "\$AWG_IFACE" -m state --state NEW -j DROP 2>/dev/null || \
             ip6tables -A FORWARD -i "\$NIC" -o "\$AWG_IFACE" -m state --state NEW -j DROP
     fi
+    if [[ "\$IPV6_MODE" == "ndp" ]]; then
+        while IFS= read -r route; do
+            [[ -n "\$route" ]] && ip -6 route replace "\$route" dev "\$AWG_IFACE"
+        done < <(ndp_peer_ipv6_routes)
+    fi
 fi
 
 [[ -x "\$P2P_RULES" ]] && "\$P2P_RULES" up
@@ -1203,6 +1213,7 @@ IPV6_ENABLED="${AWG_IPV6_ENABLED:-0}"
 IPV6_MODE="${AWG_IPV6_MODE:-legacy}"
 IPV6_SUBNET="${AWG_IPV6_SUBNET:-}"
 P2P_RULES="${p2p}"
+SERVER_CONF_FILE="${SERVER_CONF_FILE:-/etc/amnezia/amneziawg/awg0.conf}"
 
 case "\$IPV6_MODE" in
     native) IPV6_MODE="ndp" ;;
@@ -1213,6 +1224,10 @@ del_ipt_nat() { local chain="\$1"; shift; while iptables -t nat -C "\$chain" "\$
 del_ipt() { local chain="\$1"; shift; while iptables -C "\$chain" "\$@" 2>/dev/null; do iptables -D "\$chain" "\$@"; done; }
 del_ip6t_nat() { local chain="\$1"; shift; while ip6tables -t nat -C "\$chain" "\$@" 2>/dev/null; do ip6tables -t nat -D "\$chain" "\$@"; done; }
 del_ip6t() { local chain="\$1"; shift; while ip6tables -C "\$chain" "\$@" 2>/dev/null; do ip6tables -D "\$chain" "\$@"; done; }
+ndp_peer_ipv6_routes() {
+    [[ -f "\$SERVER_CONF_FILE" ]] || return 0
+    awk '/^AllowedIPs[[:space:]]*=/{gsub(/,/, " "); for (i=1; i<=NF; i++) if (\$i ~ /^[0-9A-Fa-f:]+\\/128$/) print \$i}' "\$SERVER_CONF_FILE"
+}
 
 [[ -x "\$P2P_RULES" ]] && "\$P2P_RULES" down
 
@@ -1223,6 +1238,11 @@ del_ipt FORWARD -i "\$AWG_IFACE" -j ACCEPT
 del_ipt FORWARD -o "\$AWG_IFACE" -m state --state RELATED,ESTABLISHED -j ACCEPT
 
 if [[ "\$IPV6_ENABLED" == "1" ]]; then
+    if [[ "\$IPV6_MODE" == "ndp" ]]; then
+        while IFS= read -r route; do
+            [[ -n "\$route" ]] && ip -6 route del "\$route" dev "\$AWG_IFACE" 2>/dev/null || true
+        done < <(ndp_peer_ipv6_routes)
+    fi
     del_ip6t FORWARD -i "\$AWG_IFACE" -j ACCEPT
     del_ip6t FORWARD -o "\$AWG_IFACE" -m state --state RELATED,ESTABLISHED -j ACCEPT
     del_ip6t FORWARD -i "\$NIC" -o "\$AWG_IFACE" -m state --state RELATED,ESTABLISHED -j ACCEPT

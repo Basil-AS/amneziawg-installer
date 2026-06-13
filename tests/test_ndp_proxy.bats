@@ -290,6 +290,30 @@ EOF
     [ "$status" -eq 0 ]
 }
 
+@test "generate_firewall_scripts adds and removes /128 peer routes for ndp mode" {
+    export AWG_IPV6_ENABLED=1
+    export AWG_IPV6_MODE=ndp
+    export AWG_IPV6_MODE_EFFECTIVE=ndp
+    export AWG_IPV6_SUBNET="2a09:9340:808:4::/64"
+    create_server_config
+    cat >> "$SERVER_CONF_FILE" <<'EOF'
+
+[Peer]
+#_Name = v6route
+PublicKey = PUB
+AllowedIPs = 10.9.9.4/32, 2a09:9340:808:4::103/128
+EOF
+    run generate_firewall_scripts "ens18"
+    [ "$status" -eq 0 ]
+    grep -qF 'ndp_peer_ipv6_routes' "$AWG_DIR/postup.sh"
+    grep -qF 'ip -6 route replace "$route" dev "$AWG_IFACE"' "$AWG_DIR/postup.sh"
+    grep -qF 'ip -6 route del "$route" dev "$AWG_IFACE"' "$AWG_DIR/postdown.sh"
+    run bash -n "$AWG_DIR/postup.sh"
+    [ "$status" -eq 0 ]
+    run bash -n "$AWG_DIR/postdown.sh"
+    [ "$status" -eq 0 ]
+}
+
 # -------------------------------------------------------------------------
 # Web panel: Python-side diagnostics and API endpoints
 # -------------------------------------------------------------------------
