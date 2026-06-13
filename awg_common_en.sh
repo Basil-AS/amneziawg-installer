@@ -237,6 +237,18 @@ awg_ipv6_mode() {
     normalize_awg_ipv6_mode "${AWG_IPV6_MODE:-legacy}" 2>/dev/null || echo "legacy"
 }
 
+awg_ipv6_effective_mode() {
+    local effective="${AWG_IPV6_MODE_EFFECTIVE:-}" mode="${AWG_IPV6_MODE:-legacy}"
+    if [[ -z "$effective" || ( "$effective" == "legacy" && "$mode" != "legacy" ) ]]; then
+        effective="$mode"
+    fi
+    normalize_awg_ipv6_mode "${effective:-legacy}" 2>/dev/null || echo "legacy"
+}
+
+awg_ipv6_effective_mode_is_ndp() {
+    [[ "$(awg_ipv6_effective_mode)" == "ndp" ]]
+}
+
 awg_server_name() {
     local name="${AWG_SERVER_NAME:-MyVPN}"
     name="${name//$'\r'/ }"
@@ -260,11 +272,12 @@ awg_ipv6_leak_block_enabled() {
 # Used when an IPv6 prefix from the provider is on-link on the WAN interface
 # rather than routed to the server: VPN clients behind awg0 then need an NDP
 # proxy on the WAN interface to answer Neighbor Solicitations for their
-# addresses. These helpers are pure diagnostics/config-generation; they never
-# install or start anything by themselves.
+# addresses.
 # ------------------------------------------------------------------------------
 
 NDPPD_CONF_FILE="${NDPPD_CONF_FILE:-/etc/ndppd.conf}"
+NDPPD_SYSTEMD_DROPIN="${NDPPD_SYSTEMD_DROPIN:-/etc/systemd/system/ndppd.service.d/10-amneziawg.conf}"
+NDP_SYSCTL_FILE="${NDP_SYSCTL_FILE:-/etc/sysctl.d/99-amneziawg-ndp.conf}"
 IF_INET6_FILE="${IF_INET6_FILE:-/proc/net/if_inet6}"
 
 if ! declare -f die >/dev/null 2>&1; then
@@ -305,6 +318,145 @@ get_vpn_nic() {
     fi
 }
 
+get_wan_ipv6_prefixes() {
+    local wan="${1:-$(get_main_nic)}"
+    [[ -n "$wan" ]] || return 1
+    ip -6 -o addr show dev "$wan" scope global 2>/dev/null | awk '{print $4}'
+}
+
+is_prefix_onlink_on_wan() {
+    local prefix="$1" wan="${2:-$(get_main_nic)}"
+    [[ -n "$prefix" && -n "$wan" ]] || return 1
+    command -v python3 &>/dev/null || return 1
+    local wan_prefix
+    while IFS= read -r wan_prefix; do
+        [[ -n "$wan_prefix" ]] || continue
+        python3 - "$prefix" "$wan_prefix" <<'PY' 2>/dev/null && return 0
+import ipaddress
+import sys
+
+try:
+    wanted = ipaddress.ip_network(sys.argv[1], strict=False)
+    onlink = ipaddress.ip_interface(sys.argv[2]).network
+except ValueError:
+    sys.exit(1)
+sys.exit(0 if wanted.version == 6 and wanted == onlink else 1)
+PY
+    done < <(get_wan_ipv6_prefixes "$wan")
+    return 1
+}
+
+detect_ipv6_address_collisions() {
+    local prefix="${1:-${AWG_IPV6_SUBNET:-}}" wan="${2:-$(get_main_nic)}"
+    command -v python3 &>/dev/null || return 0
+    AWG_DIR="${AWG_DIR:-/root/awg}" SERVER_CONF_FILE="${SERVER_CONF_FILE:-/etc/amnezia/amneziawg/awg0.conf}" \
+    python3 - "$prefix" "$wan" <<'PY'
+import ipaddress
+import os
+import re
+import subprocess
+import sys
+from collections import defaultdict
+from pathlib import Path
+
+prefix, wan = sys.argv[1], sys.argv[2]
+try:
+    net = ipaddress.ip_network(prefix, strict=False) if prefix else None
+except ValueError:
+    net = None
+
+owners = defaultdict(list)
+
+def add(addr, owner):
+    try:
+        ip = ipaddress.ip_address(addr)
+    except ValueError:
+        return
+    if ip.version == 6 and (net is None or ip in net):
+        owners[str(ip)].append(owner)
+
+try:
+    out = subprocess.run(["ip", "-6", "-o", "addr", "show", "dev", wan, "scope", "global"], capture_output=True, text=True, timeout=2, check=False).stdout
+    for token in re.findall(r"inet6\s+([0-9A-Fa-f:]+)/\d+", out):
+        add(token, f"WAN:{wan}")
+except Exception:
+    pass
+
+try:
+    out = subprocess.run(["ip", "-6", "route", "show", "default"], capture_output=True, text=True, timeout=2, check=False).stdout
+    for token in re.findall(r"\bvia\s+([0-9A-Fa-f:]+)", out):
+        add(token, "WAN:gateway")
+except Exception:
+    pass
+
+if net:
+    add(str(net.network_address), "reserved:network")
+    add(str(net.network_address + 1), "server:vpn")
+
+paths = []
+server_conf = Path(os.environ.get("SERVER_CONF_FILE", ""))
+if server_conf:
+    paths.append(server_conf)
+awg_dir = Path(os.environ.get("AWG_DIR", ""))
+if awg_dir:
+    paths.extend(awg_dir.glob("*.conf"))
+
+for path in paths:
+    try:
+        data = path.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        continue
+    label = str(path)
+    in_interface = False
+    for line in data.splitlines():
+        stripped = line.strip()
+        if stripped == "[Interface]":
+            in_interface = True
+            continue
+        if stripped.startswith("[") and stripped != "[Interface]":
+            in_interface = False
+        if in_interface and path == server_conf and stripped.startswith("Address"):
+            for token in re.findall(r"([0-9A-Fa-f:]+/\d+)", stripped):
+                add(token, f"server:{label}")
+    for token in re.findall(r"(?:AllowedIPs|Address)\s*=\s*[^\n#]*?([0-9A-Fa-f:]+)/128", data):
+        add(token, f"client:{label}")
+
+for ip, who in sorted(owners.items(), key=lambda item: ipaddress.ip_address(item[0])):
+    client = [x for x in who if x.startswith("client:")]
+    non_client = [x for x in who if not x.startswith("client:")]
+    if client and non_client:
+        print(f"{ip}: {', '.join(who)}")
+PY
+}
+
+awg_shell_quote() {
+    printf "%q" "$1"
+}
+
+update_config_var() {
+    local key="$1" value="$2" file="${3:-$CONFIG_FILE}" quoted tmp
+    [[ -n "$key" && -n "$file" ]] || return 1
+    tmp=$(awg_mktemp) || return 1
+    if [[ "$value" =~ ^[0-9]+$ ]]; then
+        quoted="$value"
+    else
+        quoted="'${value//\'/\'\\\'\'}'"
+    fi
+    if [[ -f "$file" ]]; then
+        awk -v key="$key" -v line="export ${key}=${quoted}" '
+            $0 ~ "^export[[:space:]]+" key "=" || $0 ~ "^" key "=" {
+                if (!done) { print line; done=1 }
+                next
+            }
+            { print }
+            END { if (!done) print line }
+        ' "$file" > "$tmp" || { rm -f "$tmp"; return 1; }
+    else
+        printf 'export %s=%s\n' "$key" "$quoted" > "$tmp" || { rm -f "$tmp"; return 1; }
+    fi
+    mv -f "$tmp" "$file"
+}
+
 # Classify the IPv6/NDP situation of this host into one of:
 #   ipv6_disabled                    - no global IPv6 address; ndppd not applicable
 #   ipv6_prefix_onlink_needs_ndp_proxy - AWG_IPV6_MODE=ndp: provider prefix is on-link, ndppd needed
@@ -316,7 +468,7 @@ ipv6_ndp_state() {
         echo "ipv6_disabled"
         return 0
     fi
-    case "$(awg_ipv6_mode)" in
+    case "$(awg_ipv6_effective_mode)" in
         ndp) echo "ipv6_prefix_onlink_needs_ndp_proxy" ;;
         routed|nat66) echo "ipv6_prefix_routed_to_server" ;;
         *)
@@ -348,7 +500,7 @@ ipv6_ndp_generate_config() {
         cp -a "$NDPPD_CONF_FILE" "${NDPPD_CONF_FILE}.bak.$(date +%Y%m%d-%H%M%S)" || die "Failed to backup $NDPPD_CONF_FILE"
     fi
     cat > "$NDPPD_CONF_FILE" << EOF
-# Managed by AmneziaWG Web Panel. Manual changes may be overwritten.
+# Managed by AmneziaWG installer. Manual changes may be overwritten.
 route_ttl 30000
 proxy ${wan} {
     router yes
@@ -363,6 +515,38 @@ EOF
     log "ndppd config generated: proxy ${wan} { rule ${prefix} { iface ${vpn} } } -> $NDPPD_CONF_FILE"
 }
 
+ipv6_ndp_write_systemd_dropin() {
+    local vpn="${1:-$(get_vpn_nic)}"
+    mkdir -p "$(dirname "$NDPPD_SYSTEMD_DROPIN")" || die "Failed to create ndppd systemd drop-in directory"
+    cat > "$NDPPD_SYSTEMD_DROPIN" << EOF
+[Unit]
+After=network-online.target awg-quick@${vpn}.service
+Wants=network-online.target awg-quick@${vpn}.service
+
+[Service]
+Restart=on-failure
+RestartSec=5s
+EOF
+    chmod 644 "$NDPPD_SYSTEMD_DROPIN" 2>/dev/null || true
+}
+
+ipv6_ndp_enable_sysctl() {
+    local wan="${1:-$(get_main_nic)}"
+    [[ -n "$wan" ]] || wan="eth0"
+    mkdir -p "$(dirname "$NDP_SYSCTL_FILE")" || die "Failed to create sysctl directory"
+    cat > "$NDP_SYSCTL_FILE" << EOF
+# Managed by AmneziaWG installer. Manual changes may be overwritten.
+net.ipv6.conf.all.forwarding = 1
+net.ipv6.conf.default.forwarding = 1
+net.ipv6.conf.all.proxy_ndp = 1
+net.ipv6.conf.${wan}.proxy_ndp = 1
+EOF
+    sysctl -w net.ipv6.conf.all.forwarding=1 >/dev/null 2>&1 || true
+    sysctl -w net.ipv6.conf.default.forwarding=1 >/dev/null 2>&1 || true
+    sysctl -w net.ipv6.conf.all.proxy_ndp=1 >/dev/null 2>&1 || true
+    sysctl -w "net.ipv6.conf.${wan}.proxy_ndp=1" >/dev/null 2>&1 || true
+}
+
 # Enable and start ndppd. Installs the package if missing. Refuses when
 # IPv6 is unavailable on the host (never auto-installs in that case).
 ipv6_ndp_enable() {
@@ -374,6 +558,9 @@ ipv6_ndp_enable() {
         DEBIAN_FRONTEND=noninteractive apt-get update -qq 2>/dev/null || true
         DEBIAN_FRONTEND=noninteractive apt-get install -y ndppd || die "Failed to install ndppd package"
     fi
+    ipv6_ndp_write_systemd_dropin "$(get_vpn_nic)"
+    systemctl daemon-reload 2>/dev/null || true
+    ipv6_ndp_enable_sysctl "$(get_main_nic)"
     systemctl enable --now ndppd || die "Failed to enable/start ndppd"
     log "ndppd enabled and started."
 }
@@ -394,17 +581,78 @@ ipv6_ndp_restart() {
 
 # Print a human-readable NDP proxy status summary.
 ipv6_ndp_print_status() {
-    log "IPv6 NDP state: $(ipv6_ndp_state)"
-    log "ndppd binary: $(command -v ndppd || echo 'not installed')"
+    local wan vpn state installed configured active enabled proxy_all proxy_wan forwarding collisions
+    wan="$(get_main_nic)"; [[ -n "$wan" ]] || wan="eth0"
+    vpn="$(get_vpn_nic)"
+    state="$(ipv6_ndp_state)"
+    command -v ndppd >/dev/null 2>&1 && installed="installed" || installed="missing"
+    [[ -f "$NDPPD_CONF_FILE" ]] && configured="present" || configured="missing"
+    active="$(systemctl is-active ndppd 2>/dev/null || echo inactive)"
+    enabled="$(systemctl is-enabled ndppd 2>/dev/null || echo disabled)"
+    proxy_all="$(cat /proc/sys/net/ipv6/conf/all/proxy_ndp 2>/dev/null || echo 0)"
+    proxy_wan="$(cat "/proc/sys/net/ipv6/conf/${wan}/proxy_ndp" 2>/dev/null || echo 0)"
+    forwarding="$(cat /proc/sys/net/ipv6/conf/all/forwarding 2>/dev/null || echo 0)"
+    collisions="$(detect_ipv6_address_collisions "${AWG_IPV6_SUBNET:-}" "$wan" 2>/dev/null || true)"
+    [[ -n "$collisions" ]] || collisions="none"
+    log "IPv6 enabled: $([[ "${AWG_IPV6_ENABLED:-0}" == "1" ]] && echo yes || echo no)"
+    log "IPv6 mode requested: ${AWG_IPV6_MODE_REQUESTED:-${AWG_IPV6_MODE:-legacy}}"
+    log "IPv6 mode effective: $(awg_ipv6_effective_mode)"
+    log "NDP proxy needed: $(awg_ipv6_effective_mode_is_ndp && echo yes || echo no)"
+    log "WAN iface: ${wan}"
+    log "VPN iface: ${vpn}"
+    log "Prefix: ${AWG_IPV6_SUBNET:-}"
+    log "ndppd package: ${installed}"
     if [[ -f "$NDPPD_CONF_FILE" ]]; then
-        log "ndppd config: $NDPPD_CONF_FILE"
+        log "ndppd config: present"
     else
-        log "ndppd config: absent"
+        log "ndppd config: missing"
     fi
-    local _ndppd_active
-    _ndppd_active="$(systemctl is-active ndppd 2>/dev/null)"
-    log "ndppd active: ${_ndppd_active:-inactive}"
-    log "proxy_ndp sysctl: $(cat /proc/sys/net/ipv6/conf/all/proxy_ndp 2>/dev/null || echo 'unknown')"
+    log "ndppd active: ${active:-inactive}"
+    log "ndppd enabled: ${enabled:-disabled}"
+    log "proxy_ndp all: ${proxy_all}"
+    log "proxy_ndp ${wan}: ${proxy_wan}"
+    log "forwarding: ${forwarding}"
+    log "address collisions: ${collisions}"
+    if awg_ipv6_effective_mode_is_ndp; then
+        [[ "$installed" == "installed" ]] || log_warn "ERROR: effective IPv6 mode is ndp but ndppd is missing"
+        [[ "$configured" == "present" ]] || log_warn "ERROR: effective IPv6 mode is ndp but $NDPPD_CONF_FILE is missing"
+        [[ "$active" == "active" ]] || log_warn "ERROR: effective IPv6 mode is ndp but ndppd is not active"
+    fi
+}
+
+ipv6_ndp_fix() {
+    safe_load_config "$CONFIG_FILE" 2>/dev/null || true
+    local wan prefix changed=0
+    wan="$(get_main_nic)"; [[ -n "$wan" ]] || wan="eth0"
+    prefix="${AWG_IPV6_SUBNET:-}"
+    [[ -n "$prefix" ]] || die "AWG_IPV6_SUBNET is empty; cannot configure NDP proxy."
+    validate_ipv6_cidr "$prefix" || die "Invalid IPv6 CIDR prefix: $prefix"
+    if is_prefix_onlink_on_wan "$prefix" "$wan"; then
+        AWG_IPV6_ENABLED=1
+        AWG_IPV6_MODE_REQUESTED="${AWG_IPV6_MODE_REQUESTED:-auto}"
+        [[ "$AWG_IPV6_MODE_REQUESTED" == "legacy" ]] && AWG_IPV6_MODE_REQUESTED="auto"
+        AWG_IPV6_MODE_EFFECTIVE=ndp
+        AWG_IPV6_MODE=ndp
+        AWG_IPV6_NDP_PROXY=1
+        AWG_IPV6_MODE_REASON="selected ndp because VPN prefix matches WAN on-link /64"
+        changed=1
+    elif awg_ipv6_effective_mode_is_ndp; then
+        changed=1
+    else
+        die "VPN prefix ${prefix} is not on-link on WAN ${wan}; refusing to force NDP."
+    fi
+    if [[ "$changed" -eq 1 && -f "$CONFIG_FILE" ]]; then
+        update_config_var AWG_IPV6_ENABLED 1
+        update_config_var AWG_IPV6_MODE "$AWG_IPV6_MODE"
+        update_config_var AWG_IPV6_MODE_REQUESTED "$AWG_IPV6_MODE_REQUESTED"
+        update_config_var AWG_IPV6_MODE_EFFECTIVE "$AWG_IPV6_MODE_EFFECTIVE"
+        update_config_var AWG_IPV6_MODE_REASON "$AWG_IPV6_MODE_REASON"
+        update_config_var AWG_IPV6_SUBNET "$AWG_IPV6_SUBNET"
+        update_config_var AWG_IPV6_NDP_PROXY 1
+    fi
+    ipv6_ndp_generate_config "$prefix"
+    ipv6_ndp_enable
+    ipv6_ndp_print_status
 }
 
 # ------------------------------------------------------------------------------
@@ -634,7 +882,11 @@ PY
 
 get_server_ipv6_address() {
     awg_ipv6_enabled || return 1
-    ipv6_addr_at "$AWG_IPV6_SUBNET" 1
+    if awg_ipv6_effective_mode_is_ndp; then
+        ipv6_addr_at "$AWG_IPV6_SUBNET" 256
+    else
+        ipv6_addr_at "$AWG_IPV6_SUBNET" 1
+    fi
 }
 
 _extract_peer_value() {
@@ -800,23 +1052,55 @@ allocate_p2p_ports_for_ipv4() {
 
 get_next_client_ipv6() {
     awg_ipv6_enabled || return 1
-    local subnet="$AWG_IPV6_SUBNET"
-    python3 - "$subnet" "$SERVER_CONF_FILE" <<'PY'
-import ipaddress, re, sys
+    local subnet="$AWG_IPV6_SUBNET" wan mode
+    wan="$(get_main_nic 2>/dev/null || true)"
+    mode="$(awg_ipv6_effective_mode)"
+    python3 - "$subnet" "$SERVER_CONF_FILE" "${AWG_DIR:-}" "$wan" "$mode" <<'PY'
+import ipaddress, os, re, subprocess, sys
+from pathlib import Path
+
 net = ipaddress.ip_network(sys.argv[1], strict=False)
-used = {net.network_address + 1}
-try:
-    data = open(sys.argv[2], encoding="utf-8", errors="ignore").read()
-except FileNotFoundError:
-    data = ""
-for token in re.findall(r"([0-9A-Fa-f:]+/128)", data):
+server_conf, awg_dir, wan, mode = sys.argv[2:6]
+server_offset = 0x100 if mode == "ndp" else 1
+used = {net.network_address, net.network_address + server_offset}
+
+def reserve_token(token):
     try:
-        addr = ipaddress.ip_interface(token).ip
+        addr = ipaddress.ip_interface(token).ip if "/" in token else ipaddress.ip_address(token)
     except ValueError:
-        continue
-    if addr in net:
+        return
+    if addr.version == 6 and addr in net:
         used.add(addr)
-for i in range(2, 255):
+
+paths = [Path(server_conf)]
+if awg_dir:
+    paths.extend(Path(awg_dir).glob("*.conf"))
+for path in paths:
+    try:
+        data = path.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        continue
+    for token in re.findall(r"(?:AllowedIPs|Address)\s*=\s*[^\n#]*?([0-9A-Fa-f:]+/128)", data):
+        reserve_token(token)
+
+if mode == "ndp":
+    if wan:
+        try:
+            out = subprocess.run(["ip", "-6", "-o", "addr", "show", "dev", wan, "scope", "global"], capture_output=True, text=True, timeout=2, check=False).stdout
+            for token in re.findall(r"inet6\s+([0-9A-Fa-f:]+/\d+)", out):
+                reserve_token(token)
+        except Exception:
+            pass
+    try:
+        out = subprocess.run(["ip", "-6", "route", "show", "default"], capture_output=True, text=True, timeout=2, check=False).stdout
+        for token in re.findall(r"\bvia\s+([0-9A-Fa-f:]+)", out):
+            reserve_token(token)
+    except Exception:
+        pass
+
+start = 0x101 if mode == "ndp" else 2
+limit = min(net.num_addresses - 1, 65535)
+for i in range(start, limit + 1):
     cand = net.network_address + i
     if cand not in used:
         print(cand)
@@ -3733,6 +4017,7 @@ upgrade_existing_peers_ipv6_p2p() {
     tmpfile=$(awg_mktemp) || { exec {lock_fd}>&-; return 1; }
     AWG_IPV6_SUBNET="${AWG_IPV6_SUBNET:-}" \
     AWG_IPV6_ENABLED="${AWG_IPV6_ENABLED:-0}" \
+    AWG_IPV6_MODE_EFFECTIVE="${AWG_IPV6_MODE_EFFECTIVE:-${AWG_IPV6_MODE:-legacy}}" \
     AWG_P2P_ENABLED="${AWG_P2P_ENABLED:-0}" \
     AWG_P2P_BASE_PORT="${AWG_P2P_BASE_PORT:-20000}" \
     AWG_P2P_PORTS_PER_CLIENT="${AWG_P2P_PORTS_PER_CLIENT:-3}" \
@@ -3744,6 +4029,7 @@ data = open(src, encoding="utf-8", errors="ignore").read().splitlines()
 ipv6_enabled = os.environ.get("AWG_IPV6_ENABLED") == "1" and os.environ.get("AWG_IPV6_SUBNET")
 p2p_enabled = os.environ.get("AWG_P2P_ENABLED") == "1"
 net = ipaddress.ip_network(os.environ["AWG_IPV6_SUBNET"], strict=False) if ipv6_enabled else None
+ipv6_mode = os.environ.get("AWG_IPV6_MODE_EFFECTIVE", os.environ.get("AWG_IPV6_MODE", "legacy"))
 base = int(os.environ.get("AWG_P2P_BASE_PORT", "20000"))
 count = int(os.environ.get("AWG_P2P_PORTS_PER_CLIENT", "3"))
 
@@ -3759,12 +4045,14 @@ for line in data:
     if line.startswith("#_P2PPorts"):
         used_ports.update(int(x) for x in re.findall(r"\d+", line))
 if net:
-    used_v6.add(net.network_address + 1)
+    used_v6.add(net.network_address)
+    used_v6.add(net.network_address + (0x100 if ipv6_mode == "ndp" else 1))
 
 def alloc_v6():
     if not net:
         return ""
-    for i in range(2, 255):
+    start = 0x101 if ipv6_mode == "ndp" else 2
+    for i in range(start, min(net.num_addresses - 1, 65535) + 1):
         cand = net.network_address + i
         if cand not in used_v6:
             used_v6.add(cand)

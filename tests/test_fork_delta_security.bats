@@ -45,17 +45,17 @@ CONF
     grep -q 'IPV6_MODE" == "nat66"' "$AWG_DIR/postup.sh"
 }
 
-@test "installer ndppd config is managed only for ndp mode with auto rule" {
+@test "installer ndppd config is managed only for effective ndp mode with awg iface rule" {
     local ru="$BATS_TEST_DIRNAME/../install_amneziawg.sh"
     local en="$BATS_TEST_DIRNAME/../install_amneziawg_en.sh"
-    grep -qF 'AWG_IPV6_MODE:-}" == "ndp"' "$ru"
-    grep -qF 'AWG_IPV6_MODE:-}" == "ndp"' "$en"
+    grep -qF 'installer_ipv6_effective_mode_is_ndp' "$ru"
+    grep -qF 'installer_ipv6_effective_mode_is_ndp' "$en"
     grep -qF 'Managed by AmneziaWG installer' "$ru"
     grep -qF 'Managed by AmneziaWG installer' "$en"
     grep -qF "rule \${AWG_IPV6_SUBNET}" "$ru"
     grep -qF "rule \${AWG_IPV6_SUBNET}" "$en"
-    grep -qF '        auto' "$ru"
-    grep -qF '        auto' "$en"
+    grep -qF "        iface \${vpn}" "$ru"
+    grep -qF "        iface \${vpn}" "$en"
     if grep -qF 'AWG_IPV6_MODE:-}" == "native"' "$en"; then
         fail "EN installer must not use obsolete native mode for ndppd"
     fi

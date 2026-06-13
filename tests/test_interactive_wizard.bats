@@ -177,6 +177,13 @@
         select_effective_ipv6_mode auto "2001:db8:9::/64"
         [ "$AWG_IPV6_MODE" = "routed" ]
 
+        is_prefix_onlink_on_wan_installer(){ [ "$1" = "2001:db8:1::/64" ]; }
+        select_effective_ipv6_mode auto "2001:db8:1::/64"
+        [ "$AWG_IPV6_MODE" = "ndp" ]
+        [ "$AWG_IPV6_MODE_EFFECTIVE" = "ndp" ]
+        [ "$AWG_IPV6_NDP_PROXY:-0" != "1" ]
+        [ "$AWG_IPV6_MODE_REASON" = "selected ndp because VPN prefix matches WAN on-link /64" ]
+
         select_effective_ipv6_mode auto "fd12:3456:789a:2::/64"
         [ "$AWG_IPV6_MODE" = "nat66" ]
 

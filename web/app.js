@@ -1358,8 +1358,8 @@ function ndpProxyStatus(ndp) {
   const mode = ndp.mode || "ipv6_unknown_manual_review";
   if (mode === "ipv6_prefix_onlink_needs_ndp_proxy") {
     if (ndp.ndppd_active && ndp.configured) return {text: "Enabled", status: "ok"};
-    if ((ndp.installed || ndp.configured) && !ndp.ndppd_active) return {text: "Misconfigured", status: "warn"};
-    return {text: "Needed", status: "warn"};
+    if (!ndp.installed || !ndp.configured) return {text: "Needed", status: "error"};
+    return {text: "Misconfigured", status: "warn"};
   }
   if (mode === "ipv6_unknown_manual_review") return {text: "Manual review required", status: "warn"};
   return {text: "Not needed", status: "info"};
@@ -1380,6 +1380,9 @@ function renderNdpProxyPanel() {
   const summary = ndpProxyStatus(ndp);
   const needsPrefixInput = !ndp.prefix && mode !== "ipv6_disabled";
   const canManage = mode !== "ipv6_disabled";
+  const collisions = Array.isArray(ndp.collisions) && ndp.collisions.length
+    ? ndp.collisions.map((item) => `${item.address}: ${(item.owners || []).join(", ")}`).join("; ")
+    : "none";
 
   host.innerHTML = `
     <div class="rounded-md border border-[var(--line)] bg-[var(--soft)] p-3">
@@ -1393,8 +1396,13 @@ function renderNdpProxyPanel() {
         <div>${"VP" + "N"} iface: <span class="text-[var(--text)]">${esc(ndp["vp" + "n_iface"] || "-")}</span></div>
         <div>Prefix: <span class="text-[var(--text)]">${esc(ndp.prefix || "(not configured)")}</span></div>
         <div>proxy_ndp sysctl: <span class="text-[var(--text)]">${esc(ndp.proxy_ndp_sysctl ?? "-")}</span></div>
+        <div>proxy_ndp WAN: <span class="text-[var(--text)]">${esc(ndp.proxy_ndp_wan_sysctl ?? "-")}</span></div>
+        <div>forwarding: <span class="text-[var(--text)]">${esc(ndp.forwarding_sysctl ?? "-")}</span></div>
         <div>ndppd installed: <span class="text-[var(--text)]">${ndp.installed ? "yes" : "no"}</span></div>
+        <div>ndppd config: <span class="text-[var(--text)]">${ndp.configured ? "present" : "missing"}</span></div>
+        <div>ndppd enabled: <span class="text-[var(--text)]">${ndp.enabled ? "yes" : "no"}</span></div>
         <div>ndppd active: <span class="text-[var(--text)]">${ndp.ndppd_active ? "yes" : "no"}</span></div>
+        <div class="sm:col-span-2">IPv6 address collisions: <span class="text-[var(--text)]">${esc(collisions)}</span></div>
       </div>
       ${canManage ? `
         ${needsPrefixInput ? `

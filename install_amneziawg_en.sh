@@ -34,11 +34,11 @@ MANAGE_SCRIPT_PATH="$AWG_DIR/manage_amneziawg.sh"
 # are used first; remote download is allowed only with pinned SHA256 or explicit
 # AWG_ALLOW_UNVERIFIED_DOWNLOAD=1 for development.
 declare -A AWG_ASSET_SHA256=(
-    ["awg_common_en.sh"]="443a2a9883f70228cfd687ce2ab93db96155d8cd0eb340338b2716758c7eaca8"
-    ["manage_amneziawg_en.sh"]="4c5e12156177fc5a58957f45744b81abae85b1a778d45298c7742efb836f698a"
-    ["web/server.py"]="1e30e788ca38d070a865429cb6b1b4def1c98aa297613e11b264b52daac7879b"
+    ["awg_common_en.sh"]="00233e2bbf237106435a4d8795df44447cfb51182f2e2b07c7aaf9b18fbb5d0c"
+    ["manage_amneziawg_en.sh"]="18e1dfbe9989f38692883ac992c7f1005f06ec4d41c03a92b682a28f31bf7d80"
+    ["web/server.py"]="468bc42c3e644a8d58cec2f787326150d4a19b28de848c1a63e328f54693afea"
     ["web/index.html"]="7c07ed1d1991e08c0f9fc31e86ed8eb2bba5fa96387088f1f18918396cf7e662"
-    ["web/app.js"]="61344d70914e6a8d1c4f3f4056d8a57819720e65acde2a6d9c39deaa94b3cfba"
+    ["web/app.js"]="649c8ad16e264bc10031a331a52b880bc23483f5425fd382ab9474c20d794e75"
     ["web/awg_i1.js"]="c97a6ac6c4e4bd7ab24c37c45f451e364414f276441f8da1c0805d26013aaa03"
     ["web/style.css"]="a4c67a98f7f5086b7b9f7519a675fc53c45204b99bada9c780a060963a08edc3"
     ["web/favicon.svg"]="ae700ecb12dbf01403d0ed25247bac6b70f11201b094ee6c14b774b7fa533859"
@@ -932,6 +932,33 @@ normalize_ipv6_mode_installer() {
     esac
 }
 
+installer_ipv6_effective_mode_is_ndp() {
+    [[ "${AWG_IPV6_MODE_EFFECTIVE:-${AWG_IPV6_MODE:-legacy}}" == "ndp" ]]
+}
+
+is_prefix_onlink_on_wan_installer() {
+    local prefix="$1" wan="${2:-}"
+    [[ -n "$prefix" ]] || return 1
+    [[ -n "$wan" ]] || wan="$(get_main_nic 2>/dev/null || true)"
+    [[ -n "$wan" ]] || return 1
+    command -v python3 &>/dev/null || return 1
+    local wan_prefix
+    while IFS= read -r wan_prefix; do
+        [[ -n "$wan_prefix" ]] || continue
+        python3 - "$prefix" "$wan_prefix" <<'PY' 2>/dev/null && return 0
+import ipaddress
+import sys
+try:
+    wanted = ipaddress.ip_network(sys.argv[1], strict=False)
+    onlink = ipaddress.ip_interface(sys.argv[2]).network
+except ValueError:
+    sys.exit(1)
+sys.exit(0 if wanted.version == 6 and wanted == onlink else 1)
+PY
+    done < <(ip -6 -o addr show dev "$wan" scope global 2>/dev/null | awk '{print $4}')
+    return 1
+}
+
 resolve_ipv6_mode_choice() {
     case "${1:-1}" in
         1|auto) echo "auto" ;;
@@ -983,6 +1010,10 @@ select_effective_ipv6_mode() {
                     AWG_IPV6_MODE="nat66"
                     AWG_IPV6_SUBNET="$subnet"
                     AWG_IPV6_MODE_REASON="selected nat66 because ULA prefix was provided"
+                elif is_prefix_onlink_on_wan_installer "$subnet"; then
+                    AWG_IPV6_MODE="ndp"
+                    AWG_IPV6_SUBNET="$subnet"
+                    AWG_IPV6_MODE_REASON="selected ndp because VPN prefix matches WAN on-link /64"
                 else
                     AWG_IPV6_MODE="routed"
                     AWG_IPV6_SUBNET="$subnet"
@@ -3622,7 +3653,7 @@ PPASRC
         if _try_install_prebuilt_arm; then
             log "Prebuilt kernel module installed. Installing userspace tools from PPA..."
             install_packages "amneziawg-tools" "wireguard-tools" "qrencode" "python3" "openssl"
-            [[ "${AWG_IPV6_MODE:-}" == "ndp" && "${AWG_IPV6_NDP_PROXY:-0}" -eq 1 ]] && install_packages "ndppd"
+            installer_ipv6_effective_mode_is_ndp && install_packages "ndppd"
             log "Step 2 completed (prebuilt ARM)."
             request_reboot 3
             return
@@ -3632,7 +3663,7 @@ PPASRC
 
     local packages=("amneziawg-dkms" "amneziawg-tools" "wireguard-tools" "dkms"
                     "build-essential" "dpkg-dev" "qrencode" "python3" "openssl")
-    if [[ "${AWG_IPV6_MODE:-}" == "ndp" && "${AWG_IPV6_NDP_PROXY:-0}" -eq 1 ]]; then
+    if installer_ipv6_effective_mode_is_ndp; then
         packages+=("ndppd")
     fi
 
@@ -4171,11 +4202,13 @@ step5_download_scripts() {
 }
 
 setup_ndppd_config() {
-    [[ "${AWG_IPV6_ENABLED:-0}" -eq 1 && "${AWG_IPV6_MODE:-}" == "ndp" && "${AWG_IPV6_NDP_PROXY:-0}" -eq 1 ]] || return 0
-    local nic conf="/etc/ndppd.conf"
+    [[ "${AWG_IPV6_ENABLED:-0}" -eq 1 ]] && installer_ipv6_effective_mode_is_ndp || return 0
+    local nic vpn conf="/etc/ndppd.conf" dropin="/etc/systemd/system/ndppd.service.d/10-amneziawg.conf"
     [[ -n "${AWG_IPV6_SUBNET:-}" ]] || { log_warn "ndppd skipped: AWG_IPV6_SUBNET is empty."; return 0; }
+    validate_ipv6_subnet "$AWG_IPV6_SUBNET" || { log_warn "ndppd skipped: invalid AWG_IPV6_SUBNET."; return 0; }
     nic=$(ip route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="dev") print $(i+1); exit}')
     [[ -n "$nic" ]] || nic="eth0"
+    vpn="awg0"
     if [[ -f "$conf" ]] && ! grep -q "Managed by AmneziaWG installer" "$conf"; then
         cp -a "$conf" "${conf}.bak.$(date +%Y%m%d-%H%M%S)" || die "Failed to back up $conf"
     fi
@@ -4187,11 +4220,33 @@ proxy ${nic} {
     timeout 500
     ttl 30000
     rule ${AWG_IPV6_SUBNET} {
-        auto
+        iface ${vpn}
     }
 }
 EOF
     chmod 644 "$conf"
+    mkdir -p "$(dirname "$dropin")"
+    cat > "$dropin" << EOF
+[Unit]
+After=network-online.target awg-quick@${vpn}.service
+Wants=network-online.target awg-quick@${vpn}.service
+
+[Service]
+Restart=on-failure
+RestartSec=5s
+EOF
+    cat > /etc/sysctl.d/99-amneziawg-ndp.conf << EOF
+# Managed by AmneziaWG installer. Manual changes may be overwritten.
+net.ipv6.conf.all.forwarding = 1
+net.ipv6.conf.default.forwarding = 1
+net.ipv6.conf.all.proxy_ndp = 1
+net.ipv6.conf.${nic}.proxy_ndp = 1
+EOF
+    sysctl -w net.ipv6.conf.all.forwarding=1 >/dev/null 2>&1 || true
+    sysctl -w net.ipv6.conf.default.forwarding=1 >/dev/null 2>&1 || true
+    sysctl -w net.ipv6.conf.all.proxy_ndp=1 >/dev/null 2>&1 || true
+    sysctl -w "net.ipv6.conf.${nic}.proxy_ndp=1" >/dev/null 2>&1 || true
+    systemctl daemon-reload 2>/dev/null || true
     systemctl enable ndppd 2>/dev/null || log_warn "Failed to enable ndppd"
     systemctl restart ndppd 2>/dev/null || log_warn "Failed to restart ndppd"
     log "ndppd configured for ${AWG_IPV6_SUBNET} via ${nic}."

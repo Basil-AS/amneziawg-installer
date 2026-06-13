@@ -1880,10 +1880,12 @@ usage() {
     echo "  ipv6 status           Показать режим IPv6"
     echo "  ipv6 upgrade          Выдать IPv6/P2P metadata существующим клиентам"
     echo "  ipv6 ndp status       Показать диагностику NDP proxy (ndppd)"
+    echo "  ipv6 ndp install      Установить ndppd и включить service"
     echo "  ipv6 ndp generate [PREFIX]  Сгенерировать /etc/ndppd.conf для PREFIX (или AWG_IPV6_SUBNET)"
     echo "  ipv6 ndp enable       Установить (если нужно), enable+start ndppd"
     echo "  ipv6 ndp disable      Disable+stop ndppd"
     echo "  ipv6 ndp restart      Перезапустить ndppd"
+    echo "  ipv6 ndp fix          Исправить auto/on-link режим, config, sysctl и ndppd"
     echo "  dns status            Показать режим DNS и статус AdGuard Home"
     echo "  dns restart           Синхронизировать клиентов и перезапустить AdGuard Home"
     echo "  dns sync-clients      Синхронизировать клиентов в AdGuard Home"
@@ -2249,11 +2251,17 @@ case $COMMAND in
                     enable)
                         ipv6_ndp_enable
                         ;;
+                    install)
+                        ipv6_ndp_enable
+                        ;;
                     disable)
                         ipv6_ndp_disable
                         ;;
                     restart)
                         ipv6_ndp_restart
+                        ;;
+                    fix)
+                        ipv6_ndp_fix
                         ;;
                     *)
                         die "Неизвестная ipv6 ndp команда: $_ndp_sub"

@@ -1455,17 +1455,81 @@ def ndppd_service_active():
         return False
 
 
-def ndp_proxy_check(ipv6_mode, has_global_ipv6):
-    binary = shutil.which("ndppd")
-    config_exists = Path("/etc/ndppd.conf").exists()
-    enabled = False
+def systemctl_is_enabled(unit):
     try:
         out = subprocess.run(
-            ["systemctl", "is-enabled", "ndppd"], capture_output=True, text=True, timeout=2.0, check=False,
+            ["systemctl", "is-enabled", unit], capture_output=True, text=True, timeout=2.0, check=False,
         )
-        enabled = (out.stdout or "").strip() in {"enabled", "static"}
+        return (out.stdout or "").strip() in {"enabled", "static"}
     except (OSError, subprocess.SubprocessError):
-        enabled = False
+        return False
+
+
+def ipv6_address_collisions(prefix, wan_iface):
+    try:
+        net = ipaddress.ip_network(prefix, strict=False) if prefix else None
+    except ValueError:
+        net = None
+    owners = {}
+
+    def add(addr, owner):
+        try:
+            ip = ipaddress.ip_address(str(addr).split("/", 1)[0])
+        except ValueError:
+            return
+        if ip.version != 6 or (net is not None and ip not in net):
+            return
+        owners.setdefault(str(ip), []).append(owner)
+
+    try:
+        out = subprocess.run(["ip", "-6", "-o", "addr", "show", "dev", wan_iface, "scope", "global"], capture_output=True, text=True, timeout=2.0, check=False)
+        for token in re.findall(r"inet6\s+([0-9A-Fa-f:]+)/\d+", out.stdout or ""):
+            add(token, f"WAN:{wan_iface}")
+    except (OSError, subprocess.SubprocessError):
+        pass
+    try:
+        out = subprocess.run(["ip", "-6", "route", "show", "default"], capture_output=True, text=True, timeout=2.0, check=False)
+        for token in re.findall(r"\bvia\s+([0-9A-Fa-f:]+)", out.stdout or ""):
+            add(token, "WAN:gateway")
+    except (OSError, subprocess.SubprocessError):
+        pass
+    paths = [Path(SERVER_CONF)]
+    try:
+        paths.extend(Path(AWG_DIR).glob("*.conf"))
+    except OSError:
+        pass
+    for path in paths:
+        data = read_text_file(path)
+        in_interface = False
+        for line in data.splitlines():
+            stripped = line.strip()
+            if stripped == "[Interface]":
+                in_interface = True
+                continue
+            if stripped.startswith("[") and stripped != "[Interface]":
+                in_interface = False
+            if in_interface and path == Path(SERVER_CONF) and stripped.startswith("Address"):
+                for token in re.findall(r"([0-9A-Fa-f:]+/\d+)", stripped):
+                    add(token, f"server:{path}")
+        for token in re.findall(r"(?:AllowedIPs|Address)\s*=\s*[^\n#]*?([0-9A-Fa-f:]+)/128", data):
+            add(token, f"client:{path}")
+
+    collisions = []
+    for addr, owner_list in owners.items():
+        client = [x for x in owner_list if x.startswith("client:")]
+        non_client = [x for x in owner_list if not x.startswith("client:")]
+        if client and non_client:
+            collisions.append({"address": addr, "owners": owner_list})
+    return sorted(collisions, key=lambda item: ipaddress.ip_address(item["address"]))
+
+
+def ndp_proxy_check(ipv6_mode, has_global_ipv6, cfg=None, wan_iface=""):
+    cfg = cfg or {}
+    effective = str(cfg.get("AWG_IPV6_MODE_EFFECTIVE") or cfg.get("AWG_IPV6_MODE") or "legacy").lower()
+    binary = shutil.which("ndppd")
+    config_exists = Path("/etc/ndppd.conf").exists()
+    enabled = systemctl_is_enabled("ndppd")
+    active = ndppd_service_active()
 
     if ipv6_mode == "disabled":
         return {
@@ -1474,6 +1538,33 @@ def ndp_proxy_check(ipv6_mode, has_global_ipv6):
             "detail": "IPv6 is disabled on this host; NDP proxy is not applicable.",
             "installed": bool(binary),
             "configured": config_exists,
+            "enabled": enabled,
+            "ndppd_active": active,
+        }
+
+    if effective == "ndp":
+        missing = []
+        if not binary:
+            missing.append("package missing")
+        if not config_exists:
+            missing.append("config missing")
+        if not active:
+            missing.append("service inactive")
+        if missing:
+            detail = "NDP proxy is needed for the on-link IPv6 prefix: " + ", ".join(missing) + "."
+            status = "error" if not binary or not config_exists else "warn"
+        else:
+            detail = "NDP proxy is needed and ndppd is installed, configured, and active."
+            status = "ok"
+        return {
+            "status": status,
+            "state": "needed",
+            "detail": detail,
+            "installed": bool(binary),
+            "configured": config_exists,
+            "enabled": enabled,
+            "ndppd_active": active,
+            "needed": True,
         }
 
     if has_global_ipv6 and not ipv6_default_route_present():
@@ -1484,6 +1575,8 @@ def ndp_proxy_check(ipv6_mode, has_global_ipv6):
                 "detail": "ndppd is installed and enabled.",
                 "installed": True,
                 "configured": True,
+                "enabled": enabled,
+                "ndppd_active": active,
             }
         return {
             "status": "warn",
@@ -1491,6 +1584,8 @@ def ndp_proxy_check(ipv6_mode, has_global_ipv6):
             "detail": "Global IPv6 address present without a default route; NDP proxy (ndppd) may be needed.",
             "installed": bool(binary),
             "configured": config_exists,
+            "enabled": enabled,
+            "ndppd_active": active,
         }
 
     return {
@@ -1499,6 +1594,9 @@ def ndp_proxy_check(ipv6_mode, has_global_ipv6):
         "detail": "A routed IPv6 prefix is present; NDP proxy is not needed.",
         "installed": bool(binary),
         "configured": config_exists,
+        "enabled": enabled,
+        "ndppd_active": active,
+        "needed": False,
     }
 
 
@@ -1517,14 +1615,16 @@ def vpn_readiness_payload(force=False):
         udp_buf = udp_buffer_check()
         offloads = wan_offload_check(wan_iface)
         ipv6_routing = ipv6_routing_check()
-        ndp = ndp_proxy_check(ipv6_routing["mode"], ipv6_routing["global_address"])
         cfg = parse_config()
+        ndp = ndp_proxy_check(ipv6_routing["mode"], ipv6_routing["global_address"], cfg, wan_iface)
         ndp["mode"] = ipv6_ndp_state(ipv6_routing, cfg)
         ndp["wan_iface"] = wan_iface
         ndp["vpn_iface"] = detect_vpn_iface()
         ndp["prefix"] = cfg.get("AWG_IPV6_SUBNET") or ""
         ndp["proxy_ndp_sysctl"] = read_text_file("/proc/sys/net/ipv6/conf/all/proxy_ndp", "0").strip()
-        ndp["ndppd_active"] = ndppd_service_active()
+        ndp["proxy_ndp_wan_sysctl"] = read_text_file(f"/proc/sys/net/ipv6/conf/{wan_iface}/proxy_ndp", "0").strip()
+        ndp["forwarding_sysctl"] = read_text_file("/proc/sys/net/ipv6/conf/all/forwarding", "0").strip()
+        ndp["collisions"] = ipv6_address_collisions(ndp["prefix"], wan_iface)
 
         overall = combine_status(
             kernel["status"],

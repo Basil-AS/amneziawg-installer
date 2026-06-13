@@ -1883,10 +1883,12 @@ usage() {
     echo "  ipv6 status           Show IPv6 mode"
     echo "  ipv6 upgrade          Add IPv6/P2P metadata to existing clients"
     echo "  ipv6 ndp status       Show NDP proxy (ndppd) diagnostics"
+    echo "  ipv6 ndp install      Install ndppd and enable the service"
     echo "  ipv6 ndp generate [PREFIX]  Generate /etc/ndppd.conf for PREFIX (or AWG_IPV6_SUBNET)"
     echo "  ipv6 ndp enable       Install (if needed), enable+start ndppd"
     echo "  ipv6 ndp disable      Disable+stop ndppd"
     echo "  ipv6 ndp restart      Restart ndppd"
+    echo "  ipv6 ndp fix          Fix auto/on-link mode, config, sysctl, and ndppd"
     echo "  dns status            Show DNS mode and AdGuard Home status"
     echo "  dns restart           Sync clients and restart AdGuard Home"
     echo "  dns sync-clients      Sync VPN clients into AdGuard Home"
@@ -2249,11 +2251,17 @@ case $COMMAND in
                     enable)
                         ipv6_ndp_enable
                         ;;
+                    install)
+                        ipv6_ndp_enable
+                        ;;
                     disable)
                         ipv6_ndp_disable
                         ;;
                     restart)
                         ipv6_ndp_restart
+                        ;;
+                    fix)
+                        ipv6_ndp_fix
                         ;;
                     *)
                         die "Unknown ipv6 ndp command: $_ndp_sub"

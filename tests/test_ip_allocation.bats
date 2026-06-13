@@ -115,6 +115,53 @@ EOF
     [ "$output" = "fd12:3456:789a:1::3" ]
 }
 
+@test "get_server_ipv6_address: ndp mode uses ::100 instead of gateway-like ::1" {
+    command -v python3 &>/dev/null || skip "python3 not available"
+    export AWG_IPV6_ENABLED=1
+    export AWG_IPV6_MODE="ndp"
+    export AWG_IPV6_MODE_EFFECTIVE="ndp"
+    export AWG_IPV6_SUBNET="2a09:9340:808:4::/64"
+    run get_server_ipv6_address
+    [ "$status" -eq 0 ]
+    [ "$output" = "2a09:9340:808:4::100" ]
+}
+
+@test "get_next_client_ipv6: ndp mode starts after server ::100 and skips WAN/gateway/existing clients" {
+    command -v python3 &>/dev/null || skip "python3 not available"
+    mkdir -p "$TEST_DIR/bin"
+    cat > "$TEST_DIR/bin/ip" <<'EOF'
+#!/bin/bash
+if [[ "$*" == "-6 -o addr show dev ens18 scope global" ]]; then
+    echo "2: ens18 inet6 2a09:9340:808:4::2/64 scope global"
+    exit 0
+fi
+if [[ "$*" == "-6 route show default" ]]; then
+    echo "default via 2a09:9340:808:4::1 dev ens18"
+    exit 0
+fi
+exit 0
+EOF
+    chmod +x "$TEST_DIR/bin/ip"
+    export PATH="$TEST_DIR/bin:$PATH"
+    get_main_nic(){ echo ens18; }
+    export -f get_main_nic
+    export AWG_IPV6_ENABLED=1
+    export AWG_IPV6_MODE="ndp"
+    export AWG_IPV6_MODE_EFFECTIVE="ndp"
+    export AWG_IPV6_SUBNET="2a09:9340:808:4::/64"
+    create_server_config
+    cat >> "$SERVER_CONF_FILE" <<'EOF'
+
+[Peer]
+#_Name = existing
+PublicKey = PUB
+AllowedIPs = 10.9.9.2/32, 2a09:9340:808:4::101/128
+EOF
+    run get_next_client_ipv6
+    [ "$status" -eq 0 ]
+    [ "$output" = "2a09:9340:808:4::102" ]
+}
+
 @test "allocate_p2p_ports_for_ipv4: allocates three deterministic ports" {
     export AWG_P2P_BASE_PORT=20000
     export AWG_P2P_PORTS_PER_CLIENT=3

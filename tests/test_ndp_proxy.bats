@@ -119,6 +119,22 @@ EOF
     grep -qF "iface awg0" "$NDPPD_CONF_FILE"
 }
 
+@test "is_prefix_onlink_on_wan: same WAN /64 is on-link, different prefix is not" {
+    command -v python3 &>/dev/null || skip "python3 not available"
+    mkdir -p "$TEST_DIR/bin"
+    cat > "$TEST_DIR/bin/ip" <<'EOF'
+#!/bin/bash
+if [[ "$*" == "-6 -o addr show dev ens18 scope global" ]]; then
+    echo "2: ens18 inet6 2a09:9340:808:4::2/64 scope global"
+fi
+EOF
+    chmod +x "$TEST_DIR/bin/ip"
+    export PATH="$TEST_DIR/bin:$PATH"
+    is_prefix_onlink_on_wan "2a09:9340:808:4::/64" "ens18"
+    run is_prefix_onlink_on_wan "2a09:9340:809:100::/64" "ens18"
+    [ "$status" -ne 0 ]
+}
+
 @test "ipv6_ndp_generate_config: backs up existing config" {
     command -v python3 &>/dev/null || skip "python3 not available"
     setup_wan_mock
@@ -187,12 +203,91 @@ EOF
     grep -qF 'ipv6_ndp_enable' "$BATS_TEST_DIRNAME/../manage_amneziawg.sh"
     grep -qF 'ipv6_ndp_disable' "$BATS_TEST_DIRNAME/../manage_amneziawg.sh"
     grep -qF 'ipv6_ndp_restart' "$BATS_TEST_DIRNAME/../manage_amneziawg.sh"
+    grep -qF 'ipv6_ndp_fix' "$BATS_TEST_DIRNAME/../manage_amneziawg.sh"
 }
 
 @test "manage_amneziawg_en.sh (EN) defines an 'ipv6 ndp' subcommand dispatch" {
     grep -qE '^\s*ndp\)' "$BATS_TEST_DIRNAME/../manage_amneziawg_en.sh"
     grep -qF 'ipv6_ndp_print_status' "$BATS_TEST_DIRNAME/../manage_amneziawg_en.sh"
     grep -qF 'ipv6_ndp_generate_config' "$BATS_TEST_DIRNAME/../manage_amneziawg_en.sh"
+    grep -qF 'ipv6_ndp_fix' "$BATS_TEST_DIRNAME/../manage_amneziawg_en.sh"
+}
+
+@test "ipv6_ndp_print_status reports NDP proxy needed for effective ndp" {
+    log(){ echo "$*"; }
+    log_warn(){ echo "$*"; }
+    export -f log log_warn
+    write_if_inet6 "$TEST_DIR/if_inet6" "00"
+    export IF_INET6_FILE="$TEST_DIR/if_inet6"
+    export AWG_IPV6_ENABLED=1
+    export AWG_IPV6_MODE_REQUESTED=auto
+    export AWG_IPV6_MODE=routed
+    export AWG_IPV6_MODE_EFFECTIVE=ndp
+    export AWG_IPV6_SUBNET="2a09:9340:808:4::/64"
+    run ipv6_ndp_print_status
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"NDP proxy needed: yes"* ]]
+    [[ "$output" == *"IPv6 mode requested: auto"* ]]
+    [[ "$output" == *"IPv6 mode effective: ndp"* ]]
+}
+
+@test "ipv6_ndp_fix updates auto same-WAN /64 config and is idempotent" {
+    command -v python3 &>/dev/null || skip "python3 not available"
+    mkdir -p "$TEST_DIR/bin" "$TEST_DIR/systemd/ndppd.service.d" "$TEST_DIR/sysctl.d"
+    cat > "$TEST_DIR/bin/ip" <<'EOF'
+#!/bin/bash
+if [[ "$*" == "route get 1.1.1.1" ]]; then
+    echo "1.1.1.1 dev ens18 src 10.0.0.5"
+    exit 0
+fi
+if [[ "$*" == "-6 -o addr show dev ens18 scope global" ]]; then
+    echo "2: ens18 inet6 2a09:9340:808:4::2/64 scope global"
+    exit 0
+fi
+if [[ "$*" == "-6 route show default" ]]; then
+    echo "default via 2a09:9340:808:4::1 dev ens18"
+    exit 0
+fi
+exit 0
+EOF
+    cat > "$TEST_DIR/bin/systemctl" <<'EOF'
+#!/bin/bash
+case "$1" in
+    is-active) echo active ;;
+    is-enabled) echo enabled ;;
+esac
+exit 0
+EOF
+    cat > "$TEST_DIR/bin/sysctl" <<'EOF'
+#!/bin/bash
+exit 0
+EOF
+    touch "$TEST_DIR/bin/ndppd"
+    chmod +x "$TEST_DIR/bin/"*
+    export PATH="$TEST_DIR/bin:$PATH"
+    export NDPPD_CONF_FILE="$TEST_DIR/ndppd.conf"
+    export NDPPD_SYSTEMD_DROPIN="$TEST_DIR/systemd/ndppd.service.d/10-amneziawg.conf"
+    export NDP_SYSCTL_FILE="$TEST_DIR/sysctl.d/99-amneziawg-ndp.conf"
+    write_if_inet6 "$TEST_DIR/if_inet6" "00"
+    export IF_INET6_FILE="$TEST_DIR/if_inet6"
+    cat > "$CONFIG_FILE" <<'EOF'
+export AWG_IPV6_ENABLED=1
+export AWG_IPV6_MODE='routed'
+export AWG_IPV6_MODE_REQUESTED='auto'
+export AWG_IPV6_MODE_EFFECTIVE='routed'
+export AWG_IPV6_MODE_REASON='selected routed because user provided dedicated prefix'
+export AWG_IPV6_SUBNET='2a09:9340:808:4::/64'
+export AWG_IPV6_NDP_PROXY=0
+EOF
+    run ipv6_ndp_fix
+    [ "$status" -eq 0 ]
+    grep -qF "export AWG_IPV6_MODE='ndp'" "$CONFIG_FILE"
+    grep -qF "export AWG_IPV6_MODE_EFFECTIVE='ndp'" "$CONFIG_FILE"
+    grep -qF "export AWG_IPV6_NDP_PROXY=1" "$CONFIG_FILE"
+    grep -qF "rule 2a09:9340:808:4::/64" "$NDPPD_CONF_FILE"
+    grep -qF "iface awg0" "$NDPPD_CONF_FILE"
+    run ipv6_ndp_fix
+    [ "$status" -eq 0 ]
 }
 
 # -------------------------------------------------------------------------
@@ -227,6 +322,24 @@ assert server.ipv6_ndp_state(enabled, {"AWG_IPV6_MODE": "ndp", "AWG_IPV6_SUBNET"
 assert server.ipv6_ndp_state(enabled, {"AWG_IPV6_MODE": "routed", "AWG_IPV6_SUBNET": "2001:db8::/64"}) == "ipv6_prefix_routed_to_server"
 assert server.ipv6_ndp_state(enabled, {"AWG_IPV6_MODE": "nat66", "AWG_IPV6_SUBNET": "fd00::/64"}) == "ipv6_prefix_routed_to_server"
 assert server.ipv6_ndp_state(enabled, {"AWG_IPV6_MODE": "legacy", "AWG_IPV6_SUBNET": ""}) == "ipv6_public_single_address_only"
+PY
+}
+
+@test "web panel: ndp readiness marks missing ndppd as error for effective ndp" {
+    command -v python3 &>/dev/null || skip "python3 not available"
+    PYTHONPATH="$BATS_TEST_DIRNAME/../web" python3 - <<'PY'
+import server
+
+server.shutil.which = lambda name: None
+result = server.ndp_proxy_check(
+    "enabled",
+    True,
+    {"AWG_IPV6_MODE_EFFECTIVE": "ndp", "AWG_IPV6_SUBNET": "2a09:9340:808:4::/64"},
+    "ens18",
+)
+assert result["needed"] is True
+assert result["status"] in {"error", "warn"}
+assert "NDP proxy is needed" in result["detail"]
 PY
 }
 
