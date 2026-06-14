@@ -2350,6 +2350,10 @@ server.write_tokens({
     "super_token_hash": server.token_hash(super_token),
     "users": {server.token_hash(user_token): {"name": "user", "clients": []}},
 })
+server.client_stats_map = lambda force=False: {
+    "phone": {"rx": 1000, "tx": 2000, "last_handshake": 123},
+    "laptop": {"rx": 3000, "tx": 4000, "last_handshake": 124},
+}
 
 class Headers(dict):
     def get(self, key, default=None):
@@ -2381,6 +2385,11 @@ payload = json.loads(handler.wfile.getvalue().decode())
 assert payload["cache_ttl_seconds"] == 5.0
 assert "cpu" in payload and "memory" in payload and "disk" in payload
 assert "network" in payload and "process" in payload
+assert payload["network"]["clients"]["server_rx_bytes"] == 4000
+assert payload["network"]["clients"]["server_tx_bytes"] == 6000
+assert payload["network"]["clients"]["client_count"] == 2
+assert payload["network"]["clients"]["active_count"] == 2
+assert payload["network"]["clients"]["direction"]["server_tx"] == "client_download"
 assert payload["request"]["client_ip"] == "127.0.0.1"
 PY
     rm -rf "$tmp"
@@ -2581,6 +2590,9 @@ PY
     grep -qF 'os.statvfs' "$server"
     grep -qF '"/sys/class/net"' "$server"
     grep -qF '"/proc/sys/net/netfilter/nf_conntrack_count"' "$server"
+    grep -qF 'def client_traffic_load(stats=None, now=None):' "$server"
+    grep -qF '"client_download_bps"' "$server"
+    grep -qF '"clients_tx": counter_rate_summary(rows, "client_server_tx_bytes")' "$server"
 }
 
 @test "web server health history aggregates JSONL samples without secrets" {
@@ -2601,8 +2613,8 @@ spec.loader.exec_module(server)
 now = int(time.time())
 path = Path(os.environ["AWG_DIR"]) / "web" / "health_history" / time.strftime("samples-%Y%m%d.jsonl", time.gmtime(now))
 rows = [
-    {"ts": now - 120, "timestamp": "old", "status": "ok", "cpu_usage_percent": 10, "memory_used_percent": 20, "memory_available_bytes": 800, "disk_used_percent": 50, "disk_free_bytes": 400, "conntrack_count": 10, "conntrack_used_percent": 1, "wan_rx_bytes": 1000, "wan_tx_bytes": 2000, "vpn_rx_bytes": 3000, "vpn_tx_bytes": 4000, "wan_rx_dropped": 0, "wan_tx_dropped": 0, "vpn_rx_dropped": 0, "vpn_tx_dropped": 0, "wan_rx_errors": 0, "wan_tx_errors": 0, "vpn_rx_errors": 0, "vpn_tx_errors": 0, "python_rss_bytes": 1000, "python_fd_count": 4, "python_threads": 1},
-    {"ts": now - 10, "timestamp": "new", "status": "warn", "cpu_usage_percent": 80, "memory_used_percent": 40, "memory_available_bytes": 600, "disk_used_percent": 51, "disk_free_bytes": 390, "conntrack_count": 20, "conntrack_used_percent": 2, "wan_rx_bytes": 21000, "wan_tx_bytes": 42000, "vpn_rx_bytes": 63000, "vpn_tx_bytes": 84000, "wan_rx_dropped": 2, "wan_tx_dropped": 0, "vpn_rx_dropped": 1, "vpn_tx_dropped": 0, "wan_rx_errors": 0, "wan_tx_errors": 1, "vpn_rx_errors": 0, "vpn_tx_errors": 0, "python_rss_bytes": 2000, "python_fd_count": 8, "python_threads": 2},
+    {"ts": now - 120, "timestamp": "old", "status": "ok", "cpu_usage_percent": 10, "memory_used_percent": 20, "memory_available_bytes": 800, "disk_used_percent": 50, "disk_free_bytes": 400, "conntrack_count": 10, "conntrack_used_percent": 1, "wan_rx_bytes": 1000, "wan_tx_bytes": 2000, "vpn_rx_bytes": 3000, "vpn_tx_bytes": 4000, "client_server_rx_bytes": 5000, "client_server_tx_bytes": 7000, "wan_rx_dropped": 0, "wan_tx_dropped": 0, "vpn_rx_dropped": 0, "vpn_tx_dropped": 0, "wan_rx_errors": 0, "wan_tx_errors": 0, "vpn_rx_errors": 0, "vpn_tx_errors": 0, "python_rss_bytes": 1000, "python_fd_count": 4, "python_threads": 1},
+    {"ts": now - 10, "timestamp": "new", "status": "warn", "cpu_usage_percent": 80, "memory_used_percent": 40, "memory_available_bytes": 600, "disk_used_percent": 51, "disk_free_bytes": 390, "conntrack_count": 20, "conntrack_used_percent": 2, "wan_rx_bytes": 21000, "wan_tx_bytes": 42000, "vpn_rx_bytes": 63000, "vpn_tx_bytes": 84000, "client_server_rx_bytes": 25000, "client_server_tx_bytes": 37000, "wan_rx_dropped": 2, "wan_tx_dropped": 0, "vpn_rx_dropped": 1, "vpn_tx_dropped": 0, "wan_rx_errors": 0, "wan_tx_errors": 1, "vpn_rx_errors": 0, "vpn_tx_errors": 0, "python_rss_bytes": 2000, "python_fd_count": 8, "python_threads": 2},
 ]
 path.write_text("".join(json.dumps(row) + "\n" for row in rows))
 out = server.server_health_history("10m")
@@ -2613,6 +2625,8 @@ assert out["summary"]["network"]["drops_delta"] == 3
 assert out["summary"]["network"]["errors_delta"] == 1
 assert out["summary"]["network"]["rates"]["wan_rx"]["avg_bps"] > 0
 assert out["summary"]["network"]["rates"]["vpn_tx"]["peak_bps"] > 0
+assert out["summary"]["network"]["rates"]["clients_rx"]["avg_bps"] > 0
+assert out["summary"]["network"]["rates"]["clients_tx"]["peak_bps"] > 0
 assert out["summary"]["process"]["max_fd_count"] == 8
 assert "token" not in json.dumps(out).lower()
 try:
@@ -2941,6 +2955,10 @@ PY
     local server="$BATS_TEST_DIRNAME/../web/server.py"
     grep -qF '"/nettest": ("index.html"' "$server"
     grep -qF 'Server Health' "$app"
+    grep -qF 'Client Load' "$app"
+    grep -qF 'client_download_bps' "$app"
+    grep -qF 'peak_server_tx_bps' "$app"
+    grep -qF 'rates.clients_tx' "$app"
     grep -qF 'Network Tester' "$app"
     grep -qF 'summary-card-narrow' "$app"
     grep -qF 'summary-card-links' "$app"

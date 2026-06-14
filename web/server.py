@@ -80,6 +80,8 @@ SERVER_HEALTH_CACHE_TS = 0.0
 SERVER_HEALTH_PREV_CPU = None
 SERVER_HEALTH_PREV_NET = {}
 SERVER_HEALTH_PREV_COUNTERS = {}
+SERVER_HEALTH_CLIENT_TRAFFIC_PREV = None
+SERVER_HEALTH_CLIENT_TRAFFIC_PEAK = {"server_rx_bps": 0.0, "server_tx_bps": 0.0, "total_bps": 0.0}
 QDISC_CACHE_LOCK = threading.Lock()
 QDISC_CACHE = {"ts": 0.0, "dropped": None, "iface": ""}
 QDISC_CACHE_TTL = 60.0
@@ -1186,6 +1188,62 @@ def process_health():
     }
 
 
+def client_traffic_load(stats=None, now=None):
+    """Summarize all WireGuard peer counters as current aggregate client load."""
+    global SERVER_HEALTH_CLIENT_TRAFFIC_PREV
+    now = time.time() if now is None else float(now)
+    rows = stats if isinstance(stats, dict) else client_stats_map()
+    server_rx = 0
+    server_tx = 0
+    client_count = 0
+    active_count = 0
+    for row in rows.values():
+        if not isinstance(row, dict):
+            continue
+        client_count += 1
+        pair = _traffic_pair(row)
+        server_rx += pair["rx"]
+        server_tx += pair["tx"]
+        if int(row.get("latestHandshakeAt", row.get("last_handshake", 0)) or 0) > 0:
+            active_count += 1
+
+    server_rx_bps = 0.0
+    server_tx_bps = 0.0
+    prev = SERVER_HEALTH_CLIENT_TRAFFIC_PREV
+    if prev:
+        elapsed = max(0.0, now - float(prev.get("ts") or 0))
+        if elapsed > 0:
+            if server_rx >= int(prev.get("server_rx") or 0):
+                server_rx_bps = (server_rx - int(prev.get("server_rx") or 0)) / elapsed
+            if server_tx >= int(prev.get("server_tx") or 0):
+                server_tx_bps = (server_tx - int(prev.get("server_tx") or 0)) / elapsed
+    SERVER_HEALTH_CLIENT_TRAFFIC_PREV = {"ts": now, "server_rx": server_rx, "server_tx": server_tx}
+
+    total_bps = server_rx_bps + server_tx_bps
+    SERVER_HEALTH_CLIENT_TRAFFIC_PEAK["server_rx_bps"] = max(SERVER_HEALTH_CLIENT_TRAFFIC_PEAK["server_rx_bps"], server_rx_bps)
+    SERVER_HEALTH_CLIENT_TRAFFIC_PEAK["server_tx_bps"] = max(SERVER_HEALTH_CLIENT_TRAFFIC_PEAK["server_tx_bps"], server_tx_bps)
+    SERVER_HEALTH_CLIENT_TRAFFIC_PEAK["total_bps"] = max(SERVER_HEALTH_CLIENT_TRAFFIC_PEAK["total_bps"], total_bps)
+    return {
+        "server_rx_bytes": server_rx,
+        "server_tx_bytes": server_tx,
+        "server_rx_bps": round(server_rx_bps, 2),
+        "server_tx_bps": round(server_tx_bps, 2),
+        "server_total_bps": round(total_bps, 2),
+        "client_upload_bps": round(server_rx_bps, 2),
+        "client_download_bps": round(server_tx_bps, 2),
+        "client_total_bps": round(total_bps, 2),
+        "peak_server_rx_bps": round(SERVER_HEALTH_CLIENT_TRAFFIC_PEAK["server_rx_bps"], 2),
+        "peak_server_tx_bps": round(SERVER_HEALTH_CLIENT_TRAFFIC_PEAK["server_tx_bps"], 2),
+        "peak_total_bps": round(SERVER_HEALTH_CLIENT_TRAFFIC_PEAK["total_bps"], 2),
+        "client_count": client_count,
+        "active_count": active_count,
+        "direction": {
+            "server_rx": "client_upload",
+            "server_tx": "client_download",
+        },
+    }
+
+
 def collect_server_health(force=False):
     global SERVER_HEALTH_CACHE, SERVER_HEALTH_CACHE_TS, SERVER_HEALTH_PREV_CPU
     now = time.time()
@@ -1214,6 +1272,7 @@ def collect_server_health(force=False):
         vpn_stats = read_iface_stats(vpn_iface)
         wan_delta = iface_delta(wan_iface or "wan", wan_stats)
         vpn_delta = iface_delta(vpn_iface or "vpn", vpn_stats)
+        client_load = client_traffic_load(now=now)
         drops_delta = wan_delta["drops_delta"] + vpn_delta["drops_delta"]
         errors_delta = wan_delta["errors_delta"] + vpn_delta["errors_delta"]
         network_status = "warn" if drops_delta or errors_delta else "ok"
@@ -1280,6 +1339,7 @@ def collect_server_health(force=False):
                 "ip6_no_route_delta": ip6_no_route_delta,
                 "ip6_no_route_pct": ip6_no_route_pct,
                 "ip6_out_requests_delta": ip6_out_requests_delta,
+                "clients": client_load,
                 "status": network_status,
             },
             "conntrack": conntrack,
@@ -1801,6 +1861,7 @@ def flatten_health_sample(payload):
     process = payload.get("process") if isinstance(payload.get("process"), dict) else {}
     wan = network.get("wan") if isinstance(network.get("wan"), dict) else {}
     vpn = network.get("vpn") if isinstance(network.get("vpn"), dict) else {}
+    clients = network.get("clients") if isinstance(network.get("clients"), dict) else {}
     return {
         "ts": int(now),
         "timestamp": payload.get("timestamp") or utc_now_iso(),
@@ -1831,6 +1892,8 @@ def flatten_health_sample(payload):
         "vpn_tx_dropped": safe_int(vpn.get("tx_dropped")) or 0,
         "vpn_rx_errors": safe_int(vpn.get("rx_errors")) or 0,
         "vpn_tx_errors": safe_int(vpn.get("tx_errors")) or 0,
+        "client_server_rx_bytes": safe_int(clients.get("server_rx_bytes")) or 0,
+        "client_server_tx_bytes": safe_int(clients.get("server_tx_bytes")) or 0,
         "python_rss_bytes": safe_int(process.get("rss_bytes")) or 0,
         "python_fd_count": safe_int(process.get("fd_count")) or 0,
         "python_threads": safe_int(process.get("threads")) or 0,
@@ -2064,6 +2127,8 @@ def summarize_health_history(rows):
                 "wan_tx": counter_rate_summary(rows, "wan_tx_bytes"),
                 "vpn_rx": counter_rate_summary(rows, "vpn_rx_bytes"),
                 "vpn_tx": counter_rate_summary(rows, "vpn_tx_bytes"),
+                "clients_rx": counter_rate_summary(rows, "client_server_rx_bytes"),
+                "clients_tx": counter_rate_summary(rows, "client_server_tx_bytes"),
             },
         },
         "process": {"max_rss_bytes": max_rss, "max_fd_count": max_value(rows, "python_fd_count"), "max_threads": max_value(rows, "python_threads")},
