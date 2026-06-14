@@ -348,16 +348,33 @@ def host_is_ip(value):
         return False
 
 
-def default_allowed_hosts():
-    domain = (os.environ.get("AWG_WEB_DOMAIN") or "").strip().lower()
-    bind = os.environ.get("AWG_WEB_BIND") or "10.9.9.1"
-    endpoint = (os.environ.get("AWG_ENDPOINT") or "").strip().lower()
-    hosts = ["localhost", "127.0.0.1", "194-180-189-244.sslip.io", "194.180.189.244"]
-    for value in (domain, endpoint, bind):
-        host = split_host(value)
-        if host and host not in {"0.0.0.0", "::"} and host not in hosts:
-            hosts.append(host)
+def web_access_required_hosts(extra_host=""):
+    hosts = ["localhost", "127.0.0.1"]
+    values = [
+        os.environ.get("AWG_WEB_DOMAIN") or "",
+        os.environ.get("AWG_WEB_PUBLIC_URL") or "",
+        os.environ.get("AWG_ENDPOINT") or "",
+        os.environ.get("AWG_WEB_BIND") or "",
+        extra_host or "",
+    ]
+    for value in values:
+        host = split_host(urlparse(str(value)).netloc or str(value))
+        if not host or host in {"0.0.0.0", "::"} or host in hosts:
+            continue
+        hosts.append(host)
+        try:
+            ip = ipaddress.ip_address(host)
+        except ValueError:
+            continue
+        if ip.version == 4:
+            sslip = f"{str(ip).replace('.', '-')}.sslip.io"
+            if sslip not in hosts:
+                hosts.append(sslip)
     return hosts
+
+
+def default_allowed_hosts():
+    return web_access_required_hosts()
 
 
 def default_access_policy():
@@ -480,21 +497,21 @@ def clean_access_policy(value):
     trusted_proxy_cidrs = clean_cidr_list(data.get("trusted_proxy_cidrs", defaults["trusted_proxy_cidrs"]), "trusted_proxy_cidrs")
     if mode == "public":
         source_check_enabled = False
-        allowed_hosts = ensure_items(allowed_hosts, ["194-180-189-244.sslip.io", "194.180.189.244", "localhost", "127.0.0.1"])
+        allowed_hosts = ensure_items(allowed_hosts, web_access_required_hosts())
     elif mode == "public_nginx":
         source_check_enabled = False
-        allowed_hosts = ensure_items(allowed_hosts, ["194-180-189-244.sslip.io", "194.180.189.244", "localhost", "127.0.0.1"])
+        allowed_hosts = ensure_items(allowed_hosts, web_access_required_hosts())
         trusted_proxy_cidrs = ensure_items(trusted_proxy_cidrs, ["127.0.0.0/8", "::1/128"])
         if not allowed_source_cidrs:
             allowed_source_cidrs = ["0.0.0.0/0", "::/0"]
     elif mode == "restricted_nginx":
         source_check_enabled = True
         trusted_proxy_cidrs = ensure_items(trusted_proxy_cidrs, ["127.0.0.0/8", "::1/128"])
-        allowed_hosts = ensure_items(allowed_hosts, ["194-180-189-244.sslip.io", "194.180.189.244", "localhost", "127.0.0.1"])
+        allowed_hosts = ensure_items(allowed_hosts, web_access_required_hosts())
     elif mode == "vpn_only_nginx":
         source_check_enabled = True
         trusted_proxy_cidrs = ensure_items(trusted_proxy_cidrs, ["127.0.0.0/8", "::1/128"])
-        allowed_hosts = ensure_items(allowed_hosts, ["194-180-189-244.sslip.io", "194.180.189.244", "localhost", "127.0.0.1"])
+        allowed_hosts = ensure_items(allowed_hosts, web_access_required_hosts())
         if not allowed_source_cidrs or any(cidr in {"0.0.0.0/0", "::/0"} for cidr in allowed_source_cidrs):
             allowed_source_cidrs = ["10.9.9.0/24", "127.0.0.0/8", "::1/128"]
     elif mode == "localhost_maintenance":
@@ -713,6 +730,114 @@ def restart_web_panel_later():
         time.sleep(0.5)
         subprocess.Popen(["systemctl", "restart", "awg-web.service"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     threading.Thread(target=_restart, daemon=True).start()
+
+
+def web_cert_status():
+    cert_path = WEB_DIR / "cert.pem"
+    key_path = WEB_DIR / "key.pem"
+    data = {
+        "cert_path": str(cert_path),
+        "key_path": str(key_path),
+        "cert_exists": cert_path.exists(),
+        "key_exists": key_path.exists(),
+        "mode": os.environ.get("AWG_WEB_CERT_MODE", ""),
+        "domain": os.environ.get("AWG_WEB_DOMAIN", ""),
+        "letsencrypt_live_path": "",
+        "letsencrypt_available": shutil.which("certbot") is not None,
+        "renew_available": False,
+    }
+    domain = data["domain"]
+    if domain:
+        live_path = Path("/etc/letsencrypt/live") / domain
+        data["letsencrypt_live_path"] = str(live_path)
+        data["renew_available"] = data["letsencrypt_available"] and live_path.exists()
+    if cert_path.exists():
+        try:
+            decoded = ssl._ssl._test_decode_cert(str(cert_path))  # type: ignore[attr-defined]
+            data.update({
+                "subject": ", ".join("=".join(part) for group in decoded.get("subject", []) for part in group),
+                "issuer": ", ".join("=".join(part) for group in decoded.get("issuer", []) for part in group),
+                "not_before": decoded.get("notBefore", ""),
+                "not_after": decoded.get("notAfter", ""),
+                "serial_number": decoded.get("serialNumber", ""),
+                "dns_names": [item[1] for item in decoded.get("subjectAltName", []) if item[0].lower() == "dns"],
+            })
+        except Exception as exc:
+            data["parse_error"] = str(exc)
+        try:
+            st = cert_path.stat()
+            data["cert_mtime"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(st.st_mtime))
+            data["cert_size_bytes"] = st.st_size
+        except OSError:
+            pass
+    return data
+
+
+def _openssl_pubkey(path, args):
+    p = subprocess.run(["openssl", *args, "-in", str(path), "-pubout"], capture_output=True, text=True, timeout=10)
+    if p.returncode != 0:
+        raise ValueError("openssl could not read certificate/key")
+    return p.stdout.strip()
+
+
+def validate_cert_key_pair(cert_path, key_path):
+    cert = Path(cert_path)
+    key = Path(key_path)
+    if not cert.is_absolute() or not key.is_absolute():
+        raise ValueError("certificate and key paths must be absolute")
+    if not cert.exists() or not cert.is_file():
+        raise ValueError("certificate file not found")
+    if not key.exists() or not key.is_file():
+        raise ValueError("private key file not found")
+    ssl._ssl._test_decode_cert(str(cert))  # type: ignore[attr-defined]
+    cert_pub = _openssl_pubkey(cert, ["x509"])
+    key_pub = _openssl_pubkey(key, ["pkey"])
+    if not cert_pub or cert_pub != key_pub:
+        raise ValueError("certificate and private key do not match")
+
+
+def install_custom_web_certificate(cert_path, key_path):
+    validate_cert_key_pair(cert_path, key_path)
+    WEB_DIR.mkdir(parents=True, exist_ok=True)
+    stamp = time.strftime("%Y%m%d-%H%M%S", time.gmtime())
+    backups = []
+    for path in (WEB_DIR / "cert.pem", WEB_DIR / "key.pem"):
+        if path.exists():
+            backup = path.with_name(f"{path.name}.bak.{stamp}")
+            shutil.copy2(path, backup)
+            backups.append(str(backup))
+    tmp_cert = WEB_DIR / f".cert.pem.tmp.{os.getpid()}"
+    tmp_key = WEB_DIR / f".key.pem.tmp.{os.getpid()}"
+    try:
+        shutil.copyfile(cert_path, tmp_cert)
+        shutil.copyfile(key_path, tmp_key)
+        os.chmod(tmp_cert, 0o644)
+        os.chmod(tmp_key, 0o600)
+        os.replace(tmp_cert, WEB_DIR / "cert.pem")
+        os.replace(tmp_key, WEB_DIR / "key.pem")
+    finally:
+        tmp_cert.unlink(missing_ok=True)
+        tmp_key.unlink(missing_ok=True)
+    return {"ok": True, "backups": backups, "certificate": web_cert_status()}
+
+
+def renew_web_certificate():
+    if shutil.which("certbot") is None:
+        raise ValueError("certbot is not installed")
+    domain = os.environ.get("AWG_WEB_DOMAIN", "")
+    if domain and not (Path("/etc/letsencrypt/live") / domain).exists():
+        raise ValueError("no Let's Encrypt live certificate for configured domain")
+    p = subprocess.run(
+        ["certbot", "renew", "--deploy-hook", "systemctl restart awg-web.service"],
+        capture_output=True, text=True, timeout=300,
+    )
+    if p.returncode != 0:
+        raise ValueError("certbot renew failed")
+    return {
+        "ok": True,
+        "stdout": "\n".join((p.stdout or "").splitlines()[-20:]),
+        "certificate": web_cert_status(),
+    }
 
 
 def run_manage(*args, timeout=60, extra_env=None):
@@ -2064,7 +2189,8 @@ def server_info_payload():
     vpn_ipv4 = cfg.get("AWG_TUNNEL_SUBNET") or "10.9.9.1/24"
     vpn_ipv4_host = first_ip_in_subnet(vpn_ipv4) or "10.9.9.1"
     vpn_ipv6 = cfg.get("AWG_IPV6_SUBNET") if cfg.get("AWG_IPV6_ENABLED") == "1" else ""
-    web_public_url = cfg.get("AWG_WEB_PUBLIC_URL") or f"https://{cfg.get('AWG_WEB_DOMAIN') or '194-180-189-244.sslip.io'}/"
+    web_host = cfg.get("AWG_WEB_DOMAIN") or (f"{endpoint.replace('.', '-')}.sslip.io" if public_ipv4 else endpoint) or "localhost"
+    web_public_url = cfg.get("AWG_WEB_PUBLIC_URL") or f"https://{web_host}/"
     adguard_enabled = cfg.get("AWG_ADGUARD_ENABLED") == "1"
     adguard_url = f"http://{vpn_ipv4_host}:{cfg.get('AWG_ADGUARD_PORT') or '3000'}/" if adguard_enabled else ""
     dns_mode = cfg.get("AWG_DNS_MODE", "system")
@@ -6032,6 +6158,8 @@ class Handler(SimpleHTTPRequestHandler):
         return {
             "policy": policy,
             "edge": edge,
+            "required_hosts": web_access_required_hosts(split_host(raw_host)),
+            "certificate": web_cert_status(),
             "current": {
                 "host": raw_host,
                 "normalized_host": split_host(raw_host),
@@ -6442,6 +6570,11 @@ class Handler(SimpleHTTPRequestHandler):
                 return
             self.send_json(self.web_access_policy_payload())
             return
+        if u.path == "/api/web-cert":
+            if not self.require_super(auth):
+                return
+            self.send_json({"ok": True, "certificate": web_cert_status()})
+            return
         if u.path == "/api/server/logs":
             if not self.require_super(auth):
                 return
@@ -6818,6 +6951,21 @@ class Handler(SimpleHTTPRequestHandler):
                     return
                 restart_web_panel_later()
                 self.send_json({"ok": True, "message": "web panel restart scheduled"})
+                return
+            elif u.path == "/api/web-cert/install-custom":
+                if not self.require_super(auth):
+                    return
+                cert_path = str(body.get("cert_path") or "").strip()
+                key_path = str(body.get("key_path") or "").strip()
+                result = install_custom_web_certificate(cert_path, key_path)
+                restart_web_panel_later()
+                self.send_json(result)
+                return
+            elif u.path == "/api/web-cert/renew":
+                if not self.require_super(auth):
+                    return
+                result = renew_web_certificate()
+                self.send_json(result)
                 return
             else:
                 import_link = re.match(r"^/api/clients/([^/]+)/(import-link|access-link)$", u.path)

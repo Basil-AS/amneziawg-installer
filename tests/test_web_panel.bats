@@ -680,19 +680,19 @@ import server
 policy = server.clean_access_policy({
     "bind_mode": "custom",
     "bind_host": "0.0.0.0",
-    "allowed_hosts": ["194-180-189-244.sslip.io", "194.180.189.244"],
+    "allowed_hosts": ["77-90-29-231.sslip.io", "77.90.29.231"],
     "allowed_source_cidrs": ["10.66.66.0/24"],
     "host_check_enabled": True,
     "source_check_enabled": True,
 })
-assert server.host_allowed("194-180-189-244.sslip.io", "10.66.66.2", policy)
-assert server.host_allowed("194-180-189-244.sslip.io:443", "10.66.66.2", policy)
-assert server.host_allowed("194.180.189.244:443", "10.66.66.2", policy)
+assert server.host_allowed("77-90-29-231.sslip.io", "10.66.66.2", policy)
+assert server.host_allowed("77-90-29-231.sslip.io:443", "10.66.66.2", policy)
+assert server.host_allowed("77.90.29.231:443", "10.66.66.2", policy)
 assert not server.host_allowed("example.invalid", "10.66.66.2", policy)
 assert server.source_allowed("10.66.66.42", policy)
 assert not server.source_allowed("10.66.67.42", policy)
-assert server.request_allowed_by_policy("194-180-189-244.sslip.io:443", "10.66.66.42", policy)
-assert not server.request_allowed_by_policy("194-180-189-244.sslip.io:443", "10.66.67.42", policy)
+assert server.request_allowed_by_policy("77-90-29-231.sslip.io:443", "10.66.66.42", policy)
+assert not server.request_allowed_by_policy("77-90-29-231.sslip.io:443", "10.66.67.42", policy)
 ctx = server.client_ip_context("127.0.0.1", {"X-Forwarded-For": "46.34.133.234, 10.0.0.2"}, policy)
 assert ctx["client_ip"] == "46.34.133.234"
 assert ctx["socket_remote_ip"] == "127.0.0.1"
@@ -703,16 +703,16 @@ assert spoofed["trusted_proxy_used"] is False
 proxy_policy = server.clean_access_policy({
     "bind_mode": "custom",
     "bind_host": "127.0.0.1",
-    "allowed_hosts": ["194-180-189-244.sslip.io", "127.0.0.1"],
+    "allowed_hosts": ["77-90-29-231.sslip.io", "127.0.0.1"],
     "allowed_source_cidrs": ["46.34.133.0/24"],
     "trusted_proxy_cidrs": ["127.0.0.0/8", "::1/128"],
     "host_check_enabled": True,
     "source_check_enabled": True,
 })
 ctx = server.client_ip_context("127.0.0.1", {"X-Forwarded-For": "46.34.133.234"}, proxy_policy)
-assert server.request_allowed_by_policy("194-180-189-244.sslip.io", "127.0.0.1", proxy_policy, ctx["client_ip"], ctx["trusted_proxy_used"])
+assert server.request_allowed_by_policy("77-90-29-231.sslip.io", "127.0.0.1", proxy_policy, ctx["client_ip"], ctx["trusted_proxy_used"])
 blocked_ctx = server.client_ip_context("127.0.0.1", {"X-Forwarded-For": "82.197.73.253"}, proxy_policy)
-assert not server.request_allowed_by_policy("194-180-189-244.sslip.io", "127.0.0.1", proxy_policy, blocked_ctx["client_ip"], blocked_ctx["trusted_proxy_used"])
+assert not server.request_allowed_by_policy("77-90-29-231.sslip.io", "127.0.0.1", proxy_policy, blocked_ctx["client_ip"], blocked_ctx["trusted_proxy_used"])
 assert server.clean_allowed_host("[::1]:443") == "::1"
 try:
     server.clean_access_policy({
@@ -731,7 +731,7 @@ assert not server.bind_allows_current_remote("127.0.0.1", "203.0.113.9")
 vpn_policy = server.clean_access_policy({
     "bind_mode": "vpn_only",
     "bind_host": "0.0.0.0",
-    "allowed_hosts": ["194-180-189-244.sslip.io", "localhost", "127.0.0.1"],
+    "allowed_hosts": ["77-90-29-231.sslip.io", "localhost", "127.0.0.1"],
     "allowed_source_cidrs": ["0.0.0.0/0", "::/0"],
     "host_check_enabled": True,
     "source_check_enabled": False,
@@ -753,7 +753,7 @@ assert local_policy["allowed_source_cidrs"] == ["127.0.0.0/8", "::1/128"]
 nginx_policy = server.clean_access_policy({
     "bind_mode": "public_nginx",
     "bind_host": "0.0.0.0",
-    "allowed_hosts": ["194-180-189-244.sslip.io"],
+    "allowed_hosts": ["77-90-29-231.sslip.io"],
     "allowed_source_cidrs": ["0.0.0.0/0"],
     "trusted_proxy_cidrs": ["127.0.0.0/8"],
     "host_check_enabled": True,
@@ -765,7 +765,7 @@ assert server.web_access_edge_info(nginx_policy)["mode"] == "nginx_reverse_proxy
 restricted = server.clean_access_policy({
     "bind_mode": "restricted_nginx",
     "bind_host": "0.0.0.0",
-    "allowed_hosts": ["194-180-189-244.sslip.io"],
+    "allowed_hosts": ["77-90-29-231.sslip.io"],
     "allowed_source_cidrs": ["46.34.133.0/24"],
     "trusted_proxy_cidrs": ["127.0.0.0/8"],
     "host_check_enabled": True,
@@ -774,16 +774,16 @@ restricted = server.clean_access_policy({
 assert restricted["bind_host"] == "127.0.0.1"
 assert restricted["source_check_enabled"] is True
 ctx = server.client_ip_context("127.0.0.1", {"X-Forwarded-For": "46.34.133.234"}, restricted)
-assert server.request_allowed_by_policy("194-180-189-244.sslip.io", "127.0.0.1", restricted, ctx["client_ip"], ctx["trusted_proxy_used"])
+assert server.request_allowed_by_policy("77-90-29-231.sslip.io", "127.0.0.1", restricted, ctx["client_ip"], ctx["trusted_proxy_used"])
 blocked_ctx = server.client_ip_context("127.0.0.1", {"X-Forwarded-For": "203.0.113.9"}, restricted)
-assert not server.request_allowed_by_policy("194-180-189-244.sslip.io", "127.0.0.1", restricted, blocked_ctx["client_ip"], blocked_ctx["trusted_proxy_used"])
+assert not server.request_allowed_by_policy("77-90-29-231.sslip.io", "127.0.0.1", restricted, blocked_ctx["client_ip"], blocked_ctx["trusted_proxy_used"])
 spoofed = server.client_ip_context("198.51.100.7", {"X-Forwarded-For": "46.34.133.234"}, restricted)
 assert spoofed["client_ip"] == "198.51.100.7"
 assert spoofed["trusted_proxy_used"] is False
 safe_tunnel = server.clean_access_policy({
     "bind_mode": "v" + "pn_only_nginx",
     "bind_host": "0.0.0.0",
-    "allowed_hosts": ["194-180-189-244.sslip.io"],
+    "allowed_hosts": ["77-90-29-231.sslip.io"],
     "allowed_source_cidrs": ["0.0.0.0/0"],
     "trusted_proxy_cidrs": ["127.0.0.0/8"],
     "host_check_enabled": True,
@@ -812,7 +812,13 @@ PY
     grep -qF 'if not self.require_super(auth):' "$BATS_TEST_DIRNAME/../web/server.py"
     grep -qF 'policy would block the current request' "$BATS_TEST_DIRNAME/../web/server.py"
     grep -qF 'bind mode would block the current connection after restart' "$BATS_TEST_DIRNAME/../web/server.py"
-    grep -qF '194-180-189-244.sslip.io' "$BATS_TEST_DIRNAME/../web/server.py"
+    grep -qF 'web_access_required_hosts' "$BATS_TEST_DIRNAME/../web/server.py"
+    if grep -qF '194-180-189-244.sslip.io' "$BATS_TEST_DIRNAME/../web/server.py"; then
+        fail "web access policy must not hardcode the old server host"
+    fi
+    if grep -qF '194-180-189-244.sslip.io' "$BATS_TEST_DIRNAME/../web/app.js"; then
+        fail "web access UI must not hardcode the old server host"
+    fi
     grep -qF 'Web Access' "$BATS_TEST_DIRNAME/../web/app.js"
     grep -qF 'Allow current host' "$BATS_TEST_DIRNAME/../web/app.js"
     grep -qF 'Enable Host header check' "$BATS_TEST_DIRNAME/../web/app.js"
@@ -826,6 +832,12 @@ PY
     grep -qF 'nginx public listener:' "$BATS_TEST_DIRNAME/../web/app.js"
     grep -qF 'Python backend:' "$BATS_TEST_DIRNAME/../web/app.js"
     grep -qF 'not the 127.0.0.1 proxy peer' "$BATS_TEST_DIRNAME/../web/app.js"
+    grep -qF '/api/web-cert' "$BATS_TEST_DIRNAME/../web/server.py"
+    grep -qF '/api/web-cert/install-custom' "$BATS_TEST_DIRNAME/../web/server.py"
+    grep -qF '/api/web-cert/renew' "$BATS_TEST_DIRNAME/../web/server.py"
+    grep -qF 'TLS certificate' "$BATS_TEST_DIRNAME/../web/app.js"
+    grep -qF 'Install custom cert' "$BATS_TEST_DIRNAME/../web/app.js"
+    grep -qF "Renew Let's Encrypt" "$BATS_TEST_DIRNAME/../web/app.js"
     grep -qF 'webAccessDisplayMode' "$BATS_TEST_DIRNAME/../web/app.js"
     grep -qF 'applyWebAccessModeProfile' "$BATS_TEST_DIRNAME/../web/app.js"
     grep -qF 'Unsaved changes' "$BATS_TEST_DIRNAME/../web/app.js"

@@ -247,6 +247,16 @@ function showToast(msg, type = "success") {
   }, 3000);
 }
 
+function apiErrorMessage(error, fallback = "Request failed") {
+  const raw = String(error?.message || error || "");
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed.error || parsed.message || fallback;
+  } catch {
+    return raw || fallback;
+  }
+}
+
 async function api(path, opt = {}) {
   const headers = Object.assign({"Authorization": "Bearer " + token}, opt.headers || {});
   if (opt.body && !(opt.body instanceof FormData)) headers["Content-Type"] = "application/json";
@@ -3504,6 +3514,7 @@ function renderWebAccessPolicy() {
       <p class="mt-1 text-amber-700">If source check is enabled, it checks Client IP from trusted proxy headers, not the 127.0.0.1 proxy peer.</p>
       <p id="webAccessModeHint" class="mt-1 text-amber-700"></p>
     </div>
+    ${renderWebCertificatePanel(webAccessPolicyState.certificate || {})}
     <details class="mt-3 rounded-md border border-[var(--line)] bg-[var(--soft)] px-3 py-2 text-xs text-[var(--muted)]">
       <summary class="cursor-pointer font-medium text-[var(--text)]">Recent rejected hosts</summary>
       <div class="mt-2 grid gap-1">
@@ -3522,14 +3533,80 @@ function renderWebAccessPolicy() {
   host.querySelector("#webAccessBindMode").onchange = () => applyWebAccessModeProfile(true);
   ["#webAccessBindHost", "#webAccessHostCheck", "#webAccessSourceCheck", "#webAccessHosts", "#webAccessCidrs", "#webAccessTrustedProxies"].forEach(selector => {
     const field = host.querySelector(selector);
-    if (field) field.oninput = markWebAccessChanged;
-    if (field) field.onchange = markWebAccessChanged;
+    if (field) field.oninput = () => markWebAccessChanged();
+    if (field) field.onchange = () => markWebAccessChanged();
   });
+  const installCert = host.querySelector("#installWebCustomCert");
+  if (installCert) installCert.onclick = installWebCustomCertificate;
+  const renewCert = host.querySelector("#renewWebCert");
+  if (renewCert) renewCert.onclick = renewWebCertificate;
   applyWebAccessModeProfile(false);
 }
 
 function webAccessRequiredHosts() {
-  return ["194-180-189-244.sslip.io", "194.180.189.244", "localhost", "127.0.0.1"];
+  const rows = webAccessPolicyState?.required_hosts || ["localhost", "127.0.0.1"];
+  return rows.filter(Boolean);
+}
+
+function renderWebCertificatePanel(cert) {
+  const dns = Array.isArray(cert.dns_names) && cert.dns_names.length ? cert.dns_names.join(", ") : "-";
+  const renewDisabled = cert.renew_available ? "" : "disabled";
+  return `
+    <div class="mt-3 rounded-md border border-[var(--line)] bg-[var(--soft)] p-3 text-xs text-[var(--muted)]">
+      <div class="flex flex-wrap items-center justify-between gap-2">
+        <p class="font-semibold uppercase text-[var(--muted)]">TLS certificate</p>
+        <button id="renewWebCert" class="${buttonClasses("h-8 px-2 text-xs")}" ${renewDisabled}>${icon("refresh")}<span>Renew Let's Encrypt</span></button>
+      </div>
+      <div class="mt-2 grid gap-1 sm:grid-cols-2">
+        <p><span class="font-semibold text-[var(--text)]">Domain:</span> ${esc(cert.domain || "-")}</p>
+        <p><span class="font-semibold text-[var(--text)]">Mode:</span> ${esc(cert.mode || "-")}</p>
+        <p><span class="font-semibold text-[var(--text)]">Certificate:</span> ${cert.cert_exists ? "present" : "missing"}</p>
+        <p><span class="font-semibold text-[var(--text)]">Private key:</span> ${cert.key_exists ? "present" : "missing"}</p>
+        <p><span class="font-semibold text-[var(--text)]">Valid from:</span> ${esc(cert.not_before || "-")}</p>
+        <p><span class="font-semibold text-[var(--text)]">Valid until:</span> ${esc(cert.not_after || "-")}</p>
+        <p class="break-all"><span class="font-semibold text-[var(--text)]">Subject:</span> ${esc(cert.subject || "-")}</p>
+        <p class="break-all"><span class="font-semibold text-[var(--text)]">Issuer:</span> ${esc(cert.issuer || "-")}</p>
+        <p class="break-all sm:col-span-2"><span class="font-semibold text-[var(--text)]">DNS names:</span> ${esc(dns)}</p>
+      </div>
+      <div class="mt-3 grid gap-2 lg:grid-cols-[1fr_1fr_auto]">
+        <input id="webCustomCertPath" class="h-9 rounded-md border border-[var(--line)] bg-[var(--panel)] px-2 font-mono text-xs text-[var(--text)] outline-none focus:border-[var(--accent)]" placeholder="/path/to/fullchain.pem">
+        <input id="webCustomKeyPath" class="h-9 rounded-md border border-[var(--line)] bg-[var(--panel)] px-2 font-mono text-xs text-[var(--text)] outline-none focus:border-[var(--accent)]" placeholder="/path/to/privkey.pem">
+        <button id="installWebCustomCert" class="${buttonClasses("h-9 px-3 text-xs")}">${icon("save")}<span>Install custom cert</span></button>
+      </div>
+      <p class="mt-2 text-xs text-[var(--muted)]">Private key contents are never displayed. Custom install validates that cert and key match, then restarts the panel.</p>
+    </div>
+  `;
+}
+
+async function installWebCustomCertificate() {
+  const certPath = document.querySelector("#webCustomCertPath")?.value.trim() || "";
+  const keyPath = document.querySelector("#webCustomKeyPath")?.value.trim() || "";
+  if (!certPath || !keyPath) {
+    showToast("Certificate and key paths are required", "error");
+    return;
+  }
+  try {
+    const res = await api("/api/web-cert/install-custom", {
+      method: "POST",
+      body: JSON.stringify({cert_path: certPath, key_path: keyPath}),
+    });
+    webAccessPolicyState.certificate = res.certificate;
+    renderWebAccessPolicy();
+    showToast("Custom certificate installed; web panel restart scheduled");
+  } catch (error) {
+    showToast(apiErrorMessage(error, "Failed to install certificate"), "error");
+  }
+}
+
+async function renewWebCertificate() {
+  try {
+    const res = await api("/api/web-cert/renew", {method: "POST", body: "{}"});
+    webAccessPolicyState.certificate = res.certificate;
+    renderWebAccessPolicy();
+    showToast("Certificate renew command completed");
+  } catch (error) {
+    showToast(apiErrorMessage(error, "Failed to renew certificate"), "error");
+  }
 }
 
 function webAccessTrustedProxyDefaults() {
@@ -3654,7 +3731,7 @@ async function submitWebAccessPolicy(action) {
       showToast("Web panel restart scheduled");
     }
   } catch (error) {
-    showToast("Policy rejected: it may lock out current access", "error");
+    showToast(`Policy rejected: ${apiErrorMessage(error, "it may lock out current access")}`, "error");
   }
 }
 
