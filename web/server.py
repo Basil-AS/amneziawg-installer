@@ -5355,15 +5355,49 @@ def remember_path_check_result(name, result):
     return result
 
 
-def recent_path_check_results(now=None):
+def endpoint_cache_key(name, endpoint):
+    return f"{safe_name(name)}:endpoint:{endpoint or '-'}"
+
+
+def path_result_matches_endpoint(result, endpoint):
+    if not isinstance(result, dict):
+        return False
+    if result.get("target_type") != "endpoint":
+        return True
+    return (result.get("endpoint") or "") == (endpoint or "")
+
+
+def recent_path_check_results(now=None, current_endpoints=None):
     now = now or time.time()
+    current_endpoints = current_endpoints or {}
     out = {}
     for name, item in list(CLIENT_PATH_CHECK_RESULTS.items()):
         if now - item.get("ts", 0) > CLIENT_PATH_CHECK_RESULT_TTL:
             CLIENT_PATH_CHECK_RESULTS.pop(name, None)
             continue
-        out[name] = json.loads(json.dumps(item.get("value") or {}))
+        value = json.loads(json.dumps(item.get("value") or {}))
+        if name in current_endpoints and not path_result_matches_endpoint(value, current_endpoints.get(name, "")):
+            continue
+        out[name] = value
     return out
+
+
+def client_latency_snapshot_signature(peers, stats):
+    rows = []
+    for peer in peers:
+        name = peer.get("name") or peer.get("config_name") or ""
+        if not name:
+            continue
+        row = stats.get(name, {}) if isinstance(stats, dict) else {}
+        rows.append([
+            name,
+            peer.get("ipv4") or "",
+            row.get("endpoint") or "",
+            int(row.get("latestHandshakeAt", row.get("last_handshake", 0)) or 0),
+            int(row.get("rx") or 0),
+            int(row.get("tx") or 0),
+        ])
+    return rows
 
 
 def client_path_check(name, target_type="endpoint"):
@@ -5394,7 +5428,7 @@ def client_path_check(name, target_type="endpoint"):
         if endpoint_stale:
             note += " Endpoint may be stale because latest handshake is old."
     now = time.time()
-    rate_key = f"{name}:{target_type}"
+    rate_key = endpoint_cache_key(name, endpoint) if target_type == "endpoint" else f"{name}:{target_type}"
     with CLIENT_PATH_CHECK_LOCK:
         last_check = CLIENT_PATH_CHECK_LAST.get(rate_key, 0)
         if now - last_check < CLIENT_PATH_CHECK_INTERVAL:
@@ -5494,7 +5528,7 @@ def batch_client_path_check(target_type="endpoint", scope="active"):
 
         peers = parse_peers()
         stats = client_stats_map(force=True)
-        cached = recent_path_check_results(now)
+        current_endpoints = {}
         started = time.time()
         candidates = []
 
@@ -5504,6 +5538,7 @@ def batch_client_path_check(target_type="endpoint", scope="active"):
                 continue
             row_stats = stats.get(name, {})
             endpoint = row_stats.get("endpoint") or ""
+            current_endpoints[name] = endpoint
             endpoint_ip, _endpoint_port = split_endpoint(endpoint)
             last = int(row_stats.get("latestHandshakeAt", row_stats.get("last_handshake", 0)) or 0)
             age = None if last <= 0 else max(0, int(now - last))
@@ -5521,6 +5556,7 @@ def batch_client_path_check(target_type="endpoint", scope="active"):
             candidates.append(name)
 
         total_candidates = len(candidates)
+        cached = recent_path_check_results(now, current_endpoints)
         for name in candidates[:CLIENT_PATH_BATCH_MAX_CLIENTS]:
             cached_result = cached.get(name)
             if cached_result:
@@ -5530,7 +5566,7 @@ def batch_client_path_check(target_type="endpoint", scope="active"):
                 skipped[name] = "time_budget"
                 continue
             with CLIENT_PATH_CHECK_LOCK:
-                last_check = CLIENT_PATH_CHECK_LAST.get(f"{name}:endpoint", 0)
+                last_check = CLIENT_PATH_CHECK_LAST.get(endpoint_cache_key(name, current_endpoints.get(name, "")), 0)
             if now - last_check < CLIENT_PATH_CHECK_INTERVAL:
                 skipped[name] = "cooldown"
                 continue
@@ -5568,18 +5604,26 @@ def batch_client_path_check(target_type="endpoint", scope="active"):
 def client_latency_payload(force=False):
     now = time.time()
     with CLIENT_LATENCY_LOCK:
+        peers = parse_peers()
+        stats = client_stats_map(force=force)
+        snapshot_signature = client_latency_snapshot_signature(peers, stats)
         cached = CLIENT_LATENCY_CACHE.get("value")
-        if not force and cached and now - CLIENT_LATENCY_CACHE.get("ts", 0) <= CLIENT_LATENCY_CACHE_TTL:
+        cached_signature = CLIENT_LATENCY_CACHE.get("signature")
+        cache_same_snapshot = cached_signature == snapshot_signature
+        if not force and cached and cache_same_snapshot and now - CLIENT_LATENCY_CACHE.get("ts", 0) <= CLIENT_LATENCY_CACHE_TTL:
             return json.loads(json.dumps(cached))
-        if force and cached and now - CLIENT_LATENCY_CACHE.get("ts", 0) < CLIENT_LATENCY_FORCE_MIN_INTERVAL:
+        if force and cached and cache_same_snapshot and now - CLIENT_LATENCY_CACHE.get("ts", 0) < CLIENT_LATENCY_FORCE_MIN_INTERVAL:
             return json.loads(json.dumps(cached))
 
-        peers = parse_peers()
-        stats = client_stats_map()
         endpoint_history = record_client_endpoint_history(peers, stats, now)
         history_clients = endpoint_history.get("clients", {}) if isinstance(endpoint_history, dict) else {}
         nettest_latency = recent_nettest_latency_by_vpn_ip()
-        path_results = recent_path_check_results(now)
+        current_endpoints = {}
+        for peer in peers:
+            name = peer.get("name") or peer.get("config_name") or ""
+            if name:
+                current_endpoints[name] = (stats.get(name, {}) or {}).get("endpoint") or ""
+        path_results = recent_path_check_results(now, current_endpoints)
         network = vpn_ipv4_network()
         clients = {}
         scanned = 0
@@ -5756,6 +5800,7 @@ def client_latency_payload(force=False):
         }
         CLIENT_LATENCY_CACHE["ts"] = now
         CLIENT_LATENCY_CACHE["value"] = payload
+        CLIENT_LATENCY_CACHE["signature"] = snapshot_signature
         return json.loads(json.dumps(payload))
 
 

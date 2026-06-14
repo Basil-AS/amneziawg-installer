@@ -1173,6 +1173,8 @@ PY
     grep -qF 'device may sleep or block ping' "$app"
     grep -qF 'renderSharedProfileChip(client)' "$app"
     grep -qF 'function renderPathChip(client)' "$app"
+    grep -qF 'function pathEntryMatchesClient(entry, client)' "$app"
+    grep -qF '(entry.endpoint || "") === (client.endpoint || "")' "$app"
     grep -qF 'clientPathState = {results: {}, running: {}, batchRunning: false, batchSummary: null}' "$app"
     grep -qF 'Client Network Overview' "$app"
     grep -qF 'Endpoint paths checked' "$app"
@@ -2422,12 +2424,13 @@ server.parse_peers = lambda: [
     {"name": "sleepy", "ipv4": "10.9.9.31"},
     {"name": "bad", "ipv4": "8.8.8.8"},
 ]
-server.client_stats_map = lambda force=False: {
+stats_state = {
     "phone": {"last_handshake": now - 20, "rx": 150, "tx": 200, "endpoint": "198.51.100.10:50000"},
     "nopinger": {"last_handshake": now - 30, "rx": 300, "tx": 400, "endpoint": "198.51.100.20:50000"},
     "noping": {"last_handshake": now - 40, "rx": 500, "tx": 600, "endpoint": "198.51.100.21:50000"},
     "sleepy": {"last_handshake": now - 2000},
 }
+server.client_stats_map = lambda force=False: stats_state
 server.CLIENT_TRANSFER_PREV["nopinger"] = {"rx": 1, "tx": 1, "ts": now - 60}
 server.CLIENT_TRANSFER_PREV["noping"] = {"rx": 1, "tx": 1, "ts": now - 60}
 calls = []
@@ -2497,6 +2500,24 @@ assert calls == ["10.9.9.12", "10.9.9.40", "10.9.9.41"]
 handler = make_handler(super_token)
 handler.do_GET()
 assert len(calls) == 3, "fresh cache should avoid a second ping scan"
+
+server.CLIENT_PATH_CHECK_RESULTS["phone"] = {
+    "ts": time.time(),
+    "value": {
+        "name": "phone",
+        "target_type": "endpoint",
+        "endpoint": "198.51.100.10:50000",
+        "target_ip": "198.51.100.10",
+        "status": "ok",
+    },
+}
+stats_state["phone"] = dict(stats_state["phone"], endpoint="198.51.100.99:50000", rx=151)
+handler = make_handler(super_token)
+handler.do_GET()
+payload = json.loads(handler.wfile.getvalue().decode())
+assert len(calls) == 6, "endpoint change must invalidate latency cache"
+assert payload["clients"]["phone"]["endpoint"] == "198.51.100.99:50000"
+assert "path_check" not in payload["clients"]["phone"], "stale endpoint path result must be hidden"
 PY
     rm -rf "$tmp"
 }

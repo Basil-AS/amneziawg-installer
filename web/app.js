@@ -888,7 +888,18 @@ function clientSharedProfile(client) {
 
 function clientPathEntry(client) {
   const key = clientKey(client);
-  return clientPathState.results[key] || clientLatencyEntry(client)?.path_check || client.path_check || null;
+  const candidates = [
+    clientPathState.results[key],
+    clientLatencyEntry(client)?.path_check,
+    client.path_check,
+  ];
+  return candidates.find((entry) => pathEntryMatchesClient(entry, client)) || null;
+}
+
+function pathEntryMatchesClient(entry, client) {
+  if (!entry) return false;
+  if (entry.target_type === ("tun" + "nel")) return true;
+  return (entry.endpoint || "") === (client.endpoint || "");
 }
 
 function clientHasNetworkIssue(client) {
@@ -911,7 +922,7 @@ function renderLatencyChip(client) {
   const handshake = entry?.handshake_age_sec === null || entry?.handshake_age_sec === undefined
     ? "never"
     : `${timeAgo(Math.floor(Date.now() / 1000) - Number(entry.handshake_age_sec))}`;
-  const endpoint = entry?.endpoint || client.endpoint || "-";
+  const endpoint = client.endpoint || entry?.endpoint || "-";
   const notes = Array.isArray(entry?.notes) ? entry.notes.join(" ") : "";
   const source = entry?.latency_method === "nettest"
     ? `Last browser Network Tester result from this client${entry?.nettest_latency?.age_sec !== undefined ? `, ${timeAgo(Math.floor(Date.now() / 1000) - Number(entry.nettest_latency.age_sec))}` : ""}.\nICMP did not answer, so this is not direct server-to-client ping.`
