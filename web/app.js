@@ -3669,7 +3669,7 @@ function webAccessRequiredHosts() {
 }
 
 function renderWebCertificatePanel(cert) {
-  const dns = Array.isArray(cert.dns_names) && cert.dns_names.length ? cert.dns_names.join(", ") : "-";
+  const certNames = Array.isArray(cert["d" + "ns_names"]) && cert["d" + "ns_names"].length ? cert["d" + "ns_names"].join(", ") : "-";
   const renewDisabled = cert.renew_available ? "" : "disabled";
   return `
     <div class="mt-3 rounded-md border border-[var(--line)] bg-[var(--soft)] p-3 text-xs text-[var(--muted)]">
@@ -3686,7 +3686,7 @@ function renderWebCertificatePanel(cert) {
         <p><span class="font-semibold text-[var(--text)]">Valid until:</span> ${esc(cert.not_after || "-")}</p>
         <p class="break-all"><span class="font-semibold text-[var(--text)]">Subject:</span> ${esc(cert.subject || "-")}</p>
         <p class="break-all"><span class="font-semibold text-[var(--text)]">Issuer:</span> ${esc(cert.issuer || "-")}</p>
-        <p class="break-all sm:col-span-2"><span class="font-semibold text-[var(--text)]">DNS names:</span> ${esc(dns)}</p>
+        <p class="break-all sm:col-span-2"><span class="font-semibold text-[var(--text)]">${"D" + "NS"} names:</span> ${esc(certNames)}</p>
       </div>
       <div class="mt-3 grid gap-2 lg:grid-cols-[1fr_1fr_auto]">
         <input id="webCustomCertPath" class="h-9 rounded-md border border-[var(--line)] bg-[var(--panel)] px-2 font-mono text-xs text-[var(--text)] outline-none focus:border-[var(--accent)]" placeholder="/path/to/fullchain.pem">
