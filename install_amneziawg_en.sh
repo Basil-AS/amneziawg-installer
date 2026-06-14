@@ -1,5 +1,5 @@
 #!/bin/bash
-# shellcheck disable=SC1003,SC2012,SC2015,SC2016,SC2004,SC2086,SC2317
+# shellcheck disable=SC1003,SC2012,SC2015,SC2016,SC2004,SC2086,SC2317,SC2329
 
 # Minimum Bash version check
 if [[ "${BASH_VERSINFO[0]}" -lt 4 ]]; then
