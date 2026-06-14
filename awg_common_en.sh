@@ -318,6 +318,7 @@ get_vpn_nic() {
     fi
 }
 
+# shellcheck disable=SC2120 # Optional config path; callers usually use SERVER_CONF_FILE.
 awg_peer_ipv6_routes() {
     local conf="${1:-${SERVER_CONF_FILE:-/etc/amnezia/amneziawg/awg0.conf}}"
     [[ -f "$conf" ]] || return 0
@@ -622,6 +623,7 @@ ipv6_ndp_print_status() {
     log "IPv6 enabled: $([[ "${AWG_IPV6_ENABLED:-0}" == "1" ]] && echo yes || echo no)"
     log "IPv6 mode requested: ${AWG_IPV6_MODE_REQUESTED:-${AWG_IPV6_MODE:-legacy}}"
     log "IPv6 mode effective: $(awg_ipv6_effective_mode)"
+    log "NDP state: ${state}"
     log "NDP proxy needed: $(awg_ipv6_effective_mode_is_ndp && echo yes || echo no)"
     log "WAN iface: ${wan}"
     log "VPN iface: ${vpn}"
@@ -673,7 +675,7 @@ ipv6_ndp_fix() {
         update_config_var AWG_IPV6_MODE_EFFECTIVE "$AWG_IPV6_MODE_EFFECTIVE"
         update_config_var AWG_IPV6_MODE_REASON "$AWG_IPV6_MODE_REASON"
         update_config_var AWG_IPV6_SUBNET "$AWG_IPV6_SUBNET"
-        update_config_var AWG_IPV6_NDP_PROXY 1
+        update_config_var AWG_IPV6_NDP_PROXY "$AWG_IPV6_NDP_PROXY"
     fi
     ipv6_ndp_generate_config "$prefix"
     ipv6_ndp_enable
