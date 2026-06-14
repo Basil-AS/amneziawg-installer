@@ -1,6 +1,6 @@
 #!/usr/bin/env bats
 # Tests for scripts/update_geoip_dbs.py:
-#   - dbip_candidate_urls() month/fallback computation
+#   - default source URLs
 #   - looks_like_mmdb() validation
 #   - end-to-end download/validate/atomic-replace + geoip_db_versions.json,
 #     against a local HTTP server (no real network access)
@@ -9,21 +9,16 @@ bats_require_minimum_version 1.5.0
 
 load test_helper
 
-@test "update_geoip_dbs: dbip_candidate_urls returns current and previous month" {
+@test "update_geoip_dbs: default DB-IP source uses jsdelivr city-lite MMDB archive" {
     command -v python3 &>/dev/null || skip "python3 not available"
     PYTHONPATH="$BATS_TEST_DIRNAME/../scripts" python3 - <<'PY'
-from datetime import datetime, timezone
 import update_geoip_dbs as m
 
-urls = m.dbip_candidate_urls(datetime(2026, 1, 15, tzinfo=timezone.utc))
-assert urls == [
-    "https://download.db-ip.com/free/dbip-city-lite-2026-01.mmdb.gz",
-    "https://download.db-ip.com/free/dbip-city-lite-2025-12.mmdb.gz",
+sources = m.resolve_sources("/tmp/nonexistent-geoip-providers.json")
+assert sources["dbip_city_lite"]["urls"] == [
+    "https://cdn.jsdelivr.net/npm/dbip-city-lite/dbip-city-lite.mmdb.gz",
 ]
-
-urls2 = m.dbip_candidate_urls(datetime(2026, 6, 1, tzinfo=timezone.utc))
-assert urls2[0].endswith("2026-06.mmdb.gz")
-assert urls2[1].endswith("2026-05.mmdb.gz")
+assert sources["dbip_city_lite"]["filename"] == "dbip-city-lite.mmdb"
 PY
 }
 

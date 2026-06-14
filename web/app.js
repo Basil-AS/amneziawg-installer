@@ -3727,7 +3727,7 @@ function renderGeoipProviders() {
               <span>Only run on manual "Refresh" (avoid rate limits)</span>
             </label>
           ` : ""}
-          ${info.kind === "mmdb" ? `<p class="mt-1 text-xs text-[var(--muted)]">Database file managed below.</p>` : ""}
+          ${info.kind === "mmdb" ? `<p class="mt-1 text-xs text-[var(--muted)]">Enabling this provider downloads missing local MMDB databases automatically.</p>` : ""}
         </div>`;
       }).join("")}
     </div>
@@ -3773,14 +3773,43 @@ function readGeoipProvidersForm() {
   return providers;
 }
 
+function geoipMmdbNeedsDownload(providers, databases) {
+  const enabled = providers || {};
+  const dbs = databases || {};
+  const missing = name => !(dbs[name] && dbs[name].present);
+  if (enabled.maxmind && enabled.maxmind.enabled) {
+    if (missing("maxmind_asn") || missing("maxmind_city") || missing("maxmind_country")) return true;
+  }
+  if (enabled.dbip_mmdb && enabled.dbip_mmdb.enabled && missing("dbip_city_lite")) return true;
+  return false;
+}
+
+async function updateGeoipDatabases(reason = "GeoIP databases updated") {
+  const res = await api("/api/geoip/databases/update", {method: "POST", body: "{}"});
+  geoipDatabasesState = {databases: res.databases, auto_update: res.auto_update};
+  renderGeoipDatabases();
+  showToast(res.ok ? reason : "GeoIP database update finished with errors", res.ok ? "success" : "error");
+  return res;
+}
+
 async function saveGeoipProviders() {
   const providers = readGeoipProvidersForm();
+  let needsDownload = false;
   try {
     geoipProvidersState = await api("/api/geoip/providers", {method: "PUT", body: JSON.stringify({providers})});
     renderGeoipProviders();
-    showToast("GeoIP providers saved");
+    needsDownload = geoipMmdbNeedsDownload(providers, geoipDatabasesState && geoipDatabasesState.databases);
+    showToast(needsDownload ? "GeoIP providers saved, downloading local MMDB databases..." : "GeoIP providers saved");
   } catch {
     showToast("Failed to save GeoIP providers", "error");
+    return;
+  }
+  if (needsDownload) {
+    try {
+      await updateGeoipDatabases("GeoIP providers saved and local MMDB databases downloaded");
+    } catch {
+      showToast("GeoIP providers saved, but MMDB download failed", "error");
+    }
   }
 }
 
@@ -3834,10 +3863,7 @@ function renderGeoipDatabases() {
     btn.disabled = true;
     btn.innerHTML = `${icon("refresh")}<span>Updating...</span>`;
     try {
-      const res = await api("/api/geoip/databases/update", {method: "POST", body: "{}"});
-      geoipDatabasesState = {databases: res.databases, auto_update: res.auto_update};
-      renderGeoipDatabases();
-      showToast(res.ok ? "GeoIP databases updated" : "GeoIP database update finished with errors", res.ok ? "success" : "error");
+      await updateGeoipDatabases("GeoIP databases updated");
     } catch {
       showToast("Failed to update GeoIP databases", "error");
       btn.disabled = false;

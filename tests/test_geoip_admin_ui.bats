@@ -58,6 +58,21 @@ load test_helper
     grep -qF 'document.querySelector("#saveGeoipProviders").onclick = saveGeoipProviders;' "$app"
 }
 
+@test "app.js: enabling local MMDB providers downloads missing databases automatically" {
+    local app="$BATS_TEST_DIRNAME/../web/app.js"
+    grep -qF 'function geoipMmdbNeedsDownload' "$app"
+    grep -qF 'async function updateGeoipDatabases' "$app"
+    block=$(awk '/^async function saveGeoipProviders/,/^}/' "$app")
+    grep -qF 'geoipMmdbNeedsDownload' <<<"$block"
+    grep -qF 'updateGeoipDatabases("GeoIP providers saved and local MMDB databases downloaded")' <<<"$block"
+    grep -qF 'GeoIP providers saved, but MMDB download failed' <<<"$block"
+    helper=$(awk '/^function geoipMmdbNeedsDownload/,/^}/' "$app")
+    grep -qF 'maxmind_asn' <<<"$helper"
+    grep -qF 'maxmind_city' <<<"$helper"
+    grep -qF 'maxmind_country' <<<"$helper"
+    grep -qF 'dbip_city_lite' <<<"$helper"
+}
+
 @test "app.js: renderGeoipDatabases shows MMDB status and wires update/auto-update actions" {
     local app="$BATS_TEST_DIRNAME/../web/app.js"
     grep -qF 'function renderGeoipDatabases()' "$app"
@@ -66,7 +81,8 @@ load test_helper
         grep -qF "$db" "$app"
     done
     block=$(awk '/^function renderGeoipDatabases/,/^}/' "$app")
-    grep -qF '/api/geoip/databases/update' <<<"$block"
+    grep -qF 'updateGeoipDatabases("GeoIP databases updated")' <<<"$block"
+    grep -qF '/api/geoip/databases/update' "$app"
     grep -qF '/api/geoip/auto-update' <<<"$block"
     grep -qF 'confirmModal(' <<<"$block"
     grep -qF '"POST"' <<<"$block"

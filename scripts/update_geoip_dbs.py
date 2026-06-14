@@ -5,7 +5,7 @@ By default this fetches:
   - GeoLite2-ASN.mmdb, GeoLite2-City.mmdb, GeoLite2-Country.mmdb from the
     P3TERX/GeoLite.mmdb community mirror (rebuilt daily from MaxMind's
     GeoLite2 data, no license key required), and
-  - dbip-city-lite.mmdb from DB-IP's free monthly release.
+  - dbip-city-lite.mmdb from the DB-IP City Lite npm/jsdelivr mirror.
 
 into <AWG_DIR>/geoip/, validating each file looks like a real MMDB (checks
 for the MaxMind.com metadata marker), atomically replacing any existing
@@ -52,7 +52,7 @@ DEFAULT_SOURCES = {
         "filename": "GeoLite2-Country.mmdb",
     },
     "dbip_city_lite": {
-        "urls": None,  # computed by dbip_candidate_urls()
+        "urls": ["https://cdn.jsdelivr.net/npm/dbip-city-lite/dbip-city-lite.mmdb.gz"],
         "filename": "dbip-city-lite.mmdb",
     },
 }
