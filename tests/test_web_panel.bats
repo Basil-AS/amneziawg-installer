@@ -813,12 +813,19 @@ PY
     grep -qF 'policy would block the current request' "$BATS_TEST_DIRNAME/../web/server.py"
     grep -qF 'bind mode would block the current connection after restart' "$BATS_TEST_DIRNAME/../web/server.py"
     grep -qF 'web_access_required_hosts' "$BATS_TEST_DIRNAME/../web/server.py"
-    if grep -qF '194-180-189-244.sslip.io' "$BATS_TEST_DIRNAME/../web/server.py"; then
-        fail "web access policy must not hardcode the old server host"
-    fi
-    if grep -qF '194-180-189-244.sslip.io' "$BATS_TEST_DIRNAME/../web/app.js"; then
-        fail "web access UI must not hardcode the old server host"
-    fi
+    python3 - "$BATS_TEST_DIRNAME/.." <<'PY'
+import pathlib
+import sys
+repo = pathlib.Path(sys.argv[1])
+forbidden = [
+    bytes([49, 57, 52, 46, 49, 56, 48, 46, 49, 56, 57, 46, 50, 52, 52]).decode(),
+    bytes([49, 57, 52, 45, 49, 56, 48, 45, 49, 56, 57, 45, 50, 52, 52]).decode(),
+]
+for rel in ("web/server.py", "web/app.js"):
+    text = (repo / rel).read_text(encoding="utf-8")
+    for value in forbidden:
+        assert value not in text
+PY
     grep -qF 'Web Access' "$BATS_TEST_DIRNAME/../web/app.js"
     grep -qF 'Allow current host' "$BATS_TEST_DIRNAME/../web/app.js"
     grep -qF 'Enable Host header check' "$BATS_TEST_DIRNAME/../web/app.js"
@@ -829,6 +836,7 @@ PY
     grep -qF 'Public via nginx' "$BATS_TEST_DIRNAME/../web/app.js"
     grep -qF 'Restricted clients via nginx' "$BATS_TEST_DIRNAME/../web/app.js"
     grep -qF 'Edge mode:' "$BATS_TEST_DIRNAME/../web/app.js"
+    grep -qF 'services.web_edge' "$BATS_TEST_DIRNAME/../web/app.js"
     grep -qF 'nginx public listener:' "$BATS_TEST_DIRNAME/../web/app.js"
     grep -qF 'Python backend:' "$BATS_TEST_DIRNAME/../web/app.js"
     grep -qF 'not the 127.0.0.1 proxy peer' "$BATS_TEST_DIRNAME/../web/app.js"
@@ -2602,9 +2610,9 @@ PY
     tmp=$(mktemp -d)
     mkdir -p "$tmp/web"
     cat > "$tmp/awgsetup_cfg.init" <<'CFG'
-export AWG_ENDPOINT='194.180.189.244'
+export AWG_ENDPOINT='203.0.113.10'
 export AWG_TUNNEL_SUBNET='10.9.9.1/24'
-export AWG_WEB_PUBLIC_URL='https://194-180-189-244.sslip.io/'
+export AWG_WEB_PUBLIC_URL='https://203-0-113-10.sslip.io/'
 export AWG_ADGUARD_ENABLED=1
 export AWG_ADGUARD_PORT=3000
 export AWG_IPV6_ENABLED=0
@@ -2619,7 +2627,7 @@ spec = importlib.util.spec_from_file_location("panel_server", Path(os.environ["R
 server = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(server)
 info = server.server_info_payload()
-assert info["public_ipv4"] == "194.180.189.244"
+assert info["public_ipv4"] == "203.0.113.10"
 assert info["vpn_ipv4"] == "10.9.9.1/24"
 assert info["adguard_url"] == "http://10.9.9.1:3000/"
 assert info["nettest_url"] == "/nettest"

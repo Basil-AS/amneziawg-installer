@@ -6375,7 +6375,15 @@ class Handler(SimpleHTTPRequestHandler):
                 return
             health = json.loads(json.dumps(collect_server_health()))
             client_ctx = request_client_context(self)
-            health.setdefault("services", {}).setdefault("nginx_edge", {})["status"] = "ok" if client_ctx.get("trusted_proxy_used") else "unknown"
+            edge = web_access_edge_info(load_access_policy(), self.headers, client_ctx.get("trusted_proxy_used"))
+            edge_status = "ok" if edge.get("mode") != "nginx_reverse_proxy" else ("ok" if client_ctx.get("trusted_proxy_used") else "unknown")
+            health.setdefault("services", {})["web_edge"] = {
+                "status": edge_status,
+                "mode": edge.get("mode"),
+                "label": edge.get("label"),
+                "listener": edge.get("public_listener"),
+            }
+            health.setdefault("services", {}).setdefault("nginx_edge", {})["status"] = edge_status
             health["request"] = {
                 "host": split_host(self.headers.get("Host", "")),
                 "client_ip": client_ctx.get("client_ip"),

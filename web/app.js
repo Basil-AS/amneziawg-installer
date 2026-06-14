@@ -1129,17 +1129,19 @@ function renderServerHealth() {
     ? `Load ${Number(load.one || 0).toFixed(2)}`
     : formatPercent(cpu.usage_percent, 1);
   const memoryUsed = bytes(Math.max(0, Number(memory.total_bytes || 0) - Number(memory.available_bytes || 0)));
-  const nginx = services.nginx_edge || {};
+  const webEdge = services.web_edge || services.nginx_edge || {};
   const overlay = services["vp" + "n_interface"] || {};
   const overlayIface = network["vp" + "n_iface"] || "link";
   const overlayDrops = network["vp" + "n_drops_delta"] || 0;
+  const webEdgeLabel = webEdge.mode === "nginx_reverse_proxy" ? "nginx" : "direct";
+  const webEdgeStatus = webEdge.status || (webEdge.mode === "legacy_direct" ? "ok" : "unknown");
   host.innerHTML = `
     ${renderHealthCard("CPU", cpuValue, `load ${Number(load.one || 0).toFixed(2)} / ${load.cpu_count || 1} core`, cpu.status || load.status || "ok")}
     ${renderHealthCard("RAM", formatPercent(memory.used_percent, 0), `${memoryUsed} used · ${bytes(memory.available_bytes || 0)} available`, memory.status || "unknown")}
     ${renderHealthCard("Disk", formatPercent(disk.used_percent, 0), `${bytes(disk.free_bytes || 0)} free on ${disk.path || "/"}`, disk.status || "unknown")}
     ${renderHealthCard("Conntrack", conntrack.available === false ? "n/a" : formatPercent(conntrack.used_percent, 1), conntrack.available === false ? "not exposed" : `${conntrack.count || 0}/${conntrack.max || 0}`, conntrack.status || "unknown")}
     ${renderHealthCard("Network", `${network.drops_delta || 0} drops`, `${network.wan_iface || "wan"} / ${overlayIface} · errors ${network.errors_delta || 0}`, network.status || "unknown")}
-    ${renderHealthCard("Web/Link", `${nginx.status || "unknown"} / ${overlay.status || "unknown"}`, `python RSS ${bytes(process.rss_bytes || 0)} · FD ${process.fd_count || 0} · link drops ${overlayDrops}`, h.status || "unknown")}
+    ${renderHealthCard("Web/Link", `${webEdgeLabel} ${webEdgeStatus} / ${overlay.status || "unknown"}`, `python RSS ${bytes(process.rss_bytes || 0)} · FD ${process.fd_count || 0} · link drops ${overlayDrops}`, h.status || "unknown")}
   `;
   const stamp = document.querySelector("#serverHealthUpdated");
   if (stamp) stamp.textContent = h.timestamp ? `Updated ${h.timestamp}` : "";
