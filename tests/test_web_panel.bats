@@ -3014,6 +3014,23 @@ PY
     grep -qF 'NETTEST_PING_SAMPLES = 30' "$app"
 }
 
+@test "web app supports persistent collapsible dashboard sections" {
+    local app="$BATS_TEST_DIRNAME/../web/app.js"
+    local css="$BATS_TEST_DIRNAME/../web/style.css"
+    grep -qF 'COLLAPSED_SECTIONS_KEY = "panelCollapsedSections"' "$app"
+    grep -qF 'function bindCollapsibleSections()' "$app"
+    grep -qF 'localStorage.setItem(COLLAPSED_SECTIONS_KEY' "$app"
+    grep -qF 'data-collapse-toggle' "$app"
+    grep -qF 'data-collapsible-section' "$app"
+    grep -qF 'collapsible-section-body' "$app"
+    grep -qF 'collapseToggle("trafficPanel", "Traffic")' "$app"
+    grep -qF 'collapseToggle("serverHealthPanel", "Server Health")' "$app"
+    grep -qF 'collapseToggle("webAccessPanel", "Web Access")' "$app"
+    grep -qF 'bindCollapsibleSections();' "$app"
+    grep -qF '[data-collapsible-section][data-collapsed=true]>.collapsible-section-body{display:none}' "$css"
+    grep -qF '.section-collapse-toggle' "$css"
+}
+
 @test "nettest context includes Amnezia parameter assessment" {
     command -v python3 &>/dev/null || skip "python3 not available"
     local tmp

@@ -34,6 +34,7 @@ let topTrafficMode = localStorage.getItem("topTrafficMode") || "30d";
 let nettestNetworkType = localStorage.getItem("nettestNetworkType") || "mobile";
 let nettestDuration = Number(localStorage.getItem("nettestDuration") || 180);
 let serverHealthRange = localStorage.getItem("serverHealthRange") || "1h";
+const COLLAPSED_SECTIONS_KEY = "panelCollapsedSections";
 const ACTIVE_CLIENT_POLL_MS = 5000;
 const HIDDEN_CLIENT_POLL_MS = 30000;
 const SERVER_HEALTH_POLL_MS = 10000;
@@ -196,6 +197,7 @@ const icons = {
   pencil: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="m4 20 4.2-1 10.6-10.6a2.1 2.1 0 0 0-3-3L5.2 16 4 20Z"/><path d="m14.5 6.5 3 3"/></svg>',
   refresh: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 6v5h-5"/><path d="M4 18v-5h5"/><path d="M18.5 9A7 7 0 0 0 6.7 6.7L4 9"/><path d="M5.5 15a7 7 0 0 0 11.8 2.3L20 15"/></svg>',
   more: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="5" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="12" cy="19" r="1.5"/></svg>',
+  chevron: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m6 9 6 6 6-6"/></svg>',
 };
 
 const theme = localStorage.getItem("panelTheme") || "light";
@@ -227,6 +229,59 @@ function esc(value) {
 
 function icon(name) {
   return `<span class="w-4 h-4 inline-flex shrink-0">${icons[name] || ""}</span>`;
+}
+
+function loadCollapsedSections() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(COLLAPSED_SECTIONS_KEY) || "[]");
+    return new Set(Array.isArray(parsed) ? parsed.filter(item => typeof item === "string") : []);
+  } catch {
+    return new Set();
+  }
+}
+
+let collapsedSections = loadCollapsedSections();
+
+function saveCollapsedSections() {
+  localStorage.setItem(COLLAPSED_SECTIONS_KEY, JSON.stringify([...collapsedSections].sort()));
+}
+
+function isSectionCollapsed(id) {
+  return collapsedSections.has(id);
+}
+
+function collapsibleSectionAttrs(id, label = id) {
+  return `data-collapsible-section="${esc(id)}" data-section-label="${esc(label)}" data-collapsed="${isSectionCollapsed(id) ? "true" : "false"}"`;
+}
+
+function collapsibleSectionBody(id, classes = "mt-3") {
+  return `id="${esc(id)}Body" class="collapsible-section-body ${esc(classes)}"`;
+}
+
+function collapseToggle(id, label) {
+  const collapsed = isSectionCollapsed(id);
+  return `<button type="button" data-collapse-toggle="${esc(id)}" aria-expanded="${collapsed ? "false" : "true"}" aria-controls="${esc(id)}Body" title="${collapsed ? "Expand" : "Collapse"} ${esc(label)}" class="section-collapse-toggle">${icon("chevron")}<span>${collapsed ? "Show" : "Hide"}</span></button>`;
+}
+
+function bindCollapsibleSections() {
+  document.querySelectorAll("[data-collapse-toggle]").forEach(btn => {
+    btn.onclick = () => {
+      const id = btn.dataset.collapseToggle;
+      const section = Array.from(document.querySelectorAll("[data-collapsible-section]")).find(item => item.dataset.collapsibleSection === id);
+      if (!id || !section) return;
+      const collapsed = section.getAttribute("data-collapsed") !== "true";
+      section.setAttribute("data-collapsed", collapsed ? "true" : "false");
+      btn.setAttribute("aria-expanded", collapsed ? "false" : "true");
+      btn.title = `${collapsed ? "Expand" : "Collapse"} ${section.dataset.sectionLabel || "section"}`;
+      const label = btn.querySelector("span:last-child");
+      if (label) label.textContent = collapsed ? "Show" : "Hide";
+      if (collapsed) collapsedSections.add(id);
+      else collapsedSections.delete(id);
+      saveCollapsedSections();
+      if (!collapsed && id === "trafficPanel") renderTraffic();
+      if (!collapsed && id === "topTrafficPanel") renderTopClients();
+    };
+  });
 }
 
 function showToast(msg, type = "success") {
@@ -2340,123 +2395,162 @@ async function renderPanel() {
       </div>
     </section>
 
-    <section id="trafficPanel" class="mt-3 rounded-lg border border-[var(--line)] bg-[var(--panel)] p-4">
+    <section id="trafficPanel" ${collapsibleSectionAttrs("trafficPanel", "Traffic")} class="mt-3 rounded-lg border border-[var(--line)] bg-[var(--panel)] p-4">
       <div class="flex flex-wrap items-center justify-between gap-3">
         <h2 class="text-base font-semibold">Traffic</h2>
-        <p id="trafficUpdated" class="text-xs text-[var(--muted)]">Last 30 days</p>
-      </div>
-      <div id="trafficChart" class="mt-3 h-44"></div>
-    </section>
-
-    <section id="topTrafficPanel" class="mt-3 rounded-lg border border-[var(--line)] bg-[var(--panel)] p-4">
-      <div class="flex flex-wrap items-center justify-between gap-3">
-        <h2 class="text-base font-semibold">Top Clients</h2>
-        <div class="flex rounded-md border border-[var(--line)] bg-[var(--soft)] p-1">
-          <button data-top-mode="30d" class="top-mode h-8 rounded px-3 text-xs font-semibold transition">30d</button>
-          <button data-top-mode="total" class="top-mode h-8 rounded px-3 text-xs font-semibold transition">Total</button>
-          <button data-top-mode="now" class="top-mode h-8 rounded px-3 text-xs font-semibold transition">Now</button>
+        <div class="flex flex-wrap items-center justify-end gap-2">
+          <p id="trafficUpdated" class="text-xs text-[var(--muted)]">Last 30 days</p>
+          ${collapseToggle("trafficPanel", "Traffic")}
         </div>
       </div>
-      <div id="topClientsList" class="mt-3 grid gap-2"></div>
+      <div ${collapsibleSectionBody("trafficPanel")}>
+        <div id="trafficChart" class="h-44"></div>
+      </div>
     </section>
 
-    <section id="serverHealthPanel" class="mt-3 rounded-lg border border-[var(--line)] bg-[var(--panel)] p-4 ${statusState.role === "super" ? "" : "hidden"}">
+    <section id="topTrafficPanel" ${collapsibleSectionAttrs("topTrafficPanel", "Top Clients")} class="mt-3 rounded-lg border border-[var(--line)] bg-[var(--panel)] p-4">
+      <div class="flex flex-wrap items-center justify-between gap-3">
+        <h2 class="text-base font-semibold">Top Clients</h2>
+        <div class="flex flex-wrap items-center justify-end gap-2">
+          <div class="flex rounded-md border border-[var(--line)] bg-[var(--soft)] p-1">
+            <button data-top-mode="30d" class="top-mode h-8 rounded px-3 text-xs font-semibold transition">30d</button>
+            <button data-top-mode="total" class="top-mode h-8 rounded px-3 text-xs font-semibold transition">Total</button>
+            <button data-top-mode="now" class="top-mode h-8 rounded px-3 text-xs font-semibold transition">Now</button>
+          </div>
+          ${collapseToggle("topTrafficPanel", "Top Clients")}
+        </div>
+      </div>
+      <div ${collapsibleSectionBody("topTrafficPanel")}>
+        <div id="topClientsList" class="grid gap-2"></div>
+      </div>
+    </section>
+
+    <section id="serverHealthPanel" ${collapsibleSectionAttrs("serverHealthPanel", "Server Health")} class="mt-3 rounded-lg border border-[var(--line)] bg-[var(--panel)] p-4 ${statusState.role === "super" ? "" : "hidden"}">
       <div class="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h2 class="text-base font-semibold">Server Health</h2>
           <p class="text-sm text-[var(--muted)]">Cached CPU, memory, disk, network and process checks.</p>
         </div>
-        <p id="serverHealthUpdated" class="text-xs text-[var(--muted)]"></p>
-      </div>
-      <div id="serverHealthGrid" class="server-health-grid mt-3"></div>
-      <div id="clientNetworkDiagnostics" class="mt-3"></div>
-      <div id="networkExplain"></div>
-      <div id="serverHealthHistory" class="mt-3"></div>
-      <div class="mt-4">
-        <div class="flex flex-wrap items-center justify-between gap-3">
-          <p class="text-xs font-semibold uppercase text-[var(--muted)]">${"VP" + "N"} readiness</p>
-          <p id="readinessUpdated" class="text-xs text-[var(--muted)]"></p>
+        <div class="flex flex-wrap items-center justify-end gap-2">
+          <p id="serverHealthUpdated" class="text-xs text-[var(--muted)]"></p>
+          ${collapseToggle("serverHealthPanel", "Server Health")}
         </div>
-        <div id="readinessGrid" class="readiness-grid mt-2"></div>
       </div>
-      <div id="ndpProxyPanel" class="mt-4"></div>
+      <div ${collapsibleSectionBody("serverHealthPanel")}>
+        <div id="serverHealthGrid" class="server-health-grid"></div>
+        <div id="clientNetworkDiagnostics" class="mt-3"></div>
+        <div id="networkExplain"></div>
+        <div id="serverHealthHistory" class="mt-3"></div>
+        <div class="mt-4">
+          <div class="flex flex-wrap items-center justify-between gap-3">
+            <p class="text-xs font-semibold uppercase text-[var(--muted)]">${"VP" + "N"} readiness</p>
+            <p id="readinessUpdated" class="text-xs text-[var(--muted)]"></p>
+          </div>
+          <div id="readinessGrid" class="readiness-grid mt-2"></div>
+        </div>
+        <div id="ndpProxyPanel" class="mt-4"></div>
+      </div>
     </section>
 
-    <section id="networkTesterPanel" class="mt-3 rounded-lg border border-[var(--line)] bg-[var(--panel)] p-4">
+    <section id="networkTesterPanel" ${collapsibleSectionAttrs("networkTesterPanel", "Network Tester")} class="mt-3 rounded-lg border border-[var(--line)] bg-[var(--panel)] p-4">
       <div class="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h2 class="text-base font-semibold">Network Tester</h2>
           <p class="text-sm text-[var(--muted)]">Run a browser-side quality test.</p>
         </div>
-        <button id="startNettest" class="${primaryButtonClasses()}">${icon("refresh")}<span>Start test</span></button>
-      </div>
-      ${nettestControlsHTML()}
-      <div id="nettestContext" class="mt-3"></div>
-      <p id="nettestStatus" class="mt-3 text-sm text-[var(--muted)]">Ready.</p>
-      <div id="nettestResult" class="mt-3"></div>
-      <div class="mt-3 ${statusState.role === "super" ? "" : "hidden"}">
-        <div class="flex flex-wrap items-center justify-between gap-2">
-          <p class="text-xs font-semibold uppercase text-[var(--muted)]">Saved reports</p>
-          <button id="clearNettestReports" class="${buttonClasses("h-8 px-2 text-xs")}">${icon("trash")}<span>Clear all reports</span></button>
+        <div class="flex flex-wrap items-center justify-end gap-2">
+          ${collapseToggle("networkTesterPanel", "Network Tester")}
+          <button id="startNettest" class="${primaryButtonClasses()}">${icon("refresh")}<span>Start test</span></button>
         </div>
-        <div id="nettestReports" class="mt-2"></div>
+      </div>
+      <div ${collapsibleSectionBody("networkTesterPanel")}>
+        ${nettestControlsHTML()}
+        <div id="nettestContext" class="mt-3"></div>
+        <p id="nettestStatus" class="mt-3 text-sm text-[var(--muted)]">Ready.</p>
+        <div id="nettestResult" class="mt-3"></div>
+        <div class="mt-3 ${statusState.role === "super" ? "" : "hidden"}">
+          <div class="flex flex-wrap items-center justify-between gap-2">
+            <p class="text-xs font-semibold uppercase text-[var(--muted)]">Saved reports</p>
+            <button id="clearNettestReports" class="${buttonClasses("h-8 px-2 text-xs")}">${icon("trash")}<span>Clear all reports</span></button>
+          </div>
+          <div id="nettestReports" class="mt-2"></div>
+        </div>
       </div>
     </section>
 
-    <section id="accessPanel" class="mt-3 rounded-lg border border-[var(--line)] bg-[var(--panel)] p-4 ${statusState.role === "super" ? "" : "hidden"}">
+    <section id="accessPanel" ${collapsibleSectionAttrs("accessPanel", "Access Control")} class="mt-3 rounded-lg border border-[var(--line)] bg-[var(--panel)] p-4 ${statusState.role === "super" ? "" : "hidden"}">
       <div class="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h2 class="text-base font-semibold">Access Control</h2>
           <p class="text-sm text-[var(--muted)]">User tokens are limited to selected clients.</p>
         </div>
-        <button id="newToken" class="${buttonClasses()}">${icon("key")}<span>Generate Token</span></button>
+        <div class="flex flex-wrap items-center justify-end gap-2">
+          ${collapseToggle("accessPanel", "Access Control")}
+          <button id="newToken" class="${buttonClasses()}">${icon("key")}<span>Generate Token</span></button>
+        </div>
       </div>
-      <div id="tokenList" class="mt-4 grid gap-2"></div>
+      <div ${collapsibleSectionBody("accessPanel", "mt-4")}>
+        <div id="tokenList" class="grid gap-2"></div>
+      </div>
     </section>
 
-    <section id="webAccessPanel" class="mt-3 rounded-lg border border-[var(--line)] bg-[var(--panel)] p-4 ${statusState.role === "super" ? "" : "hidden"}">
+    <section id="webAccessPanel" ${collapsibleSectionAttrs("webAccessPanel", "Web Access")} class="mt-3 rounded-lg border border-[var(--line)] bg-[var(--panel)] p-4 ${statusState.role === "super" ? "" : "hidden"}">
       <div class="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h2 class="text-base font-semibold">Web Access</h2>
           <p class="text-sm text-[var(--muted)]">Host and source policy for this panel.</p>
         </div>
         <div class="flex flex-wrap gap-2">
+          ${collapseToggle("webAccessPanel", "Web Access")}
           <button id="testWebAccessPolicy" class="${buttonClasses()}">${icon("shield")}<span>Test policy</span></button>
           <button id="saveWebAccessPolicy" class="${primaryButtonClasses()}">${icon("save")}<span>Save</span></button>
           <button id="saveRestartWebAccessPolicy" class="${buttonClasses("border-amber-600 text-amber-700")}">${icon("refresh")}<span>Save and restart</span></button>
         </div>
       </div>
-      <div id="webAccessPolicyForm" class="mt-4"></div>
+      <div ${collapsibleSectionBody("webAccessPanel", "mt-4")}>
+        <div id="webAccessPolicyForm"></div>
+      </div>
     </section>
 
-    <section id="geoipPanel" class="mt-3 rounded-lg border border-[var(--line)] bg-[var(--panel)] p-4 ${statusState.role === "super" ? "" : "hidden"}">
+    <section id="geoipPanel" ${collapsibleSectionAttrs("geoipPanel", "GeoIP Sources")} class="mt-3 rounded-lg border border-[var(--line)] bg-[var(--panel)] p-4 ${statusState.role === "super" ? "" : "hidden"}">
       <div class="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h2 class="text-base font-semibold">GeoIP Sources</h2>
           <p class="text-sm text-[var(--muted)]">Lookup providers, tokens, and local MMDB databases.</p>
         </div>
-        <button id="saveGeoipProviders" class="${primaryButtonClasses()}">${icon("save")}<span>Save</span></button>
+        <div class="flex flex-wrap items-center justify-end gap-2">
+          ${collapseToggle("geoipPanel", "GeoIP Sources")}
+          <button id="saveGeoipProviders" class="${primaryButtonClasses()}">${icon("save")}<span>Save</span></button>
+        </div>
       </div>
-      <div id="geoipProvidersForm" class="mt-4"></div>
-      <div id="geoipDatabasesPanel" class="mt-4"></div>
+      <div ${collapsibleSectionBody("geoipPanel")}>
+        <div id="geoipProvidersForm"></div>
+        <div id="geoipDatabasesPanel" class="mt-4"></div>
+      </div>
     </section>
 
-    <section id="advancedPanel" class="mt-3 rounded-lg border border-[var(--line)] bg-[var(--panel)] p-4 ${statusState.role === "super" ? "" : "hidden"}">
+    <section id="advancedPanel" ${collapsibleSectionAttrs("advancedPanel", "Advanced")} class="mt-3 rounded-lg border border-[var(--line)] bg-[var(--panel)] p-4 ${statusState.role === "super" ? "" : "hidden"}">
       <div class="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h2 class="text-base font-semibold">Advanced</h2>
         <p class="text-sm text-[var(--muted)]">Disruptive system operations.</p>
         </div>
+        ${collapseToggle("advancedPanel", "Advanced")}
+      </div>
+      <div ${collapsibleSectionBody("advancedPanel", "mt-3")}>
         <button id="rotateProfile" class="${buttonClasses("border-amber-600 text-amber-700")}">${icon("refresh")}<span>Rotate profile</span></button>
       </div>
     </section>
 
-    <section id="clientFiltersPanel" class="mt-3 rounded-lg border border-[var(--line)] bg-[var(--panel)] p-3">
+    <section id="clientFiltersPanel" ${collapsibleSectionAttrs("clientFiltersPanel", "Client filters")} class="mt-3 rounded-lg border border-[var(--line)] bg-[var(--panel)] p-3">
       <div class="flex flex-wrap items-center justify-between gap-2">
         <h2 class="text-sm font-semibold">Client filters</h2>
-        <p class="text-xs text-[var(--muted)]">Search and owner filters combine.</p>
+        <div class="flex flex-wrap items-center justify-end gap-2">
+          <p class="text-xs text-[var(--muted)]">Search and owner filters combine.</p>
+          ${collapseToggle("clientFiltersPanel", "Client filters")}
+        </div>
       </div>
-      <div class="client-filter-grid">
+      <div ${collapsibleSectionBody("clientFiltersPanel", "client-filter-grid")}>
         <div class="client-search-wrap">
           <span class="client-search-icon">${icon("search")}</span>
           <input id="searchInput" class="client-search-input" placeholder="Search clients..." autocomplete="off">
@@ -2472,6 +2566,7 @@ async function renderPanel() {
   document.querySelector("#logout").onclick = logout;
   document.querySelector("#addClient").onclick = addClient;
   document.querySelector("#searchInput").oninput = applySearch;
+  bindCollapsibleSections();
   bindNetworkTester();
   if (statusState.role === "super") document.querySelector("#newToken").onclick = newToken;
   if (statusState.role === "super") document.querySelector("#rotateProfile").onclick = rotateProfile;
@@ -2649,6 +2744,13 @@ function renderTraffic() {
 
   const updated = document.querySelector("#trafficUpdated");
   if (updated) updated.textContent = `${(trafficState.days || []).length || 30} day window`;
+  if (document.querySelector("#trafficPanel")?.dataset.collapsed === "true") {
+    if (trafficChart) {
+      trafficChart.destroy();
+      trafficChart = null;
+    }
+    return;
+  }
   if (!window.ApexCharts) return;
   const el = document.querySelector("#trafficChart");
   if (!el) return;

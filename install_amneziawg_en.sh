@@ -34,13 +34,13 @@ MANAGE_SCRIPT_PATH="$AWG_DIR/manage_amneziawg.sh"
 # are used first; remote download is allowed only with pinned SHA256 or explicit
 # AWG_ALLOW_UNVERIFIED_DOWNLOAD=1 for development.
 declare -A AWG_ASSET_SHA256=(
-    ["awg_common_en.sh"]="977405c8f3f6850d5c93a33697216a6969cedb4d8cf087d6f55ba4c8740dcdaa"
+    ["awg_common_en.sh"]="e47870373b96c6f590f5da23942f349ba6f618a24c8a2caba4ddbddd2a7080fb"
     ["manage_amneziawg_en.sh"]="18e1dfbe9989f38692883ac992c7f1005f06ec4d41c03a92b682a28f31bf7d80"
     ["web/server.py"]="7c0a1039e7db38000d8708519e96008abc6da9b8fe8ab6451cad974f4c9a6ebe"
     ["web/index.html"]="7c07ed1d1991e08c0f9fc31e86ed8eb2bba5fa96387088f1f18918396cf7e662"
-    ["web/app.js"]="221c7e2b61b2e33ad0274e88bd135ed1711109ebab3be3161125aca52d8cfe4d"
+    ["web/app.js"]="e3b6a9f1ca125a14e19ce343565a94abfc02d53a26fdf5504e3d57c0688d2596"
     ["web/awg_i1.js"]="c97a6ac6c4e4bd7ab24c37c45f451e364414f276441f8da1c0805d26013aaa03"
-    ["web/style.css"]="a4c67a98f7f5086b7b9f7519a675fc53c45204b99bada9c780a060963a08edc3"
+    ["web/style.css"]="3c5c79628e640c11c65d2fee85bca228c371dcce98a10f8a24e0c16548843f1c"
     ["web/favicon.svg"]="ae700ecb12dbf01403d0ed25247bac6b70f11201b094ee6c14b774b7fa533859"
     ["web/vendor/tailwindcss.js"]="176e894661aa9cdc9a5cba6c720044cbbf7b8bd80d1c9a142a7c24b1b6c50d15"
     ["web/vendor/apexcharts.min.js"]="a7400cd48b40b4f39d1c15137ae0cc8cbec31dc2b55a606640f1cd11912416dd"
