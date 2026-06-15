@@ -34,7 +34,7 @@ MANAGE_SCRIPT_PATH="$AWG_DIR/manage_amneziawg.sh"
 # используются первыми; remote download разрешён только с pinned SHA256 либо
 # при явном AWG_ALLOW_UNVERIFIED_DOWNLOAD=1 для разработки.
 declare -A AWG_ASSET_SHA256=(
-    ["awg_common.sh"]="2decc84dc9eafe51a9a6e983439229da6f857ac74ce715ab89378d8ef3155983"
+    ["awg_common.sh"]="ee343d0f493a99451054c640a9b2b870bc35c7f3aec5bc73b11782269d253a47"
     ["manage_amneziawg.sh"]="a42c7f338e8238e9e13f0b261db7e10e051ffa395b20250cb25f0c0a242f54b9"
     ["web/server.py"]="7c0a1039e7db38000d8708519e96008abc6da9b8fe8ab6451cad974f4c9a6ebe"
     ["web/index.html"]="7c07ed1d1991e08c0f9fc31e86ed8eb2bba5fa96387088f1f18918396cf7e662"
@@ -4240,6 +4240,7 @@ render_curated_adguard_yaml() {
     local existing_yaml="$1" output_yaml="$2" server_conf="$3" ag_port="$4" ag_user="$5" ag_hash="$6"
     AWG_TUNNEL_SUBNET="${AWG_TUNNEL_SUBNET:-10.9.9.1/24}" \
     AWG_IPV6_ENABLED="${AWG_IPV6_ENABLED:-0}" \
+    AWG_IPV6_MODE_EFFECTIVE="${AWG_IPV6_MODE_EFFECTIVE:-${AWG_IPV6_MODE:-legacy}}" \
     AWG_IPV6_SUBNET="${AWG_IPV6_SUBNET:-}" \
     python3 - "$existing_yaml" "$output_yaml" "$server_conf" "$ag_port" "$ag_user" "$ag_hash" <<'PY'
 import ipaddress
@@ -4498,7 +4499,8 @@ allowed_clients = [str(tunnel.network)]
 bind_hosts = [vpn_ip]
 if os.environ.get("AWG_IPV6_ENABLED") == "1" and os.environ.get("AWG_IPV6_SUBNET"):
     v6_net = ipaddress.ip_network(os.environ["AWG_IPV6_SUBNET"], strict=False)
-    bind_hosts.append(str(v6_net.network_address + 1))
+    v6_offset = 0x100 if os.environ.get("AWG_IPV6_MODE_EFFECTIVE") == "ndp" else 1
+    bind_hosts.append(str(v6_net.network_address + v6_offset))
     allowed_clients.append(str(v6_net))
 rewrites = [(f"{client_label(peer['name'])}.awg", client_id) for peer in peers for client_id in peer["ids"]]
 

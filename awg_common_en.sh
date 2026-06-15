@@ -588,7 +588,19 @@ ipv6_ndp_enable() {
     systemctl daemon-reload 2>/dev/null || true
     ipv6_ndp_enable_sysctl "$(get_main_nic)"
     systemctl enable --now ndppd || die "Failed to enable/start ndppd"
+    systemctl restart ndppd || die "Failed to restart ndppd"
     log "ndppd enabled and started."
+}
+
+ipv6_ndp_refresh_after_config_apply() {
+    awg_ipv6_effective_mode_is_ndp || return 0
+    [[ "${AWG_IPV6_ENABLED:-0}" == "1" ]] || return 0
+    [[ -n "${AWG_IPV6_SUBNET:-}" ]] || return 0
+    ipv6_ndp_generate_config "$AWG_IPV6_SUBNET"
+    ipv6_ndp_enable
+    if [[ -x "${AWG_DIR:-/root/awg}/postup.sh" ]]; then
+        bash "${AWG_DIR:-/root/awg}/postup.sh" 2>/dev/null || log_warn "Failed to apply live NDP peer routes; restart awg-quick@awg0 if IPv6 peers are unreachable."
+    fi
 }
 
 # Disable and stop ndppd. Always allowed (cleanup must work even if IPv6
@@ -2399,6 +2411,9 @@ apply_config() {
         log "Перезапуск сервиса (apply-mode=restart)..."
         systemctl restart awg-quick@awg0 2>/dev/null; rc=$?
         [[ $rc -ne 0 ]] && log_warn "Ошибка перезапуска."
+        if [[ $rc -eq 0 ]]; then
+            ipv6_ndp_refresh_after_config_apply || rc=$?
+        fi
         exec {apply_fd}>&-
         return $rc
     fi
@@ -2408,6 +2423,9 @@ apply_config() {
         log_warn "awg-quick strip не удался или timeout, использую полный перезапуск."
         systemctl restart awg-quick@awg0 2>/dev/null; rc=$?
         [[ $rc -ne 0 ]] && log_warn "Ошибка перезапуска."
+        if [[ $rc -eq 0 ]]; then
+            ipv6_ndp_refresh_after_config_apply || rc=$?
+        fi
         exec {apply_fd}>&-
         return $rc
     }
@@ -2415,12 +2433,16 @@ apply_config() {
         log_warn "awg syncconf не удался или timeout, использую полный перезапуск."
         systemctl restart awg-quick@awg0 2>/dev/null; rc=$?
         [[ $rc -ne 0 ]] && log_warn "Ошибка перезапуска."
+        if [[ $rc -eq 0 ]]; then
+            ipv6_ndp_refresh_after_config_apply || rc=$?
+        fi
         exec {apply_fd}>&-
         return $rc
     }
     log_debug "Конфигурация применена (syncconf)."
+    ipv6_ndp_refresh_after_config_apply || rc=$?
     exec {apply_fd}>&-
-    return 0
+    return $rc
 }
 
 # ==============================================================================

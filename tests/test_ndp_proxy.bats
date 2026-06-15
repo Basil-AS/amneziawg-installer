@@ -142,6 +142,63 @@ EOF
     fi
 }
 
+@test "ipv6_ndp_refresh_after_config_apply: refreshes ndppd and live /128 routes after peer changes" {
+    command -v python3 &>/dev/null || skip "python3 not available"
+    setup_wan_mock
+    cat > "$TEST_DIR/bin/systemctl" << EOF
+#!/bin/bash
+echo "\$*" >> "$TEST_DIR/systemctl.log"
+exit 0
+EOF
+    cat > "$TEST_DIR/bin/sysctl" << EOF
+#!/bin/bash
+echo "\$*" >> "$TEST_DIR/sysctl.log"
+exit 0
+EOF
+    cat > "$TEST_DIR/bin/ndppd" <<'EOF'
+#!/bin/bash
+exit 0
+EOF
+    chmod +x "$TEST_DIR/bin/systemctl" "$TEST_DIR/bin/sysctl" "$TEST_DIR/bin/ndppd"
+    write_if_inet6 "$TEST_DIR/if_inet6" "00"
+    export IF_INET6_FILE="$TEST_DIR/if_inet6"
+    export NDPPD_CONF_FILE="$TEST_DIR/ndppd.conf"
+    export NDPPD_SYSTEMD_DROPIN="$TEST_DIR/ndppd-dropin.conf"
+    export NDP_SYSCTL_FILE="$TEST_DIR/ndp-sysctl.conf"
+    export AWG_IPV6_ENABLED=1
+    export AWG_IPV6_MODE=ndp
+    export AWG_IPV6_MODE_EFFECTIVE=ndp
+    export AWG_IPV6_SUBNET="2a09:9340:808:4::/64"
+    create_server_config
+    cat >> "$SERVER_CONF_FILE" <<'EOF'
+
+[Peer]
+#_Name = old_peer
+PublicKey = PUB1
+AllowedIPs = 10.9.9.4/32, 2a09:9340:808:4::103/128
+
+[Peer]
+#_Name = new_router
+PublicKey = PUB2
+AllowedIPs = 10.9.9.12/32, 2a09:9340:808:4::10b/128
+EOF
+    cat > "$AWG_DIR/postup.sh" << EOF
+#!/bin/bash
+echo postup >> "$TEST_DIR/postup.log"
+EOF
+    chmod +x "$AWG_DIR/postup.sh"
+
+    run ipv6_ndp_refresh_after_config_apply
+    [ "$status" -eq 0 ]
+    grep -qF "rule 2a09:9340:808:4::103 {" "$NDPPD_CONF_FILE"
+    grep -qF "rule 2a09:9340:808:4::10b {" "$NDPPD_CONF_FILE"
+    grep -qF "static" "$NDPPD_CONF_FILE"
+    grep -qF "enable --now ndppd" "$TEST_DIR/systemctl.log"
+    grep -qF "restart ndppd" "$TEST_DIR/systemctl.log"
+    grep -qF "postup" "$TEST_DIR/postup.log"
+    grep -qF "net.ipv6.conf.ens1.proxy_ndp = 1" "$NDP_SYSCTL_FILE"
+}
+
 @test "is_prefix_onlink_on_wan: same WAN /64 is on-link, different prefix is not" {
     command -v python3 &>/dev/null || skip "python3 not available"
     mkdir -p "$TEST_DIR/bin"
