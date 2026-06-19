@@ -5,6 +5,7 @@ let token = sessionStorage.getItem("panelToken") || "";
 let statusState = null;
 let resolverState = null;
 let trafficState = null;
+let providerTrafficState = null;
 let webAccessPolicyState = null;
 let geoipProvidersState = null;
 let geoipDatabasesState = null;
@@ -481,6 +482,14 @@ function trafficText(data = {}, mode = "traffic") {
   return mode === "now"
     ? `↓ ${speed(stats.download)} · ↑ ${speed(stats.upload)}`
     : `Download ${bytes(stats.download)} · Upload ${bytes(stats.upload)}`;
+}
+
+function trafficSplitHtml(data = {}) {
+  const stats = clientTraffic(data);
+  return `
+    <span class="summary-traffic-line"><span>Download</span><strong>${esc(bytes(stats.download))}</strong></span>
+    <span class="summary-traffic-line"><span>Upload</span><strong>${esc(bytes(stats.upload))}</strong></span>
+  `;
 }
 
 function trafficMetricRow(label, data = {}) {
@@ -2398,22 +2407,30 @@ async function renderPanel() {
 
     <section class="summary-cards mt-3">
       <div class="summary-card summary-card-narrow">
-        <p class="text-xs font-semibold uppercase text-[var(--muted)]">Active</p>
-        <strong id="metricActive" class="mt-1 block text-2xl">0</strong>
-      </div>
-      <div class="summary-card summary-card-narrow">
-        <p class="text-xs font-semibold uppercase text-[var(--muted)]">Clients</p>
-        <strong id="metricClients" class="mt-1 block text-2xl">0</strong>
+        <div class="summary-stack-metric">
+          <p class="text-xs font-semibold uppercase text-[var(--muted)]">Active</p>
+          <strong id="metricActive" class="mt-1 block text-2xl">0</strong>
+        </div>
+        <div class="summary-divider"></div>
+        <div class="summary-stack-metric">
+          <p class="text-xs font-semibold uppercase text-[var(--muted)]">Clients</p>
+          <strong id="metricClients" class="mt-1 block text-2xl">0</strong>
+        </div>
       </div>
       <div class="summary-card summary-card-traffic">
         <p class="text-xs font-semibold uppercase text-[var(--muted)]">Traffic Total</p>
         <strong id="metricTrafficTotal" class="mt-1 block text-2xl">-</strong>
-        <p id="metricTrafficTotalSub" class="mt-1 text-xs text-[var(--muted)]">-</p>
+        <div id="metricTrafficTotalSub" class="summary-traffic-lines mt-1">-</div>
+      </div>
+      <div id="providerTrafficCard" class="summary-card summary-card-provider hidden">
+        <p id="metricProviderTrafficLabel" class="text-xs font-semibold uppercase text-[var(--muted)]">Provider Traffic</p>
+        <strong id="metricProviderTraffic" class="mt-1 block text-2xl">-</strong>
+        <div id="metricProviderTrafficSub" class="summary-traffic-lines mt-1">-</div>
       </div>
       <div class="summary-card summary-card-traffic">
         <p class="text-xs font-semibold uppercase text-[var(--muted)]">30 Days</p>
         <strong id="metricTraffic30d" class="mt-1 block text-2xl">-</strong>
-        <p id="metricTraffic30dSub" class="mt-1 text-xs text-[var(--muted)]">-</p>
+        <div id="metricTraffic30dSub" class="summary-traffic-lines mt-1">-</div>
       </div>
       <div class="summary-card summary-card-links">
         <p class="text-xs font-semibold uppercase text-[var(--muted)]">Links</p>
@@ -2718,10 +2735,20 @@ async function loadClients() {
         avatar: await avatarHtml(client.name),
       });
     }));
+    if (statusState.role === "super") {
+      try {
+        providerTrafficState = await api("/api/provider-traffic");
+      } catch {
+        providerTrafficState = null;
+      }
+    } else {
+      providerTrafficState = null;
+    }
     renderClients();
     document.querySelector("#metricClients").textContent = latestClients.length;
     document.querySelector("#metricActive").textContent = latestClients.filter(isOnline).length;
     renderTraffic();
+    renderProviderTraffic();
     renderTopClients();
     if (statusState.role === "super") renderTokenList();
     applySearch();
@@ -2770,9 +2797,9 @@ function renderTraffic() {
   const last30Metric = document.querySelector("#metricTraffic30d");
   const last30Sub = document.querySelector("#metricTraffic30dSub");
   if (totalMetric) totalMetric.textContent = bytes(total.total || 0);
-  if (totalSub) totalSub.textContent = trafficText(total);
+  if (totalSub) totalSub.innerHTML = trafficSplitHtml(total);
   if (last30Metric) last30Metric.textContent = bytes(last30.total || 0);
-  if (last30Sub) last30Sub.textContent = trafficText(last30);
+  if (last30Sub) last30Sub.innerHTML = trafficSplitHtml(last30);
 
   const updated = document.querySelector("#trafficUpdated");
   if (updated) updated.textContent = `${(trafficState.days || []).length || 30} day window`;
@@ -2805,6 +2832,39 @@ function renderTraffic() {
     tooltip: {y: {formatter: value => bytes(value)}},
   });
   trafficChart.render();
+}
+
+function renderProviderTraffic() {
+  const card = document.querySelector("#providerTrafficCard");
+  if (!card) return;
+  const state = providerTrafficState || {};
+  if (!state.enabled) {
+    card.classList.add("hidden");
+    return;
+  }
+  card.classList.remove("hidden");
+  const label = document.querySelector("#metricProviderTrafficLabel");
+  const metric = document.querySelector("#metricProviderTraffic");
+  const sub = document.querySelector("#metricProviderTrafficSub");
+  const traffic = state.traffic || {};
+  const remaining = state.remaining || {};
+  const remainingTotal = remaining.total_bytes;
+  if (label) label.textContent = state.label || "Provider Traffic";
+  if (metric) {
+    metric.textContent = remainingTotal === null || remainingTotal === undefined
+      ? bytes(traffic.total_bytes || 0)
+      : bytes(remainingTotal);
+  }
+  if (sub) {
+    const caption = remainingTotal === null || remainingTotal === undefined ? "Used" : "Remaining";
+    const status = state.status && state.status !== "ok" ? `<span class="summary-provider-status">${esc(state.status)}</span>` : "";
+    sub.innerHTML = `
+      <span class="summary-traffic-line"><span>${caption}</span><strong>${esc(bytes(remainingTotal === null || remainingTotal === undefined ? traffic.total_bytes || 0 : remainingTotal))}</strong></span>
+      <span class="summary-traffic-line"><span>IN</span><strong>${esc(bytes(traffic.in_bytes || 0))}</strong></span>
+      <span class="summary-traffic-line"><span>OUT</span><strong>${esc(bytes(traffic.out_bytes || 0))}</strong></span>
+      ${status}
+    `;
+  }
 }
 
 function topClientStats(client, mode) {

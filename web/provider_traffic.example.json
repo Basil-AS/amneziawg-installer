@@ -1,0 +1,14 @@
+{
+  "enabled": false,
+  "provider": "hostkey",
+  "label": "HOSTKEY Traffic",
+  "token": "",
+  "ip": "",
+  "period_days": 30,
+  "cache_ttl_seconds": 600,
+  "unit": "gb",
+  "unbilled": 0,
+  "limit_total_gb": null,
+  "limit_in_gb": null,
+  "limit_out_gb": null
+}

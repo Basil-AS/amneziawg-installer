@@ -19,9 +19,9 @@ from collections import deque
 from http import HTTPStatus
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, quote, unquote, urlparse
+from urllib.parse import parse_qs, quote, unquote, urlencode, urlparse
 from urllib.error import URLError
-from urllib.request import urlopen
+from urllib.request import Request, urlopen
 
 AWG_DIR = Path(os.environ.get("AWG_DIR", "/root/awg"))
 WEB_DIR = AWG_DIR / "web"
@@ -35,6 +35,7 @@ CLIENT_METADATA_FILE = WEB_DIR / "client_metadata.json"
 IP_INFO_CACHE_FILE = WEB_DIR / "ip_cache.json"
 NETTEST_REPORT_DIR = WEB_DIR / "nettest_reports"
 HEALTH_HISTORY_DIR = WEB_DIR / "health_history"
+PROVIDER_TRAFFIC_FILE = WEB_DIR / "provider_traffic.json"
 LEGACY_TOKEN_FILE = WEB_DIR / "auth_token"
 NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 TOKEN_HASH_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -94,6 +95,10 @@ SERVER_HEALTH_HISTORY_CACHE_TTL = 15.0
 SERVER_HEALTH_SAMPLE_INTERVAL = 10.0
 SERVER_HEALTH_RETENTION_DAYS = 30
 SERVER_HEALTH_COLLECTOR_STARTED = False
+PROVIDER_TRAFFIC_LOCK = threading.Lock()
+PROVIDER_TRAFFIC_CACHE = None
+PROVIDER_TRAFFIC_CACHE_TS = 0.0
+PROVIDER_TRAFFIC_CACHE_KEY = ""
 SERVER_HEALTH_RANGES = {
     "10m": 10 * 60,
     "1h": 60 * 60,
@@ -4364,6 +4369,161 @@ def client_traffic_api(total_pair=None, last_30d_pair=None):
     }
 
 
+def _provider_positive_int(value, default, minimum=1, maximum=86400):
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        return default
+    return max(minimum, min(maximum, n))
+
+
+def _provider_optional_gb(value):
+    if value in (None, ""):
+        return None
+    try:
+        n = float(value)
+    except (TypeError, ValueError):
+        return None
+    return n if n >= 0 else None
+
+
+def load_provider_traffic_config():
+    if not PROVIDER_TRAFFIC_FILE.exists():
+        return {"enabled": False, "provider": "", "label": "Provider Traffic"}
+    try:
+        data = json.loads(PROVIDER_TRAFFIC_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return {"enabled": False, "provider": "", "label": "Provider Traffic"}
+    if not isinstance(data, dict):
+        return {"enabled": False, "provider": "", "label": "Provider Traffic"}
+    provider = str(data.get("provider") or "").strip().lower()
+    if provider not in {"hostkey"}:
+        provider = ""
+    label = str(data.get("label") or "Provider Traffic").strip()[:60] or "Provider Traffic"
+    return {
+        "enabled": bool(data.get("enabled")) and bool(provider),
+        "provider": provider,
+        "label": label,
+        "token": str(data.get("token") or os.environ.get("HOSTKEY_TOKEN") or "").strip(),
+        "ip": str(data.get("ip") or "").strip(),
+        "server_id": str(data.get("server_id") or "").strip(),
+        "period_days": _provider_positive_int(data.get("period_days"), 30, 1, 366),
+        "cache_ttl_seconds": _provider_positive_int(data.get("cache_ttl_seconds"), 600, 30, 86400),
+        "unit": str(data.get("unit") or "gb").strip().lower(),
+        "limit_total_gb": _provider_optional_gb(data.get("limit_total_gb")),
+        "limit_in_gb": _provider_optional_gb(data.get("limit_in_gb")),
+        "limit_out_gb": _provider_optional_gb(data.get("limit_out_gb")),
+        "unbilled": 1 if str(data.get("unbilled", "0")).lower() in {"1", "true", "yes"} else 0,
+    }
+
+
+def provider_value_to_bytes(value, unit="gb"):
+    try:
+        n = float(value)
+    except (TypeError, ValueError):
+        return 0
+    unit = (unit or "gb").lower()
+    if unit in {"bytes", "byte", "b"}:
+        return max(0, int(n))
+    if unit in {"mb", "mib"}:
+        factor = 1024 ** 2 if unit == "mib" else 1000 ** 2
+    elif unit == "gib":
+        factor = 1024 ** 3
+    else:
+        factor = 1000 ** 3
+    return max(0, int(n * factor))
+
+
+def provider_gb_to_bytes(value):
+    if value is None:
+        return None
+    return max(0, int(float(value) * 1000 ** 3))
+
+
+def hostkey_post(endpoint, params, timeout=8.0):
+    data = urlencode(params).encode("utf-8")
+    request = Request(
+        f"https://invapi.hostkey.ru/{endpoint}",
+        data=data,
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        method="POST",
+    )
+    with urlopen(request, timeout=timeout) as response:
+        raw = response.read(256 * 1024)
+    return json.loads(raw.decode("utf-8", errors="replace"))
+
+
+def hostkey_traffic_payload(cfg):
+    token = cfg.get("token", "")
+    if not token:
+        return {"enabled": True, "provider": "hostkey", "label": cfg["label"], "status": "error", "error": "missing token"}
+    ip = cfg.get("ip") or server_info_payload().get("public_ipv4", "")
+    if not ip:
+        return {"enabled": True, "provider": "hostkey", "label": cfg["label"], "status": "error", "error": "missing ip"}
+    now = int(time.time())
+    start = now - int(cfg.get("period_days", 30)) * 86400
+    try:
+        payload = hostkey_post("ip.php", {
+            "action": "get_traffic",
+            "token": token,
+            "ip": ip,
+            "period_start": start,
+            "period_stop": now,
+            "summary": 1,
+            "unbilled": int(cfg.get("unbilled", 0)),
+        })
+    except (OSError, URLError, TimeoutError, json.JSONDecodeError) as exc:
+        return {"enabled": True, "provider": "hostkey", "label": cfg["label"], "status": "error", "error": exc.__class__.__name__}
+    if not isinstance(payload, dict) or payload.get("result") != "OK":
+        message = str((payload or {}).get("message") or "request failed")[:160] if isinstance(payload, dict) else "request failed"
+        return {"enabled": True, "provider": "hostkey", "label": cfg["label"], "status": "warn", "error": message}
+    traffic = payload.get("traffic")
+    rows = traffic if isinstance(traffic, list) else [traffic] if isinstance(traffic, dict) else []
+    in_bytes = sum(provider_value_to_bytes(row.get("in"), cfg.get("unit")) for row in rows if isinstance(row, dict))
+    out_bytes = sum(provider_value_to_bytes(row.get("out"), cfg.get("unit")) for row in rows if isinstance(row, dict))
+    total = in_bytes + out_bytes
+    limit_total = provider_gb_to_bytes(cfg.get("limit_total_gb"))
+    limit_in = provider_gb_to_bytes(cfg.get("limit_in_gb"))
+    limit_out = provider_gb_to_bytes(cfg.get("limit_out_gb"))
+    return {
+        "enabled": True,
+        "provider": "hostkey",
+        "label": cfg["label"],
+        "status": "ok",
+        "period_days": int(cfg.get("period_days", 30)),
+        "refreshed_at": utc_now_iso(),
+        "traffic": {"in_bytes": in_bytes, "out_bytes": out_bytes, "total_bytes": total},
+        "quota": {"total_bytes": limit_total, "in_bytes": limit_in, "out_bytes": limit_out},
+        "remaining": {
+            "total_bytes": None if limit_total is None else max(0, limit_total - total),
+            "in_bytes": None if limit_in is None else max(0, limit_in - in_bytes),
+            "out_bytes": None if limit_out is None else max(0, limit_out - out_bytes),
+        },
+    }
+
+
+def provider_traffic_payload(force=False):
+    global PROVIDER_TRAFFIC_CACHE, PROVIDER_TRAFFIC_CACHE_TS, PROVIDER_TRAFFIC_CACHE_KEY
+    cfg = load_provider_traffic_config()
+    if not cfg.get("enabled"):
+        return {"enabled": False}
+    cache_key = json.dumps({k: v for k, v in cfg.items() if k != "token"}, sort_keys=True)
+    now = time.time()
+    with PROVIDER_TRAFFIC_LOCK:
+        if (
+            not force
+            and PROVIDER_TRAFFIC_CACHE is not None
+            and PROVIDER_TRAFFIC_CACHE_KEY == cache_key
+            and now - PROVIDER_TRAFFIC_CACHE_TS < int(cfg.get("cache_ttl_seconds", 600))
+        ):
+            return dict(PROVIDER_TRAFFIC_CACHE)
+        payload = hostkey_traffic_payload(cfg) if cfg.get("provider") == "hostkey" else {"enabled": False}
+        PROVIDER_TRAFFIC_CACHE = dict(payload)
+        PROVIDER_TRAFFIC_CACHE_TS = time.time()
+        PROVIDER_TRAFFIC_CACHE_KEY = cache_key
+        return payload
+
+
 def _sum_days_for_client(days, name):
     rx = tx = 0
     if not isinstance(days, dict):
@@ -6545,6 +6705,13 @@ class Handler(SimpleHTTPRequestHandler):
                 self.send_json(server_health_history(range_key))
             except ValueError as exc:
                 self.send_json({"error": str(exc)}, 400)
+            return
+        if u.path == "/api/provider-traffic":
+            if not self.require_super(auth):
+                return
+            query = parse_qs(u.query)
+            force = (query.get("refresh") or [""])[0] in {"1", "true", "yes"}
+            self.send_json(provider_traffic_payload(force=force))
             return
         if u.path == "/api/vpn-readiness":
             if not self.require_super(auth):

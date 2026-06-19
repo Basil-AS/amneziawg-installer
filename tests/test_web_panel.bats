@@ -2491,6 +2491,113 @@ PY
     rm -rf "$tmp"
 }
 
+@test "provider traffic is disabled by default and Hostkey payload hides token" {
+    command -v python3 &>/dev/null || skip "python3 not available"
+    local tmp
+    tmp=$(mktemp -d)
+    mkdir -p "$tmp/web"
+    AWG_DIR="$tmp" SERVER_CONF_FILE="$tmp/awg0.conf" REPO_ROOT="$BATS_TEST_DIRNAME/.." python3 - <<'PY'
+import importlib.util
+import json
+import os
+from pathlib import Path
+
+spec = importlib.util.spec_from_file_location("panel_server", Path(os.environ["REPO_ROOT"]) / "web" / "server.py")
+server = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(server)
+
+assert server.provider_traffic_payload(force=True) == {"enabled": False}
+
+calls = []
+def fake_hostkey_post(endpoint, params, timeout=8.0):
+    calls.append((endpoint, dict(params)))
+    return {"result": "OK", "traffic": [{"in": 1.5, "out": 2.5}]}
+
+server.hostkey_post = fake_hostkey_post
+server.PROVIDER_TRAFFIC_FILE.write_text(json.dumps({
+    "enabled": True,
+    "provider": "hostkey",
+    "label": "HOSTKEY",
+    "token": "secret-token",
+    "ip": "192.0.2.10",
+    "period_days": 30,
+    "unit": "gb",
+    "limit_total_gb": 10,
+}), encoding="utf-8")
+
+payload = server.provider_traffic_payload(force=True)
+assert payload["enabled"] is True
+assert payload["provider"] == "hostkey"
+assert payload["status"] == "ok"
+assert payload["traffic"]["in_bytes"] == 1500000000
+assert payload["traffic"]["out_bytes"] == 2500000000
+assert payload["remaining"]["total_bytes"] == 6000000000
+assert "secret-token" not in json.dumps(payload)
+endpoint, params = calls[0]
+assert endpoint == "ip.php"
+assert params["action"] == "get_traffic"
+assert params["token"] == "secret-token"
+assert "method" not in params
+PY
+    rm -rf "$tmp"
+}
+
+@test "provider traffic API is super-only" {
+    command -v python3 &>/dev/null || skip "python3 not available"
+    local tmp
+    tmp=$(mktemp -d)
+    mkdir -p "$tmp/web"
+    AWG_DIR="$tmp" SERVER_CONF_FILE="$tmp/awg0.conf" REPO_ROOT="$BATS_TEST_DIRNAME/.." python3 - <<'PY'
+import importlib.util
+import io
+import json
+import os
+from pathlib import Path
+
+spec = importlib.util.spec_from_file_location("panel_server", Path(os.environ["REPO_ROOT"]) / "web" / "server.py")
+server = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(server)
+
+super_token = "super-secret"
+user_token = "user-secret"
+server.write_tokens({
+    "super_token_hash": server.token_hash(super_token),
+    "users": {server.token_hash(user_token): {"name": "user", "clients": []}},
+})
+server.provider_traffic_payload = lambda force=False: {"enabled": False, "forced": force}
+
+class Headers(dict):
+    def get(self, key, default=None):
+        return super().get(key, default)
+
+def make_handler(token, path="/api/provider-traffic"):
+    h = object.__new__(server.Handler)
+    h.path = path
+    h.client_address = ("127.0.0.1", 12345)
+    h.rfile = io.BytesIO()
+    h.wfile = io.BytesIO()
+    h.responses = []
+    h.headers_sent = []
+    h.headers = Headers({"Host": "127.0.0.1", "Authorization": f"Bearer {token}"})
+    h.send_response = lambda code: h.responses.append(code)
+    h.send_error = lambda code, *args, **kwargs: h.responses.append(code)
+    h.send_header = lambda key, value: h.headers_sent.append((key, value))
+    h.end_headers = lambda: None
+    return h
+
+handler = make_handler(user_token)
+handler.do_GET()
+assert handler.responses == [403]
+
+handler = make_handler(super_token, "/api/provider-traffic?refresh=1")
+handler.do_GET()
+assert handler.responses == [200]
+payload = json.loads(handler.wfile.getvalue().decode())
+assert payload == {"enabled": False, "forced": True}
+PY
+    rm -rf "$tmp"
+}
+
 @test "web server reboot endpoint is super-only and confirmation-gated" {
     command -v python3 &>/dev/null || skip "python3 not available"
     local tmp
@@ -3127,14 +3234,22 @@ PY
     grep -qF 'summary-card-narrow' "$app"
     grep -qF 'summary-card-links' "$app"
     grep -qF 'summary-card-addresses' "$app"
+    grep -qF 'providerTrafficCard' "$app"
+    grep -qF '/api/provider-traffic' "$app"
+    grep -qF 'trafficSplitHtml' "$app"
+    grep -qF 'renderProviderTraffic' "$app"
     grep -qF 'Traffic Total' "$app"
     grep -qF '30 Days' "$app"
     grep -qF 'IP / Addresses' "$app"
     grep -qF 'metricLinks' "$app"
     grep -qF 'metricAddresses' "$app"
-    grep -qF 'grid-template-columns:minmax(88px,.55fr) minmax(88px,.55fr) minmax(190px,1.15fr) minmax(190px,1.15fr) minmax(150px,1fr) minmax(210px,1.35fr)' "$css"
+    grep -qF 'grid-template-columns:minmax(118px,.72fr) minmax(150px,1fr) minmax(150px,1fr) minmax(150px,1fr) minmax(128px,.82fr) minmax(190px,1.2fr)' "$css"
     grep -qF '.summary-card-narrow{grid-column:span 1}' "$css"
+    grep -qF '.summary-divider{height:1px' "$css"
+    grep -qF '.summary-traffic-line{display:flex' "$css"
     grep -qF '.summary-link-row{display:flex;flex-direction:column' "$css"
+    grep -qF '"enabled": false' "$BATS_TEST_DIRNAME/../web/provider_traffic.example.json"
+    grep -qF '"provider": "hostkey"' "$BATS_TEST_DIRNAME/../web/provider_traffic.example.json"
     grep -qF '"Ad" + "Guard"' "$app"
     grep -qF '{label: "Network Tester"' "$app"
     if grep -qF '{label: "Web Panel"' "$app"; then
