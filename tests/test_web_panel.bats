@@ -2480,12 +2480,77 @@ payload = json.loads(handler.wfile.getvalue().decode())
 assert payload["cache_ttl_seconds"] == 5.0
 assert "cpu" in payload and "memory" in payload and "disk" in payload
 assert "network" in payload and "process" in payload
+assert payload["host"]["uptime_seconds"] >= 0
 assert payload["network"]["clients"]["server_rx_bytes"] == 4000
 assert payload["network"]["clients"]["server_tx_bytes"] == 6000
 assert payload["network"]["clients"]["client_count"] == 2
 assert payload["network"]["clients"]["active_count"] == 2
 assert payload["network"]["clients"]["direction"]["server_tx"] == "client_download"
 assert payload["request"]["client_ip"] == "127.0.0.1"
+PY
+    rm -rf "$tmp"
+}
+
+@test "web server reboot endpoint is super-only and confirmation-gated" {
+    command -v python3 &>/dev/null || skip "python3 not available"
+    local tmp
+    tmp=$(mktemp -d)
+    mkdir -p "$tmp/web"
+    AWG_DIR="$tmp" SERVER_CONF_FILE="$tmp/awg0.conf" REPO_ROOT="$BATS_TEST_DIRNAME/.." python3 - <<'PY'
+import importlib.util
+import io
+import json
+import os
+from pathlib import Path
+
+spec = importlib.util.spec_from_file_location("panel_server", Path(os.environ["REPO_ROOT"]) / "web" / "server.py")
+server = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(server)
+
+super_token = "super-secret"
+user_token = "user-secret"
+server.write_tokens({
+    "super_token_hash": server.token_hash(super_token),
+    "users": {server.token_hash(user_token): {"name": "user", "clients": []}},
+})
+scheduled = []
+server.schedule_server_reboot = lambda auth: scheduled.append(auth["role"])
+
+class Headers(dict):
+    def get(self, key, default=None):
+        return super().get(key, default)
+
+def make_handler(token, body):
+    payload = json.dumps(body).encode()
+    h = object.__new__(server.Handler)
+    h.path = "/api/server/reboot"
+    h.client_address = ("127.0.0.1", 12345)
+    h.rfile = io.BytesIO(payload)
+    h.wfile = io.BytesIO()
+    h.responses = []
+    h.headers_sent = []
+    h.headers = Headers({"Host": "127.0.0.1", "Authorization": f"Bearer {token}", "Content-Length": str(len(payload))})
+    h.send_response = lambda code: h.responses.append(code)
+    h.send_error = lambda code, *args, **kwargs: h.responses.append(code)
+    h.send_header = lambda key, value: h.headers_sent.append((key, value))
+    h.end_headers = lambda: None
+    return h
+
+handler = make_handler(user_token, {"confirm": "REBOOT"})
+handler.do_POST()
+assert handler.responses == [403]
+assert scheduled == []
+
+handler = make_handler(super_token, {"confirm": "nope"})
+handler.do_POST()
+assert handler.responses == [400]
+assert scheduled == []
+
+handler = make_handler(super_token, {"confirm": "REBOOT"})
+handler.do_POST()
+assert handler.responses == [200]
+assert scheduled == ["super"]
+assert json.loads(handler.wfile.getvalue().decode())["scheduled"] is True
 PY
     rm -rf "$tmp"
 }
@@ -3050,6 +3115,10 @@ PY
     local server="$BATS_TEST_DIRNAME/../web/server.py"
     grep -qF '"/nettest": ("index.html"' "$server"
     grep -qF 'Server Health' "$app"
+    grep -qF 'durationText(hostInfo.uptime_seconds || 0)' "$app"
+    grep -qF 'id="rebootServer"' "$app"
+    grep -qF '/api/server/reboot' "$app"
+    grep -qF 'confirmTypedModal(' "$app"
     grep -qF 'Client Load' "$app"
     grep -qF 'client_download_bps' "$app"
     grep -qF 'peak_server_tx_bps' "$app"

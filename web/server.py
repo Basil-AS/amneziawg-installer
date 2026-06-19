@@ -912,6 +912,14 @@ def read_loadavg():
     }
 
 
+def host_uptime_seconds():
+    raw = read_text_file("/proc/uptime")
+    try:
+        return max(0, int(float(raw.split()[0])))
+    except (IndexError, ValueError):
+        return 0
+
+
 def read_cpu_times():
     raw = read_text_file("/proc/stat")
     first = raw.splitlines()[0].split() if raw else []
@@ -1188,6 +1196,20 @@ def process_health():
     }
 
 
+def schedule_server_reboot(auth, delay_seconds=1.0):
+    actor_fp = auth_fingerprint(auth)
+    audit_log(f"Server reboot requested actor_role={auth.get('role')} actor_fp={actor_fp}")
+
+    def reboot_later():
+        time.sleep(max(0.1, float(delay_seconds)))
+        try:
+            subprocess.Popen(["systemctl", "reboot"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception as exc:
+            audit_log(f"Server reboot command failed error={exc.__class__.__name__}")
+
+    threading.Thread(target=reboot_later, name="server-reboot", daemon=True).start()
+
+
 def client_traffic_load(stats=None, now=None):
     """Summarize all WireGuard peer counters as current aggregate client load."""
     global SERVER_HEALTH_CLIENT_TRAFFIC_PREV
@@ -1307,6 +1329,7 @@ def collect_server_health(force=False):
             "timestamp": utc_now_iso(),
             "cache_ttl_seconds": SERVER_HEALTH_CACHE_TTL,
             "status": overall,
+            "host": {"uptime_seconds": host_uptime_seconds()},
             "load": {**load, "status": load_status},
             "cpu": {"usage_percent": usage_percent, "status": cpu_status},
             "memory": memory,
@@ -6832,6 +6855,16 @@ class Handler(SimpleHTTPRequestHandler):
                 time.sleep(duration)
                 after = raw_drop_counters()
                 self.send_json(drops_sample_report(before, after, duration))
+                return
+            if u.path == "/api/server/reboot":
+                if not self.require_super(auth):
+                    return
+                body = json_body_from_handler(self, 1024)
+                if body.get("confirm") != "REBOOT":
+                    self.send_json({"error": "confirmation required"}, HTTPStatus.BAD_REQUEST)
+                    return
+                schedule_server_reboot(auth)
+                self.send_json({"ok": True, "scheduled": True})
                 return
             if u.path == "/api/geoip/refresh":
                 if not self.require_super(auth):

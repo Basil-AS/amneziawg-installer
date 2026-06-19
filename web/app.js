@@ -389,6 +389,18 @@ function speed(n) {
   return `${mbps.toFixed(mbps >= 10 ? 1 : 2)} Mbps`;
 }
 
+function durationText(seconds) {
+  let rest = Math.max(0, Math.floor(Number(seconds) || 0));
+  const days = Math.floor(rest / 86400);
+  rest %= 86400;
+  const hours = Math.floor(rest / 3600);
+  rest %= 3600;
+  const minutes = Math.floor(rest / 60);
+  if (days) return `${days}d ${hours}h`;
+  if (hours) return `${hours}h ${minutes}m`;
+  return `${minutes}m`;
+}
+
 function isNetworkTesterPage() {
   return window.location.pathname.replace(/\/+$/, "") === "/nettest";
 }
@@ -1193,6 +1205,7 @@ function renderServerHealth() {
   const network = h.network || {};
   const conntrack = h.conntrack || {};
   const process = h.process || {};
+  const hostInfo = h.host || {};
   const services = h.services || {};
   const clientLoad = network.clients || {};
   const cpuValue = cpu.usage_percent === null || cpu.usage_percent === undefined
@@ -1209,6 +1222,7 @@ function renderServerHealth() {
     ${renderHealthCard("CPU", cpuValue, `load ${Number(load.one || 0).toFixed(2)} / ${load.cpu_count || 1} core`, cpu.status || load.status || "ok")}
     ${renderHealthCard("RAM", formatPercent(memory.used_percent, 0), `${memoryUsed} used · ${bytes(memory.available_bytes || 0)} available`, memory.status || "unknown")}
     ${renderHealthCard("Disk", formatPercent(disk.used_percent, 0), `${bytes(disk.free_bytes || 0)} free on ${disk.path || "/"}`, disk.status || "unknown")}
+    ${renderHealthCard("Uptime", durationText(hostInfo.uptime_seconds || 0), `web ${durationText(process.uptime_seconds || 0)}`, "ok")}
     ${renderHealthCard("Conntrack", conntrack.available === false ? "n/a" : formatPercent(conntrack.used_percent, 1), conntrack.available === false ? "not exposed" : `${conntrack.count || 0}/${conntrack.max || 0}`, conntrack.status || "unknown")}
     ${renderHealthCard("Network", `${network.drops_delta || 0} drops`, `${network.wan_iface || "wan"} / ${overlayIface} · errors ${network.errors_delta || 0}`, network.status || "unknown")}
     ${renderHealthCard("Client Load", `↓ ${speed(clientLoad.client_download_bps || 0)} · ↑ ${speed(clientLoad.client_upload_bps || 0)}`, `peak ↓ ${speed(clientLoad.peak_server_tx_bps || 0)} · ↑ ${speed(clientLoad.peak_server_rx_bps || 0)} · ${clientLoad.active_count || 0}/${clientLoad.client_count || 0} active`, network.status || "unknown")}
@@ -1219,6 +1233,22 @@ function renderServerHealth() {
   renderHealthHistory();
   renderClientNetworkDiagnostics();
   renderNetworkExplain();
+}
+
+async function rebootServer() {
+  const ok = await confirmTypedModal(
+    "Reboot server",
+    "This will reboot the whole server and temporarily disconnect all clients and the web panel.",
+    "REBOOT",
+    "Reboot"
+  );
+  if (!ok) return;
+  try {
+    await api("/api/server/reboot", {method: "POST", body: JSON.stringify({confirm: "REBOOT"})});
+    showToast("Server reboot scheduled");
+  } catch {
+    showToast("Could not schedule reboot", "error");
+  }
 }
 
 async function loadClientLatency(force = false) {
@@ -2433,6 +2463,7 @@ async function renderPanel() {
         </div>
         <div class="flex flex-wrap items-center justify-end gap-2">
           <p id="serverHealthUpdated" class="text-xs text-[var(--muted)]"></p>
+          <button id="rebootServer" class="${buttonClasses("border-[var(--danger)] text-[var(--danger)]")}">${icon("power")}<span>Reboot server</span></button>
           ${collapseToggle("serverHealthPanel", "Server Health")}
         </div>
       </div>
@@ -2576,6 +2607,7 @@ async function renderPanel() {
     document.querySelector("#saveRestartWebAccessPolicy").onclick = () => submitWebAccessPolicy("save-restart");
     document.querySelector("#saveGeoipProviders").onclick = saveGeoipProviders;
     document.querySelector("#clearNettestReports").onclick = clearAllNettestReports;
+    document.querySelector("#rebootServer").onclick = rebootServer;
   }
   if (nettestPage) {
     for (const selector of [
