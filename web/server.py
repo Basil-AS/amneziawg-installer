@@ -99,6 +99,10 @@ PROVIDER_TRAFFIC_LOCK = threading.Lock()
 PROVIDER_TRAFFIC_CACHE = None
 PROVIDER_TRAFFIC_CACHE_TS = 0.0
 PROVIDER_TRAFFIC_CACHE_KEY = ""
+HOSTKEY_SESSION_LOCK = threading.Lock()
+HOSTKEY_SESSION_TOKEN = ""
+HOSTKEY_SESSION_EXPIRE = 0.0
+HOSTKEY_SESSION_KEY = ""
 SERVER_HEALTH_RANGES = {
     "10m": 10 * 60,
     "1h": 60 * 60,
@@ -4453,34 +4457,90 @@ def hostkey_post(endpoint, params, timeout=8.0):
     return json.loads(raw.decode("utf-8", errors="replace"))
 
 
+def hostkey_login(api_key, ttl=3600):
+    payload = hostkey_post("auth.php", {
+        "action": "login",
+        "key": api_key,
+        "ttl": ttl,
+        "base": "https://invapi.hostkey.ru",
+    })
+    result = payload.get("result") if isinstance(payload, dict) else None
+    if not isinstance(result, dict) or not result.get("token"):
+        raise ValueError(str((payload or {}).get("error") or "login failed")[:160])
+    return result
+
+
+def hostkey_session_token(api_key):
+    global HOSTKEY_SESSION_TOKEN, HOSTKEY_SESSION_EXPIRE, HOSTKEY_SESSION_KEY
+    with HOSTKEY_SESSION_LOCK:
+        if (
+            HOSTKEY_SESSION_TOKEN
+            and HOSTKEY_SESSION_KEY == api_key
+            and time.time() < HOSTKEY_SESSION_EXPIRE - 60
+        ):
+            return HOSTKEY_SESSION_TOKEN, None
+        result = hostkey_login(api_key)
+        HOSTKEY_SESSION_TOKEN = result["token"]
+        HOSTKEY_SESSION_KEY = api_key
+        HOSTKEY_SESSION_EXPIRE = float(result.get("token_expire") or (time.time() + 3600))
+        servers = result.get("servers") or []
+        default_server_id = str(servers[0]) if servers else None
+        return HOSTKEY_SESSION_TOKEN, default_server_id
+
+
+def hostkey_invalidate_session():
+    global HOSTKEY_SESSION_TOKEN, HOSTKEY_SESSION_EXPIRE
+    with HOSTKEY_SESSION_LOCK:
+        HOSTKEY_SESSION_TOKEN = ""
+        HOSTKEY_SESSION_EXPIRE = 0.0
+
+
 def hostkey_traffic_payload(cfg):
-    token = cfg.get("token", "")
-    if not token:
+    api_key = cfg.get("token", "")
+    if not api_key:
         return {"enabled": True, "provider": "hostkey", "label": cfg["label"], "status": "error", "error": "missing token"}
-    ip = cfg.get("ip") or server_info_payload().get("public_ipv4", "")
-    if not ip:
-        return {"enabled": True, "provider": "hostkey", "label": cfg["label"], "status": "error", "error": "missing ip"}
-    now = int(time.time())
-    start = now - int(cfg.get("period_days", 30)) * 86400
-    try:
-        payload = hostkey_post("ip.php", {
+    period_days = int(cfg.get("period_days", 30))
+    cutoff = time.strftime("%Y-%m-%d", time.gmtime(time.time() - period_days * 86400))
+
+    def fetch(force_relogin=False):
+        if force_relogin:
+            hostkey_invalidate_session()
+        session_token, default_server_id = hostkey_session_token(api_key)
+        server_id = cfg.get("server_id") or default_server_id
+        if not server_id:
+            raise ValueError("missing server_id")
+        payload = hostkey_post("eq.php", {
             "action": "get_traffic",
-            "token": token,
-            "ip": ip,
-            "period_start": start,
-            "period_stop": now,
-            "summary": 1,
-            "unbilled": int(cfg.get("unbilled", 0)),
+            "token": session_token,
+            "id": server_id,
         })
-    except (OSError, URLError, TimeoutError, json.JSONDecodeError) as exc:
-        return {"enabled": True, "provider": "hostkey", "label": cfg["label"], "status": "error", "error": exc.__class__.__name__}
+        return payload
+
+    try:
+        payload = fetch()
+        if not isinstance(payload, dict) or payload.get("result") != "OK":
+            payload = fetch(force_relogin=True)
+    except (OSError, URLError, TimeoutError, json.JSONDecodeError, ValueError) as exc:
+        return {"enabled": True, "provider": "hostkey", "label": cfg["label"], "status": "error", "error": str(exc)[:160] or exc.__class__.__name__}
     if not isinstance(payload, dict) or payload.get("result") != "OK":
-        message = str((payload or {}).get("message") or "request failed")[:160] if isinstance(payload, dict) else "request failed"
+        message = str((payload or {}).get("error") or "request failed")[:160] if isinstance(payload, dict) else "request failed"
         return {"enabled": True, "provider": "hostkey", "label": cfg["label"], "status": "warn", "error": message}
     traffic = payload.get("traffic")
     rows = traffic if isinstance(traffic, list) else [traffic] if isinstance(traffic, dict) else []
-    in_bytes = sum(provider_value_to_bytes(row.get("in"), cfg.get("unit")) for row in rows if isinstance(row, dict))
-    out_bytes = sum(provider_value_to_bytes(row.get("out"), cfg.get("unit")) for row in rows if isinstance(row, dict))
+    include_unbilled = bool(cfg.get("unbilled", 0))
+    in_bytes = out_bytes = 0
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        if row.get("updated") and str(row.get("updated")) < cutoff:
+            continue
+        if not include_unbilled and not row.get("billed", 1):
+            continue
+        volume_bytes = provider_value_to_bytes(row.get("volume"), "gb")
+        if row.get("direction") == 1:
+            in_bytes += volume_bytes
+        else:
+            out_bytes += volume_bytes
     total = in_bytes + out_bytes
     limit_total = provider_gb_to_bytes(cfg.get("limit_total_gb"))
     limit_in = provider_gb_to_bytes(cfg.get("limit_in_gb"))
@@ -4490,7 +4550,7 @@ def hostkey_traffic_payload(cfg):
         "provider": "hostkey",
         "label": cfg["label"],
         "status": "ok",
-        "period_days": int(cfg.get("period_days", 30)),
+        "period_days": period_days,
         "refreshed_at": utc_now_iso(),
         "traffic": {"in_bytes": in_bytes, "out_bytes": out_bytes, "total_bytes": total},
         "quota": {"total_bytes": limit_total, "in_bytes": limit_in, "out_bytes": limit_out},

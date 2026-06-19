@@ -2405,7 +2405,7 @@ async function renderPanel() {
     </header>
     <p id="panelIdleNote" class="hidden text-xs text-[var(--muted)]">Paused background refresh after 10 min idle</p>
 
-    <section class="summary-cards mt-3">
+    <section id="summaryCards" class="summary-cards no-provider mt-3">
       <div class="summary-card summary-card-narrow">
         <div class="summary-stack-metric">
           <p class="text-xs font-semibold uppercase text-[var(--muted)]">Active</p>
@@ -2837,12 +2837,15 @@ function renderTraffic() {
 function renderProviderTraffic() {
   const card = document.querySelector("#providerTrafficCard");
   if (!card) return;
+  const grid = document.querySelector("#summaryCards");
   const state = providerTrafficState || {};
   if (!state.enabled) {
     card.classList.add("hidden");
+    if (grid) grid.classList.add("no-provider");
     return;
   }
   card.classList.remove("hidden");
+  if (grid) grid.classList.remove("no-provider");
   const label = document.querySelector("#metricProviderTrafficLabel");
   const metric = document.querySelector("#metricProviderTraffic");
   const sub = document.querySelector("#metricProviderTrafficSub");

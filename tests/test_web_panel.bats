@@ -2508,10 +2508,26 @@ spec.loader.exec_module(server)
 
 assert server.provider_traffic_payload(force=True) == {"enabled": False}
 
+import time as _time
+today = _time.strftime("%Y-%m-%d", _time.gmtime())
+
 calls = []
 def fake_hostkey_post(endpoint, params, timeout=8.0):
     calls.append((endpoint, dict(params)))
-    return {"result": "OK", "traffic": [{"in": 1.5, "out": 2.5}]}
+    if endpoint == "auth.php":
+        return {"result": {"token": "session-tok", "token_expire": _time.time() + 3600, "servers": [123]}}
+    if endpoint == "eq.php":
+        return {
+            "result": "OK",
+            "module": "eq",
+            "action": "get_traffic",
+            "id": 123,
+            "traffic": [
+                {"ip": "192.0.2.10", "volume": 1.5, "updated": today, "billed": 1, "direction": 1},
+                {"ip": "192.0.2.10", "volume": 2.5, "updated": today, "billed": 1, "direction": 0},
+            ],
+        }
+    raise AssertionError(f"unexpected endpoint {endpoint}")
 
 server.hostkey_post = fake_hostkey_post
 server.PROVIDER_TRAFFIC_FILE.write_text(json.dumps({
@@ -2533,11 +2549,16 @@ assert payload["traffic"]["in_bytes"] == 1500000000
 assert payload["traffic"]["out_bytes"] == 2500000000
 assert payload["remaining"]["total_bytes"] == 6000000000
 assert "secret-token" not in json.dumps(payload)
-endpoint, params = calls[0]
-assert endpoint == "ip.php"
-assert params["action"] == "get_traffic"
-assert params["token"] == "secret-token"
-assert "method" not in params
+auth_endpoint, auth_params = calls[0]
+assert auth_endpoint == "auth.php"
+assert auth_params["action"] == "login"
+assert auth_params["key"] == "secret-token"
+traffic_endpoint, traffic_params = calls[1]
+assert traffic_endpoint == "eq.php"
+assert traffic_params["action"] == "get_traffic"
+assert traffic_params["token"] == "session-tok"
+assert traffic_params["id"] == "123"
+assert "method" not in traffic_params
 PY
     rm -rf "$tmp"
 }
@@ -3243,7 +3264,8 @@ PY
     grep -qF 'IP / Addresses' "$app"
     grep -qF 'metricLinks' "$app"
     grep -qF 'metricAddresses' "$app"
-    grep -qF 'grid-template-columns:minmax(118px,.72fr) minmax(150px,1fr) minmax(150px,1fr) minmax(150px,1fr) minmax(128px,.82fr) minmax(190px,1.2fr)' "$css"
+    grep -qF 'grid-template-columns:minmax(118px,.72fr) minmax(150px,1fr) minmax(150px,1fr) minmax(150px,1fr) minmax(96px,.62fr) minmax(200px,1.3fr)' "$css"
+    grep -qF '.summary-cards.no-provider{grid-template-columns:' "$css"
     grep -qF '.summary-card-narrow{grid-column:span 1}' "$css"
     grep -qF '.summary-divider{height:1px' "$css"
     grep -qF '.summary-traffic-line{display:flex' "$css"

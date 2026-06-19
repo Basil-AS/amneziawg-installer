@@ -4,6 +4,7 @@
   "label": "HOSTKEY Traffic",
   "token": "",
   "ip": "",
+  "server_id": "",
   "period_days": 30,
   "cache_ttl_seconds": 600,
   "unit": "gb",
