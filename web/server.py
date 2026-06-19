@@ -4407,17 +4407,18 @@ def update_traffic_history(rows):
             if date not in keep_days:
                 del days[date]
                 changed = True
+        current_peer_names = {peer["name"] for peer in parse_peers()}
         for name in list(last):
             if name.startswith("_"):
                 del last[name]
                 changed = True
-            elif name not in active_names:
+            elif name not in active_names and name not in current_peer_names:
                 del last[name]
                 changed = True
         for name in list(totals):
             if name.startswith("_"):
                 continue
-            if name not in active_names:
+            if name not in active_names and name not in current_peer_names:
                 pair = _traffic_pair(totals.get(name, {}))
                 if pair["rx"] or pair["tx"]:
                     deleted_total["rx"] = max(0, int(deleted_total.get("rx") or 0)) + pair["rx"]
@@ -4429,6 +4430,15 @@ def update_traffic_history(rows):
                 changed = True
         if changed:
             write_traffic_history(data)
+
+
+def latest_client_endpoint_snapshot(history_rows):
+    if not isinstance(history_rows, list):
+        return {}
+    for row in reversed(history_rows):
+        if isinstance(row, dict):
+            return row
+    return {}
 
 
 def traffic_summary(auth, stats=None, names=None):
@@ -6619,6 +6629,7 @@ class Handler(SimpleHTTPRequestHandler):
             for peer in visible:
                 item = dict(peer)
                 row_stats = stats.get(peer["name"], {})
+                endpoint_snapshot = latest_client_endpoint_snapshot(history_clients.get(peer["name"], []))
                 item["id"] = peer["name"]
                 item["config_name"] = peer["name"]
                 item["display_name"] = peer.get("display_name") or peer["name"]
@@ -6642,8 +6653,15 @@ class Handler(SimpleHTTPRequestHandler):
                 item["traffic_30d"] = client_traffic_30d(peer["name"], history)
                 item["traffic_total"] = client_traffic_total(peer["name"], history)
                 item["traffic"] = client_traffic_api(item["traffic_total"], item["traffic_30d"])
-                item["latestHandshakeAt"] = row_stats.get("latestHandshakeAt", row_stats.get("last_handshake", 0))
+                item["latestHandshakeAt"] = row_stats.get(
+                    "latestHandshakeAt",
+                    row_stats.get("last_handshake", endpoint_snapshot.get("latest_handshake", 0)),
+                )
                 endpoint = row_stats.get("endpoint", "")
+                if endpoint in {"", "-", "(none)", "none"} and endpoint_snapshot:
+                    endpoint_ip = endpoint_snapshot.get("endpoint_ip", "")
+                    endpoint_port = endpoint_snapshot.get("endpoint_port", "")
+                    endpoint = f"{endpoint_ip}:{endpoint_port}" if endpoint_ip and endpoint_port else endpoint_ip
                 item["endpoint"] = "" if endpoint in {"", "-", "(none)", "none"} else endpoint
                 endpoint_ip, endpoint_port = split_endpoint(item["endpoint"])
                 item["endpoint_ip"] = endpoint_ip

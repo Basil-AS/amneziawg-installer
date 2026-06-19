@@ -369,6 +369,82 @@ PY
     rm -rf "$tmp"
 }
 
+@test "web clients keep disabled peer history and traffic visible" {
+    command -v python3 &>/dev/null || skip "python3 not available"
+    local tmp
+    tmp=$(mktemp -d)
+    mkdir -p "$tmp/web"
+    cat > "$tmp/awg0.conf" <<'CONF'
+# [Peer]
+#_Name = roma
+#PublicKey = ROMA
+#AllowedIPs = 10.9.9.44/32
+CONF
+    AWG_DIR="$tmp" SERVER_CONF_FILE="$tmp/awg0.conf" REPO_ROOT="$BATS_TEST_DIRNAME/.." python3 - <<'PY'
+import importlib.util
+import io
+import json
+import os
+import time
+from pathlib import Path
+
+spec = importlib.util.spec_from_file_location("panel_server", Path(os.environ["REPO_ROOT"]) / "web" / "server.py")
+server = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(server)
+
+super_token = "super-token"
+server.write_tokens({"super_token_hash": server.token_hash(super_token), "users": {}})
+server.client_stats_map = lambda force=False: {}
+server.write_client_endpoint_history({
+    "clients": {
+        "roma": [{
+            "observed_at": int(time.time()),
+            "endpoint_ip": "203.0.113.5",
+            "endpoint_port": 5555,
+            "latest_handshake": 123456,
+            "rx": 100,
+            "tx": 200,
+        }],
+    },
+})
+server.write_traffic_history({
+    "last": {"roma": {"rx": 100, "tx": 200}},
+    "days": {},
+    "totals": {"roma": {"rx": 1000, "tx": 2000}, "_deleted_clients_total": {"rx": 0, "tx": 0}},
+})
+
+class Headers(dict):
+    def get(self, key, default=None):
+        return super().get(key, default)
+
+h = object.__new__(server.Handler)
+h.path = "/api/clients"
+h.client_address = ("127.0.0.1", 12345)
+h.rfile = io.BytesIO()
+h.wfile = io.BytesIO()
+h.responses = []
+h.headers_sent = []
+h.headers = Headers({"Host": "127.0.0.1", "Authorization": f"Bearer {super_token}"})
+h.send_response = lambda code: h.responses.append(code)
+h.send_error = lambda code, *args, **kwargs: h.responses.append(code)
+h.send_header = lambda key, value: h.headers_sent.append((key, value))
+h.end_headers = lambda: None
+
+h.do_GET()
+assert h.responses == [200]
+payload = json.loads(h.wfile.getvalue().decode())
+row = payload["clients"][0]
+assert row["config_name"] == "roma"
+assert row["disabled"] is True
+assert row["ipv4"] == "10.9.9.44"
+assert row["latestHandshakeAt"] == 123456
+assert row["endpoint"] == "203.0.113.5:5555"
+assert row["traffic_total"]["rx"] == 1000
+assert row["traffic_total"]["tx"] == 2000
+PY
+    rm -rf "$tmp"
+}
+
 @test "web app filters admin clients by token assignment owner" {
     command -v python3 &>/dev/null || skip "python3 not available"
     REPO_ROOT="$BATS_TEST_DIRNAME/.." python3 - <<'PY'
@@ -1698,6 +1774,24 @@ history = server.load_traffic_history()
 assert history["totals"]["beta"] == {"rx": 1200, "tx": 120}
 
 today = date.today().isoformat()
+Path(os.environ["SERVER_CONF_FILE"]).write_text("""
+# [Peer]
+#_Name = sleepy
+#PublicKey = SLEEPY
+#AllowedIPs = 10.9.9.44/32
+""".lstrip())
+server.TRAFFIC_FILE.write_text(json.dumps({
+    "last": {"sleepy": {"rx": 100, "tx": 200}},
+    "days": {today: {"sleepy": {"rx": 10, "tx": 20}}},
+    "totals": {"sleepy": {"rx": 1000, "tx": 2000}},
+}))
+server.update_traffic_history([])
+history = server.load_traffic_history()
+assert history["last"]["sleepy"] == {"rx": 100, "tx": 200}
+assert history["days"][today]["sleepy"] == {"rx": 10, "tx": 20}
+assert history["totals"]["sleepy"] == {"rx": 1000, "tx": 2000}
+assert history["totals"]["_deleted_clients_total"] == {"rx": 0, "tx": 0}
+
 server.TRAFFIC_FILE.write_text(json.dumps({
     "last": {"gone": {"rx": 10, "tx": 20}, "_internal": {"rx": 1, "tx": 1}},
     "days": {today: {"gone": {"rx": 5, "tx": 7}, "alpha": {"rx": 2, "tx": 3}}},
