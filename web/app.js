@@ -384,6 +384,15 @@ function bytes(n) {
   return `${n.toFixed(1)} PiB`;
 }
 
+function bytesPrecise(n) {
+  n = Number(n || 0);
+  for (const unit of ["B", "KiB", "MiB", "GiB", "TiB"]) {
+    if (n < 1024) return `${n.toFixed(unit === "B" ? 0 : 2)} ${unit}`;
+    n /= 1024;
+  }
+  return `${n.toFixed(2)} PiB`;
+}
+
 function speed(n) {
   const bytesPerSecond = Number(n) || 0;
   const mbps = bytesPerSecond * 8 / 1000 / 1000;
@@ -2855,16 +2864,16 @@ function renderProviderTraffic() {
   if (label) label.textContent = state.label || "Provider Traffic";
   if (metric) {
     metric.textContent = remainingTotal === null || remainingTotal === undefined
-      ? bytes(traffic.total_bytes || 0)
-      : bytes(remainingTotal);
+      ? bytesPrecise(traffic.total_bytes || 0)
+      : bytesPrecise(remainingTotal);
   }
   if (sub) {
     const caption = remainingTotal === null || remainingTotal === undefined ? "Used" : "Remaining";
     const status = state.status && state.status !== "ok" ? `<span class="summary-provider-status">${esc(state.status)}</span>` : "";
     sub.innerHTML = `
-      <span class="summary-traffic-line"><span>${caption}</span><strong>${esc(bytes(remainingTotal === null || remainingTotal === undefined ? traffic.total_bytes || 0 : remainingTotal))}</strong></span>
-      <span class="summary-traffic-line"><span>IN</span><strong>${esc(bytes(traffic.in_bytes || 0))}</strong></span>
-      <span class="summary-traffic-line"><span>OUT</span><strong>${esc(bytes(traffic.out_bytes || 0))}</strong></span>
+      <span class="summary-traffic-line"><span>${caption}</span><strong>${esc(bytesPrecise(remainingTotal === null || remainingTotal === undefined ? traffic.total_bytes || 0 : remainingTotal))}</strong></span>
+      <span class="summary-traffic-line"><span>IN</span><strong>${esc(bytesPrecise(traffic.in_bytes || 0))}</strong></span>
+      <span class="summary-traffic-line"><span>OUT</span><strong>${esc(bytesPrecise(traffic.out_bytes || 0))}</strong></span>
       ${status}
     `;
   }
