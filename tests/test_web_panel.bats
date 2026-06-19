@@ -1547,6 +1547,7 @@ PY
     grep -qF 'data-rotate' "$BATS_TEST_DIRNAME/../web/app.js"
     grep -qF 'data-edit-name' "$BATS_TEST_DIRNAME/../web/app.js"
     grep -qF 'tokenTraffic' "$BATS_TEST_DIRNAME/../web/app.js"
+    grep -qF 'b.stats.total - a.stats.total' "$BATS_TEST_DIRNAME/../web/app.js"
     grep -qF '/rotate' "$BATS_TEST_DIRNAME/../web/server.py"
 }
 

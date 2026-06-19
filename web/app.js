@@ -3384,8 +3384,16 @@ function tokenTraffic(clients) {
 function renderTokenList() {
   const panel = document.querySelector("#tokenList");
   if (!panel) return;
-  panel.innerHTML = latestTokens.length ? latestTokens.map(row => {
-    const stats = tokenTraffic(row.clients);
+  const rows = latestTokens
+    .map(row => ({row, stats: tokenTraffic(row.clients)}))
+    .sort((a, b) => {
+      const delta = b.stats.total - a.stats.total;
+      if (delta) return delta;
+      const left = a.row.name || a.row.hash || "";
+      const right = b.row.name || b.row.hash || "";
+      return left.localeCompare(right);
+    });
+  panel.innerHTML = rows.length ? rows.map(({row, stats}) => {
     const label = row.name || "Unnamed token";
     return `
     <div class="flex flex-wrap items-center justify-between gap-3 rounded-md border border-[var(--line)] bg-[var(--soft)] px-3 py-2">
