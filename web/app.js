@@ -2861,17 +2861,15 @@ function renderProviderTraffic() {
   const traffic = state.traffic || {};
   const remaining = state.remaining || {};
   const remainingTotal = remaining.total_bytes;
-  if (label) label.textContent = state.label || "Provider Traffic";
+  const hasRemaining = remainingTotal !== null && remainingTotal !== undefined;
+  const caption = hasRemaining ? "Remaining" : "Used";
+  if (label) label.textContent = `${state.label || "Provider Traffic"} · ${caption}`;
   if (metric) {
-    metric.textContent = remainingTotal === null || remainingTotal === undefined
-      ? bytesPrecise(traffic.total_bytes || 0)
-      : bytesPrecise(remainingTotal);
+    metric.textContent = bytesPrecise(hasRemaining ? remainingTotal : (traffic.total_bytes || 0));
   }
   if (sub) {
-    const caption = remainingTotal === null || remainingTotal === undefined ? "Used" : "Remaining";
     const status = state.status && state.status !== "ok" ? `<span class="summary-provider-status">${esc(state.status)}</span>` : "";
     sub.innerHTML = `
-      <span class="summary-traffic-line"><span>${caption}</span><strong>${esc(bytesPrecise(remainingTotal === null || remainingTotal === undefined ? traffic.total_bytes || 0 : remainingTotal))}</strong></span>
       <span class="summary-traffic-line"><span>IN</span><strong>${esc(bytesPrecise(traffic.in_bytes || 0))}</strong></span>
       <span class="summary-traffic-line"><span>OUT</span><strong>${esc(bytesPrecise(traffic.out_bytes || 0))}</strong></span>
       ${status}
