@@ -3264,7 +3264,7 @@ PY
     grep -qF 'IP / Addresses' "$app"
     grep -qF 'metricLinks' "$app"
     grep -qF 'metricAddresses' "$app"
-    grep -qF 'grid-template-columns:minmax(118px,.72fr) minmax(150px,1fr) minmax(150px,1fr) minmax(150px,1fr) minmax(96px,.62fr) minmax(200px,1.3fr)' "$css"
+    grep -qF 'grid-template-columns:minmax(118px,.72fr) minmax(150px,1fr) minmax(150px,1fr) minmax(150px,1fr) minmax(165px,.62fr) minmax(185px,1.16fr)' "$css"
     grep -qF '.summary-cards.no-provider{grid-template-columns:' "$css"
     grep -qF '.summary-card-narrow{grid-column:span 1}' "$css"
     grep -qF '.summary-divider{height:1px' "$css"
