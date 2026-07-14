@@ -77,10 +77,10 @@
 
 @test "public Web Panel warning mentions reverse proxy, VPN-only and SSH tunnel" {
     grep -qF 'reverse proxy' "$BATS_TEST_DIRNAME/../install_amneziawg_en.sh"
-    grep -qF 'VPN-only bind 10.9.9.1' "$BATS_TEST_DIRNAME/../install_amneziawg_en.sh"
+    grep -qF 'VPN-only bind on the VPN gateway' "$BATS_TEST_DIRNAME/../install_amneziawg_en.sh"
     grep -qF 'SSH tunnel' "$BATS_TEST_DIRNAME/../install_amneziawg_en.sh"
     grep -qF 'reverse proxy' "$BATS_TEST_DIRNAME/../install_amneziawg.sh"
-    grep -qF 'VPN-only bind 10.9.9.1' "$BATS_TEST_DIRNAME/../install_amneziawg.sh"
+    grep -qF 'VPN-only bind на шлюзе VPN' "$BATS_TEST_DIRNAME/../install_amneziawg.sh"
     grep -qF 'SSH tunnel' "$BATS_TEST_DIRNAME/../install_amneziawg.sh"
 }
 

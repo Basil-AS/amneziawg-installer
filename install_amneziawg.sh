@@ -36,9 +36,9 @@ MANAGE_SCRIPT_PATH="$AWG_DIR/manage_amneziawg.sh"
 declare -A AWG_ASSET_SHA256=(
     ["awg_common.sh"]="fb3d0aa6267b578fb7bd7b1e678d886e80fb9d8e43a0130cf5ddc314b203a801"
     ["manage_amneziawg.sh"]="fad317c15ab95b2463af94a469660261af6ac7d3c2d1a33646aff7abf26eebee"
-    ["web/server.py"]="1c49b7f13798b5bfc5a06632ee22dbb93a2aae05ae6544ecfefeb02795f96c90"
+    ["web/server.py"]="279c5bf134d86668f734981f53976c3b86ef97067d72c28ddbde9b4ace19d7c3"
     ["web/index.html"]="7c07ed1d1991e08c0f9fc31e86ed8eb2bba5fa96387088f1f18918396cf7e662"
-    ["web/app.js"]="37fa5bfcd08f708377506e6901ddbfe4baa23fa0cf123cde55c394eaa54f2196"
+    ["web/app.js"]="2bff893e8c6733850d4944371ed0821167be4ea96e075f1ef3c5f890831b1154"
     ["web/awg_i1.js"]="c97a6ac6c4e4bd7ab24c37c45f451e364414f276441f8da1c0805d26013aaa03"
     ["web/style.css"]="c6c728f244b79cdae162df3c5d0eddaea0b0b92951598355e4547f0add9e911a"
     ["web/favicon.svg"]="ae700ecb12dbf01403d0ed25247bac6b70f11201b094ee6c14b774b7fa533859"
@@ -46,7 +46,7 @@ declare -A AWG_ASSET_SHA256=(
     ["web/vendor/apexcharts.min.js"]="a7400cd48b40b4f39d1c15137ae0cc8cbec31dc2b55a606640f1cd11912416dd"
     ["scripts/update_geoip_dbs.py"]="7ca3db88709a7ba8aed79b57c1f7aba834a80c57cacd513604ef2a68582513e3"
     ["scripts/update-installed.sh"]="f9857a9b4ccd43b3741b2140c7676a935cab261ea87c2d4f9895ae6658e81318"
-    ["scripts/migrate-tunnel-subnet.sh"]="551718b23cd1fd17bc1ff6b144cb54a2aaeb217b244ae91893b7a275355dcfda"
+    ["scripts/migrate-tunnel-subnet.sh"]="d73778e320e5f77457b28e4b62301dee322190080e60aa12a76715c5e0133632"
 )
 
 # Флаги CLI

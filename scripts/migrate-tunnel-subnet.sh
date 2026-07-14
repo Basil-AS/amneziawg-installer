@@ -103,7 +103,7 @@ add_target() {
 }
 
 discover_project_text_targets() {
-    local root path
+    local path
     while IFS= read -r -d '' path; do
         add_target "$path"
     done < <(python3 - "$OLD_SUBNET" "$AWG_DIR" "$(dirname "$SERVER_CONF_FILE")" <<'PY'

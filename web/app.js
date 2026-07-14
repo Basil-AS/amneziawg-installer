@@ -417,7 +417,7 @@ function isNetworkTesterPage() {
 
 function isDirectNettestMode() {
   return window.location.port === "8088" ||
-    (window.location.protocol === "http:" && window.location.hostname === serverInfoState?.vpn_gateway_ipv4);
+    (window.location.protocol === "http:" && window.location.hostname === serverInfoState?.internal_gateway_ipv4);
 }
 
 function nettestApiBase() {
@@ -2690,7 +2690,7 @@ function renderResolverMetric() {
   if (!metric || !resolverState) return;
   const label = resolverState.client_resolver || resolverState.mode || "-";
   if (resolverState.managed_enabled) {
-    const url = resolverState.managed_url || serverInfoState?.adguard_url || "";
+    const url = resolverState.managed_url || "";
     metric.innerHTML = `
       <span class="min-w-0 flex-1 truncate">${esc(label)}</span>
       <a class="ml-2 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-[var(--line)] bg-[var(--soft)] text-[var(--accent)] transition hover:border-[var(--accent)]" href="${esc(url)}" target="_blank" rel="noopener" title="Open resolver" aria-label="Open resolver">${icon("external")}</a>
@@ -3916,8 +3916,8 @@ function applyWebAccessModeProfile(changed) {
     sourceCheck.checked = true;
     ensureTextareaRows("#webAccessHosts", webAccessRequiredHosts());
     const current = currentClientCidr();
-    const vpnNetwork = serverInfoState?.vpn_ipv4_network || "10.9.9.0/24";
-    setTextareaRows("#webAccessCidrs", [vpnNetwork, "127.0.0.0/8", "::1/128"].concat(current ? [current] : []));
+    const internalNetwork = serverInfoState?.internal_ipv4_network || "10.9.9.0/24";
+    setTextareaRows("#webAccessCidrs", [internalNetwork, "127.0.0.0/8", "::1/128"].concat(current ? [current] : []));
     hint.textContent = "nginx keeps listening on 443; policy allows selected network CIDR and the current Client IP.";
   } else if (mode === "localhost_maintenance") {
     bindHost.value = "127.0.0.1";

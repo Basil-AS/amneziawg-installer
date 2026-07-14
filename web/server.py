@@ -2337,6 +2337,8 @@ def server_info_payload():
         "vpn_ipv6": vpn_ipv6,
         "vpn_gateway_ipv4": vpn_ipv4_host,
         "vpn_ipv4_network": str(ipaddress.ip_interface(vpn_ipv4).network),
+        "internal_gateway_ipv4": vpn_ipv4_host,
+        "internal_ipv4_network": str(ipaddress.ip_interface(vpn_ipv4).network),
         "dns_resolver": dns_resolver,
         "web_public_url": web_public_url,
         "web_current_url": web_public_url,
