@@ -3336,6 +3336,10 @@ step1_update_and_optimize() {
     update_state 1
     log "### ШАГ 1: Обновление, очистка и оптимизация системы ###"
 
+    mkdir -p /etc/apt/apt.conf.d || die "Не удалось создать /etc/apt/apt.conf.d."
+    printf 'DPkg::Lock::Timeout "300";\n' > /etc/apt/apt.conf.d/99-amneziawg-lock-timeout \
+        || die "Не удалось настроить ожидание dpkg lock."
+
     # Очистка ненужных компонентов (ДО обновления для экономии трафика/времени)
     if [[ "$NO_TWEAKS" -eq 0 ]]; then
         cleanup_system
@@ -3352,8 +3356,16 @@ step1_update_and_optimize() {
         DEBIAN_FRONTEND=noninteractive dpkg --configure -a || log_warn "dpkg --configure -a."
     fi
 
+    local lock_holder=""
     log "Обновление системы..."
-    DEBIAN_FRONTEND=noninteractive apt full-upgrade -y || die "Ошибка apt full-upgrade."
+    if ! DEBIAN_FRONTEND=noninteractive apt full-upgrade -y; then
+        lock_holder=$(fuser /var/lib/dpkg/lock-frontend 2>/dev/null | tr -s ' ' || true)
+        [[ -n "$lock_holder" ]] && log_warn "dpkg lock занят процессами:${lock_holder}."
+        log_warn "apt full-upgrade не прошёл; выполняю dpkg repair и один повтор."
+        DEBIAN_FRONTEND=noninteractive dpkg --configure -a || log_warn "dpkg repair завершился с ошибкой; apt retry определит итог."
+        DEBIAN_FRONTEND=noninteractive apt full-upgrade -y \
+            || die "Ошибка apt full-upgrade после retry. Проверьте: fuser /var/lib/dpkg/lock-frontend"
+    fi
     log "Система обновлена."
 
     install_packages curl wget gpg sudo ethtool

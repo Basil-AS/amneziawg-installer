@@ -3341,6 +3341,10 @@ step1_update_and_optimize() {
     update_state 1
     log "### STEP 1: System update, cleanup, and optimization ###"
 
+    mkdir -p /etc/apt/apt.conf.d || die "Failed to create /etc/apt/apt.conf.d."
+    printf 'DPkg::Lock::Timeout "300";\n' > /etc/apt/apt.conf.d/99-amneziawg-lock-timeout \
+        || die "Failed to configure dpkg lock waiting."
+
     # Clean unnecessary components (BEFORE update to save bandwidth/time)
     if [[ "$NO_TWEAKS" -eq 0 ]]; then
         cleanup_system
@@ -3357,8 +3361,16 @@ step1_update_and_optimize() {
         DEBIAN_FRONTEND=noninteractive dpkg --configure -a || log_warn "dpkg --configure -a."
     fi
 
+    local lock_holder=""
     log "Updating system..."
-    DEBIAN_FRONTEND=noninteractive apt full-upgrade -y || die "apt full-upgrade error."
+    if ! DEBIAN_FRONTEND=noninteractive apt full-upgrade -y; then
+        lock_holder=$(fuser /var/lib/dpkg/lock-frontend 2>/dev/null | tr -s ' ' || true)
+        [[ -n "$lock_holder" ]] && log_warn "dpkg lock is held by:${lock_holder}."
+        log_warn "apt full-upgrade failed; running dpkg repair and one retry."
+        DEBIAN_FRONTEND=noninteractive dpkg --configure -a || log_warn "dpkg repair failed; apt retry will determine the result."
+        DEBIAN_FRONTEND=noninteractive apt full-upgrade -y \
+            || die "apt full-upgrade failed after retry. Check: fuser /var/lib/dpkg/lock-frontend"
+    fi
     log "System updated."
 
     install_packages curl wget gpg sudo ethtool
