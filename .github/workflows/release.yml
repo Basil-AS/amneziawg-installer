@@ -38,6 +38,12 @@ jobs:
           VERSION="${GITHUB_REF#refs/tags/v}"
           ESCAPED="${VERSION//./\\.}"
 
+          FILE_VERSION="$(tr -d '\r\n' < VERSION)"
+          if [[ "$FILE_VERSION" != "$VERSION" ]]; then
+            echo "::error::Tag version ${VERSION} does not match VERSION file (${FILE_VERSION})"
+            exit 1
+          fi
+
           if ! grep -q "^## \\[${ESCAPED}\\]" CHANGELOG.en.md; then
             echo "::error::Version ${VERSION} not found in CHANGELOG.en.md"
             exit 1
