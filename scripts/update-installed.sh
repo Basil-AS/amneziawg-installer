@@ -173,6 +173,7 @@ awg_common_en.sh
 manage_amneziawg.sh
 manage_amneziawg_en.sh
 scripts/update-installed.sh
+scripts/migrate-tunnel-subnet.sh
 scripts/update_geoip_dbs.py
 web/server.py
 web/index.html
@@ -196,7 +197,8 @@ validate_payload() {
         || die "Bundle VERSION ($payload_version) does not match release tag ($TARGET_TAG)."
 
     for rel in install_amneziawg.sh install_amneziawg_en.sh awg_common.sh awg_common_en.sh \
-        manage_amneziawg.sh manage_amneziawg_en.sh scripts/update-installed.sh; do
+        manage_amneziawg.sh manage_amneziawg_en.sh scripts/update-installed.sh \
+        scripts/migrate-tunnel-subnet.sh; do
         bash -n "$WORK_DIR/payload/$rel" || die "Bash syntax validation failed: $rel"
     done
     python3 - "$WORK_DIR/payload/web/server.py" "$WORK_DIR/payload/scripts/update_geoip_dbs.py" <<'PY'
@@ -249,6 +251,7 @@ destination_for() {
         install_amneziawg.sh|install_amneziawg_en.sh|awg_common.sh|awg_common_en.sh|manage_amneziawg.sh|manage_amneziawg_en.sh)
             printf '%s/%s\n' "$AWG_DIR" "$1" ;;
         scripts/update-installed.sh) printf '%s/update-installed.sh\n' "$AWG_DIR" ;;
+        scripts/migrate-tunnel-subnet.sh) printf '%s/migrate-tunnel-subnet.sh\n' "$AWG_DIR" ;;
         scripts/update_geoip_dbs.py) printf '%s/scripts/update_geoip_dbs.py\n' "$AWG_DIR" ;;
         web/*) printf '%s/%s\n' "$AWG_DIR" "$1" ;;
         *) die "Internal error: unapproved payload path: $1" ;;

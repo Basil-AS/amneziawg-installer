@@ -106,7 +106,7 @@ sudo bash ./install_amneziawg.sh --yes --route-all --server-name="my-vpn"
 sudo bash ./install_amneziawg.sh
 ```
 
-The wizard asks for the important deployment choices before installation starts: server name, endpoint/public IP or auto-detect, route mode, `default|mobile` preset, IPv6 mode `auto|routed|ndp|nat66`, IPv6 subnet for `routed`, web-panel exposure (`VPN-only`, `localhost`, `public`), web-panel HTTPS port, AdGuard Home, and P2P ports. Pressing Enter at the Web Panel access step keeps the safe VPN-only default `https://10.9.9.1:8443`; choose `public` for a public domain, where domain modes (`ip-domain`, `letsencrypt`, `custom`) default to `443`. For trusted HTTPS, use your own domain + Let's Encrypt; `sslip.io`/`nip.io` are convenient but best-effort because they share Let's Encrypt rate limits. It prints a final summary before installation; selected values are saved to `/root/awg/awgsetup_cfg.init` so reboot resume does not fall back to default preset/bind.
+The wizard asks for the important deployment choices before installation starts: server name, endpoint/public IP or auto-detect, route mode, `default|mobile` preset, IPv6 mode `auto|routed|ndp|nat66`, IPv6 subnet for `routed`, web-panel exposure (`VPN-only`, `localhost`, `public`), web-panel HTTPS port, AdGuard Home, and P2P ports. A fresh install deterministically selects a server-specific `/24` from `10.64.0.0/10`; an explicit `--subnet` takes precedence. Pressing Enter at the Web Panel access step keeps the safe VPN-only URL on the selected subnet gateway and port `8443`; choose `public` for a public domain, where domain modes (`ip-domain`, `letsencrypt`, `custom`) default to `443`. For trusted HTTPS, use your own domain + Let's Encrypt; `sslip.io`/`nip.io` are convenient but best-effort because they share Let's Encrypt rate limits. It prints a final summary before installation; selected values are saved to `/root/awg/awgsetup_cfg.init` so reboot resume does not fall back to default preset/bind.
 
 ### Non-interactive install with flags
 
@@ -119,7 +119,6 @@ sudo bash ./install_amneziawg.sh \
   --endpoint=203.0.113.10 \
   --server-name="my-vpn" \
   --preset=mobile \
-  --web-bind=10.9.9.1 \
   --web-port=8443 \
   --enable-adguard \
   --adguard-port=3000
@@ -154,7 +153,7 @@ sudo bash ./install_amneziawg_en.sh
 
 ### Accessing the web panel
 
-By default, the web panel is reachable only from inside the VPN:
+By default, the web panel listens only on the selected VPN subnet's IPv4 gateway. The exact URL is stored in `/root/awg/INSTALL_SUMMARY.txt`; for example, with an explicit `--subnet=10.9.9.1/24`:
 
 ```text
 https://10.9.9.1:8443
@@ -212,7 +211,7 @@ For a public panel, the interactive wizard recommends trusted HTTPS with your ow
 
 > Exposing the web panel to the whole internet is not recommended. Prefer a firewall allowlist, VPN, SSH tunnel, or a reverse proxy with extra authentication. Public self-signed mode is not recommended: browsers and WG Tunnel URL Import may reject the certificate. Keep the bearer token long and secret; do not publish `tokens.json`, client configs, QR codes, or `vpn://` URIs.
 
-If the panel is still exposed publicly, treat the Python stdlib HTTP server as a lightweight admin panel, not a full public edge. Prefer a VPN-only bind (`10.9.9.1`), `127.0.0.1` plus an SSH tunnel, or an nginx/caddy reverse proxy with TLS, timeouts, and connection limits. Minimal nginx fragment:
+If the panel is still exposed publicly, treat the Python stdlib HTTP server as a lightweight admin panel, not a full public edge. Prefer a bind on the selected VPN subnet's IPv4 gateway, `127.0.0.1` plus an SSH tunnel, or an nginx/caddy reverse proxy with TLS, timeouts, and connection limits. Minimal nginx fragment:
 
 ```nginx
 client_header_timeout 5s;
@@ -234,8 +233,8 @@ Troubleshooting Let's Encrypt:
 # Minimal install
 sudo bash install_amneziawg_en.sh
 
-# Web panel inside the VPN only (default)
-sudo bash install_amneziawg_en.sh --web-bind=10.9.9.1 --web-port=8443
+# Web panel inside the VPN only (default; bind derives from tunnel subnet)
+sudo bash install_amneziawg_en.sh --web-port=8443
 
 # Web panel on localhost only, when you want an SSH tunnel
 sudo bash install_amneziawg_en.sh --web-bind=127.0.0.1 --web-port=8443
@@ -259,7 +258,7 @@ sudo bash install_amneziawg_en.sh --enable-native-ipv6 --ipv6-mode=routed --ipv6
 sudo bash install_amneziawg_en.sh --enable-adguard --dns-mode=adguard
 ```
 
-AdGuard Home gets curated `user_rules` for common advertising/analytics domains. If client DNS points to local AdGuard (`10.9.9.1` or the IPv6 tunnel address), split AllowedIPs modes automatically add the exact DNS route, preserving LAN exclusions and leaving route-all unchanged.
+AdGuard Home gets curated `user_rules` for common advertising/analytics domains. If client DNS points to local AdGuard (the selected tunnel subnet's IPv4 gateway or the IPv6 tunnel address), split AllowedIPs modes automatically add the exact DNS route, preserving LAN exclusions and leaving route-all unchanged.
 
 IPv6 modes:
 
@@ -286,7 +285,7 @@ sudo /root/awg/manage_amneziawg.sh p2p toggle CLIENT_NAME
 | Flag | Purpose | Example |
 | --- | --- | --- |
 | `--yes` | Run without interactive confirmations | `sudo bash install_amneziawg_en.sh --yes` |
-| `--web-bind=ADDR` | Address the web panel listens on. Default: VPN gateway `10.9.9.1` | `--web-bind=0.0.0.0` |
+| `--web-bind=ADDR` | Address the web panel listens on. Default: selected tunnel subnet's IPv4 gateway | `--web-bind=0.0.0.0` |
 | `--web-port=PORT` | Web panel HTTPS port. VPN-only/localhost default `8443`; public trusted HTTPS default `443` in the wizard/fresh install | `--web-port=443` |
 | `--disable-web` | Do not deploy the web panel | `--disable-web` |
 | `--enable-native-ipv6` | Compatibility alias for enabling client IPv6 | `--enable-native-ipv6` |
@@ -336,7 +335,7 @@ sudo /root/awg/manage_amneziawg.sh dns restart
 
 ## Security notes
 
-* The web panel binds to VPN gateway `10.9.9.1` by default and is reachable only by connected VPN clients.
+* The web panel binds to the selected tunnel subnet's IPv4 gateway by default and is reachable only by connected VPN clients.
 * Static serving is restricted to an allowlist: `index.html`, `style.css`, `app.js`, `favicon.svg`.
 * Private files such as `tokens.json`, `import_tokens.json`, `auth_token`, `key.pem`, `cert.pem`, and `server.py` are not served over static HTTP.
 * `tokens.json`, `import_tokens.json`, and `/root/awg/INSTALL_SUMMARY.txt` contain secrets or token hashes and must remain private.
@@ -360,7 +359,7 @@ The fork's own version is **`v5.15.3-bas.2`**. The `<upstream-sync>-bas.<revisio
 * **P2P ports:** every client gets TCP+UDP ports for torrents, games, and self-hosted services; extra ports are managed through CLI and the web panel.
 * **Full Cone NAT attempt:** `FULLCONENAT` is used when available; otherwise the scripts fall back to `MASQUERADE`.
 * **Web panel:** HTTPS `:8443`, self-signed TLS, bearer token, clients, config/QR/vpnuri, stats, logs, service restart, and a DNS/AdGuard card.
-* **AdGuard Home DNS:** optional no-Docker install, DNS only on localhost/VPN, clients receive `10.9.9.1` and the server IPv6 address when dual-stack is enabled.
+* **AdGuard Home DNS:** optional no-Docker install, DNS only on localhost/VPN, clients receive the selected tunnel subnet's IPv4 gateway and the server IPv6 address when dual-stack is enabled.
 * **New management commands:** `diagnose`, `p2p list/show/add/remove`, `ipv6 status/upgrade`, `dns status/restart/logs/set-mode`.
 * **Selected upstream fixes:** QR/MTU/public-IP/diagnose/cleanup/ARM build fixes from upstream `5.14.0`-`5.14.3` were manually ported without a full merge and without changing the upstream base.
 * **Generated firewall hooks:** `/root/awg/postup.sh`, `/root/awg/postdown.sh`, `/root/awg/p2p_rules.sh`.
@@ -481,7 +480,7 @@ Useful flags:
 --p2p-ports-per-client=3
 --fullcone-nat
 --web-port=8443
---web-bind=10.9.9.1
+--web-bind=VPN_GATEWAY_IP    # optional override; default derives from tunnel subnet
 --disable-web
 --enable-adguard
 --adguard-port=3000
@@ -494,11 +493,11 @@ Useful flags:
 * Server config uses dual `Address` and external hooks: `/root/awg/postup.sh` and `/root/awg/postdown.sh`.
 * Peer blocks are the source of truth: `AllowedIPs = <ipv4>/32, <ipv6>/128` and `#_P2PPorts = p1,p2,p3`.
 * Default P2P ports for IPv4 last octet `N`: `20000+N`, `20256+N`, `20512+N`; extra ports are allocated from `20001-21024`.
-* Web files live in `/root/awg/web/`; the panel listens on VPN gateway `10.9.9.1:8443` by default, uses local assets without external CDNs, self-signed TLS, and stores bearer-token hashes/RBAC records in `/root/awg/web/tokens.json`.
+* Web files live in `/root/awg/web/`; the panel listens on the selected tunnel subnet's IPv4 gateway and port `8443` by default, uses local assets without external CDNs, self-signed TLS, and stores bearer-token hashes/RBAC records in `/root/awg/web/tokens.json`.
 * The client card exposes explicit actions: download `.conf`, copy full config text, show QR, copy the `vpn://` URI, and create a WG Tunnel import URL. Config/import-link endpoints stay authenticated and RBAC-scoped.
 * WG Tunnel import URLs are created with `POST /api/clients/<name>/import-link`, expire after 1 hour by default, and are served as raw `text/plain` from `GET /import/<client>/<token>` without `Content-Disposition`.
 * Client names are intentionally ASCII-only: use `A-Z`, `a-z`, `0-9`, `_`, and `-` (`my_phone`, `iphone_15`, `laptop-home`).
-* AdGuard Home is installed in `/opt/AdGuardHome`; DNS listens on `127.0.0.1`, `10.9.9.1`, and the server IPv6 address inside the VPN. If it fails, VPN remains usable; fallback: `manage dns set-mode system`.
+* AdGuard Home is installed in `/opt/AdGuardHome`; DNS listens on `127.0.0.1`, the selected tunnel subnet's IPv4 gateway, and the server IPv6 address inside the VPN. If it fails, VPN remains usable; fallback: `manage dns set-mode system`.
 
 ### Not finished yet
 
@@ -648,7 +647,7 @@ This installation method handles interactive prompts and colored output correctl
 
 5.  **Initial setup:** The script will interactively ask for:
     * **UDP port:** Port for client connections (1024-65535). Default: a random high port; you can set it manually with `--port=XXXXX`.
-    * **Tunnel subnet:** Internal VPN network. Default: `10.9.9.1/24`.
+    * **Tunnel subnet:** Internal VPN network. A fresh install selects a stable server-specific `/24`; override it with `--subnet` for managed allocation.
     * **Disable IPv6:** Recommended (`Y`) to prevent traffic leaks.
     * **Routing mode:** Determines which traffic goes through the VPN. Default `2` (Amnezia List + DNS) — recommended for best compatibility and bypassing restrictions.
 
@@ -664,6 +663,20 @@ This installation method handles interactive prompts and colored output correctl
 
 8.  **Completion:** After the second reboot and the third script run, you will see the message:
     `AmneziaWG 2.0 installation and configuration completed SUCCESSFULLY!`
+
+### Multiple VPN servers on one Linux client
+
+Every server needs a distinct internal IPv4 subnet. A fresh install selects a stable server-specific `/24` from `10.64.0.0/10`; managed fleets should allocate it explicitly, for example Finland `--subnet=10.9.9.1/24` and Germany `--subnet=10.9.10.1/24`. First confirm that the network does not overlap any client LAN or route table.
+
+On an existing server, `/root/awg/migrate-tunnel-subnet.sh` builds a read-only plan by default:
+
+```bash
+sudo /root/awg/migrate-tunnel-subnet.sh --old 10.9.9.1/24 --new 10.9.10.1/24
+```
+
+Apply requires a separate `--apply` flag and the exact confirmation token. It creates a rollback archive, preserves keys/peer identity and every client's host offset, replaces the old network across active project text files, regenerates hooks/firewall/P2P, QR and `vpn://`, updates web/AdGuard/hosts, restarts affected services, and rolls back after a failed health check. Download and re-import every client config from that server after cutover. Historical logs/backups are not rewritten; the rollback archive intentionally keeps the old addresses.
+
+Distinct internal subnets resolve routes to VPN gateways, DNS, and peers, but two concurrently active full-tunnel profiles still compete for `0.0.0.0/0`. Use one active full tunnel (active/standby) or configure disjoint split routes/policy routing.
 
 ---
 
@@ -836,8 +849,8 @@ Implemented:
 * installer flags `--enable-adguard`, `--adguard-port=3000`, `--dns-mode=adguard|system|custom`;
 * no-Docker AdGuard Home install: binary `/opt/AdGuardHome/AdGuardHome`, config `/opt/AdGuardHome/AdGuardHome.yaml`, service `AdGuardHome.service`;
 * curated `AdGuardHome.yaml` is generated/patched during install and checked with `/opt/AdGuardHome/AdGuardHome --check-config`; bootstrap does not use the HTTP API;
-* UI remains VPN-only at `http://10.9.9.1:3000` (`AWG_ADGUARD_PORT`, default `3000`), even when the separate `awg-web` panel is public via `--web-bind=0.0.0.0`;
-* DNS bind only on VPN addresses, not as an open public resolver; clients use `10.9.9.1` and, with IPv6, the server IPv6 from `AWG_IPV6_SUBNET`;
+* UI remains VPN-only on the selected tunnel subnet's IPv4 gateway and `AWG_ADGUARD_PORT` (default `3000`), even when the separate `awg-web` panel is public via `--web-bind=0.0.0.0`;
+* DNS bind only on VPN addresses, not as an open public resolver; clients use the selected tunnel subnet's IPv4 gateway and, with IPv6, the server IPv6 from `AWG_IPV6_SUBNET`;
 * upstream mode `parallel`; enabled upstreams: AdGuard DNS, AliDNS, Cloudflare, Cloudflare Security, dns.sb, DNSPod Public DNS, Google, Quad9, Wikimedia;
 * AliDNS is enabled; Yandex DNS is not used; unfiltered AdGuard upstream is not used;
 * bootstrap resolvers include IPv4+IPv6 Cloudflare, Quad9, AdGuard, AliDNS, Google, dns.sb, and DNSPod, without Yandex;
@@ -877,7 +890,7 @@ Safety goals:
 
 <details>
   <summary><strong>Q: Handshake completes but no traffic flows - what's wrong?</strong></summary>
-  <b>A:</b> A common cause is the split-tunneling AllowedIPs gotcha during manual customization. If you want to ping or SSH to the server by its inner tunnel IP (<code>10.9.9.1</code> in the default subnet), add the <b>tunnel subnet</b> (default <code>10.9.9.0/24</code>, or your custom one if you changed <code>--subnet</code>) to the client's <code>AllowedIPs</code>. Otherwise the client does not route traffic to the server even from inside the tunnel. The <code>--route-all</code> mode (full tunnel <code>0.0.0.0/0</code>) covers the subnet automatically; the default <code>--route-amnezia</code> (Amnezia List) and <code>--route-custom=</code> do not, add it explicitly. See <a href="ADVANCED.en.md#allowedips-adv">ADVANCED.en.md → AllowedIPs</a>.
+  <b>A:</b> A common cause is the split-tunneling AllowedIPs gotcha during manual customization. If you want to ping or SSH to the server by its internal IPv4 gateway, add the <b>selected tunnel subnet</b> to the client's <code>AllowedIPs</code>. Otherwise the client does not route traffic to the server even from inside the tunnel. The <code>--route-all</code> mode (full tunnel <code>0.0.0.0/0</code>) covers the subnet automatically; the default <code>--route-amnezia</code> (Amnezia List) and <code>--route-custom=</code> do not, so add it explicitly. See <a href="ADVANCED.en.md#allowedips-adv">ADVANCED.en.md → AllowedIPs</a>.
 </details>
 
 <details>

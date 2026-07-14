@@ -42,7 +42,8 @@ for asset in \
     web/vendor/tailwindcss.js \
     web/vendor/apexcharts.min.js \
     scripts/update_geoip_dbs.py \
-    scripts/update-installed.sh
+    scripts/update-installed.sh \
+    scripts/migrate-tunnel-subnet.sh
 do
     digest="$(sha "$asset")"
     replace_sha install_amneziawg.sh "$asset" "$digest"

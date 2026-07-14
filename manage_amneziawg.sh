@@ -1525,7 +1525,7 @@ dns_status() {
     log "Client DNS: $(awg_dns_servers)"
     log "AdGuard enabled: ${AWG_ADGUARD_ENABLED:-0}"
     log "AdGuard service: ${active:-unknown}"
-    log "AdGuard UI: http://10.9.9.1:${AWG_ADGUARD_PORT:-3000}/"
+    log "AdGuard UI: http://$(awg_ipv4_gateway):${AWG_ADGUARD_PORT:-3000}/"
     if [[ "${AWG_DNS_MODE:-system}" == "adguard" && "$active" != "active" ]]; then
         log_warn "AdGuard Home не активен. VPN продолжит работать; для fallback выполните: manage dns set-mode system"
     fi
@@ -1909,7 +1909,7 @@ usage() {
     echo "  web token reset-super Перегенерировать super token"
     echo "  web token check <token> Проверить token без вывода секрета"
     echo "  web token status Показать состояние token store без секретов"
-    echo "  web fix-nginx-startup Установить systemd drop-in: nginx ждёт awg0 10.9.9.1"
+    echo "  web fix-nginx-startup Установить systemd drop-in: nginx ждёт awg0 VPN gateway"
     echo "  web nginx-wait-awg0   Алиас для web fix-nginx-startup"
     echo "  regen <имя>           Безопасно перегенерировать конфиг клиента с ротацией ключей"
     echo "  regenerate <имя>      Алиас для regen <имя>"

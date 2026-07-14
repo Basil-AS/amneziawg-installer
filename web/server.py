@@ -382,6 +382,7 @@ def host_is_ip(value):
 def web_access_required_hosts(extra_host=""):
     hosts = ["localhost", "127.0.0.1"]
     values = [
+        configured_vpn_ipv4()[0],
         os.environ.get("AWG_WEB_DOMAIN") or "",
         os.environ.get("AWG_WEB_PUBLIC_URL") or "",
         os.environ.get("AWG_ENDPOINT") or "",
@@ -409,7 +410,8 @@ def default_allowed_hosts():
 
 
 def default_access_policy():
-    bind = os.environ.get("AWG_WEB_BIND") or "10.9.9.1"
+    vpn_gateway, vpn_network = configured_vpn_ipv4()
+    bind = os.environ.get("AWG_WEB_BIND") or vpn_gateway
     if bind in {"0.0.0.0", "::"}:
         mode = "public"
         source_cidrs = ["0.0.0.0/0", "::/0"]
@@ -417,9 +419,9 @@ def default_access_policy():
         mode = "public_nginx"
         bind = "127.0.0.1"
         source_cidrs = ["0.0.0.0/0", "::/0"]
-    elif bind == "10.9.9.1":
+    elif bind == vpn_gateway:
         mode = "vpn_only"
-        source_cidrs = ["10.0.0.0/8", "127.0.0.0/8"]
+        source_cidrs = [vpn_network, "127.0.0.0/8"]
     else:
         mode = "custom"
         source_cidrs = ["0.0.0.0/0", "::/0"]
@@ -544,7 +546,7 @@ def clean_access_policy(value):
         trusted_proxy_cidrs = ensure_items(trusted_proxy_cidrs, ["127.0.0.0/8", "::1/128"])
         allowed_hosts = ensure_items(allowed_hosts, web_access_required_hosts())
         if not allowed_source_cidrs or any(cidr in {"0.0.0.0/0", "::/0"} for cidr in allowed_source_cidrs):
-            allowed_source_cidrs = ["10.9.9.0/24", "127.0.0.0/8", "::1/128"]
+            allowed_source_cidrs = [configured_vpn_ipv4()[1], "127.0.0.0/8", "::1/128"]
     elif mode == "localhost_maintenance":
         source_check_enabled = True
         trusted_proxy_cidrs = ensure_items(trusted_proxy_cidrs, ["127.0.0.0/8", "::1/128"])
@@ -553,7 +555,7 @@ def clean_access_policy(value):
     elif mode == "vpn_only":
         source_check_enabled = True
         if not allowed_source_cidrs or any(cidr in {"0.0.0.0/0", "::/0"} for cidr in allowed_source_cidrs):
-            allowed_source_cidrs = ["10.0.0.0/8", "127.0.0.0/8"]
+            allowed_source_cidrs = [configured_vpn_ipv4()[1], "127.0.0.0/8"]
     elif mode == "localhost_only":
         source_check_enabled = True
         allowed_source_cidrs = ["127.0.0.0/8", "::1/128"]
@@ -2268,6 +2270,16 @@ def first_ip_in_subnet(cidr):
         return str(net.network_address)
 
 
+def configured_vpn_ipv4():
+    try:
+        interface = ipaddress.ip_interface(parse_config().get("AWG_TUNNEL_SUBNET") or "10.9.9.1/24")
+        if interface.version != 4:
+            raise ValueError("not IPv4")
+        return str(interface.ip), str(interface.network)
+    except (OSError, ValueError):
+        return "10.9.9.1", "10.9.9.0/24"
+
+
 def detect_public_ipv6(iface=""):
     try:
         lines = Path("/proc/net/if_inet6").read_text(encoding="utf-8").splitlines()
@@ -2324,6 +2336,9 @@ def server_info_payload():
         "vpn_ipv4": vpn_ipv4,
         "vpn_ipv6": vpn_ipv6,
         "vpn_gateway_ipv4": vpn_ipv4_host,
+        "vpn_ipv4_network": str(ipaddress.ip_interface(vpn_ipv4).network),
+        "internal_gateway_ipv4": vpn_ipv4_host,
+        "internal_ipv4_network": str(ipaddress.ip_interface(vpn_ipv4).network),
         "dns_resolver": dns_resolver,
         "web_public_url": web_public_url,
         "web_current_url": web_public_url,
@@ -5113,10 +5128,11 @@ def parse_peers():
 
 def dns_status():
     cfg = parse_config()
+    vpn_gateway, _vpn_network = configured_vpn_ipv4()
     mode = cfg["AWG_DNS_MODE"]
     client_dns = cfg["AWG_CUSTOM_DNS"] if mode == "custom" else "1.1.1.1"
     if mode == "adguard":
-        client_dns = "10.9.9.1"
+        client_dns = vpn_gateway
         if cfg["AWG_IPV6_ENABLED"] == "1" and cfg["AWG_IPV6_SUBNET"]:
             try:
                 client_dns += f", {ipaddress.ip_network(cfg['AWG_IPV6_SUBNET'], strict=False).network_address + 1}"
@@ -5139,12 +5155,14 @@ def dns_status():
 
 def resolver_status():
     status = dns_status()
+    vpn_gateway, _vpn_network = configured_vpn_ipv4()
     return {
         "mode": status["mode"],
         "client_resolver": status["client_dns"],
         "managed_enabled": status["adguard_enabled"],
         "managed_service": status["adguard_service"],
         "managed_port": status["adguard_port"],
+        "managed_url": f"http://{vpn_gateway}:{status['adguard_port']}/" if status["adguard_enabled"] else "",
     }
 
 
@@ -6526,7 +6544,7 @@ class Handler(SimpleHTTPRequestHandler):
     def request_base_url(self):
         host = (self.headers.get("Host") or "").strip()
         if not host or any(ch in host for ch in "/\\\r\n\t "):
-            host = f"10.9.9.1:{os.environ.get('AWG_WEB_PORT', '8443')}"
+            host = f"{configured_vpn_ipv4()[0]}:{os.environ.get('AWG_WEB_PORT', '8443')}"
         return f"https://{host}"
 
     def web_access_policy_payload(self, policy=None):
@@ -7572,7 +7590,7 @@ def main():
     policy = load_access_policy()
     start_server_health_collector()
     os.chdir(WEB_DIR)
-    bind_host = policy.get("bind_host") or os.environ.get("AWG_WEB_BIND") or "10.9.9.1"
+    bind_host = policy.get("bind_host") or os.environ.get("AWG_WEB_BIND") or configured_vpn_ipv4()[0]
     httpd = LimitedThreadingHTTPServer((bind_host, int(os.environ.get("AWG_WEB_PORT", "8443"))), Handler)
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     ctx.load_cert_chain(WEB_DIR / "cert.pem", WEB_DIR / "key.pem")

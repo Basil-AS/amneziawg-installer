@@ -206,9 +206,10 @@ PY
 }
 
 @test "web panel defaults to VPN gateway instead of public bind" {
-    grep -qF 'AWG_WEB_BIND="10.9.9.1"' "$BATS_TEST_DIRNAME/../install_amneziawg.sh"
-    grep -qF 'AWG_WEB_BIND="10.9.9.1"' "$BATS_TEST_DIRNAME/../install_amneziawg_en.sh"
-    grep -qF 'bind_host = policy.get("bind_host") or os.environ.get("AWG_WEB_BIND") or "10.9.9.1"' "$BATS_TEST_DIRNAME/../web/server.py"
+    grep -qF 'AWG_WEB_BIND="${AWG_WEB_BIND:-}"' "$BATS_TEST_DIRNAME/../install_amneziawg.sh"
+    grep -qF 'AWG_WEB_BIND="${AWG_WEB_BIND:-}"' "$BATS_TEST_DIRNAME/../install_amneziawg_en.sh"
+    grep -qF '[[ -n "${AWG_WEB_BIND:-}" ]] || AWG_WEB_BIND="${AWG_TUNNEL_SUBNET%/*}"' "$BATS_TEST_DIRNAME/../install_amneziawg.sh"
+    grep -qF 'bind_host = policy.get("bind_host") or os.environ.get("AWG_WEB_BIND") or configured_vpn_ipv4()[0]' "$BATS_TEST_DIRNAME/../web/server.py"
     if sed -n '/# Инициализация переменных/,/# Загрузка конфига/p' "$BATS_TEST_DIRNAME/../install_amneziawg.sh" | grep -qF 'AWG_WEB_BIND="0.0.0.0"'; then
         fail "web panel must not default to public bind"
     fi
@@ -839,7 +840,7 @@ vpn_policy = server.clean_access_policy({
 })
 assert vpn_policy["bind_mode"] == "vpn_only"
 assert vpn_policy["source_check_enabled"] is True
-assert vpn_policy["allowed_source_cidrs"] == ["10.0.0.0/8", "127.0.0.0/8"]
+assert vpn_policy["allowed_source_cidrs"] == ["10.9.9.0/24", "127.0.0.0/8"]
 local_policy = server.clean_access_policy({
     "bind_mode": "localhost_only",
     "bind_host": "0.0.0.0",
