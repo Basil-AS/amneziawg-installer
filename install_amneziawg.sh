@@ -34,18 +34,19 @@ MANAGE_SCRIPT_PATH="$AWG_DIR/manage_amneziawg.sh"
 # используются первыми; remote download разрешён только с pinned SHA256 либо
 # при явном AWG_ALLOW_UNVERIFIED_DOWNLOAD=1 для разработки.
 declare -A AWG_ASSET_SHA256=(
-    ["awg_common.sh"]="c149ded94ba683db2d66e40716a210700aadb4ffd9745f4fb3fb676c3fa4b691"
-    ["manage_amneziawg.sh"]="667c46ae41b56981bee924e4b6bd1c1a0b8ef8a1b73b9e3b13c58fa22ee7db5e"
-    ["web/server.py"]="ded41254337d2a9365a7d343f5fae55bd623bc1665a8f8eadf310bbacf2ad147"
+    ["awg_common.sh"]="fb3d0aa6267b578fb7bd7b1e678d886e80fb9d8e43a0130cf5ddc314b203a801"
+    ["manage_amneziawg.sh"]="fad317c15ab95b2463af94a469660261af6ac7d3c2d1a33646aff7abf26eebee"
+    ["web/server.py"]="1c49b7f13798b5bfc5a06632ee22dbb93a2aae05ae6544ecfefeb02795f96c90"
     ["web/index.html"]="7c07ed1d1991e08c0f9fc31e86ed8eb2bba5fa96387088f1f18918396cf7e662"
-    ["web/app.js"]="e8fb5b405f2fff62229d19063f53445c58690e0bbbdb72080949f9df78958f0c"
+    ["web/app.js"]="37fa5bfcd08f708377506e6901ddbfe4baa23fa0cf123cde55c394eaa54f2196"
     ["web/awg_i1.js"]="c97a6ac6c4e4bd7ab24c37c45f451e364414f276441f8da1c0805d26013aaa03"
     ["web/style.css"]="c6c728f244b79cdae162df3c5d0eddaea0b0b92951598355e4547f0add9e911a"
     ["web/favicon.svg"]="ae700ecb12dbf01403d0ed25247bac6b70f11201b094ee6c14b774b7fa533859"
     ["web/vendor/tailwindcss.js"]="176e894661aa9cdc9a5cba6c720044cbbf7b8bd80d1c9a142a7c24b1b6c50d15"
     ["web/vendor/apexcharts.min.js"]="a7400cd48b40b4f39d1c15137ae0cc8cbec31dc2b55a606640f1cd11912416dd"
     ["scripts/update_geoip_dbs.py"]="7ca3db88709a7ba8aed79b57c1f7aba834a80c57cacd513604ef2a68582513e3"
-    ["scripts/update-installed.sh"]="9e3414b47c41dbc3c9529a7b21800535286057575447253733e4c7e92950260b"
+    ["scripts/update-installed.sh"]="f9857a9b4ccd43b3741b2140c7676a935cab261ea87c2d4f9895ae6658e81318"
+    ["scripts/migrate-tunnel-subnet.sh"]="551718b23cd1fd17bc1ff6b144cb54a2aaeb217b244ae91893b7a275355dcfda"
 )
 
 # Флаги CLI
@@ -350,7 +351,7 @@ show_help() {
                         Количество P2P портов для нового клиента (умолч. 3)
   --fullcone-nat        Пробовать FULLCONENAT вместо MASQUERADE для IPv4
   --web-port=PORT       Порт веб-панели HTTPS (умолч. 8443)
-  --web-bind=ADDR       Адрес bind веб-панели (умолч. 10.9.9.1, внутри VPN)
+  --web-bind=ADDR       Адрес bind веб-панели (умолч. шлюз выбранной VPN-подсети)
                         0.0.0.0 открывает панель наружу; используйте только осознанно
   --web-cert-mode=MODE  TLS mode: selfsigned, custom, letsencrypt, ip-domain
   --web-domain=DOMAIN   Домен для letsencrypt/custom summary
@@ -798,6 +799,18 @@ generate_random_awg_port() {
         return 0
     done
     echo 39743
+}
+
+generate_default_tunnel_subnet() {
+    local seed digest slot second third
+    seed="$(cat /etc/machine-id 2>/dev/null || true)|$(hostname 2>/dev/null || true)"
+    [[ "$seed" != "|" ]] || seed="$(od -An -tx1 -N16 /dev/urandom 2>/dev/null | tr -d ' \n')"
+    digest="$(printf '%s' "$seed" | sha256sum | awk '{print substr($1, 1, 4)}')"
+    [[ "$digest" =~ ^[0-9a-fA-F]{4}$ ]] || digest="0909"
+    slot=$((16#$digest % 16384))
+    second=$((64 + slot / 256))
+    third=$((slot % 256))
+    printf '10.%d.%d.1/24\n' "$second" "$third"
 }
 
 validate_subnet() {
@@ -1609,7 +1622,8 @@ prompt_web_certificate() {
 prompt_web_panel() {
     [[ "$AUTO_YES" -eq 0 ]] || { warn_public_web_bind; return 0; }
     [[ "$CLI_DISABLE_WEB" -eq 0 ]] || return 0
-    local web_enable web_choice input_port public_confirm
+    local web_enable web_choice input_port public_confirm vpn_gateway
+    vpn_gateway="${AWG_TUNNEL_SUBNET%/*}"
     if [[ "$ENV_AWG_WEB_ENABLED_SET" -eq 0 ]]; then
         ask_yes_no web_enable "Включить Web Panel? [Y/n]: " "y"
         if [[ "$web_enable" == "no" ]]; then
@@ -1622,15 +1636,15 @@ prompt_web_panel() {
     if [[ -z "$CLI_WEB_BIND" && "$ENV_AWG_WEB_BIND_SET" -eq 0 ]]; then
         echo ""
         echo "Доступ к Web Panel:"
-        echo "  1) VPN-only, 10.9.9.1 — безопасно по умолчанию, порт 8443"
+        echo "  1) VPN-only, ${vpn_gateway} — безопасно по умолчанию, порт 8443"
         echo "  2) localhost, 127.0.0.1 — только SSH tunnel, порт 8443"
         echo "  3) public, 0.0.0.0 — доступ из интернета, домен + HTTPS, порт 443"
         ask_choice web_choice "Ваш выбор [1]: " "1" "1 2 3"
         case "${web_choice:-1}" in
-            1) AWG_WEB_BIND="10.9.9.1" ;;
+            1) AWG_WEB_BIND="$vpn_gateway" ;;
             2) AWG_WEB_BIND="127.0.0.1" ;;
             3) AWG_WEB_BIND="0.0.0.0" ;;
-            *) log_warn "Неизвестный режим Web Panel '$web_choice', выбран VPN-only."; AWG_WEB_BIND="10.9.9.1" ;;
+            *) log_warn "Неизвестный режим Web Panel '$web_choice', выбран VPN-only."; AWG_WEB_BIND="$vpn_gateway" ;;
         esac
     fi
     prompt_web_certificate
@@ -2927,7 +2941,8 @@ initialize_setup() {
 
     local default_port
     default_port=$(generate_random_awg_port)
-    local default_subnet="10.9.9.1/24"
+    local default_subnet
+    default_subnet="$(generate_default_tunnel_subnet)"
     local config_exists=0
 
     # Инициализация переменных
@@ -2954,7 +2969,7 @@ initialize_setup() {
     AWG_DISABLE_UFW=${AWG_DISABLE_UFW:-0}
     AWG_WEB_ENABLED=${AWG_WEB_ENABLED:-1}
     AWG_WEB_PORT=${AWG_WEB_PORT:-8443}
-    AWG_WEB_BIND="${AWG_WEB_BIND:-10.9.9.1}"
+    AWG_WEB_BIND="${AWG_WEB_BIND:-}"
     AWG_WEB_CERT_MODE="${AWG_WEB_CERT_MODE:-selfsigned}"
     AWG_WEB_DOMAIN="${AWG_WEB_DOMAIN:-}"
     AWG_WEB_CERT_FILE="${AWG_WEB_CERT_FILE:-}"
@@ -3081,6 +3096,8 @@ initialize_setup() {
         AWG_ENDPOINT=$CLI_ENDPOINT
     fi
     if [[ "$CLI_NO_TWEAKS" -eq 1 ]]; then NO_TWEAKS=1; fi
+
+    [[ -n "${AWG_WEB_BIND:-}" ]] || AWG_WEB_BIND="${AWG_TUNNEL_SUBNET%/*}"
 
     # Валидация после CLI override
     validate_port_system "$AWG_PORT" || die "Некорректный VPN порт: '$AWG_PORT'. Допустимый диапазон: 1-65535."
@@ -4201,6 +4218,7 @@ step5_download_scripts() {
     _deploy_asset "manage_amneziawg.sh" "$MANAGE_SCRIPT_PATH" 700
     _deploy_asset "scripts/update_geoip_dbs.py" "$AWG_DIR/scripts/update_geoip_dbs.py" 755
     _deploy_asset "scripts/update-installed.sh" "$AWG_DIR/update-installed.sh" 700
+    _deploy_asset "scripts/migrate-tunnel-subnet.sh" "$AWG_DIR/migrate-tunnel-subnet.sh" 700
 
     log "Шаг 5 завершен."
     update_state 6
@@ -5030,7 +5048,7 @@ PY
 
     if [[ "${AWG_WEB_BIND:-}" == "0.0.0.0" || "${AWG_WEB_BIND:-}" == "::" ]]; then
         log_warn "Web Panel слушает публичный bind ${AWG_WEB_BIND}:${AWG_WEB_PORT:-8443}. Python stdlib HTTP server подходит для лёгкой админ-панели, но слабее nginx/caddy на публичном edge."
-        log_warn "Рекомендуется VPN-only bind 10.9.9.1, localhost+SSH tunnel или reverse proxy с TLS, timeouts и connection limits."
+        log_warn "Рекомендуется VPN-only bind на шлюзе VPN, localhost+SSH tunnel или reverse proxy с TLS, timeouts и connection limits."
     fi
 
     {

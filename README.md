@@ -106,7 +106,7 @@ sudo bash ./install_amneziawg.sh --yes --route-all --server-name="my-vpn"
 sudo bash ./install_amneziawg.sh
 ```
 
-Wizard спросит важные параметры до начала установки: имя сервера, endpoint/public IP или автоопределение, route mode, preset `default|mobile`, IPv6 mode `auto|routed|ndp|nat66`, IPv6 subnet для `routed`, режим доступа к web-panel (`VPN-only`, `localhost`, `public`), HTTPS-порт web-panel, AdGuard Home и P2P-порты. Enter на шаге доступа к Web Panel оставляет безопасный VPN-only default `https://10.9.9.1:8443`; для публичного домена нужно выбрать `public`, тогда domain modes (`ip-domain`, `letsencrypt`, `custom`) по умолчанию используют `443`. Для trusted HTTPS рекомендуется свой домен + Let's Encrypt; `sslip.io`/`nip.io` удобны, но best-effort из-за общих rate limits Let's Encrypt. Перед установкой будет показан итоговый summary; выбранные значения сохраняются в `/root/awg/awgsetup_cfg.init`, чтобы resume после reboot не вернулся к default preset/bind.
+Wizard спросит важные параметры до начала установки: имя сервера, endpoint/public IP или автоопределение, route mode, preset `default|mobile`, IPv6 mode `auto|routed|ndp|nat66`, IPv6 subnet для `routed`, режим доступа к web-panel (`VPN-only`, `localhost`, `public`), HTTPS-порт web-panel, AdGuard Home и P2P-порты. Для fresh install внутренняя `/24` детерминированно выбирается для конкретного сервера из `10.64.0.0/10`; явный `--subnet` имеет приоритет. Enter на шаге доступа к Web Panel оставляет безопасный VPN-only URL на шлюзе выбранной подсети и порту `8443`; для публичного домена нужно выбрать `public`, тогда domain modes (`ip-domain`, `letsencrypt`, `custom`) по умолчанию используют `443`. Для trusted HTTPS рекомендуется свой домен + Let's Encrypt; `sslip.io`/`nip.io` удобны, но best-effort из-за общих rate limits Let's Encrypt. Перед установкой будет показан итоговый summary; выбранные значения сохраняются в `/root/awg/awgsetup_cfg.init`, чтобы resume после reboot не вернулся к default preset/bind.
 
 ### Non-interactive install через flags
 
@@ -119,7 +119,6 @@ sudo bash ./install_amneziawg.sh \
   --endpoint=203.0.113.10 \
   --server-name="my-vpn" \
   --preset=mobile \
-  --web-bind=10.9.9.1 \
   --web-port=8443 \
   --enable-adguard \
   --adguard-port=3000
@@ -154,7 +153,7 @@ sudo bash ./install_amneziawg.sh
 
 ### Доступ к web-panel
 
-По умолчанию web-panel доступна только из VPN-сети:
+По умолчанию web-panel доступна только на IPv4 gateway выбранной VPN-подсети. Точный URL записывается в `/root/awg/INSTALL_SUMMARY.txt`, например для явно заданного `--subnet=10.9.9.1/24`:
 
 ```text
 https://10.9.9.1:8443
@@ -186,7 +185,7 @@ sudo bash install_amneziawg.sh \
 
 > Открывать web-panel всему интернету не рекомендуется. Лучше использовать firewall allowlist, VPN, SSH tunnel или reverse proxy с дополнительной авторизацией. Публичный self-signed режим не рекомендуется: браузеры и WG Tunnel URL Import могут отклонять сертификат. Bearer token должен быть длинным и секретным; не публикуйте `tokens.json`, client configs, QR и `vpn://` URI.
 
-Если панель всё же публикуется наружу, Python stdlib HTTP server следует считать лёгкой admin-panel, а не полноценным public edge. Предпочтительные варианты: bind только внутри VPN (`10.9.9.1`), `127.0.0.1` + SSH tunnel, либо nginx/caddy reverse proxy с TLS, timeouts и connection limits. Минимальный nginx-фрагмент:
+Если панель всё же публикуется наружу, Python stdlib HTTP server следует считать лёгкой admin-panel, а не полноценным public edge. Предпочтительные варианты: bind на IPv4 gateway выбранной VPN-подсети, `127.0.0.1` + SSH tunnel, либо nginx/caddy reverse proxy с TLS, timeouts и connection limits. Минимальный nginx-фрагмент:
 
 ```nginx
 client_header_timeout 5s;
@@ -208,8 +207,8 @@ Troubleshooting Let's Encrypt:
 # Минимальная установка
 sudo bash install_amneziawg.sh
 
-# Web-panel только внутри VPN (default)
-sudo bash install_amneziawg.sh --web-bind=10.9.9.1 --web-port=8443
+# Web-panel только внутри VPN (default; bind вычисляется из tunnel subnet)
+sudo bash install_amneziawg.sh --web-port=8443
 
 # Web-panel только на localhost, если нужен SSH tunnel
 sudo bash install_amneziawg.sh --web-bind=127.0.0.1 --web-port=8443
@@ -233,7 +232,7 @@ sudo bash install_amneziawg.sh --enable-native-ipv6 --ipv6-mode=routed --ipv6-su
 sudo bash install_amneziawg.sh --enable-adguard --dns-mode=adguard
 ```
 
-AdGuard Home получает curated `user_rules` для популярных advertising/analytics domains. Если DNS клиентов указывает на локальный AdGuard (`10.9.9.1` или IPv6 tunnel address), split AllowedIPs modes автоматически добавляют точный маршрут к DNS-серверу, не ломая LAN exclusions и не меняя route-all mode.
+AdGuard Home получает curated `user_rules` для популярных advertising/analytics domains. Если DNS клиентов указывает на локальный AdGuard (IPv4 gateway выбранной tunnel subnet или IPv6 tunnel address), split AllowedIPs modes автоматически добавляют точный маршрут к DNS-серверу, не ломая LAN exclusions и не меняя route-all mode.
 
 IPv6 modes:
 
@@ -260,7 +259,7 @@ sudo /root/awg/manage_amneziawg.sh p2p toggle CLIENT_NAME
 | Флаг | Что делает | Пример |
 | --- | --- | --- |
 | `--yes` | Запуск без интерактивных подтверждений | `sudo bash install_amneziawg.sh --yes` |
-| `--web-bind=ADDR` | IP, на котором слушает web-panel. По умолчанию `10.9.9.1` внутри VPN | `--web-bind=0.0.0.0` |
+| `--web-bind=ADDR` | IP, на котором слушает web-panel. По умолчанию IPv4 gateway выбранной tunnel subnet | `--web-bind=0.0.0.0` |
 | `--web-port=PORT` | HTTPS-порт web-panel. VPN-only/localhost default `8443`; public trusted HTTPS default `443` в wizard/fresh install | `--web-port=443` |
 | `--disable-web` | Не разворачивать web-panel | `--disable-web` |
 | `--enable-native-ipv6` | Совместимый алиас для включения IPv6 клиентов | `--enable-native-ipv6` |
@@ -310,7 +309,7 @@ sudo /root/awg/manage_amneziawg.sh dns restart
 
 ## Security notes
 
-* Web-panel по умолчанию bind-ится к `10.9.9.1` и доступна только подключённым VPN-клиентам.
+* Web-panel по умолчанию bind-ится к IPv4 gateway выбранной tunnel subnet и доступна только подключённым VPN-клиентам.
 * Static serving ограничен allowlist: `index.html`, `style.css`, `app.js`, `favicon.svg`.
 * Private files вроде `tokens.json`, `import_tokens.json`, `auth_token`, `key.pem`, `cert.pem`, `server.py` не отдаются как static HTTP.
 * `tokens.json`, `import_tokens.json` и `/root/awg/INSTALL_SUMMARY.txt` хранят секреты или token hashes и должны оставаться приватными.
@@ -334,7 +333,7 @@ sudo /root/awg/manage_amneziawg.sh dns restart
 * **P2P-порты:** каждому клиенту автоматически выдаются TCP+UDP порты для торрентов, игр и self-hosted сервисов; дополнительные порты управляются через CLI и веб-панель.
 * **Full Cone NAT попытка:** если доступен `FULLCONENAT`, используется он; если нет — скрипт возвращается к `MASQUERADE`.
 * **Веб-панель:** HTTPS `:8443`, self-signed TLS, bearer token, список клиентов, добавление/удаление, скачивание и копирование `.conf`, QR/vpnuri, статистика, логи, рестарт сервиса, карточка DNS/AdGuard.
-* **AdGuard Home DNS:** опциональная установка без Docker, DNS только на localhost/VPN, клиенты получают `10.9.9.1` и IPv6-адрес сервера при dual-stack.
+* **AdGuard Home DNS:** опциональная установка без Docker, DNS только на localhost/VPN, клиенты получают IPv4 gateway выбранной tunnel subnet и IPv6-адрес сервера при dual-stack.
 * **Новые команды управления:** `diagnose`, `p2p list/show/add/remove`, `ipv6 status/upgrade`, `dns status/restart/logs/set-mode`.
 * **Selected upstream fixes:** вручную перенесены QR/MTU/public-IP/diagnose/cleanup/ARM build fixes из upstream `5.14.0`-`5.14.3` без full merge и без смены upstream base.
 * **Автогенерация firewall hooks:** `/root/awg/postup.sh`, `/root/awg/postdown.sh`, `/root/awg/p2p_rules.sh`.
@@ -467,9 +466,9 @@ sudo bash ./install_amneziawg.sh --upgrade-ipv6
 --p2p-ports-per-client=3     # сколько портов выдавать новому клиенту
 --fullcone-nat               # пытаться использовать FULLCONENAT
 --web-port=8443              # HTTPS-порт веб-панели
---web-bind=10.9.9.1          # адрес bind для веб-панели внутри VPN
+--web-bind=VPN_GATEWAY_IP    # optional override; default берётся из tunnel subnet
 --disable-web                # не разворачивать веб-панель
---enable-adguard             # установить AdGuard Home и выдать DNS 10.9.9.1
+--enable-adguard             # установить AdGuard Home и выдать DNS на VPN gateway
 --adguard-port=3000          # UI AdGuard на VPN-адресе
 --dns-mode=adguard|system|custom
 ```
@@ -486,15 +485,15 @@ sudo bash ./install_amneziawg.sh --upgrade-ipv6
 * Firewall/NAT генерируется idempotent-скриптами:
   `/root/awg/postup.sh`, `/root/awg/postdown.sh`, `/root/awg/p2p_rules.sh`.
 * Для native IPv6 с NDP proxy создаётся `/etc/ndppd.conf`. Для ULA-режима используется NAT66.
-* Веб-панель разворачивается в `/root/awg/web/`, по умолчанию слушает HTTPS только на VPN gateway `10.9.9.1:8443`, использует локальные assets без внешних CDN, self-signed сертификат и bearer tokens/RBAC через `tokens.json`.
+* Веб-панель разворачивается в `/root/awg/web/`, по умолчанию слушает HTTPS только на IPv4 gateway выбранной tunnel subnet и порту `8443`, использует локальные assets без внешних CDN, self-signed сертификат и bearer tokens/RBAC через `tokens.json`.
 * В карточке клиента есть явные действия: скачать `.conf`, скопировать полный текст конфига, показать QR, скопировать `vpn://` и создать WG Tunnel import URL. Config/import-link endpoints остаются под auth и RBAC.
 * WG Tunnel import URL создаётся через `POST /api/clients/<name>/import-link`, живёт 1 час по умолчанию и отдаётся как raw `text/plain` через `GET /import/<client>/<token>` без `Content-Disposition`.
 * Имена клиентов намеренно ASCII-only: используйте только `A-Z`, `a-z`, `0-9`, `_` и `-` (`my_phone`, `iphone_15`, `laptop-home`).
-* AdGuard Home ставится в `/opt/AdGuardHome`, слушает DNS на `127.0.0.1`, `10.9.9.1` и серверном IPv6 внутри VPN. Если сервис не стартует, VPN остаётся рабочим; fallback: `manage dns set-mode system`.
+* AdGuard Home ставится в `/opt/AdGuardHome`, слушает DNS на `127.0.0.1`, IPv4 gateway выбранной tunnel subnet и серверном IPv6 внутри VPN. Если сервис не стартует, VPN остаётся рабочим; fallback: `manage dns set-mode system`.
 
 ### Веб-панель
 
-По умолчанию web-panel доступна подключённым VPN-клиентам по адресу:
+По умолчанию web-panel доступна подключённым VPN-клиентам на IPv4 gateway выбранной tunnel subnet. Точный URL смотрите в `/root/awg/INSTALL_SUMMARY.txt`, например:
 
 ```text
 https://10.9.9.1:8443
@@ -711,7 +710,7 @@ GET    /api/server/logs
 
 5.  **Начальная настройка:** Скрипт интерактивно запросит:
     * **UDP порт:** Порт для подключения клиентов (1024-65535). По умолчанию: случайный высокий порт; можно задать вручную через `--port=XXXXX`.
-    * **Подсеть туннеля:** Внутренняя сеть для VPN. По умолчанию: `10.9.9.1/24`.
+    * **Подсеть туннеля:** Внутренняя сеть VPN. Fresh install выбирает стабильную server-specific `/24`; для управляемой адресации используйте `--subnet`.
     * **Отключение IPv6:** Рекомендуется отключить (`Y`) для избежания утечек трафика.
     * **Режим маршрутизации:** Определяет, какой трафик пойдет через VPN. По умолчанию `2` (Список Amnezia+DNS) - рекомендуется для лучшей совместимости и обхода блокировок.
 
@@ -727,6 +726,20 @@ GET    /api/server/logs
 
 8.  **Завершение:** После второй перезагрузки и третьего запуска скрипта вы увидите сообщение:
     `Установка и настройка AmneziaWG 2.0 УСПЕШНО ЗАВЕРШЕНА!`
+
+### Несколько VPN-серверов на одном Linux-клиенте
+
+У каждого сервера должна быть своя внутренняя IPv4-подсеть. Fresh install выбирает стабильную server-specific `/24` из `10.64.0.0/10`; для управляемой инфраструктуры лучше закреплять её явно, например Finland `--subnet=10.9.9.1/24`, Germany `--subnet=10.9.10.1/24`. Перед выбором проверьте, что сеть не пересекается с LAN и маршрутами всех клиентов.
+
+Для уже установленного сервера `/root/awg/migrate-tunnel-subnet.sh` сначала строит план и ничего не изменяет:
+
+```bash
+sudo /root/awg/migrate-tunnel-subnet.sh --old 10.9.9.1/24 --new 10.9.10.1/24
+```
+
+Apply требует отдельный `--apply` и точный confirmation token. Он создаёт rollback-архив, сохраняет ключи/peer identity и последний октет адреса каждого клиента, заменяет старую сеть во всех активных текстовых файлах проекта, пересобирает hooks/firewall/P2P, QR и `vpn://`, обновляет web/AdGuard/hosts, перезапускает затронутые сервисы и откатывается при неуспешной проверке. После cutover все клиентские конфиги этого сервера нужно скачать и импортировать заново. Исторические logs/backups не переписываются; старые адреса остаются в rollback-архиве намеренно.
+
+Разные внутренние подсети устраняют конфликт маршрутов к VPN gateway, DNS и peer-адресам, но два одновременно активных full-tunnel профиля всё равно конкурируют за `0.0.0.0/0`. Используйте один активный full tunnel (active/standby) либо настройте непересекающиеся split routes/policy routing.
 
 ---
 
@@ -899,8 +912,8 @@ sudo bash /root/awg/manage_amneziawg.sh dns set-mode system
 * installer-флаги `--enable-adguard`, `--adguard-port=3000`, `--dns-mode=adguard|system|custom`;
 * установка AdGuard Home без Docker: binary `/opt/AdGuardHome/AdGuardHome`, config `/opt/AdGuardHome/AdGuardHome.yaml`, service `AdGuardHome.service`;
 * curated `AdGuardHome.yaml` применяется во время установки через YAML generation/patch и проверяется `/opt/AdGuardHome/AdGuardHome --check-config`, без bootstrap через HTTP API;
-* UI остаётся VPN-only: `http://10.9.9.1:3000` (`AWG_ADGUARD_PORT`, default `3000`), даже если web-panel `awg-web` открыт через `--web-bind=0.0.0.0`;
-* DNS bind только на VPN-адресах, без публичного open resolver; клиенты получают `10.9.9.1` и, при IPv6, серверный IPv6 из `AWG_IPV6_SUBNET`;
+* UI остаётся VPN-only на IPv4 gateway выбранной tunnel subnet и `AWG_ADGUARD_PORT` (default `3000`), даже если web-panel `awg-web` открыт через `--web-bind=0.0.0.0`;
+* DNS bind только на VPN-адресах, без публичного open resolver; клиенты получают IPv4 gateway выбранной tunnel subnet и, при IPv6, серверный IPv6 из `AWG_IPV6_SUBNET`;
 * upstream mode `parallel`; enabled upstreams: AdGuard DNS, AliDNS, Cloudflare, Cloudflare Security, dns.sb, DNSPod Public DNS, Google, Quad9, Wikimedia;
 * AliDNS включён; Yandex DNS не используется; unfiltered AdGuard upstream не используется;
 * bootstrap resolvers включают IPv4+IPv6 Cloudflare, Quad9, AdGuard, AliDNS, Google, dns.sb и DNSPod без Yandex;
@@ -940,7 +953,7 @@ sudo bash /root/awg/manage_amneziawg.sh dns set-mode system
 
 <details>
   <summary><strong>В: Handshake проходит, но трафик не идёт - что не так?</strong></summary>
-  <b>О:</b> Частая причина - split-tunneling AllowedIPs gotcha при ручной правке. Если хочешь пинговать/SSH'иться к серверу по его внутреннему IP (<code>10.9.9.1</code> в дефолтной подсети), добавь в <code>AllowedIPs</code> клиента <b>подсеть туннеля</b> (по умолчанию <code>10.9.9.0/24</code>, или твою кастомную, если менял <code>--subnet</code>). Иначе клиент не маршрутизирует трафик к серверу даже изнутри тоннеля. Режим <code>--route-all</code> (полный туннель <code>0.0.0.0/0</code>) покрывает подсеть автоматически; режим <code>--route-amnezia</code> (по умолчанию, Amnezia List) и <code>--route-custom=</code> - нет, добавляй вручную. Подробнее - в <a href="ADVANCED.md#allowedips-adv">ADVANCED.md → AllowedIPs</a>.
+  <b>О:</b> Частая причина — split-tunneling AllowedIPs gotcha при ручной правке. Если хочешь пинговать/SSH'иться к серверу по его внутреннему IPv4 gateway, добавь в <code>AllowedIPs</code> клиента <b>выбранную подсеть туннеля</b>. Иначе клиент не маршрутизирует трафик к серверу даже изнутри тоннеля. Режим <code>--route-all</code> (полный туннель <code>0.0.0.0/0</code>) покрывает подсеть автоматически; режим <code>--route-amnezia</code> (по умолчанию, Amnezia List) и <code>--route-custom=</code> — нет, добавляй вручную. Подробнее — в <a href="ADVANCED.md#allowedips-adv">ADVANCED.md → AllowedIPs</a>.
 </details>
 
 <details>

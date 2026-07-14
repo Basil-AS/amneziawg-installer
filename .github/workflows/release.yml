@@ -66,7 +66,7 @@ jobs:
             install_amneziawg.sh install_amneziawg_en.sh \
             awg_common.sh awg_common_en.sh \
             manage_amneziawg.sh manage_amneziawg_en.sh \
-            scripts/update-installed.sh scripts/update_geoip_dbs.py \
+            scripts/update-installed.sh scripts/migrate-tunnel-subnet.sh scripts/update_geoip_dbs.py \
             web/server.py web/index.html web/style.css web/app.js web/awg_i1.js web/favicon.svg \
             web/vendor/tailwindcss.js web/vendor/apexcharts.min.js
           cd /tmp

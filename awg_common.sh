@@ -43,7 +43,8 @@ awg_mktemp() {
 
 install_nginx_awg0_wait_dropin() {
     local iface="${1:-${AWG_NGINX_WAIT_IFACE:-awg0}}"
-    local bind_ip="${2:-${AWG_NGINX_WAIT_IP:-${AWG_WEB_BIND:-10.9.9.1}}}"
+    local bind_ip="${2:-${AWG_NGINX_WAIT_IP:-${AWG_WEB_BIND:-}}}"
+    [[ -n "$bind_ip" ]] || bind_ip="$(awg_ipv4_gateway)"
     local timeout="${3:-${AWG_NGINX_WAIT_TIMEOUT:-90}}"
     local systemd_dir="${AWG_SYSTEMD_DIR:-/etc/systemd/system}"
     local dropin_dir="${NGINX_SYSTEMD_DROPIN_DIR:-$systemd_dir/nginx.service.d}"
@@ -776,12 +777,26 @@ awg_dns_mode() {
     esac
 }
 
+awg_ipv4_gateway() {
+    local tunnel="${AWG_TUNNEL_SUBNET:-10.9.9.1/24}"
+    printf '%s\n' "${tunnel%/*}"
+}
+
+awg_ipv4_network() {
+    python3 - "${AWG_TUNNEL_SUBNET:-10.9.9.1/24}" <<'PY'
+import ipaddress
+import sys
+print(ipaddress.ip_interface(sys.argv[1]).network)
+PY
+}
+
 awg_dns_servers() {
     local mode
     mode=$(awg_dns_mode)
     case "$mode" in
         adguard)
-            local dns="10.9.9.1" server_v6=""
+            local dns server_v6=""
+            dns="$(awg_ipv4_gateway)"
             if awg_ipv6_enabled; then
                 server_v6=$(get_server_ipv6_address 2>/dev/null || true)
                 [[ -n "$server_v6" ]] && dns="${dns}, ${server_v6}"

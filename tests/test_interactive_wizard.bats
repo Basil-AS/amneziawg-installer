@@ -8,7 +8,7 @@
     grep -qF 'Введите внешний IP/домен сервера или Enter для автоопределения:' "$installer"
     grep -qF 'Выберите preset параметров AWG:' "$installer"
     grep -qF 'Доступ к Web Panel:' "$installer"
-    grep -qF 'VPN-only, 10.9.9.1 — безопасно по умолчанию, порт 8443' "$installer"
+    grep -qF 'VPN-only, ${vpn_gateway} — безопасно по умолчанию, порт 8443' "$installer"
     grep -qF 'public, 0.0.0.0 — доступ из интернета, домен + HTTPS, порт 443' "$installer"
     grep -qF 'Настройка HTTPS для публичной Web Panel:' "$installer"
     grep -qF 'Свой домен + Let' "$installer"
@@ -51,7 +51,7 @@
 @test "interactive web exposure choices map to expected bind addresses and warn on public" {
     local installer="$BATS_TEST_DIRNAME/../install_amneziawg.sh"
 
-    grep -qF '1) AWG_WEB_BIND="10.9.9.1"' "$installer"
+    grep -qF '1) AWG_WEB_BIND="$vpn_gateway"' "$installer"
     grep -qF '2) AWG_WEB_BIND="127.0.0.1"' "$installer"
     grep -qF '3) AWG_WEB_BIND="0.0.0.0"' "$installer"
     grep -qF 'Вы открываете Web Panel в интернет. Продолжить? type YES:' "$installer"
@@ -101,7 +101,7 @@
     grep -qF 'Enter server public IP/domain or press Enter for auto-detect:' "$installer"
     grep -qF 'Choose AWG parameter preset:' "$installer"
     grep -qF 'Web Panel access:' "$installer"
-    grep -qF 'VPN-only, 10.9.9.1 - safe default, port 8443' "$installer"
+    grep -qF 'VPN-only, ${vpn_gateway} - safe default, port 8443' "$installer"
     grep -qF 'public, 0.0.0.0 - Internet access, domain + HTTPS, port 443' "$installer"
     grep -qF 'HTTPS setup for public Web Panel:' "$installer"
     grep -qF 'Your domain + Let' "$installer"
@@ -429,12 +429,12 @@
 }
 
 @test "README documents Web Panel access defaults for Enter, public domains, and port 443 URLs" {
-    grep -qF 'Enter на шаге доступа к Web Panel оставляет безопасный VPN-only default `https://10.9.9.1:8443`' "$BATS_TEST_DIRNAME/../README.md"
+    grep -qF 'Enter на шаге доступа к Web Panel оставляет безопасный VPN-only URL на шлюзе выбранной подсети' "$BATS_TEST_DIRNAME/../README.md"
     grep -qF 'Итоговый URL для port `443` пишется без `:443`' "$BATS_TEST_DIRNAME/../README.md"
     grep -qF 'свой домен + Let' "$BATS_TEST_DIRNAME/../README.md"
     grep -qF 'best-effort из-за общих rate limits Let' "$BATS_TEST_DIRNAME/../README.md"
     grep -qF 'TCP/80 открыт во внешнем firewall/security group' "$BATS_TEST_DIRNAME/../README.md"
-    grep -qF 'Pressing Enter at the Web Panel access step keeps the safe VPN-only default `https://10.9.9.1:8443`' "$BATS_TEST_DIRNAME/../README.en.md"
+    grep -qF 'Pressing Enter at the Web Panel access step keeps the safe VPN-only URL on the selected subnet gateway' "$BATS_TEST_DIRNAME/../README.en.md"
     grep -qF 'The final URL for port `443` is shown without `:443`' "$BATS_TEST_DIRNAME/../README.en.md"
     grep -qF 'your own domain + Let' "$BATS_TEST_DIRNAME/../README.en.md"
     grep -qF 'best-effort because they share Let' "$BATS_TEST_DIRNAME/../README.en.md"
