@@ -55,10 +55,34 @@ jobs:
           echo "--- Release notes preview ---"
           cat /tmp/release-notes.md
 
+      - name: Build deterministic safe-update bundle
+        if: steps.check.outputs.exists != 'true'
+        run: |
+          VERSION="$(tr -d '\r\n' < VERSION)"
+          ASSET="/tmp/amneziawg-update-${VERSION}.tar.gz"
+          tar --sort=name --mtime='UTC 1970-01-01' --owner=0 --group=0 --numeric-owner \
+            -czf "$ASSET" \
+            VERSION \
+            install_amneziawg.sh install_amneziawg_en.sh \
+            awg_common.sh awg_common_en.sh \
+            manage_amneziawg.sh manage_amneziawg_en.sh \
+            scripts/update-installed.sh scripts/update_geoip_dbs.py \
+            web/server.py web/index.html web/style.css web/app.js web/awg_i1.js web/favicon.svg \
+            web/vendor/tailwindcss.js web/vendor/apexcharts.min.js
+          cd /tmp
+          sha256sum "$(basename "$ASSET")" > "$(basename "$ASSET").sha256"
+          install -m 755 "$GITHUB_WORKSPACE/scripts/update-installed.sh" /tmp/update-installed.sh
+          sha256sum update-installed.sh > update-installed.sh.sha256
+
       - name: Create Release
         if: steps.check.outputs.exists != 'true'
         uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda # v3.0.0
         with:
           body_path: /tmp/release-notes.md
+          files: |
+            /tmp/amneziawg-update-*.tar.gz
+            /tmp/amneziawg-update-*.tar.gz.sha256
+            /tmp/update-installed.sh
+            /tmp/update-installed.sh.sha256
           draft: false
           prerelease: false

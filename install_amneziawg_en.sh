@@ -9,14 +9,14 @@ fi
 # ==============================================================================
 # AmneziaWG 2.0 installation and configuration script for Ubuntu/Debian servers
 # Author: @bivlked
-# Version: 5.15.3-bas.1
+# Version: 5.15.3-bas.2
 # Date: 2026-05-13
 # Repository: https://github.com/bivlked/amneziawg-installer
 # ==============================================================================
 
 # --- Safe mode and Constants ---
 set -o pipefail
-SCRIPT_VERSION="5.15.3-bas.1"
+SCRIPT_VERSION="5.15.3-bas.2"
 
 AWG_DIR="/root/awg"
 INSTALLER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)"
@@ -34,8 +34,8 @@ MANAGE_SCRIPT_PATH="$AWG_DIR/manage_amneziawg.sh"
 # are used first; remote download is allowed only with pinned SHA256 or explicit
 # AWG_ALLOW_UNVERIFIED_DOWNLOAD=1 for development.
 declare -A AWG_ASSET_SHA256=(
-    ["awg_common_en.sh"]="fcd14f747ee6359f32d4a8b8ce8de6e9e58e7c39ae417fb6a5ff6c4b1c221a39"
-    ["manage_amneziawg_en.sh"]="30a4cb14632099c39c22e7bf17f851ca303de85c7c0a72f90e8672954eb5ccde"
+    ["awg_common_en.sh"]="3d7339e23501e5b9c010278b0af4685fc472f44d449e6f0f61ab02a480dbce0e"
+    ["manage_amneziawg_en.sh"]="00e9ac282bce381eaaa2bd29b47da4ff04e87d0248d28551af48b8d740932539"
     ["web/server.py"]="ded41254337d2a9365a7d343f5fae55bd623bc1665a8f8eadf310bbacf2ad147"
     ["web/index.html"]="7c07ed1d1991e08c0f9fc31e86ed8eb2bba5fa96387088f1f18918396cf7e662"
     ["web/app.js"]="e8fb5b405f2fff62229d19063f53445c58690e0bbbdb72080949f9df78958f0c"
@@ -45,6 +45,7 @@ declare -A AWG_ASSET_SHA256=(
     ["web/vendor/tailwindcss.js"]="176e894661aa9cdc9a5cba6c720044cbbf7b8bd80d1c9a142a7c24b1b6c50d15"
     ["web/vendor/apexcharts.min.js"]="a7400cd48b40b4f39d1c15137ae0cc8cbec31dc2b55a606640f1cd11912416dd"
     ["scripts/update_geoip_dbs.py"]="7ca3db88709a7ba8aed79b57c1f7aba834a80c57cacd513604ef2a68582513e3"
+    ["scripts/update-installed.sh"]="9e3414b47c41dbc3c9529a7b21800535286057575447253733e4c7e92950260b"
 )
 
 # CLI flags
@@ -4215,6 +4216,7 @@ step5_download_scripts() {
     _deploy_asset "awg_common_en.sh" "$COMMON_SCRIPT_PATH" 700
     _deploy_asset "manage_amneziawg_en.sh" "$MANAGE_SCRIPT_PATH" 700
     _deploy_asset "scripts/update_geoip_dbs.py" "$AWG_DIR/scripts/update_geoip_dbs.py" 755
+    _deploy_asset "scripts/update-installed.sh" "$AWG_DIR/update-installed.sh" 700
 
     log "Step 5 completed."
     update_state 6

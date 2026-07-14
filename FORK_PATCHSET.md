@@ -4,7 +4,7 @@ This repository is a fork of `bivlked/amneziawg-installer`.
 
 Current upstream sync marker is `5.15.3` (`upstream/main` short hash `13203c6`) with selected upstream fixes manually ported on top of the fork; this file is the fork-delta map for future sync work.
 
-Fork releases use `<upstream-sync>-bas.<revision>`. Current fork version is `5.15.3-bas.1`; `bas.N` increments for fork-only releases and resets to `bas.1` when the upstream sync marker changes. The marker does not imply a full upstream merge.
+Fork releases use `<upstream-sync>-bas.<revision>`. Current fork version is `5.15.3-bas.2`; `bas.N` increments for fork-only releases and resets to `bas.1` when the upstream sync marker changes. The marker does not imply a full upstream merge.
 
 ## Runtime Fork Delta
 
