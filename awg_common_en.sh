@@ -792,7 +792,7 @@ awg_dns_servers() {
             echo "${AWG_CUSTOM_DNS:-1.1.1.1}"
             ;;
         *)
-            echo "1.1.1.1"
+            echo "1.1.1.1, 1.0.0.1"
             ;;
     esac
 }
@@ -2192,6 +2192,14 @@ _ensure_server_public_key() {
 # shellcheck disable=SC2154  # AWG_* vars loaded via load_awg_params -> source
 render_server_config() {
     load_awg_params || return 1
+
+    # During --force --port, the init file contains the requested new port
+    # while the live awg0.conf still contains the old one loaded above.
+    local init_port
+    init_port=$(grep -oP '^\s*export AWG_PORT=\K[0-9]+' "$CONFIG_FILE" 2>/dev/null | head -n1)
+    if [[ -n "$init_port" ]] && validate_l4_port "$init_port"; then
+        AWG_PORT="$init_port"
+    fi
 
     local server_privkey
     if [[ -f "$AWG_DIR/server_private.key" ]]; then
