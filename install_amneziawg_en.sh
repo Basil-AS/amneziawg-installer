@@ -9,14 +9,14 @@ fi
 # ==============================================================================
 # AmneziaWG 2.0 installation and configuration script for Ubuntu/Debian servers
 # Author: @bivlked
-# Version: 5.13.0
+# Version: 5.15.3-bas.1
 # Date: 2026-05-13
 # Repository: https://github.com/bivlked/amneziawg-installer
 # ==============================================================================
 
 # --- Safe mode and Constants ---
 set -o pipefail
-SCRIPT_VERSION="5.13.0"
+SCRIPT_VERSION="5.15.3-bas.1"
 
 AWG_DIR="/root/awg"
 INSTALLER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)"
@@ -34,13 +34,13 @@ MANAGE_SCRIPT_PATH="$AWG_DIR/manage_amneziawg.sh"
 # are used first; remote download is allowed only with pinned SHA256 or explicit
 # AWG_ALLOW_UNVERIFIED_DOWNLOAD=1 for development.
 declare -A AWG_ASSET_SHA256=(
-    ["awg_common_en.sh"]="a43c358527cdd32a25d76c251585361dddde9fd3b4e4aaaf5c9878377048e036"
-    ["manage_amneziawg_en.sh"]="18e1dfbe9989f38692883ac992c7f1005f06ec4d41c03a92b682a28f31bf7d80"
-    ["web/server.py"]="7c0a1039e7db38000d8708519e96008abc6da9b8fe8ab6451cad974f4c9a6ebe"
+    ["awg_common_en.sh"]="b019f85638f24692bccce8cdcaedea0bc8c7018da1e0b84b4990d79321718362"
+    ["manage_amneziawg_en.sh"]="30a4cb14632099c39c22e7bf17f851ca303de85c7c0a72f90e8672954eb5ccde"
+    ["web/server.py"]="d68b85cb28c7fdcc8f3354944c2a80a2e22c7a85e3214467f8ac3c3c56b08ab2"
     ["web/index.html"]="7c07ed1d1991e08c0f9fc31e86ed8eb2bba5fa96387088f1f18918396cf7e662"
-    ["web/app.js"]="475b8d95894abc9bdc24cef56c182c4c7b9dbc364c31935bee99351b2e73e7ea"
+    ["web/app.js"]="e8fb5b405f2fff62229d19063f53445c58690e0bbbdb72080949f9df78958f0c"
     ["web/awg_i1.js"]="c97a6ac6c4e4bd7ab24c37c45f451e364414f276441f8da1c0805d26013aaa03"
-    ["web/style.css"]="3c5c79628e640c11c65d2fee85bca228c371dcce98a10f8a24e0c16548843f1c"
+    ["web/style.css"]="c6c728f244b79cdae162df3c5d0eddaea0b0b92951598355e4547f0add9e911a"
     ["web/favicon.svg"]="ae700ecb12dbf01403d0ed25247bac6b70f11201b094ee6c14b774b7fa533859"
     ["web/vendor/tailwindcss.js"]="176e894661aa9cdc9a5cba6c720044cbbf7b8bd80d1c9a142a7c24b1b6c50d15"
     ["web/vendor/apexcharts.min.js"]="a7400cd48b40b4f39d1c15137ae0cc8cbec31dc2b55a606640f1cd11912416dd"

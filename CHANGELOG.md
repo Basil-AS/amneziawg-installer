@@ -12,6 +12,14 @@
 
 ## [Unreleased]
 
+---
+
+## [5.15.3-bas.1] — 2026-07-14
+
+- Введена собственная нумерация форка `<upstream-sync>-bas.<revision>` без переписывания существующей Git-истории.
+- Текущая версия `5.15.3-bas.1` отделяет upstream sync marker `5.15.3` от первой ревизии BAS; историческая fork-база `5.13.0` и выборочный характер upstream-портов остаются явно задокументированы.
+- `SCRIPT_VERSION` синхронизирован в RU/EN installer и manage, версия общей библиотеки — в RU/EN заголовках, каноническое значение хранится в `VERSION`; release workflow отклоняет несовпадающий тег.
+
 ### Selected upstream 5.14.x fixes ported manually
 
 - Вручную перенесены выбранные исправления upstream `5.14.0`–`5.14.3` поверх fork-базы upstream `5.13.0`; это не full merge и не смена fork release line.

@@ -23,6 +23,7 @@
   <a href="https://github.com/bivlked/amneziawg-installer/blob/main/LICENSE"><img src="https://img.shields.io/github/license/bivlked/amneziawg-installer" alt="License"></a>
   <img src="https://img.shields.io/badge/Status-Stable-success" alt="Status">
   <a href="https://github.com/bivlked/amneziawg-installer/releases"><img src="https://img.shields.io/badge/Upstream_Base-5.13.0-blue" alt="Upstream base version"></a>
+  <img src="https://img.shields.io/badge/Fork_Version-5.15.3--bas.1-6f42c1" alt="Fork version 5.15.3-bas.1">
   <img src="https://img.shields.io/badge/Fork_Delta-IPv6_|_P2P_|_Web-0aa" alt="Fork delta">
   <img src="https://img.shields.io/badge/AmneziaWG-2.0-blueviolet" alt="AWG 2.0">
   <a href="https://github.com/bivlked/amneziawg-installer/actions/workflows/shellcheck.yml"><img src="https://github.com/bivlked/amneziawg-installer/actions/workflows/shellcheck.yml/badge.svg" alt="ShellCheck"></a>
@@ -298,6 +299,8 @@ sudo /root/awg/manage_amneziawg.sh dns restart
 
 Этот репозиторий — форк [bivlked/amneziawg-installer](https://github.com/bivlked/amneziawg-installer), а не самостоятельная новая upstream-линейка. База намеренно обозначается как **upstream `v5.13.0`**, чтобы было проще подтягивать изменения из оригинала и видеть, поверх какой версии сделаны доработки.
 
+Собственная версия форка — **`v5.15.3-bas.1`**. Формат `<upstream-sync>-bas.<revision>` сохраняет связь с оригиналом: `5.15.3` — текущий upstream sync marker, а `bas.1` — независимая ревизия этого форка. Это не означает полный merge upstream `v5.15.3`: сохранена база `v5.13.0`, поверх которой выборочно перенесены совместимые изменения до указанного sync marker.
+
 **Главные отличия форка от оригинала:**
 
 * **Полноценный IPv6 для клиентов:** native `/64`, если провайдер/VPS даёт публичную подсеть, или явный `ULA fd.../64 + NAT66` fallback.
@@ -310,9 +313,9 @@ sudo /root/awg/manage_amneziawg.sh dns restart
 * **Автогенерация firewall hooks:** `/root/awg/postup.sh`, `/root/awg/postdown.sh`, `/root/awg/p2p_rules.sh`.
 * **Fork patchset:** версия upstream остаётся `5.13.0`, отличия живут как fork delta поверх неё.
 
-**Важно:** номера оригинального проекта не “перепридумываются” в README. Если в коде форка нужен отдельный маркер, лучше использовать отдельный `FORK_PATCHSET`/`FORK_NAME`, а не занимать будущие версии upstream.
+**Правило версий:** fork-only релизы увеличивают `bas.N` (`5.15.3-bas.2`), а после перехода на новый upstream sync marker нумерация начинается заново (`5.16.0-bas.1`). Старые коммиты и их даты не переписываются; версия указывается только в новых релизных коммитах и тегах.
 
-> Команды установки ниже идут напрямую из этого форка через raw GitHub, без релизов и тегов. Upstream-база по-прежнему `v5.13.0`, а ветка fork patchset — `main`.
+> Команды установки ниже идут напрямую из ветки `main`. Upstream-база по-прежнему `v5.13.0`, текущий sync marker — `v5.15.3`, версия форка — `v5.15.3-bas.1`.
 
 ---
 

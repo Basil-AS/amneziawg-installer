@@ -12,6 +12,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+---
+
+## [5.15.3-bas.1] — 2026-07-14
+
+- Introduced the fork's `<upstream-sync>-bas.<revision>` numbering without rewriting existing Git history.
+- Current version `5.15.3-bas.1` separates upstream sync marker `5.15.3` from the first BAS revision; the historical `5.13.0` fork base and selective nature of upstream ports remain explicit.
+- Synchronized `SCRIPT_VERSION` across RU/EN installer and manage scripts, updated RU/EN common-library headers, and added `VERSION` as the canonical value; the release workflow rejects a mismatched tag.
+
 ### Selected upstream 5.14.x fixes ported manually
 
 - Manually ported selected upstream `5.14.0`-`5.14.3` fixes on top of upstream base `5.13.0`; this is not a full merge and does not move the fork release line.
