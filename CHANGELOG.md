@@ -14,6 +14,17 @@
 
 ---
 
+## [5.15.3-bas.2] — 2026-07-15
+
+- Добавлен server-side safe updater для уже установленных VPS: latest stable Release,
+  SHA-256 verification, строгий allowlist runtime-файлов, preflight/health-check,
+  атомарная замена и автоматический rollback без перезапуска VPN tunnel.
+- Release workflow публикует детерминированный update bundle, checksum и проверяемый
+  standalone updater; README содержит одну команду, выполняемую непосредственно на VPS.
+- Weekly systemd timer доступен только как явный opt-in и не включается установщиком автоматически.
+
+---
+
 ## [5.15.3-bas.1] — 2026-07-14
 
 - Введена собственная нумерация форка `<upstream-sync>-bas.<revision>` без переписывания существующей Git-истории.

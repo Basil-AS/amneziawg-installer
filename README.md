@@ -23,7 +23,7 @@
   <a href="https://github.com/bivlked/amneziawg-installer/blob/main/LICENSE"><img src="https://img.shields.io/github/license/bivlked/amneziawg-installer" alt="License"></a>
   <img src="https://img.shields.io/badge/Status-Stable-success" alt="Status">
   <a href="https://github.com/bivlked/amneziawg-installer/releases"><img src="https://img.shields.io/badge/Upstream_Base-5.13.0-blue" alt="Upstream base version"></a>
-  <img src="https://img.shields.io/badge/Fork_Version-5.15.3--bas.1-6f42c1" alt="Fork version 5.15.3-bas.1">
+  <img src="https://img.shields.io/badge/Fork_Version-5.15.3--bas.2-6f42c1" alt="Fork version 5.15.3-bas.2">
   <img src="https://img.shields.io/badge/Fork_Delta-IPv6_|_P2P_|_Web-0aa" alt="Fork delta">
   <img src="https://img.shields.io/badge/AmneziaWG-2.0-blueviolet" alt="AWG 2.0">
   <a href="https://github.com/bivlked/amneziawg-installer/actions/workflows/shellcheck.yml"><img src="https://github.com/bivlked/amneziawg-installer/actions/workflows/shellcheck.yml/badge.svg" alt="ShellCheck"></a>
@@ -61,6 +61,33 @@
 Это форк `amneziawg-installer` с лёгкой web-panel на Python stdlib, HTTPS, bearer token / `tokens.json`, RBAC/access tokens, IPv6 `routed|ndp|nat66|legacy`, P2P/DNAT, AdGuard Home integration, `vpn://` URI, QR/config integration и диагностикой UDP/voice.
 
 ## 🚀 Быстрый старт
+
+### Обновить уже установленный сервер — одна команда
+
+Запустите **на самом VPN-сервере**:
+
+```bash
+sudo bash -c 'set -euo pipefail; d=$(mktemp -d); base=https://github.com/Basil-AS/amneziawg-installer/releases/latest/download; curl -fsSL --proto "=https" --tlsv1.2 "$base/update-installed.sh" -o "$d/update-installed.sh"; curl -fsSL --proto "=https" --tlsv1.2 "$base/update-installed.sh.sha256" -o "$d/update-installed.sh.sha256"; (cd "$d" && sha256sum -c update-installed.sh.sha256); install -m 700 "$d/update-installed.sh" /root/awg/update-installed.sh; rm -rf "$d"; /root/awg/update-installed.sh'
+```
+
+Команда получает updater из последнего стабильного GitHub Release, проверяет SHA-256 до
+запуска и устанавливает его в `/root/awg/update-installed.sh`. Updater проверяет текущую
+версию, AWG-конфигурацию, tunnel/interface, IPv4/IPv6 forwarding, generated hooks и активные
+web/AdGuard services; скачивает runtime-bundle только после проверки опубликованной SHA-256; создаёт
+root-only rollback snapshot; атомарно обновляет проектные файлы; перезапускает только
+`awg-web`, не прерывая VPN tunnel. Если итоговый health-check не проходит, старые файлы
+восстанавливаются автоматически. Ключи, peers, клиентские конфиги, `tokens.json`, AdGuard
+data и firewall/P2P hooks updater не перезаписывает.
+
+Дополнительные безопасные режимы:
+
+```bash
+sudo /root/awg/update-installed.sh --check       # только версии и health-check
+sudo /root/awg/update-installed.sh --dry-run     # скачать и проверить, ничего не менять
+sudo /root/awg/update-installed.sh --install-timer  # opt-in weekly auto-update
+```
+
+Автообновление намеренно не включается установщиком без явной команды.
 
 ### Безопасная установка по умолчанию
 
@@ -299,7 +326,7 @@ sudo /root/awg/manage_amneziawg.sh dns restart
 
 Этот репозиторий — форк [bivlked/amneziawg-installer](https://github.com/bivlked/amneziawg-installer), а не самостоятельная новая upstream-линейка. База намеренно обозначается как **upstream `v5.13.0`**, чтобы было проще подтягивать изменения из оригинала и видеть, поверх какой версии сделаны доработки.
 
-Собственная версия форка — **`v5.15.3-bas.1`**. Формат `<upstream-sync>-bas.<revision>` сохраняет связь с оригиналом: `5.15.3` — текущий upstream sync marker, а `bas.1` — независимая ревизия этого форка. Это не означает полный merge upstream `v5.15.3`: сохранена база `v5.13.0`, поверх которой выборочно перенесены совместимые изменения до указанного sync marker.
+Собственная версия форка — **`v5.15.3-bas.2`**. Формат `<upstream-sync>-bas.<revision>` сохраняет связь с оригиналом: `5.15.3` — текущий upstream sync marker, а `bas.2` — вторая независимая ревизия этого форка. Это не означает полный merge upstream `v5.15.3`: сохранена база `v5.13.0`, поверх которой выборочно перенесены совместимые изменения до указанного sync marker.
 
 **Главные отличия форка от оригинала:**
 
@@ -315,7 +342,7 @@ sudo /root/awg/manage_amneziawg.sh dns restart
 
 **Правило версий:** fork-only релизы увеличивают `bas.N` (`5.15.3-bas.2`), а после перехода на новый upstream sync marker нумерация начинается заново (`5.16.0-bas.1`). Старые коммиты и их даты не переписываются; версия указывается только в новых релизных коммитах и тегах.
 
-> Команды установки ниже идут напрямую из ветки `main`. Upstream-база по-прежнему `v5.13.0`, текущий sync marker — `v5.15.3`, версия форка — `v5.15.3-bas.1`.
+> Команды установки ниже идут напрямую из ветки `main`. Upstream-база по-прежнему `v5.13.0`, текущий sync marker — `v5.15.3`, версия форка — `v5.15.3-bas.2`.
 
 ---
 

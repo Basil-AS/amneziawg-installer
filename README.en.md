@@ -23,7 +23,7 @@
   <a href="https://github.com/bivlked/amneziawg-installer/blob/main/LICENSE"><img src="https://img.shields.io/github/license/bivlked/amneziawg-installer" alt="License"></a>
   <img src="https://img.shields.io/badge/Status-Stable-success" alt="Status">
   <a href="https://github.com/bivlked/amneziawg-installer/releases"><img src="https://img.shields.io/badge/Upstream_Base-5.13.0-blue" alt="Upstream base version"></a>
-  <img src="https://img.shields.io/badge/Fork_Version-5.15.3--bas.1-6f42c1" alt="Fork version 5.15.3-bas.1">
+  <img src="https://img.shields.io/badge/Fork_Version-5.15.3--bas.2-6f42c1" alt="Fork version 5.15.3-bas.2">
   <img src="https://img.shields.io/badge/Fork_Delta-IPv6_|_P2P_|_Web-0aa" alt="Fork delta">
   <img src="https://img.shields.io/badge/AmneziaWG-2.0-blueviolet" alt="AWG 2.0">
   <a href="https://github.com/bivlked/amneziawg-installer/actions/workflows/shellcheck.yml"><img src="https://github.com/bivlked/amneziawg-installer/actions/workflows/shellcheck.yml/badge.svg" alt="ShellCheck"></a>
@@ -61,6 +61,33 @@
 This is an `amneziawg-installer` fork with a lightweight Python stdlib web panel, HTTPS, bearer token / `tokens.json`, RBAC access tokens, IPv6 `routed|ndp|nat66|legacy`, P2P/DNAT, AdGuard Home integration, `vpn://` URIs, QR/config integration, and UDP/voice diagnostics.
 
 ## 🚀 Quick Start
+
+### Update an existing server — one command
+
+Run this **on the VPN server itself**:
+
+```bash
+sudo bash -c 'set -euo pipefail; d=$(mktemp -d); base=https://github.com/Basil-AS/amneziawg-installer/releases/latest/download; curl -fsSL --proto "=https" --tlsv1.2 "$base/update-installed.sh" -o "$d/update-installed.sh"; curl -fsSL --proto "=https" --tlsv1.2 "$base/update-installed.sh.sha256" -o "$d/update-installed.sh.sha256"; (cd "$d" && sha256sum -c update-installed.sh.sha256); install -m 700 "$d/update-installed.sh" /root/awg/update-installed.sh; rm -rf "$d"; /root/awg/update-installed.sh'
+```
+
+The command fetches the updater from the latest stable GitHub Release, verifies its SHA-256
+before execution, and installs it as `/root/awg/update-installed.sh`. The updater checks the
+installed version, AWG config, tunnel/interface, IPv4/IPv6 forwarding, generated hooks, and
+active web/AdGuard services; downloads a release-checksummed runtime bundle; creates a
+root-only rollback snapshot; atomically replaces project files; and restarts only `awg-web`,
+without interrupting the VPN tunnel. A failed post-update health check restores the previous
+files automatically. Keys, peers, client configs, `tokens.json`, AdGuard data, and generated
+firewall/P2P hooks are never overwritten.
+
+Additional safe modes:
+
+```bash
+sudo /root/awg/update-installed.sh --check
+sudo /root/awg/update-installed.sh --dry-run
+sudo /root/awg/update-installed.sh --install-timer  # opt-in weekly auto-update
+```
+
+Automatic updates are intentionally not enabled by the installer without an explicit command.
 
 ### Safe default installation
 
@@ -325,7 +352,7 @@ sudo /root/awg/manage_amneziawg.sh dns restart
 
 This repository is a fork of [bivlked/amneziawg-installer](https://github.com/bivlked/amneziawg-installer), not a separate upstream release line. The base is intentionally documented as **upstream `v5.13.0`** so future upstream changes can be pulled in more easily and the fork delta stays obvious.
 
-The fork's own version is **`v5.15.3-bas.1`**. The `<upstream-sync>-bas.<revision>` format preserves the relationship to the original: `5.15.3` is the current upstream sync marker and `bas.1` is this fork's independent revision. It does not claim a full merge of upstream `v5.15.3`: the fork keeps its `v5.13.0` base and selectively ports compatible changes through that sync marker.
+The fork's own version is **`v5.15.3-bas.2`**. The `<upstream-sync>-bas.<revision>` format preserves the relationship to the original: `5.15.3` is the current upstream sync marker and `bas.2` is this fork's second independent revision. It does not claim a full merge of upstream `v5.15.3`: the fork keeps its `v5.13.0` base and selectively ports compatible changes through that sync marker.
 
 **Main differences from the original:**
 
@@ -341,7 +368,7 @@ The fork's own version is **`v5.15.3-bas.1`**. The `<upstream-sync>-bas.<revisio
 
 **Version rule:** fork-only releases increment `bas.N` (`5.15.3-bas.2`); after moving to a new upstream sync marker the counter starts again (`5.16.0-bas.1`). Existing commits and dates are never rewritten; only new release commits and tags carry the fork version.
 
-> Installation commands below pull directly from `main`. The upstream base remains `v5.13.0`, the current sync marker is `v5.15.3`, and the fork version is `v5.15.3-bas.1`.
+> Installation commands below pull directly from `main`. The upstream base remains `v5.13.0`, the current sync marker is `v5.15.3`, and the fork version is `v5.15.3-bas.2`.
 
 ---
 

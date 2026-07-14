@@ -14,6 +14,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [5.15.3-bas.2] — 2026-07-15
+
+- Added a server-side safe updater for existing VPS installations: latest stable Release,
+  SHA-256 verification, a strict runtime-file allowlist, preflight/health checks, atomic
+  replacement, and automatic rollback without restarting the VPN tunnel.
+- The release workflow now publishes a deterministic update bundle, checksum, and verified
+  standalone updater; the README provides one command to run directly on the VPS.
+- The weekly systemd timer is explicit opt-in and is never enabled automatically by the installer.
+
+---
+
 ## [5.15.3-bas.1] — 2026-07-14
 
 - Introduced the fork's `<upstream-sync>-bas.<revision>` numbering without rewriting existing Git history.
