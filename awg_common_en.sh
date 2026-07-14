@@ -1187,6 +1187,9 @@ FULLCONE="${AWG_FULLCONE_NAT:-0}"
 IPV6_ENABLED="${AWG_IPV6_ENABLED:-0}"
 IPV6_MODE="$(normalize_awg_ipv6_mode "${AWG_IPV6_MODE:-legacy}" 2>/dev/null || echo legacy)"
 IPV6_SUBNET="${AWG_IPV6_SUBNET:-}"
+AWG_MTU="${AWG_MTU:-1280}"
+MSS4="$(( ${AWG_MTU:-1280} - 40 ))"
+MSS6="$(( ${AWG_MTU:-1280} - 60 ))"
 P2P_RULES="${p2p}"
 SERVER_CONF_FILE="${SERVER_CONF_FILE:-/etc/amnezia/amneziawg/awg0.conf}"
 
@@ -1211,11 +1214,15 @@ fi
 
 ipt_ins FORWARD -i "\$AWG_IFACE" -j ACCEPT
 ipt_ins FORWARD -o "\$AWG_IFACE" -m state --state RELATED,ESTABLISHED -j ACCEPT
+ipt_add mangle FORWARD -o "\$AWG_IFACE" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss "\$MSS4"
+ipt_add mangle FORWARD -i "\$AWG_IFACE" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss "\$MSS4"
 
 if [[ "\$IPV6_ENABLED" == "1" ]]; then
     ip6t_ins FORWARD -i "\$AWG_IFACE" -j ACCEPT
     ip6t_ins FORWARD -o "\$AWG_IFACE" -m state --state RELATED,ESTABLISHED -j ACCEPT
     ip6t_ins FORWARD -i "\$NIC" -o "\$AWG_IFACE" -m state --state RELATED,ESTABLISHED -j ACCEPT
+    ip6t_add mangle FORWARD -o "\$AWG_IFACE" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss "\$MSS6"
+    ip6t_add mangle FORWARD -i "\$AWG_IFACE" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss "\$MSS6"
     if [[ "\$IPV6_MODE" == "ula" && -n "\$IPV6_SUBNET" ]]; then
         ip6t_add nat POSTROUTING -s "\$IPV6_SUBNET" -o "\$NIC" -j MASQUERADE
     fi
@@ -1246,12 +1253,17 @@ AWG_IFACE="\${AWG_IFACE:-awg0}"
 IPV6_ENABLED="${AWG_IPV6_ENABLED:-0}"
 IPV6_MODE="$(normalize_awg_ipv6_mode "${AWG_IPV6_MODE:-legacy}" 2>/dev/null || echo legacy)"
 IPV6_SUBNET="${AWG_IPV6_SUBNET:-}"
+AWG_MTU="${AWG_MTU:-1280}"
+MSS4="$(( ${AWG_MTU:-1280} - 40 ))"
+MSS6="$(( ${AWG_MTU:-1280} - 60 ))"
 P2P_RULES="${p2p}"
 SERVER_CONF_FILE="${SERVER_CONF_FILE:-/etc/amnezia/amneziawg/awg0.conf}"
 
 del_ipt_nat() { local chain="\$1"; shift; while iptables -t nat -C "\$chain" "\$@" 2>/dev/null; do iptables -t nat -D "\$chain" "\$@"; done; }
+del_ipt_table() { local table="\$1" chain="\$2"; shift 2; while iptables -t "\$table" -C "\$chain" "\$@" 2>/dev/null; do iptables -t "\$table" -D "\$chain" "\$@"; done; }
 del_ipt() { local chain="\$1"; shift; while iptables -C "\$chain" "\$@" 2>/dev/null; do iptables -D "\$chain" "\$@"; done; }
 del_ip6t_nat() { local chain="\$1"; shift; while ip6tables -t nat -C "\$chain" "\$@" 2>/dev/null; do ip6tables -t nat -D "\$chain" "\$@"; done; }
+del_ip6t_table() { local table="\$1" chain="\$2"; shift 2; while ip6tables -t "\$table" -C "\$chain" "\$@" 2>/dev/null; do ip6tables -t "\$table" -D "\$chain" "\$@"; done; }
 del_ip6t() { local chain="\$1"; shift; while ip6tables -C "\$chain" "\$@" 2>/dev/null; do ip6tables -D "\$chain" "\$@"; done; }
 ndp_peer_ipv6_routes() {
     [[ -f "\$SERVER_CONF_FILE" ]] || return 0
@@ -1265,6 +1277,8 @@ del_ipt_nat POSTROUTING -o "\$NIC" -j FULLCONENAT
 del_ipt_nat POSTROUTING -o "\$NIC" -j MASQUERADE
 del_ipt FORWARD -i "\$AWG_IFACE" -j ACCEPT
 del_ipt FORWARD -o "\$AWG_IFACE" -m state --state RELATED,ESTABLISHED -j ACCEPT
+del_ipt_table mangle FORWARD -o "\$AWG_IFACE" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss "\$MSS4"
+del_ipt_table mangle FORWARD -i "\$AWG_IFACE" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss "\$MSS4"
 
 if [[ "\$IPV6_ENABLED" == "1" ]]; then
     if [[ "\$IPV6_MODE" == "ndp" ]]; then
@@ -1277,6 +1291,8 @@ if [[ "\$IPV6_ENABLED" == "1" ]]; then
     del_ip6t FORWARD -i "\$AWG_IFACE" -j ACCEPT
     del_ip6t FORWARD -o "\$AWG_IFACE" -m state --state RELATED,ESTABLISHED -j ACCEPT
     del_ip6t FORWARD -i "\$NIC" -o "\$AWG_IFACE" -m state --state RELATED,ESTABLISHED -j ACCEPT
+    del_ip6t_table mangle FORWARD -o "\$AWG_IFACE" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss "\$MSS6"
+    del_ip6t_table mangle FORWARD -i "\$AWG_IFACE" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss "\$MSS6"
     del_ip6t FORWARD -i "\$NIC" -o "\$AWG_IFACE" -m state --state NEW -j DROP
     if [[ "\$IPV6_MODE" == "ula" && -n "\$IPV6_SUBNET" ]]; then
         del_ip6t_nat POSTROUTING -s "\$IPV6_SUBNET" -o "\$NIC" -j MASQUERADE
