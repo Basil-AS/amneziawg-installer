@@ -41,6 +41,26 @@ NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 TOKEN_HASH_RE = re.compile(r"^[0-9a-f]{64}$")
 RAW_IMPORT_TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{32,256}$")
 I1_RE = re.compile(r"^[<>a-fA-F0-9xbr\s]+$")
+PROJECT_VERSION_RE = re.compile(r"^[0-9A-Za-z][0-9A-Za-z.+-]{0,63}$")
+
+
+def load_project_version():
+    """Return the deployed fork version without hard-coding it in the panel."""
+    configured = os.environ.get("AWG_PROJECT_VERSION", "").strip()
+    if PROJECT_VERSION_RE.fullmatch(configured):
+        return configured
+    candidates = (AWG_DIR / "VERSION", Path(__file__).resolve().parent.parent / "VERSION")
+    for candidate in candidates:
+        try:
+            value = candidate.read_text(encoding="utf-8").strip()
+        except OSError:
+            continue
+        if PROJECT_VERSION_RE.fullmatch(value):
+            return value
+    return "unknown"
+
+
+PROJECT_VERSION = load_project_version()
 STATIC_FILES = {
     "/": ("index.html", "text/html; charset=utf-8"),
     "/index.html": ("index.html", "text/html; charset=utf-8"),
@@ -6720,7 +6740,7 @@ class Handler(SimpleHTTPRequestHandler):
             self.send_json({
                 "service": active,
                 "clients": len(self.visible_peers(auth)),
-                "version": "5.13.0",
+                "version": PROJECT_VERSION,
                 "fork": "fork delta/patchset",
                 "role": "super" if self.is_super(auth) else "user",
                 "server_name": cfg["AWG_SERVER_NAME"],
