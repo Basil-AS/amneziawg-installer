@@ -34,7 +34,7 @@ MANAGE_SCRIPT_PATH="$AWG_DIR/manage_amneziawg.sh"
 # используются первыми; remote download разрешён только с pinned SHA256 либо
 # при явном AWG_ALLOW_UNVERIFIED_DOWNLOAD=1 для разработки.
 declare -A AWG_ASSET_SHA256=(
-    ["awg_common.sh"]="aca123fba67a19b9029f23cc30f15ac85ce4b60ad60fba0454848a5b39d96d19"
+    ["awg_common.sh"]="3d717c0e9cc7cb4ab55eb8db1fd4d6b84e82d97a6d95e64df935798511c6852d"
     ["manage_amneziawg.sh"]="7cda1f1663f2ef27822eb68106ca7c0c8ba9ed30ecd22534f5a9120a89a017a1"
     ["web/server.py"]="ded41254337d2a9365a7d343f5fae55bd623bc1665a8f8eadf310bbacf2ad147"
     ["web/index.html"]="7c07ed1d1991e08c0f9fc31e86ed8eb2bba5fa96387088f1f18918396cf7e662"
@@ -336,7 +336,7 @@ show_help() {
   --diagnostic          Создать диагностический отчет и выйти
   -v, --verbose         Расширенный вывод для отладки (включая DEBUG)
   --no-color            Отключить цветной вывод в терминале
-  --port=НОМЕР          Установить UDP порт (1024-65535) неинтерактивно
+  --port=НОМЕР          Установить UDP порт (1-65535) неинтерактивно
   --subnet=ПОДСЕТЬ      Установить подсеть туннеля (x.x.x.x/yy) неинтерактивно
   --allow-ipv6          Оставить IPv6 включенным неинтерактивно
   --disallow-ipv6       Принудительно отключить IPv6 неинтерактивно
@@ -3082,7 +3082,7 @@ initialize_setup() {
     if [[ "$CLI_NO_TWEAKS" -eq 1 ]]; then NO_TWEAKS=1; fi
 
     # Валидация после CLI override
-    validate_port_user "$AWG_PORT"
+    validate_port_system "$AWG_PORT" || die "Некорректный VPN порт: '$AWG_PORT'. Допустимый диапазон: 1-65535."
     validate_subnet "$AWG_TUNNEL_SUBNET"
     validate_port_user "$AWG_P2P_BASE_PORT"
     if [[ "$AWG_P2P_BASE_PORT" -gt 64511 ]]; then
@@ -3127,10 +3127,10 @@ initialize_setup() {
         prompt_endpoint
         prompt_awg_preset
         if [[ "$AUTO_YES" -eq 0 ]]; then
-            read -rp "Введите UDP порт AmneziaWG (1024-65535) [${AWG_PORT}]: " input_port < /dev/tty
+            read -rp "Введите UDP порт AmneziaWG (1-65535) [${AWG_PORT}]: " input_port < /dev/tty
             if [[ -n "$input_port" ]]; then AWG_PORT=$input_port; fi
         fi
-        validate_port_user "$AWG_PORT"
+        validate_port_system "$AWG_PORT" || die "Некорректный VPN порт: '$AWG_PORT'. Допустимый диапазон: 1-65535."
         if [[ "$AUTO_YES" -eq 0 ]]; then
             read -rp "Введите подсеть туннеля [${AWG_TUNNEL_SUBNET}]: " input_subnet < /dev/tty
             if [[ -n "$input_subnet" ]]; then AWG_TUNNEL_SUBNET=$input_subnet; fi
@@ -3174,7 +3174,7 @@ initialize_setup() {
     if [[ -z "$ALLOWED_IPS" ]]; then configure_routing_mode; fi
     configure_ipv6_client_mode
 
-    validate_port_user "$AWG_PORT"
+    validate_port_system "$AWG_PORT" || die "Некорректный VPN порт: '$AWG_PORT'. Допустимый диапазон: 1-65535."
     validate_subnet "$AWG_TUNNEL_SUBNET"
     validate_port_user "$AWG_P2P_BASE_PORT"
     if [[ "$AWG_P2P_BASE_PORT" -gt 64511 ]]; then
