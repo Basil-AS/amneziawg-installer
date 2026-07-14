@@ -36,7 +36,7 @@ MANAGE_SCRIPT_PATH="$AWG_DIR/manage_amneziawg.sh"
 declare -A AWG_ASSET_SHA256=(
     ["awg_common_en.sh"]="a6fd562991d5ffed990b8a95b517c27c6399cdca82bb73032346b579d1d3d64f"
     ["manage_amneziawg_en.sh"]="30a4cb14632099c39c22e7bf17f851ca303de85c7c0a72f90e8672954eb5ccde"
-    ["web/server.py"]="d68b85cb28c7fdcc8f3354944c2a80a2e22c7a85e3214467f8ac3c3c56b08ab2"
+    ["web/server.py"]="ded41254337d2a9365a7d343f5fae55bd623bc1665a8f8eadf310bbacf2ad147"
     ["web/index.html"]="7c07ed1d1991e08c0f9fc31e86ed8eb2bba5fa96387088f1f18918396cf7e662"
     ["web/app.js"]="e8fb5b405f2fff62229d19063f53445c58690e0bbbdb72080949f9df78958f0c"
     ["web/awg_i1.js"]="c97a6ac6c4e4bd7ab24c37c45f451e364414f276441f8da1c0805d26013aaa03"
@@ -5051,6 +5051,7 @@ EOF
         systemd_env_line AWG_WEB_PORT "${AWG_WEB_PORT:-}"
         systemd_env_line AWG_WEB_DOMAIN "${AWG_WEB_DOMAIN:-}"
         systemd_env_line AWG_ENDPOINT "${AWG_ENDPOINT:-}"
+        systemd_env_line AWG_PROJECT_VERSION "$SCRIPT_VERSION"
         cat <<EOF
 ExecStart=/usr/bin/python3 ${web_server_unit}
 Restart=on-failure

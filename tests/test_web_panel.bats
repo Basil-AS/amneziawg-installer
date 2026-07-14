@@ -8,6 +8,31 @@ bats_require_minimum_version 1.5.0
     python3 -m py_compile "$BATS_TEST_DIRNAME/../web/server.py"
 }
 
+@test "web panel reads the fork version from env or repository VERSION" {
+    command -v python3 &>/dev/null || skip "python3 not available"
+    REPO_ROOT="$BATS_TEST_DIRNAME/.." python3 - <<'PY'
+import importlib.util
+import os
+from pathlib import Path
+
+root = Path(os.environ["REPO_ROOT"])
+spec = importlib.util.spec_from_file_location("panel_version", root / "web" / "server.py")
+server = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(server)
+assert server.PROJECT_VERSION == (root / "VERSION").read_text(encoding="utf-8").strip()
+
+os.environ["AWG_PROJECT_VERSION"] = "5.19.1-bas.2"
+assert server.load_project_version() == "5.19.1-bas.2"
+os.environ["AWG_PROJECT_VERSION"] = "invalid version with spaces"
+assert server.load_project_version() == (root / "VERSION").read_text(encoding="utf-8").strip()
+PY
+    grep -qF 'systemd_env_line AWG_PROJECT_VERSION "$SCRIPT_VERSION"' "$BATS_TEST_DIRNAME/../install_amneziawg.sh"
+    grep -qF 'systemd_env_line AWG_PROJECT_VERSION "$SCRIPT_VERSION"' "$BATS_TEST_DIRNAME/../install_amneziawg_en.sh"
+    if grep -qF '"version": "5.13.0"' "$BATS_TEST_DIRNAME/../web/server.py"; then
+        fail "web status must not hard-code the obsolete upstream version"
+    fi
+}
+
 @test "installer deploys awg-web.service and token store" {
     grep -qF 'awg-web.service' "$BATS_TEST_DIRNAME/../install_amneziawg.sh"
     grep -qF 'tokens.json' "$BATS_TEST_DIRNAME/../install_amneziawg.sh"
