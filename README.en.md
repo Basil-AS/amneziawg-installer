@@ -23,7 +23,7 @@
   <a href="https://github.com/bivlked/amneziawg-installer/blob/main/LICENSE"><img src="https://img.shields.io/github/license/bivlked/amneziawg-installer" alt="License"></a>
   <img src="https://img.shields.io/badge/Status-Stable-success" alt="Status">
   <a href="https://github.com/bivlked/amneziawg-installer/releases"><img src="https://img.shields.io/badge/Upstream_Base-5.13.0-blue" alt="Upstream base version"></a>
-  <img src="https://img.shields.io/badge/Fork_Version-5.19.2--bas.1-6f42c1" alt="Fork version 5.19.2-bas.1">
+  <img src="https://img.shields.io/badge/Fork_Version-5.19.2--bas.2-6f42c1" alt="Fork version 5.19.2-bas.2">
   <img src="https://img.shields.io/badge/Fork_Delta-IPv6_|_P2P_|_Web-0aa" alt="Fork delta">
   <img src="https://img.shields.io/badge/AmneziaWG-2.0-blueviolet" alt="AWG 2.0">
   <a href="https://github.com/bivlked/amneziawg-installer/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="License"></a>
@@ -408,7 +408,7 @@ sudo /root/awg/manage_amneziawg.sh dns restart
 
 This repository is a fork of [bivlked/amneziawg-installer](https://github.com/bivlked/amneziawg-installer), not a separate upstream release line. The base is intentionally documented as **upstream `v5.13.0`** so future upstream changes can be pulled in more easily and the fork delta stays obvious.
 
-The fork's own version is **`v5.19.2-bas.1`**. The `<upstream-sync>-bas.<revision>` format preserves the relationship to the original: `5.19.2` is the current complete upstream sync marker and `bas.1` is the first fork revision after synchronization. Existing commits and dates are never rewritten.
+The fork's own version is **`v5.19.2-bas.2`**. The `<upstream-sync>-bas.<revision>` format preserves the relationship to the original: `5.19.2` is the current complete upstream sync marker and `bas.2` is the next fork revision after synchronization. Existing commits and dates are never rewritten.
 
 **Main differences from the original:**
 
@@ -422,9 +422,9 @@ The fork's own version is **`v5.19.2-bas.1`**. The `<upstream-sync>-bas.<revisio
 * **Generated firewall hooks:** `/root/awg/postup.sh`, `/root/awg/postdown.sh`, `/root/awg/p2p_rules.sh`.
 * **Fork patchset:** upstream version stays `5.13.0`; fork changes are documented as delta on top.
 
-**Version rule:** fork-only releases increment `bas.N` (`5.19.2-bas.1`); after moving to a new upstream sync marker the counter starts again. Existing commits and dates are never rewritten; only new release commits and tags carry the fork version.
+**Version rule:** fork-only releases increment `bas.N` (`5.19.2-bas.2`); after moving to a new upstream sync marker the counter starts again. Existing commits and dates are never rewritten; only new release commits and tags carry the fork version.
 
-> Installation commands below pull directly from `main`. The current upstream sync marker is `v5.19.2`, and the fork version is `v5.19.2-bas.1`.
+> Installation commands below pull directly from `main`. The current upstream sync marker is `v5.19.2`, and the fork version is `v5.19.2-bas.2`.
 
 ---
 
