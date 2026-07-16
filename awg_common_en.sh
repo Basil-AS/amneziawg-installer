@@ -156,7 +156,8 @@ _cidr_bounds() {
     local cidr="$1" addr prefix ip mask net bcast
     addr="${cidr%/*}"; prefix="${cidr##*/}"
     _valid_ipv4 "$addr" || return 1
-    [[ "$prefix" =~ ^[0-9]+$ && 10#$prefix -le 32 ]] || return 1
+    [[ "$prefix" =~ ^[0-9]+$ ]] || return 1
+    (( 10#$prefix <= 32 )) || return 1
     ip=$(_ipv4_to_int "$addr")
     if ((10#$prefix == 0)); then mask=0; else mask=$(( (0xFFFFFFFF << (32 - 10#$prefix)) & 0xFFFFFFFF )); fi
     net=$((ip & mask)); bcast=$((net | ((~mask) & 0xFFFFFFFF)))
