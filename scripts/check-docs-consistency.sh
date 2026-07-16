@@ -163,19 +163,20 @@ if [[ "$changelog_fail" -eq 0 ]]; then _ok "CHANGELOG headings/refs соглас
 # --- 3. Version triple: badge == SCRIPT_VERSION == верхний changelog heading ---
 ver_fail=0
 script_ver="$(awk -F'"' '/^SCRIPT_VERSION=/{print $2; exit}' install_amneziawg.sh)"
+script_base="${script_ver%%-*}"
 # Верхний non-Unreleased heading в каждом changelog.
 top_ru="$(grep -oP '^##\s+\[\K[0-9]+\.[0-9]+\.[0-9]+' CHANGELOG.md | head -n1)"
 top_en="$(grep -oP '^##\s+\[\K[0-9]+\.[0-9]+\.[0-9]+' CHANGELOG.en.md | head -n1)"
 for pair in "README.md:$script_ver" "README.en.md:$script_ver"; do
     rf="${pair%%:*}"; expect="${pair##*:}"
     badge="$(grep -oP 'Installer_Version-\K[0-9]+\.[0-9]+\.[0-9]+' "$rf" | head -n1)"
-    if [[ "$badge" != "$expect" ]]; then
-        echo "  $rf badge='$badge' != SCRIPT_VERSION='$expect'" >&2
+    if [[ "$badge" != "$script_base" ]]; then
+        echo "  $rf badge='$badge' != SCRIPT_VERSION base='$script_base'" >&2
         ver_fail=1
     fi
 done
-if [[ "$top_ru" != "$script_ver" ]]; then echo "  CHANGELOG.md top heading '$top_ru' != SCRIPT_VERSION '$script_ver'" >&2; ver_fail=1; fi
-if [[ "$top_en" != "$script_ver" ]]; then echo "  CHANGELOG.en.md top heading '$top_en' != SCRIPT_VERSION '$script_ver'" >&2; ver_fail=1; fi
+if [[ "$top_ru" != "$script_base" ]]; then echo "  CHANGELOG.md top heading '$top_ru' != SCRIPT_VERSION base '$script_base'" >&2; ver_fail=1; fi
+if [[ "$top_en" != "$script_base" ]]; then echo "  CHANGELOG.en.md top heading '$top_en' != SCRIPT_VERSION base '$script_base'" >&2; ver_fail=1; fi
 if [[ "$ver_fail" -eq 0 ]]; then _ok "version triple согласован ($script_ver)"; else _bad "version triple рассинхрон"; fi
 
 # --- 4. Матрица ОС + архитектур: полный набор во всех заявленных местах ---
@@ -250,7 +251,7 @@ for f in "${URL_DOCS[@]}"; do
     [[ -f "$f" ]] || continue
     while IFS= read -r tag; do
         [[ -z "$tag" ]] && continue
-        if [[ "$tag" != "$script_ver" ]]; then
+        if [[ "$tag" != "$script_base" ]]; then
             echo "  $f: pinned raw-URL тег v$tag != SCRIPT_VERSION v$script_ver" >&2
             url_fail=1
         fi

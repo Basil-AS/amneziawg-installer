@@ -173,6 +173,7 @@ Defines which traffic the **client** routes through the VPN tunnel.
 
 **AllowedIPs Calculator:** [WireGuard AllowedIPs Calculator](https://www.procustodibus.com/blog/2021/03/wireguard-allowedips-calculator/).
 
+<a id="ipv6-tunnel-adv"></a>
 ### IPv6 and leak protection
 
 Full-tunnel mode must handle IPv6 explicitly. When the server has routed/NDP/NAT66 IPv6, clients receive an IPv6 address and `AllowedIPs` includes `::/0`, so websites see the VPN server IPv6. When no working IPv6 route is available, use `--ipv6-mode=block`: the installer adds `::/0` as a leak-block route without assigning a client IPv6 address, so native mobile-carrier IPv6 should not silently bypass the VPN.

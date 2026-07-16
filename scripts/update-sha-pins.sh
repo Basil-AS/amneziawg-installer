@@ -3,7 +3,7 @@
 #
 # Установщики (install_amneziawg.sh / install_amneziawg_en.sh) скачивают
 # awg_common*.sh и manage_amneziawg*.sh по сети и проверяют их sha256sum
-# против захардкоженных пинов COMMON_SCRIPT_SHA256 / MANAGE_SCRIPT_SHA256.
+# против захардкоженных пинов в ассоциативной карте AWG_ASSET_SHA256.
 # При каждом релизе эти 4 пина (2 RU + 2 EN) надо пересчитывать строго после
 # финализации helper-скриптов, иначе secure-download откажет в установке.
 #
@@ -11,11 +11,8 @@
 #   bash scripts/update-sha-pins.sh            # пересчитать и записать 4 пина
 #   bash scripts/update-sha-pins.sh --verify   # только проверить, exit!=0 при рассинхроне
 #
-# Карта пинов:
-#   install_amneziawg.sh     COMMON  <- awg_common.sh
-#   install_amneziawg.sh     MANAGE  <- manage_amneziawg.sh
-#   install_amneziawg_en.sh  COMMON  <- awg_common_en.sh
-#   install_amneziawg_en.sh  MANAGE  <- manage_amneziawg_en.sh
+# Карта пинов в fork-формате AWG_ASSET_SHA256:
+#   installer | asset key | helper-файл
 #
 # Идемпотентно: повторный запуск без изменений helper-скриптов ничего не пишет.
 # Запись атомарна (temp + mv). Меняется только 64-символьное hex-значение пина.
@@ -37,10 +34,10 @@ fi
 # Пары: installer | имя пина | helper-файл
 # Порядок полей разделён через '|'.
 PIN_MAP=(
-    "install_amneziawg.sh|COMMON_SCRIPT_SHA256|awg_common.sh"
-    "install_amneziawg.sh|MANAGE_SCRIPT_SHA256|manage_amneziawg.sh"
-    "install_amneziawg_en.sh|COMMON_SCRIPT_SHA256|awg_common_en.sh"
-    "install_amneziawg_en.sh|MANAGE_SCRIPT_SHA256|manage_amneziawg_en.sh"
+    "install_amneziawg.sh|awg_common.sh|awg_common.sh"
+    "install_amneziawg.sh|manage_amneziawg.sh|manage_amneziawg.sh"
+    "install_amneziawg_en.sh|awg_common_en.sh|awg_common_en.sh"
+    "install_amneziawg_en.sh|manage_amneziawg_en.sh|manage_amneziawg_en.sh"
 )
 
 # Вычислить sha256 файла (только hex, без имени).
@@ -51,7 +48,7 @@ _sha256() {
 # Прочитать текущий пин из установщика (первое совпадение).
 _read_pin() {
     local installer="$1" pin_name="$2"
-    grep -oP "${pin_name}=\"\\K[0-9a-f]{64}" "$REPO_ROOT/$installer" | head -n1
+    grep -oP "\\[\"${pin_name}\"\\]=\"\\K[0-9a-f]{64}" "$REPO_ROOT/$installer" | head -n1
 }
 
 # Записать новый пин в установщик атомарно. Меняется только hex-значение
@@ -62,7 +59,7 @@ _write_pin() {
     local tmp
     tmp="$(mktemp "${src}.XXXXXX")" || return 1
     # Заменяем только значение в кавычках для конкретного пина.
-    sed -E "s|^(${pin_name}=\")[0-9a-f]{64}(\")|\\1${new_hash}\\2|" "$src" > "$tmp" || { rm -f "$tmp"; return 1; }
+    sed -E "s|^([[:space:]]*\\[\"${pin_name}\"\]=\")[0-9a-f]{64}(\")|\\1${new_hash}\\2|" "$src" > "$tmp" || { rm -f "$tmp"; return 1; }
     # mktemp создаёт файл 0600: без выравнивания прав mv молча заменил бы
     # installer на 0600 (git mode не меняется, diff-сигнала нет).
     chmod --reference="$src" "$tmp" 2>/dev/null || chmod 644 "$tmp"

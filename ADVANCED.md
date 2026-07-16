@@ -171,6 +171,7 @@ sudo bash install_amneziawg.sh --jc=2 --jmin=20 --jmax=60 --yes --route-amnezia
 
 **Калькулятор AllowedIPs:** [WireGuard AllowedIPs Calculator](https://www.procustodibus.com/blog/2021/03/wireguard-allowedips-calculator/).
 
+<a id="ipv6-tunnel-adv"></a>
 ### IPv6 и leak protection
 
 В full-tunnel режиме IPv6 должен быть обработан явно. Если сервер имеет routed/NDP/NAT66 IPv6, клиент получает IPv6 address и `AllowedIPs` включает `::/0`, поэтому сайты видят IPv6 VPN-сервера. Если рабочей IPv6 маршрутизации нет, используйте `--ipv6-mode=block`: installer добавит `::/0` как leak-block маршрут без выдачи клиентского IPv6 адреса, чтобы native IPv6 мобильного оператора не обходил VPN молча.

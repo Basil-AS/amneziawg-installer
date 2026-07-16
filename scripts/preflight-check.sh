@@ -185,7 +185,7 @@ fi
 # --- 7. SCRIPT_VERSION consistency ---
 ref_ver=$(awk -F'"' '/^SCRIPT_VERSION=/{print $2; exit}' install_amneziawg.sh)
 ver_fail=0
-if [[ ! "$ref_ver" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+if [[ ! "$ref_ver" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.]+)?$ ]]; then
     echo "install_amneziawg.sh SCRIPT_VERSION='$ref_ver' not semver" >&2
     ver_fail=1
 fi

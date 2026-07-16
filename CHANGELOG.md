@@ -12,6 +12,10 @@
 
 ## [Unreleased]
 
+## [5.19.2-bas.1] - 2026-07-16
+
+**Fork sync** — complete upstream `v5.19.2` history merged without rewriting existing fork commits or dates. Fork runtime remains opt-in for new features and preserves the BAS fork delta, including the multi-server subnet migrator.
+
 ## [5.19.2] - 2026-07-15
 
 **v5.19.2** - уборка старого правила UFW при смене порта (вклад @ekuraev), перегенерация конфигов после прерванной установки и честный exit-код repair-module.
@@ -1577,6 +1581,9 @@ Hardening-фиксы надёжности и безопасности по ре�
 - Полная деинсталляция (`--uninstall`).
 
 [Unreleased]: https://github.com/bivlked/amneziawg-installer/compare/v5.19.2...HEAD
+[5.19.2-bas.1]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.19.2...v5.19.2-bas.1
+[5.15.3-bas.2]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.15.3-bas.1...v5.15.3-bas.2
+[5.15.3-bas.1]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.15.3...v5.15.3-bas.1
 [5.19.2]: https://github.com/bivlked/amneziawg-installer/compare/v5.19.1...v5.19.2
 [5.19.1]: https://github.com/bivlked/amneziawg-installer/compare/v5.19.0...v5.19.1
 [5.19.0]: https://github.com/bivlked/amneziawg-installer/compare/v5.18.4...v5.19.0
