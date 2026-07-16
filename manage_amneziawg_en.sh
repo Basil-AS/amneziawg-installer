@@ -1831,7 +1831,7 @@ list_clients() {
                 if [[ "$handshake" =~ ^[0-9]+$ && "$handshake" -gt 0 ]]; then
                     local diff=$((now - handshake))
                     if [[ $diff -lt 180 ]]; then
-                        st="Active"; st_code="active"
+                        st="Active"
                         [[ "$NO_COLOR" -eq 0 ]] && color_start="\033[0;32m"
                         ((act++))
                     elif [[ $diff -lt 86400 ]]; then
