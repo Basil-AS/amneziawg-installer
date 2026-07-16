@@ -3244,8 +3244,15 @@ generate_vpn_uri() {
     fi
     rm -f "$perl_err"
 
-    echo "$vpn_uri" > "$uri_file"
-    chmod 600 "$uri_file"
+    local _uri_tmp
+    _uri_tmp=$(awg_mktemp "$AWG_DIR") || { log_error "Failed to create vpn:// URI temp file for '$name'"; return 1; }
+    printf '%s\n' "$vpn_uri" > "$_uri_tmp" || { rm -f "$_uri_tmp"; return 1; }
+    chmod 600 "$_uri_tmp"
+    if ! mv -f "$_uri_tmp" "$uri_file"; then
+        rm -f "$_uri_tmp"
+        log_error "Failed to save vpn:// URI for '$name'"
+        return 1
+    fi
     log_debug "vpn:// URI для '$name' создан: $uri_file"
     return 0
 }
@@ -3272,6 +3279,8 @@ generate_qr_vpnuri() {
         return 1
     fi
 
+    tmp_png=$(awg_mktemp "$AWG_DIR") || { log_error "Failed to create QR temp file for '$name'"; return 1; }
+
     if ! qrencode -t png -l L -s 6 -m 4 -o "$tmp_png" < "$uri_file"; then
         log_error "Ошибка генерации QR vpn:// для '$name'"
         rm -f "$tmp_png"
@@ -3284,9 +3293,21 @@ generate_qr_vpnuri() {
         return 1
     fi
 
-    mv -f "$tmp_png" "$png_file"
+    if ! mv -f "$tmp_png" "$png_file"; then
+        rm -f "$tmp_png"
+        log_error "Failed to save QR for '$name'"
+        return 1
+    fi
     log_debug "QR vpn:// для '$name' создан: $png_file"
     return 0
+}
+
+# Full set of client artifacts (conf/png/vpnuri/vpnuri.png + keys).
+_remove_client_files() {
+    local name="$1"
+    rm -f "$AWG_DIR/${name}.conf" "$AWG_DIR/${name}.png" \
+        "$AWG_DIR/${name}.vpnuri" "$AWG_DIR/${name}.vpnuri.png" \
+        "$KEYS_DIR/${name}.private" "$KEYS_DIR/${name}.public"
 }
 
 # Полный цикл создания клиента:
@@ -4729,18 +4750,21 @@ check_expired_clients() {
 
 # Установка cron-задачи для автоудаления
 install_expiry_cron() {
-    if [[ -f "$EXPIRY_CRON" ]]; then
-        log_debug "Cron-задача expiry уже установлена."
-        return 0
-    fi
-    cat > "$EXPIRY_CRON" << CRONEOF
+    local _cron_tmp
+    _cron_tmp=$(awg_mktemp "$(dirname "$EXPIRY_CRON")") || return 1
+    cat > "$_cron_tmp" << CRONEOF
 # AmneziaWG client expiry check — every 5 minutes
 AWG_DIR="${AWG_DIR}"
 CONFIG_FILE="${CONFIG_FILE}"
 SERVER_CONF_FILE="${SERVER_CONF_FILE}"
 */5 * * * * root /bin/bash -c 'source "${AWG_DIR}/awg_common.sh" || exit 1; trap _awg_cleanup EXIT; check_expired_clients' >> "${AWG_DIR}/expiry.log" 2>&1
 CRONEOF
-    chmod 644 "$EXPIRY_CRON"
+    if [[ -f "$EXPIRY_CRON" ]] && cmp -s "$_cron_tmp" "$EXPIRY_CRON"; then
+        rm -f "$_cron_tmp"
+        return 0
+    fi
+    chmod 644 "$_cron_tmp"
+    mv -f "$_cron_tmp" "$EXPIRY_CRON"
     log "Cron-задача expiry установлена: $EXPIRY_CRON"
 }
 
