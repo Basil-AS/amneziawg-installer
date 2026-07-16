@@ -31,20 +31,6 @@ jobs:
       - name: Run unit tests
         run: bats tests/*.bats
 
-      - name: Diagnose failed Bats file
-        if: ${{ failure() }}
-        shell: bash
-        run: |
-          set +e
-          for test_file in tests/*.bats; do
-            output="$(timeout 45s bats "$test_file" 2>&1)"
-            rc=$?
-            if [[ "$rc" -ne 0 ]]; then
-              summary="$(printf '%s' "$output" | tail -n 12 | tr '\n' ' ' | cut -c1-900)"
-              echo "::error file=${test_file},title=Bats failure::exit=${rc} ${summary}"
-            fi
-          done
-
       - name: Compile web panel server
         run: python3 -m py_compile web/server.py
 

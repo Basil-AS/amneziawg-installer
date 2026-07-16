@@ -5579,7 +5579,7 @@ step7_start_service() {
 # Опциональный Telegram-бот (отдельный микросервис)
 # ==============================================================================
 offer_telegram_bot() {
-    [[ "$AUTO_YES" -eq 0 && -r /dev/tty ]] || return 0
+    [[ "$AUTO_YES" -eq 0 && -t 0 && -t 1 && -r /dev/tty ]] || return 0
     local choice token admin tmp
     read -r -p "Установить опциональный Telegram-бот управления? [y/N]: " choice </dev/tty
     [[ "$choice" =~ ^[Yy]$ ]] || { log "Telegram-бот не установлен."; return 0; }
