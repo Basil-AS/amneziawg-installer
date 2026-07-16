@@ -168,7 +168,7 @@ script_base="${script_ver%%-*}"
 top_ru="$(grep -oP '^##\s+\[\K[0-9]+\.[0-9]+\.[0-9]+' CHANGELOG.md | head -n1)"
 top_en="$(grep -oP '^##\s+\[\K[0-9]+\.[0-9]+\.[0-9]+' CHANGELOG.en.md | head -n1)"
 for pair in "README.md:$script_ver" "README.en.md:$script_ver"; do
-    rf="${pair%%:*}"; expect="${pair##*:}"
+    rf="${pair%%:*}"
     badge="$(grep -oP 'Installer_Version-\K[0-9]+\.[0-9]+\.[0-9]+' "$rf" | head -n1)"
     if [[ "$badge" != "$script_base" ]]; then
         echo "  $rf badge='$badge' != SCRIPT_VERSION base='$script_base'" >&2
