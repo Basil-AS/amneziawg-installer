@@ -1222,3 +1222,12 @@ sudo bash /root/awg/manage_amneziawg.sh dns set-mode system
 <p align="center">
   <a href="#top">↑ К началу</a>
 </p>
+# Optional Telegram administration bot
+
+The installer can optionally install `modules/telegram-bot` as a separate
+systemd microservice after the VPN is ready. The prompt is disabled in
+non-interactive/`--yes` installs. The bot uses the official HTTPS Telegram API,
+keeps the web panel as a separate process, and can connect to additional
+panels through their existing bearer-authenticated API. See
+[`docs/telegram-bot-api.md`](docs/telegram-bot-api.md) and
+[`modules/telegram-bot/README.md`](modules/telegram-bot/README.md).

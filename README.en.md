@@ -1158,3 +1158,10 @@ Safety goals:
 <p align="center">
   <a href="#top">↑ Back to top</a>
 </p>
+# Optional Telegram administration bot
+
+The installer can optionally install `modules/telegram-bot` as a separate
+systemd microservice after the VPN is ready. It is disabled for
+non-interactive/`--yes` installs. The bot uses the official HTTPS Telegram API
+and connects to additional project panels through their existing bearer API.
+See [`docs/telegram-bot-api.md`](docs/telegram-bot-api.md).
