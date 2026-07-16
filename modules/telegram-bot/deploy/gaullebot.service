@@ -1,0 +1,24 @@
+[Unit]
+Description=GaulleBot Telegram bot
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=/srv/code/bots/GaulleBot/src/bot.py
+
+[Service]
+Type=simple
+User=gaullebot
+Group=gaullebot
+WorkingDirectory=/srv/code/bots/GaulleBot
+EnvironmentFile=/etc/gaullebot.env
+ExecStart=/usr/bin/python3 /srv/code/bots/GaulleBot/src/bot.py
+Restart=on-failure
+RestartSec=5s
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/srv/code/bots/GaulleBot/data /srv/code/bots/GaulleBot/var /srv/code/bots/GaulleBot/logs
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

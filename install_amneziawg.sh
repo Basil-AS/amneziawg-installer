@@ -5576,6 +5576,30 @@ step7_start_service() {
 }
 
 # ==============================================================================
+# Опциональный Telegram-бот (отдельный микросервис)
+# ==============================================================================
+offer_telegram_bot() {
+    [[ "$AUTO_YES" -eq 0 && -r /dev/tty ]] || return 0
+    local choice token admin tmp
+    read -r -p "Установить опциональный Telegram-бот управления? [y/N]: " choice </dev/tty
+    [[ "$choice" =~ ^[Yy]$ ]] || { log "Telegram-бот не установлен."; return 0; }
+    read -r -s -p "Токен Telegram-бота (не сохраняется в git): " token </dev/tty; printf '\n'
+    read -r -p "Telegram ID администратора: " admin </dev/tty
+    [[ "$token" =~ ^[0-9]{6,}:[A-Za-z0-9_-]{20,}$ ]] || { warn "Некорректный токен; бот пропущен."; return 0; }
+    [[ "$admin" =~ ^-?[0-9]+$ ]] || { warn "Некорректный Telegram ID; бот пропущен."; return 0; }
+    tmp="$(mktemp)"
+    if [[ -f "$INSTALLER_DIR/scripts/install-telegram-bot.sh" ]]; then
+        cp "$INSTALLER_DIR/scripts/install-telegram-bot.sh" "$tmp"
+    else
+        curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
+            "https://raw.githubusercontent.com/${AWG_REPO}/${AWG_BRANCH}/scripts/install-telegram-bot.sh" -o "$tmp" || { rm -f "$tmp"; warn "Не удалось получить установщик бота."; return 0; }
+    fi
+    chmod 700 "$tmp"
+    BOT_TOKEN="$token" ADMIN_CHAT_ID="$admin" TELEGRAM_API_ROOT=https://api.telegram.org bash "$tmp" || warn "Установка Telegram-бота завершилась ошибкой. VPN не изменён."
+    rm -f "$tmp"
+}
+
+# ==============================================================================
 # ШАГ 99: Завершение
 # ==============================================================================
 
@@ -6142,7 +6166,7 @@ while (( current_step < 99 )); do
         4) step4_setup_firewall; current_step=5 ;;
         5) step5_download_scripts; current_step=6 ;;
         6) step6_generate_configs; current_step=7 ;;
-        7) step7_start_service; current_step=99 ;;
+        7) step7_start_service; offer_telegram_bot; current_step=99 ;;
         *) die "Ошибка: Неизвестный шаг $current_step." ;;
     esac
 done
