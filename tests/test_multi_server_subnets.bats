@@ -135,3 +135,9 @@ EOF
     grep -qF 'automatic' <(tr '[:upper:]' '[:lower:]' < "$script")
     grep -qF '0.0.0.0/0' "$script"
 }
+
+@test "migration discovery excludes historical telemetry and GeoIP data" {
+    local script="$BATS_TEST_DIRNAME/../scripts/migrate-tunnel-subnet.sh"
+    grep -qF '"health_history", "geoip"' "$script"
+    grep -qF '".jsonl", ".log", ".mmdb"' "$script"
+}

@@ -115,8 +115,14 @@ import sys
 
 old = ipaddress.ip_interface(sys.argv[1]).network
 roots = [pathlib.Path(item) for item in sys.argv[2:]]
-excluded_dirs = {".git", "backups", "backup", "logs", "log", "updates", ".update-work"}
-excluded_suffixes = {".gz", ".xz", ".zip", ".tar", ".png", ".jpg", ".jpeg", ".gif", ".deb"}
+excluded_dirs = {
+    ".git", "backups", "backup", "logs", "log", "updates", ".update-work",
+    "health_history", "geoip",
+}
+excluded_suffixes = {
+    ".gz", ".xz", ".zip", ".tar", ".png", ".jpg", ".jpeg", ".gif", ".deb",
+    ".jsonl", ".log", ".mmdb",
+}
 pattern = re.compile(rb"(?<![0-9.])(?:[0-9]{1,3}\.){3}[0-9]{1,3}(?![0-9.])")
 
 for root in roots:
