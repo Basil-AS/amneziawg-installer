@@ -101,7 +101,7 @@ class ServerManager:
             "germany": Server("germany", "Sunny-German", os.getenv("GERMANY_SSH_HOST", ""), os.getenv("GERMANY_SSH_PORT", "22"), os.getenv("GERMANY_SSH_USER", "root"), os.getenv("GERMANY_SSH_IDENTITY", "")),
         }
 
-    def run(self, key: str, action: str) -> str:
+    def run(self, key: str, action: str, value: str = "") -> str:
         server = self.servers.get(key)
         if server is None:
             return "unknown server"
@@ -112,8 +112,14 @@ class ServerManager:
             "health": "/root/awg/update-installed.sh --check",
             "restart": "systemctl restart awg-quick@awg0 awg-web AdGuardHome",
             "clients": "for f in /root/awg/*.conf; do n=$(basename \"$f\" .conf); [ \"$n\" = awg0 ] && continue; a=$(awk -F'= *' '/^Address/{print $2; exit}' \"$f\"); printf '%s|%s\\n' \"$n\" \"$a\"; done",
+            "logs": "tail -n 100 /root/awg/manage_amneziawg.log /root/awg/install_amneziawg.log 2>/dev/null",
         }
-        command = commands.get(action)
+        if action in {"add", "remove", "regenerate"}:
+            if not value or not value.replace("_", "").replace("-", "").isalnum() or len(value) > 48:
+                return f"{server.label}: invalid client name"
+            command = {"add": f"/root/awg/manage_amneziawg.sh client add --yes {shlex.quote(value)}", "remove": f"AWG_YES=1 /root/awg/manage_amneziawg.sh client remove --yes {shlex.quote(value)}", "regenerate": f"/root/awg/manage_amneziawg.sh client regenerate {shlex.quote(value)}"}[action]
+        else:
+            command = commands.get(action)
         if command is None:
             return "unsupported action"
         encoded = base64.b64encode(command.encode()).decode("ascii")
@@ -153,15 +159,29 @@ class PanelManager:
             except (OSError, ValueError, KeyError, TypeError) as exc:
                 LOG.warning("panel config ignored: %s", exc)
 
-    def run(self, key: str, action: str, token: str | None = None) -> str | None:
+    def run(self, key: str, action: str, token: str | None = None, value: str = "") -> str | None:
         panel = self.panels.get(key)
         if panel is None:
             return None
-        endpoints = {"status": "/api/status", "health": "/api/server-health", "clients": "/api/clients", "restart": "/api/server/restart"}
-        endpoint = endpoints.get(action)
-        if endpoint is None:
+        endpoints = {"status": ("GET", "/api/status"), "health": ("GET", "/api/server-health"), "clients": ("GET", "/api/clients"), "logs": ("GET", "/api/server/logs"), "restart": ("POST", "/api/server/restart")}
+        body = None
+        if action == "add":
+            endpoint_info = ("POST", "/api/clients")
+            body = json.dumps({"name": value}).encode()
+        elif action == "regenerate":
+            endpoint_info = ("POST", f"/api/clients/{value}/regenerate")
+            body = b"{}"
+        elif action == "remove":
+            endpoint_info = ("DELETE", f"/api/clients/{value}")
+        else:
+            endpoint_info = endpoints.get(action)
+        if endpoint_info is None:
             return f"{panel.label}: unsupported API action"
-        request = Request(panel.base_url + endpoint, headers={"Authorization": f"Bearer {token or panel.token}", "Accept": "application/json"}, method="POST" if action == "restart" else "GET")
+        method, endpoint = endpoint_info
+        headers = {"Authorization": f"Bearer {token or panel.token}", "Accept": "application/json"}
+        if body is not None:
+            headers["Content-Type"] = "application/json"
+        request = Request(panel.base_url + endpoint, headers=headers, data=body, method=method)
         context = None if panel.verify_tls else ssl._create_unverified_context()
         try:
             with urlopen(request, timeout=15, context=context) as response:
@@ -176,10 +196,10 @@ class PanelManager:
         return list(self.panels)
 
 
-def server_result(panel: PanelManager, ssh: ServerManager, key: str, action: str, token: str | None = None) -> str:
+def server_result(panel: PanelManager, ssh: ServerManager, key: str, action: str, token: str | None = None, value: str = "") -> str:
     """Prefer the panel API; retain SSH as an explicit compatibility fallback."""
-    result = panel.run(key, action, token)
-    return result if result is not None else ssh.run(key, action)
+    result = panel.run(key, action, token, value)
+    return result if result is not None else ssh.run(key, action, value)
 
 
 class Telegram:
@@ -203,7 +223,7 @@ class Telegram:
 def help_text(admin: bool) -> str:
     text = "Команды пользователя:\n/me — моя привязка\n/servers — состояние серверов\n/help — помощь"
     if admin:
-        text += "\n\nАдминистратор:\n/status — оба сервера\n/health — проверки\n/clients — список клиентов\n/users — привязки\n/bind <tg_id> <fin_token> <ger_token>\n/restart <finland|germany>"
+        text += "\n\nАдминистратор:\n/status — оба сервера\n/health — проверки\n/clients — список клиентов\n/logs — последние логи\n/users — привязки\n/bind <tg_id> <fin_token> <ger_token>\n/add <server> <name>\n/remove <server> <name>\n/regenerate <server> <name>\n/restart <finland|germany>"
     return text
 
 
@@ -248,6 +268,9 @@ def main() -> None:
                         telegram.send(chat_id, "\n\n".join(server_result(panels, manager, key, action) for key in ("finland", "germany")))
                     elif name == "/restart" and len(parts) == 2:
                         telegram.send(chat_id, server_result(panels, manager, parts[1].lower(), "restart"))
+                    elif name in {"/add", "/remove", "/regenerate"} and len(parts) == 3:
+                        action = name[1:]
+                        telegram.send(chat_id, server_result(panels, manager, parts[1].lower(), action, value=parts[2]))
                     elif name == "/bind" and len(parts) == 4:
                         store.bind(int(parts[1]), str(sender.get("username", "")), str(sender.get("first_name", "")), parts[2], parts[3])
                         telegram.send(chat_id, "Привязка сохранена.")
@@ -256,6 +279,8 @@ def main() -> None:
                         telegram.send(chat_id, "\n".join(f"{r['telegram_id']} @{r['username'] or '-'} fin={'yes' if r['finland_token'] else 'no'} ger={'yes' if r['germany_token'] else 'no'}" for r in rows) or "Пользователей пока нет.")
                     elif name == "/clients":
                         telegram.send(chat_id, "\n\n".join(server_result(panels, manager, key, "clients") for key in ("finland", "germany")))
+                    elif name == "/logs":
+                        telegram.send(chat_id, "\n\n".join(server_result(panels, manager, key, "logs") for key in ("finland", "germany")))
                     else:
                         telegram.send(chat_id, help_text(True))
                 except (ValueError, RuntimeError) as exc:
