@@ -354,6 +354,9 @@ install_staged_files() {
 regenerate_derived_files() {
     # shellcheck source=/dev/null
     source "$AWG_DIR/awg_common.sh"
+    declare -f log_warn >/dev/null 2>&1 || log_warn() { warn "$*"; }
+    declare -f log_error >/dev/null 2>&1 || log_error() { warn "$*"; }
+    declare -f log_debug >/dev/null 2>&1 || log_debug() { :; }
     load_awg_params
     generate_firewall_scripts || return 1
     local name
