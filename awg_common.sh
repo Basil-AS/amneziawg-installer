@@ -2486,7 +2486,6 @@ _derive_ipv6_server_addr() {
 # шага 6 уже бэкапил бы его (потеря всех пиров при --force reinstall).
 # shellcheck disable=SC2154  # AWG_* vars loaded via load_awg_params -> source
 render_server_config() {
-    local peers_source="${1:-}"
     load_awg_params || return 1
 
     # During --force --port, the init file contains the requested new port
@@ -2857,8 +2856,6 @@ get_next_client_ip() {
         log_error "get_next_client_ip: не удалось разобрать подсеть '$subnet'"
         return 1
     }
-    local server_int=$(( net_int + 1 ))
-
     # Ассоциативный массив для O(1) lookup. Сервер (network+1) занят.
     declare -A used_set
     used_set["${subnet_base}.1"]=1
@@ -3810,7 +3807,7 @@ refresh_client_config() {
     fi
 
     # Читаем приватный ключ клиента
-    local client_privkey client_ip server_pubkey
+    local client_privkey client_ip server_pubkey client_ipv6
     if [[ -f "$KEYS_DIR/${name}.private" ]]; then
         client_privkey=$(cat "$KEYS_DIR/${name}.private")
     elif [[ -f "$AWG_DIR/${name}.conf" ]]; then
@@ -3826,16 +3823,7 @@ refresh_client_config() {
 
     # IP клиента из серверного конфига
     client_ip=$(get_client_ipv4_from_server "$name" 2>/dev/null || true)
-    local client_ipv6=""
     client_ipv6=$(get_client_ipv6_from_server "$name" 2>/dev/null || true)
-
-    client_ip="${_regen_awk_out%% *}"
-    local client_ipv6="${_regen_awk_out#* }"
-    # Defensive guard: awk always prints trailing space, so client_ipv6 is "" for IPv4-only.
-    # This guard fires only if awk produces no trailing space (not expected in practice).
-    if [[ "$client_ipv6" == "$client_ip" ]]; then
-        client_ipv6=""
-    fi
 
     # Only carry IPv6 forward if ALLOW_IPV6_TUNNEL is enabled
     if [[ "${ALLOW_IPV6_TUNNEL:-0}" != "1" ]]; then
