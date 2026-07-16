@@ -17,6 +17,16 @@ class BotTests(unittest.TestCase):
             self.assertEqual(len(store.all()), 1)
             store.close()
 
+    def test_touch_registers_unbound_user_without_tokens(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = Store(Path(directory) / "state.sqlite3")
+            store.touch(42, "user", "Name")
+            row = store.get(42)
+            self.assertEqual(row["username"], "user")
+            self.assertEqual(row["finland_token"], "")
+            self.assertEqual(row["germany_token"], "")
+            store.close()
+
     def test_settings_rejects_missing_token(self):
         old = os.environ.pop("BOT_TOKEN", None)
         try:

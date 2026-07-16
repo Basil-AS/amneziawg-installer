@@ -77,6 +77,10 @@ class Store:
         )
         self.db.commit()
 
+    def touch(self, telegram_id: int, username: str, first_name: str) -> None:
+        row = self.get(telegram_id)
+        self.bind(telegram_id, username, first_name, row["finland_token"] if row else "", row["germany_token"] if row else "")
+
     def get(self, telegram_id: int) -> sqlite3.Row | None:
         return self.db.execute("SELECT * FROM users WHERE telegram_id=?", (telegram_id,)).fetchone()
 
@@ -245,6 +249,8 @@ def main() -> None:
                 chat = message.get("chat") or {}
                 sender = message.get("from") or {}
                 chat_id = int(chat.get("id", 0))
+                if chat_id:
+                    store.touch(chat_id, str(sender.get("username", "")), str(sender.get("first_name", "")))
                 command = (message.get("text") or "").strip()
                 if not command.startswith("/"):
                     continue
