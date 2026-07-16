@@ -5582,7 +5582,7 @@ offer_telegram_bot() {
     [[ "$AUTO_YES" -eq 0 && -t 0 && -t 1 && -r /dev/tty ]] || return 0
     local choice token admin tmp
     read -r -p "Установить опциональный Telegram-бот управления? [y/N]: " choice </dev/tty
-    [[ "$choice" =~ ^[Yy]$ ]] || { log "Telegram-бот не установлен."; return 0; }
+    [[ "$choice" =~ ^[Yy]([Ee][Ss])?[[:space:]]*$ ]] || { log "Telegram-бот не установлен."; return 0; }
     read -r -s -p "Токен Telegram-бота (не сохраняется в git): " token </dev/tty; printf '\n'
     read -r -p "Telegram ID администратора: " admin </dev/tty
     [[ "$token" =~ ^[0-9]{6,}:[A-Za-z0-9_-]{20,}$ ]] || { warn "Некорректный токен; бот пропущен."; return 0; }

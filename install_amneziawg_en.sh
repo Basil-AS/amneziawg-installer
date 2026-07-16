@@ -6046,7 +6046,7 @@ offer_telegram_bot() {
     [[ "$AUTO_YES" -eq 0 && -t 0 && -t 1 && -r /dev/tty ]] || return 0
     local choice token admin tmp
     read -r -p "Install optional Telegram administration bot? [y/N]: " choice </dev/tty
-    [[ "$choice" =~ ^[Yy]$ ]] || { log "Telegram bot not installed."; return 0; }
+    [[ "$choice" =~ ^[Yy]([Ee][Ss])?[[:space:]]*$ ]] || { log "Telegram bot not installed."; return 0; }
     read -r -s -p "Telegram bot token (never committed): " token </dev/tty; printf '\n'
     read -r -p "Telegram administrator ID: " admin </dev/tty
     [[ "$token" =~ ^[0-9]{6,}:[A-Za-z0-9_-]{20,}$ ]] || { warn "Invalid token; bot skipped."; return 0; }
