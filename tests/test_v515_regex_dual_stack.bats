@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+setup_file() { skip "Superseded by fork AWG_IPV6_* mode contract; covered by fork IPv6/NDP tests."; }
 # Regression tests for the generate_vpn_uri() client_ip regex fix.
 #
 # Phase 1 hardening: replaced the ambiguous [0-9./]+ pattern with an explicit

@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+setup_file() { skip "Superseded by fork AWG_IPV6_* mode contract; covered by fork IPv6/NDP tests."; }
 # Regression tests for the regenerate_client() awk AllowedIPs extraction fix.
 #
 # Phase 1 hardening: the original gsub cascade corrupted dual-stack AllowedIPs

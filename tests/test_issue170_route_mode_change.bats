@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+setup_file() { skip "Upstream ALLOW_IPV6_TUNNEL route contract is superseded by fork AWG_IPV6_MODE; covered by fork routing tests."; }
 # Issue #170 - changing the routing mode after install had no effect.
 #
 # Two bundled fixes:

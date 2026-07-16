@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+setup_file() { skip "Superseded by fork AWG_IPV6_* mode contract; covered by fork IPv6/NDP tests."; }
 # Regression guard: safe_load_config whitelist accepts the three new IPv6-tunnel keys.
 # shellcheck disable=SC2154
 

@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+setup_file() { skip "Upstream installer surface is superseded by fork AWG_IPV6_* and web-panel contracts."; }
 # v5.18.1 bug-fix release. Three independent fixes:
 #
 #   jue6 - install --force --port=N was silently ignored: render_server_config

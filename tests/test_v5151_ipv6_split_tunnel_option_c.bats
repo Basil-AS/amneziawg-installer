@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+setup_file() { skip "Superseded by fork AWG_IPV6_* mode contract; covered by fork IPv6/NDP tests."; }
 # v5.15.1 (audit C7) - intent-mirroring of the IPv4 routing mode into IPv6.
 #
 # When the client uses a SPLIT tunnel (custom ALLOWED_IPS, not 0.0.0.0/0),

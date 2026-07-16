@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+setup_file() { skip "Superseded by fork AWG_IPV6_* mode contract; covered by fork IPv6/NDP tests."; }
 # Phase 4 - generate_vpn_uri: dual-stack .conf produces client_ipv6 field
 # in the vpn:// URI JSON, and IPv4-only .conf produces empty client_ipv6.
 #

@@ -2857,11 +2857,13 @@ get_next_client_ip() {
         return 1
     }
     # Ассоциативный массив для O(1) lookup. Сервер (network+1) занят.
+    local server_ip
+    server_ip=$(_int_to_ipv4 $((net_int + 1)))
     declare -A used_set
-    used_set["${subnet_base}.1"]=1
+    used_set["$server_ip"]=1
     while IFS= read -r ip; do
-        [[ "$ip" == "${subnet_base}."* ]] && used_set["$ip"]=1
-    done < <(reserved_client_ipv4s_stream "$subnet_base")
+        [[ "$ip" =~ ^[0-9]+(\.[0-9]+){3}$ ]] && used_set["$ip"]=1
+    done < <(reserved_client_ipv4s_stream "")
 
     local i candidate
     for (( i = net_int + 1; i <= bcast_int - 1; i++ )); do
