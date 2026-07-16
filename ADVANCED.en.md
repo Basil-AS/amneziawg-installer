@@ -4,9 +4,7 @@
 
 # AmneziaWG 2.0 Installer: Advanced Documentation
 
-This is a supplement to the main [README.en.md](README.en.md), containing deeper technical details, explanations, and advanced options for the AmneziaWG 2.0 installation and management scripts.
-
-For a step-by-step VPS deployment guide (VPS choice, OS choice, install flow, first client, update, uninstall, troubleshooting), see [INSTALL_VPS.md](INSTALL_VPS.md).
+This is a supplement to the main [README.en.md](README.en.md), containing deeper technical details, explanations, and advanced options for the AmneziaWG 2.0 installation and management scripts. For a step-by-step VPS deployment guide (VPS choice, OS choice, install flow, first client, update, uninstall, troubleshooting), see [INSTALL_VPS.md](INSTALL_VPS.md).
 
 ## Table of Contents
 
@@ -16,6 +14,7 @@ For a step-by-step VPS deployment guide (VPS choice, OS choice, install flow, fi
   - [Presets (v5.10.0+)](#presets-adv)
 - [⚙️ Client Configuration Details](#config-details-adv)
   - [AllowedIPs](#allowedips-adv)
+  - [IPv6 Dual-Stack Tunnel (v5.15.0+)](#ipv6-tunnel-adv)
   - [PersistentKeepalive](#persistentkeepalive-adv)
   - [DNS](#dns-adv)
   - [Changing Default Settings](#change-defaults-adv)
@@ -42,9 +41,12 @@ For a step-by-step VPS deployment guide (VPS choice, OS choice, install flow, fi
 - [⏳ Temporary Clients (--expires)](#expires-adv)
 - [📱 vpn:// URI Import](#vpnuri-adv)
 - [📱 MTU and Mobile Clients](#mtu-mobile-adv)
+- [🚧 Host Unreachable from Russia (Hetzner): AS-based Blocking](#as-blocking-adv)
+- [🛡️ Active Probing and Obfuscation Without a Proxy](#active-probing-adv)
 - [📋 AWG 2.0 Client Compatibility](#client-compat-adv)
 - [🐧 Debian Support](#debian-support-adv)
 - [🔧 Raspberry Pi and ARM64 Support](#arm-support-adv)
+- [🐧 Connecting a Linux machine as a client](#linux-client-adv)
 - [📦 LXC / Docker via amneziawg-go (userspace)](#lxc-userspace-adv)
 - [⚠️ Known Limitations](#limitations-adv)
 - [🤝 Contributing](#contributing-adv)
@@ -96,11 +98,14 @@ All parameters are generated automatically during installation and saved to `/ro
 | `H3` | Cookie message identifier | uint32 range | `56789012-67890123` |
 | `H4` | Data message identifier | uint32 range | `456789012-567890123` |
 | `I1` | CPS concealment packet | Format `<r N>` | `<r 128>` |
+| `I2`-`I5` | Extra CPS / special-junk packets, optional (carried to clients since v5.18.0) | Tags `<r N>` / `<b 0xHEX>` / `<c>` / `<t>` | `<b 0xf1>` |
 
 **Critical constraints:**
 * H1-H4 ranges **must not overlap** (guaranteed by the generation algorithm).
 * `S1 + 56 ≠ S2` — prevents init and response messages from having the same size.
 * All nodes (server + clients) **must** use identical parameters.
+
+> `I1`-`I5` (CPS) disguise the handshake as another protocol - the basis of resistance to active probing. Details: [Active Probing and Obfuscation Without a Proxy](#active-probing-adv).
 
 <a id="presets-adv"></a>
 ### Presets (v5.10.0+)
@@ -184,7 +189,7 @@ WebRTC leaks cannot be fully blocked by the server: browsers may expose local/pu
 <a id="dns-adv"></a>
 ### DNS
 
-* **Default value:** `1.1.1.1` (Cloudflare).
+* **Default value:** `1.1.1.1, 1.0.0.1` (Cloudflare, primary + fallback).
 * DNS server for the client inside the VPN.
 * **Change:** `sudo bash /root/awg/manage_amneziawg.sh modify <name> DNS "8.8.8.8,1.0.0.1"`
 
@@ -260,7 +265,7 @@ export AWG_PORT=39743
 export AWG_TUNNEL_SUBNET='10.9.9.1/24'
 export DISABLE_IPV6=1
 export ALLOWED_IPS_MODE=2
-export ALLOWED_IPS='0.0.0.0/5, 8.0.0.0/7, ...'
+export ALLOWED_IPS='1.0.0.0/8, 2.0.0.0/7, 4.0.0.0/6, 8.0.0.0/7, ...'
 export AWG_ENDPOINT=''
 export AWG_Jc=6
 export AWG_Jmin=55
@@ -334,9 +339,9 @@ H4 = 4567890
 
 Notes for manual setups:
 
-- **S3/S4** are AWG 2.0 parameters added to the protocol later than S1/S2. Configs from the earlier AWG 1.x release may not have them — add by hand, any value in `0-127` works, the key point is that the keys exist at all.
+- **S3/S4** are AWG 2.0 parameters added to the protocol later than S1/S2. Configs from the earlier AWG 1.x release may not have them - add by hand, `S3` takes `0-64` and `S4` takes `0-32`, the key point is that the keys exist at all.
 - **H1–H4** can be single-value (`H1 = 1234567`) or a range (`H1 = 100000-200000`); ranges must not overlap. Keep the upper bound at `2147483647` (`INT32_MAX`) or below, otherwise `amneziawg-windows-client` may flag the value as invalid.
-- **I1** (CPS packets) is optional: without it the AWG client falls back to AWG 1.0 mode. For full AWG 2.0 obfuscation add `I1 = <r 128>` (random 128 bytes) or `I1 = <b 0xHEX>` (binary).
+- **I1-I5** (CPS / special-junk packets) are optional. Without `I1` the AWG client falls back to AWG 1.0 mode; for full AWG 2.0 obfuscation add `I1 = <r 128>` (random 128 bytes) or `I1 = <b 0xHEX>` (binary). Since v5.18.0 all five (`I1`-`I5`) are carried into client configs, not just `I1`: set `I2`-`I5` in the `[Interface]` section of `awg0.conf`, restart the service (`sudo systemctl restart awg-quick@awg0`), and distribute to clients with `sudo bash /root/awg/manage_amneziawg.sh regen <name>` - the values flow into the `.conf`, QR, and `vpn://`. Ready-made sets come from, e.g., the VoidWaifu list; tag formats: `<r N>`, `<b 0xHEX>`, `<c>`, `<t>`. The values must match on server and clients. Unset `I2`-`I5` are simply not emitted.
 - **MTU**, **PostUp/PostDown** are optional and depend on the setup (see the `amneziawg-go` LXC section on `iptables` MASQUERADE).
 
 After creating such an `awg0.conf`, `manage_amneziawg.sh` also needs `/root/awg/server_public.key` (compute it with `awg pubkey < /etc/amnezia/amneziawg/server_private.key > /root/awg/server_public.key`) and a minimal `/root/awg/awgsetup_cfg.init` containing at least `AWG_PORT`, `AWG_TUNNEL_SUBNET`, `AWG_ENDPOINT`.
@@ -368,7 +373,7 @@ I1 = <r 128>
 [Peer]
 PublicKey = [SERVER_PUBLIC_KEY]
 Endpoint = 203.0.113.1:39743
-AllowedIPs = 0.0.0.0/5, 8.0.0.0/7, ...
+AllowedIPs = 1.0.0.0/8, 2.0.0.0/7, 4.0.0.0/6, 8.0.0.0/7, ...
 PersistentKeepalive = 33
 ```
 </details>
@@ -389,9 +394,11 @@ Options:
   -v, --verbose         Verbose output (including DEBUG)
   --no-color            Disable colored output
   --port=PORT           Set UDP port (1024-65535)
-  --subnet=SUBNET       Set tunnel subnet (x.x.x.x/yy)
+  --ssh-port=PORT       SSH port for the UFW rule (auto-detected; comma-separated list)
+  --subnet=SUBNET       Tunnel subnet, CIDR /16-/30 (e.g. 10.9.0.0/16)
   --allow-ipv6          Keep IPv6 enabled
   --disallow-ipv6       Force-disable IPv6
+  --allow-ipv6-tunnel   Enable dual-stack IPv6 inside the tunnel (ULA, opt-in)
   --route-all           Mode: All traffic (0.0.0.0/0)
   --route-amnezia       Mode: Amnezia List + DNS (default)
   --route-custom=NETS   Mode: Only specified networks
@@ -403,7 +410,9 @@ Options:
   --jmin=N              Set Jmin manually (0-1280, overrides preset)
   --jmax=N              Set Jmax manually (0-1280, overrides preset, must be >= Jmin)
   -y, --yes             Non-interactive mode (all confirmations auto-yes)
-  --no-tweaks           Skip hardening/optimization (no UFW, Fail2Ban, sysctl tweaks)
+  -f, --force           Reinstall over a working AWG (ENV: AWG_FORCE_REINSTALL=1)
+  --no-tweaks           Skip optional hardening/optimization (UFW, Fail2Ban);
+                        the minimal forwarding sysctl is always applied
 ```
 
 <a id="manage-cli-adv"></a>
@@ -416,10 +425,12 @@ Options:
   --no-color            Disable colored output
   --conf-dir=PATH       Specify AWG directory (default: /root/awg)
   --server-conf=PATH    Specify server config file
-  --json                JSON output (for stats command)
+  --json                JSON output (for list / stats; list includes client_ipv6)
   --expires=DURATION    Expiry duration for add (1h, 12h, 1d, 7d, 30d, 4w)
   --apply-mode=MODE     syncconf (default) or restart (bypass kernel panic)
   --psk                 (add only) generate a PresharedKey for the new client (v5.11.1+)
+  --yes                 Do not prompt for confirmation (ENV: AWG_YES=1)
+  --carrier=NAME        (diagnose only) compare parameters against a carrier profile
 ```
 
 > **`--psk`** — optional extra layer on top of AWG 2.0 obfuscation. Generates a 32-byte symmetric key via `awg genpsk` and writes it to both the server `[Peer]` and the client `[Peer]` (`PresharedKey = ...`). Compatible with any WireGuard/AmneziaWG client. In batch mode (`add c1 c2 c3 --psk`) each client gets its own PSK. Without the flag clients are created without `PresharedKey` (default — AWG 2.0 obfuscation is sufficient for most scenarios). The flag only affects the new clients created by this `add` invocation — existing clients without PSK stay untouched and keep connecting as before.
@@ -430,6 +441,7 @@ Options:
 |----------|-------------|
 | `AWG_SKIP_APPLY=1` | Skip apply_config. For automation: accumulate N operations, apply once |
 | `AWG_APPLY_MODE=restart` | Full restart instead of syncconf (can be saved in `awgsetup_cfg.init`) |
+| `AWG_YES=1` | Do not prompt for confirmation (equivalent to the `--yes` flag) |
 
 ---
 
@@ -442,8 +454,8 @@ Usage: `sudo bash /root/awg/manage_amneziawg.sh <command>`:
 
 * **`add <name> [name2 ...] [--expires=DURATION] [--psk]`:** Add one or multiple clients. In batch mode, `awg syncconf` is called once for all. With `--expires` — expiry applies to all clients. With `--psk` — each client gets its own PresharedKey (v5.11.1+).
 * **`remove <name> [name2 ...]`:** Remove one or multiple clients. In batch mode, apply_config is called once for all.
-* **`list [-v]`:** List clients (with details when using `-v`).
-* **`regen [name]`:** Regenerate `.conf`/`.png` files for one or all clients.
+* **`list [-v] [--json]`:** List clients (with details when using `-v`; `--json` - machine-readable, includes the `client_ipv6` field).
+* **`regen [name] [--reset-routes]`:** Regenerate `.conf`/`.png` files for one or all clients. By default preserves the client's individual `AllowedIPs`/`DNS`/`PersistentKeepalive` (set via `modify`). With `--reset-routes` - resets `AllowedIPs` to the current global routing mode from `awgsetup_cfg.init`; use it after changing the mode via reinstall (`--force --route-all` / `--route-amnezia` / `--route-custom=`) so the new mode reaches existing clients (Issue #170).
 * **`modify <name> <param> <value>`:** Modify a client parameter in the `.conf` file. Allowed parameters: DNS, Endpoint, AllowedIPs, PersistentKeepalive. QR code and vpn:// URI are automatically regenerated after modification.
 * **`backup`:** Create a backup (configs + keys + client expiry data + cron).
 * **`restore [file]`:** Restore from a backup (including expiry data and cron job).
@@ -451,6 +463,8 @@ Usage: `sudo bash /root/awg/manage_amneziawg.sh <command>`:
 * **`diagnose [--carrier=NAME]`:** Read-only kernel/sysctl/UFW diagnostics, web/AdGuard/IPv6/P2P/WireSock status, and optional AWG-parameter comparison against a carrier profile.
 * **`show`:** Run `awg show`.
 * **`restart`:** Restart the AmneziaWG service.
+* **`diagnose [--carrier=NAME]`:** Self-troubleshooting: checks the kernel module, sysctl and UFW; with `--carrier` it compares AWG parameters against a mobile carrier profile.
+* **`repair-module`:** Rebuild/restore the amneziawg kernel module (DKMS) after a server kernel upgrade.
 * **`help`:** Show help.
 * **`stats [--json]`:** Per-client traffic statistics. With `--json` — machine-readable format for integration.
 
@@ -544,7 +558,7 @@ Client keys are stored in `/root/awg/keys/` (permissions 600). Server keys are i
 The installer downloads `awg_common.sh` and `manage_amneziawg.sh` from URLs pinned to the specific version tag:
 
 ```
-https://raw.githubusercontent.com/bivlked/amneziawg-installer/v5.11.1/awg_common.sh
+https://raw.githubusercontent.com/bivlked/amneziawg-installer/v5.19.2/awg_common.sh
 ```
 
 This provides **supply chain pinning**: downloaded scripts match the installer version, even if `main` has already been updated.
@@ -564,12 +578,12 @@ To update the management and shared library scripts **without reinstalling the s
 
 ```bash
 # Russian version:
-wget -O /root/awg/manage_amneziawg.sh https://raw.githubusercontent.com/bivlked/amneziawg-installer/v5.11.1/manage_amneziawg.sh
-wget -O /root/awg/awg_common.sh https://raw.githubusercontent.com/bivlked/amneziawg-installer/v5.11.1/awg_common.sh
+wget -O /root/awg/manage_amneziawg.sh https://raw.githubusercontent.com/bivlked/amneziawg-installer/v5.19.2/manage_amneziawg.sh
+wget -O /root/awg/awg_common.sh https://raw.githubusercontent.com/bivlked/amneziawg-installer/v5.19.2/awg_common.sh
 
 # English version:
-wget -O /root/awg/manage_amneziawg.sh https://raw.githubusercontent.com/bivlked/amneziawg-installer/v5.11.1/manage_amneziawg_en.sh
-wget -O /root/awg/awg_common.sh https://raw.githubusercontent.com/bivlked/amneziawg-installer/v5.11.1/awg_common_en.sh
+wget -O /root/awg/manage_amneziawg.sh https://raw.githubusercontent.com/bivlked/amneziawg-installer/v5.19.2/manage_amneziawg_en.sh
+wget -O /root/awg/awg_common.sh https://raw.githubusercontent.com/bivlked/amneziawg-installer/v5.19.2/awg_common_en.sh
 
 # Set permissions
 chmod 700 /root/awg/manage_amneziawg.sh /root/awg/awg_common.sh
@@ -583,13 +597,28 @@ chmod 700 /root/awg/manage_amneziawg.sh /root/awg/awg_common.sh
 ## ❓ FAQ (Additional Questions)
 
 <details>
+  <summary><strong>Q: How do I get a split exit - Russian traffic direct, the rest abroad?</strong></summary>
+  <b>A:</b> This is built as a two-server cascade: the client connects to an entry server (ideally in Russia), Russian traffic exits directly from it, and everything else goes through a second server abroad. The cascade is not part of the installer (different scale), but there is a separate step-by-step guide - <a href="CASCADE.en.md">CASCADE.en.md</a>.
+</details>
+
+<details>
+  <summary><strong>Q: AmneziaVPN says "this server does not support split tunneling". How do I enable it?</strong></summary>
+  <b>A:</b> This is a limitation of the client, not the server. The AmneziaVPN app's built-in split tunneling by sites and apps only turns on when the config sends all traffic through the tunnel. The client looks at <code>AllowedIPs</code>: a full tunnel unlocks the feature, while a partial subnet list is treated as already split at the routing level, so the client hides its toggle with that message. The full-tunnel form it reliably recognizes is the pair <code>0.0.0.0/0, ::/0</code>. The "Amnezia" routing mode (the default) produces a subnet list, which is why the feature is unavailable. Fix, no docker needed: switch the client to a full tunnel - replace the line in its <code>.conf</code> with <code>AllowedIPs = 0.0.0.0/0, ::/0</code> and re-import, or re-issue the client in "All traffic" mode (<code>--route-all</code>). The split tunneling page in the app then opens and you pick sites/apps there. If you only need part of the traffic in the tunnel (a network-level split), <code>AllowedIPs</code> already does that - the app feature is not required for it.
+</details>
+
+<details>
+  <summary><strong>Q: The desktop AmneziaVPN on macOS hangs on connect. What can I do?</strong></summary>
+  <b>A:</b> The desktop AmneziaVPN app on macOS does not yet support CPS (the <code>I1</code> parameter) - the newest AmneziaWG 2.0 obfuscation layer, so it hangs on connect. Mobile (iOS/Android) and CLI clients handle CPS and connect fine. Install with the <code>--no-cps</code> flag: the installer drops <code>I1</code> from the server config and all clients, and the desktop connects. Only the CPS layer is lost, the rest of the obfuscation (Jc/S1-S4/H1-H4) stays - which is exactly what worked in Russia before CPS existed. On an already-installed server it is the same via reinstall: <code>sudo bash install_amneziawg_en.sh --force --no-cps</code>, then reissue existing clients <code>sudo bash /root/awg/manage_amneziawg.sh regen</code> (without this a client that still has <code>I1</code> will not match a server without <code>I1</code>). To re-enable CPS later, reinstall with any set-regeneration flag, e.g. <code>--preset=default</code> - note that this regenerates the WHOLE obfuscation set (H1-H4/S1-S4 too), so after re-enabling you need a <code>regen</code> of all clients again. The flag drops only <code>I1</code>: if you added <code>I2</code>-<code>I5</code> manually, they stay in the configs. Issue <a href="https://github.com/bivlked/amneziawg-installer/issues/159">#159</a>.
+</details>
+
+<details>
   <summary><strong>Q: How do I change the AmneziaWG port after installation?</strong></summary>
   <b>A:</b> 1. Change <code>ListenPort</code> in <code>/etc/amnezia/amneziawg/awg0.conf</code>. 2. Change <code>AWG_PORT</code> in <code>/root/awg/awgsetup_cfg.init</code>. 3. Update UFW (<code>sudo ufw delete allow &lt;old_port&gt;/udp</code>, <code>sudo ufw allow &lt;new_port&gt;/udp</code>). 4. Restart the service (<code>sudo systemctl restart awg-quick@awg0</code>). 5. <b>Regenerate ALL client configs</b> (<code>sudo bash /root/awg/manage_amneziawg.sh regen</code>) and distribute them.
 </details>
 
 <details>
   <summary><strong>Q: How do I change the internal VPN subnet?</strong></summary>
-  <b>A:</b> The easiest way is to uninstall (<code>sudo bash ./install_amneziawg_en.sh --uninstall</code>) and reinstall, specifying the new subnet during initial setup.
+  <b>A:</b> The easiest way is to uninstall (<code>sudo bash ./install_amneziawg_en.sh --uninstall</code>) and reinstall, specifying the new subnet during initial setup. A reinstall over a live server (<code>--force</code>) with a different subnet aborts while clients exist in the config - their addresses were issued in the old subnet.
 </details>
 
 <details>
@@ -599,19 +628,37 @@ chmod 700 /root/awg/manage_amneziawg.sh /root/awg/awg_common.sh
 
 <details>
   <summary><strong>Q: Where are the AWG 2.0 parameters stored?</strong></summary>
-  <b>A:</b> In <code>/root/awg/awgsetup_cfg.init</code> (variables AWG_Jc, AWG_S1..S4, AWG_H1..H4, AWG_I1). These same parameters are written to the server and client configs.
+  <b>A:</b> In <code>/root/awg/awgsetup_cfg.init</code> (variables AWG_Jc, AWG_S1..S4, AWG_H1..H4, AWG_I1..I5). These same parameters are written to the server and client configs.
 </details>
 
 <details>
   <summary><strong>Q: Can I change AWG 2.0 parameters after installation?</strong></summary>
   <b>A:</b> Yes. This is useful if your ISP started fingerprinting your server by static obfuscation parameters (e.g. Russian DPI blocked specific H1-H4 ranges). Workflow as of v5.8.0:
   <ol>
-    <li>Edit parameters (Jc, S1-S4, H1-H4, I1) in the <code>[Interface]</code> section of <code>/etc/amnezia/amneziawg/awg0.conf</code>.</li>
+    <li>Edit parameters (Jc, S1-S4, H1-H4, I1-I5) in the <code>[Interface]</code> section of <code>/etc/amnezia/amneziawg/awg0.conf</code>.</li>
     <li>Restart the service: <code>sudo systemctl restart awg-quick@awg0</code>.</li>
     <li>Regenerate every client config: <code>sudo bash /root/awg/manage_amneziawg.sh regen &lt;name&gt;</code>. As of v5.8.0, <code>regen</code> reads live values directly from <code>awg0.conf</code> (the source of truth) instead of the cached <code>awgsetup_cfg.init</code>.</li>
     <li>Distribute the new <code>.conf</code> / QR codes / vpn:// URIs to clients.</li>
   </ol>
   <b>Important:</b> server and client parameters must match — otherwise the handshake fails. The easiest way to get a fresh set of randomized non-overlapping H1-H4 ranges is to reinstall the server (<code>--uninstall</code> followed by a fresh install) — every install generates a unique set.
+</details>
+
+<details>
+  <summary><strong>Q: How is this different from the official Amnezia app?</strong></summary>
+  <b>A:</b> The protocol underneath is the same - AmneziaWG 2.0 with the same obfuscation. What differs is how the server is deployed and run. The official Amnezia app is a graphical client: you point it at a server and it installs the server side in Docker containers over SSH, without the host-wide tuning and hardening this installer does. This installer is built to get the most out of a dedicated VPS as a VPN server, so it works differently:
+  <ul>
+    <li>AmneziaWG runs as a kernel module (DKMS), with no Docker - no background daemon and none of its RAM/CPU cost.</li>
+    <li>The whole server is tuned to the hardware: sysctl buffers, swap, NIC offloads, BBR, unneeded packages stripped.</li>
+    <li>The attack surface is kept small: UFW deny-all, Fail2Ban, strict permissions, sysctl hardening, one service instead of a stack.</li>
+    <li>Fine tuning is available: a mobile-network preset and direct access to the AWG 2.0 parameters.</li>
+    <li>Management is from the CLI (<code>manage</code> add/remove/list/<code>--expires</code>), with prebuilt ARM modules and a headless mode for automation.</li>
+  </ul>
+  A detailed comparison is on the <a href="https://bivlked.github.io/amneziawg-installer/compare/">comparison page</a>.
+</details>
+
+<details>
+  <summary><strong>Q: My Hetzner server is unreachable from Russia: the handshake completes, then traffic freezes. What do I do?</strong></summary>
+  <b>A:</b> The server most likely landed in an AS that is not on Russia's allowlist (Hetzner is <code>AS24940</code>). Ordinary junk does not help; what gets through is an <code>I1</code>/CPS packet disguised as QUIC with an allowlisted SNI (<code>7-zip.org</code> for Hetzner). The method does not work on every ISP. Field results and instructions are in the <a href="#as-blocking-adv">Host Unreachable from Russia</a> section.
 </details>
 
 <details>
@@ -690,6 +737,13 @@ sudo systemctl restart awg-quick@awg0</pre>
 </details>
 
 <details>
+  <summary><strong>Q: iPhone connects but traffic stops after ~10 seconds (the tunnel "hangs")</strong></summary>
+  <b>A:</b> Fixed in v5.16.1. The default routing mode (mode 2, "Amnezia List + DNS") started with the <code>0.0.0.0/5</code> range, which covers the reserved <code>0.0.0.0/8</code>. The iOS kernel chokes on that block and never reaches the rest of the routes, so the tunnel comes up and then stalls after ~10 seconds (easy to mistake for DPI). Traced and fixed by @LiaNdrY (Issue #42). In v5.16.1 the first range is split into <code>1.0.0.0/8, 2.0.0.0/7, 4.0.0.0/6</code> - the same coverage without the problematic zero block, and split-tunnel is preserved.
+  <br><br>
+  <b>On an existing server (before v5.16.1)</b> the stored list lives in <code>/root/awg/awgsetup_cfg.init</code> and a plain <code>--force</code> reinstall does not change it (it is read back from the config). So: (1) quick per-client fix - replace the <code>AllowedIPs = ...</code> line in the iOS client config with <code>AllowedIPs = 0.0.0.0/0</code>; (2) keep split-tunnel - edit <code>/root/awg/awgsetup_cfg.init</code>, replace the leading <code>0.0.0.0/5</code> with <code>1.0.0.0/8, 2.0.0.0/7, 4.0.0.0/6</code>, then recreate the client (<code>remove</code> + <code>add</code>); (3) or a clean reinstall (<code>--uninstall</code>, then install v5.16.1) regenerates the list correctly.
+</details>
+
+<details>
   <summary><strong>Q: VPN connects over cellular only on the third attempt / unstable</strong></summary>
   <b>A:</b> Starting with v5.10.0, simply install with the <code>--preset=mobile</code> flag — it automatically sets optimal parameters for mobile networks (Jc=3, narrow Jmax). Discussion #38 (@elvaleto): on Tattelecom (Letai) with Jc=4-8 it took multiple attempts to connect, but after setting <code>Jc = 3</code> it worked immediately.
   <br><br>
@@ -711,13 +765,22 @@ sudo systemctl restart awg-quick@awg0</pre>
   <tr><td>Tattelecom (Letai)</td><td>Jc=3, I1=&lt;r 64&gt;</td><td><code>--preset=mobile</code></td><td>✅</td></tr>
   <tr><td>Yota (Moscow)</td><td>I1=&lt;b 0xce...&gt;, Jmax=261</td><td><code>--preset=mobile</code></td><td>✅</td></tr>
   <tr><td>Yota/Tele2 (Moscow)</td><td>Jc=3, Jmin=40, Jmax=70</td><td><code>--preset=mobile</code></td><td>✅</td></tr>
-  <tr><td>Tele2 (Krasnoyarsk)</td><td>Jc=3, <b>I1=absent</b></td><td><code>--preset=mobile</code> + remove <code>I1</code></td><td>✅</td></tr>
+  <tr><td>Tele2 (Krasnoyarsk)</td><td>earlier I1=absent; May 2026: I1=&lt;r 48&gt;</td><td><code>--preset=mobile</code>; in the May wave I1=&lt;r 48&gt;</td><td>✅</td></tr>
+  <tr><td>MTS (Primorsky Krai)</td><td>Jc=3, I1=&lt;r 48&gt; (May 2026)</td><td><code>--preset=mobile</code> + I1=&lt;r 48&gt;</td><td>✅</td></tr>
   <tr><td>Beeline</td><td>default</td><td><code>--preset=default</code></td><td>✅</td></tr>
   <tr><td>Megafon (Moscow)</td><td>Jc=3, Jmin=80, Jmax=268</td><td><code>--preset=mobile</code></td><td>🔄 testing</td></tr>
   <tr><td>Megafon (regions)</td><td><b>I1=absent</b></td><td><code>--preset=mobile</code> + remove <code>I1</code></td><td>✅</td></tr>
+  <tr><td>T-Mobile (Moscow)</td><td>narrow profile (like the Amnezia app): Jc=6, Jmin=10, Jmax=50, DNS-mimic I1=&lt;r 2&gt;&lt;b 0x8580...&gt; (full value in the routers section below); full tunnel <code>0.0.0.0/0, ::/0</code></td><td>manual parameters; the <code>diagnose --carrier=tmobile_us</code> profile checks Jc/Jmin/Jmax and that I1 is binary; <code>--preset=mobile</code> does not fit here</td><td>✅</td></tr>
+  <tr><td>Tele2 + Megafon (Kemerovo, region 42)</td><td>random I1 (&lt;r N&gt;) stopped passing after 2+ days; works with QUIC-mimicry I1=&lt;b 0xc3...&gt; or I1=absent</td><td><code>--preset=mobile</code> + I1=&lt;b 0xc3...&gt; (QUIC) or remove <code>I1</code></td><td>✅</td></tr>
   </table>
   <br>
   <b>"I1=absent"</b> means: in <code>/etc/amnezia/amneziawg/awg0.conf</code> and in client <code>.conf</code> files, remove the <code>I1 = ...</code> line entirely (do not leave it empty). This is the AWG 1.0 fallback — no CPS masking, but the handshake clears DPI at some regional carriers where CPS packets themselves trigger blocks (Issue <a href="https://github.com/bivlked/amneziawg-installer/issues/42">#42</a>, @alkorrnd). On the server: <code>sudo systemctl restart awg-quick@awg0</code>. On clients — <code>sudo bash /root/awg/manage_amneziawg.sh regen &lt;name&gt;</code> for each, then redistribute the configs.
+  <br>
+  <b>Update, May 2026:</b> in the May blocking wave the <code>I1=absent</code> option stopped working on Tele2 (Krasnoyarsk), while a short <code>I1 = &lt;r 48&gt;</code> cleared DPI. The same worked on MTS (Primorsky Krai). It looks like the I1 size matters for these carriers: a smaller value <code>&lt;r 48&gt;</code> may be less conspicuous to DPI. If <code>--preset=mobile</code> or <code>I1=absent</code> do not help - try <code>I1 = &lt;r 48&gt;</code>. The <code>diagnose --carrier=tele2_krasnoyarsk</code> profile still reflects the earlier <code>I1=absent</code> (Issue #42), so for the May 2026 wave set <code>I1 = &lt;r 48&gt;</code> manually (Discussion <a href="https://github.com/bivlked/amneziawg-installer/discussions/38">#38</a>, @alkorrnd + @etotent).
+  <br>
+  <b>QUIC-mimicry I1 (experimental):</b> instead of a random <code>&lt;r N&gt;</code> you can set I1 as a block that mimics the start of a QUIC packet: <code>I1 = &lt;b 0xc30000000108&gt;&lt;r 8&gt;&lt;b 0x08&gt;&lt;r 8&gt;&lt;b 0x0045dc&gt;&lt;t&gt;&lt;r 16&gt;</code>. The first bytes (<code>0xC3</code> + version) look like a QUIC v1 long-header, and DPI that classifies UDP/443 as QUIC let the flow through in this report. It held for 2+ days on Tele2/Megafon (Kemerovo) (Issue <a href="https://github.com/bivlked/amneziawg-installer/issues/42">#42</a>, @Fourdot-co). This is a client-side parameter, changed only in client <code>.conf</code> files, no server sync needed; mind that editing just one exported <code>.conf</code> will be lost on the next client <code>regen</code>. Note: do not base it on a TLS ClientHello (<code>&lt;b 0x160301...&gt;</code>) - that is a TCP format, over UDP the DPI will see the TCP structure and drop the packet. For UDP mimicry use a QUIC long-header or DTLS (the same ClientHello handshake type, but with a record header that adds epoch and sequence number).
+  <br>
+  <b>How to check whether a carrier is blocking your VPN server (DPI/TSPU diagnostics):</b> if AmneziaWG cannot punch through on a particular carrier, first find out whether the server IP itself is blocked and by what signal. The open-source scanner <a href="https://github.com/pwnnex/ByeByeVPN">ByeByeVPN</a> inspects the address from the censor's side and helps tell an obfuscation-parameter problem (then tune Jc/I1 per the table above) apart from an AS/IP-level block (then see the <a href="#as-blocking-adv">Hosting unreachable from Russia</a> section).
 </details>
 
 <details>
@@ -756,9 +819,9 @@ sudo ufw reload</pre>
   <br><br>
   <b>Verify:</b> from the client <code>ping &lt;server_tunnel_IP&gt;</code>. From the server to a client (<code>ping &lt;client_IP&gt;</code>) the client itself may not reply: on Windows and iOS the built-in firewall often drops echo-request — testing client → server is the cleanest path.
   <br><br>
-  <b>If you manually customized <code>AllowedIPs</code> on the client for split tunneling</b> (only some subnets go through the VPN — e.g. only Telegram/Discord, everything else stays direct), make sure the <b>tunnel subnet</b> (<code>10.9.9.0/24</code> or your custom one) is in that list. Without it, the client does not route through the tunnel even packets destined for the server itself — <code>ufw status verbose</code> and <code>iptables -L ufw-before-input -v -n</code> can look correct, and ping still fails. With the default <code>AllowedIPs = 0.0.0.0/0</code> (what <code>manage add</code> generates) the tunnel subnet is included automatically.
+  <b>If you manually customized <code>AllowedIPs</code> on the client for split tunneling</b> (only some subnets go through the VPN — e.g. only Telegram/Discord, everything else stays direct), make sure the <b>tunnel subnet</b> (<code>10.9.9.0/24</code> or your custom one) is in that list. Without it, the client does not route through the tunnel even packets destined for the server itself — <code>ufw status verbose</code> and <code>iptables -L ufw-before-input -v -n</code> can look correct, and ping still fails. Coverage depends on the routing mode chosen at install time: <code>--route-all</code> (full tunnel <code>0.0.0.0/0</code>) includes the tunnel subnet automatically; the default <code>--route-amnezia</code> (Amnezia List, excludes <code>10.0.0.0/8</code>) and <code>--route-custom=</code> do not, add it explicitly.
   <br><br>
-  <b>For client-to-client ping</b> (phone ↔ router via the server): <code>sudo ufw route allow in on awg0 out on awg0 &amp;&amp; sudo ufw reload</code>. <code>AllowedIPs</code> in client <code>.conf</code> defaults to <code>0.0.0.0/0</code> — the tunnel subnet is already covered. Discussion <a href="https://github.com/bivlked/amneziawg-installer/discussions/63">#63</a>.
+  <b>For client-to-client ping</b> (phone ↔ router via the server): <code>sudo ufw route allow in on awg0 out on awg0 &amp;&amp; sudo ufw reload</code>. <code>AllowedIPs</code> in client <code>.conf</code> depends on the routing mode chosen at install (see the paragraph above). Discussion <a href="https://github.com/bivlked/amneziawg-installer/discussions/63">#63</a>.
 </details>
 
 <details>
@@ -778,7 +841,7 @@ sudo ufw reload</pre>
 
 <details>
   <summary><strong>Q: Why did <code>--uninstall</code> not disable UFW?</strong></summary>
-  <b>A:</b> This is the expected behaviour as of v5.8.0. The installer writes a marker file <code>/root/awg/.ufw_enabled_by_installer</code> <b>only if it had to enable UFW itself</b> (UFW was in <code>inactive</code> state before the install). During <code>--uninstall</code>, UFW is disabled <b>only</b> when that marker is present. If UFW was already active on the VPS before this script was installed (for example, protecting SSH or web services), <code>--uninstall</code> will remove our own rules (VPN port, <code>awg0</code> routing) but leave UFW running. This protects your firewall posture from destructive uninstall on a VPS that was already hardened. If you want to force UFW off anyway — run <code>ufw disable</code> manually.
+  <b>A:</b> This is the expected behaviour as of v5.8.0. The installer writes a marker file <code>/root/awg/.ufw_enabled_by_installer</code> <b>only if it had to enable UFW itself</b> (UFW was in <code>inactive</code> state before the install). During <code>--uninstall</code>, UFW is disabled <b>only</b> when that marker is present. If UFW was already active on the VPS before this script was installed (for example, protecting SSH or web services), <code>--uninstall</code> will remove our own rules (VPN port, <code>awg0</code> routing; the SSH rate-limit rule it added stays in place) but leave UFW running. This protects your firewall posture from destructive uninstall on a VPS that was already hardened. If you want to force UFW off anyway — run <code>ufw disable</code> manually.
 </details>
 
 <details>
@@ -851,11 +914,56 @@ The report (`--diagnostic`) includes the following sections:
 </details>
 
 <details>
+<summary><strong>AmneziaWG handshake completes but traffic then dies (Russian DPI / TSPU, Hetzner, endless re-handshakes)</strong></summary>
+
+This symptom is different from the item above: the handshake **completes once** (`Received handshake response` shows up in the client log), traffic may flow for a couple of seconds, then it goes silent. The client loops `Handshake did not complete after 5 seconds` and `stopped hearing back`, while `awg show` on the server shows a sharp asymmetry: the client sent tens of KiB, the server received only a couple of KiB, and `latest handshake` never refreshes.
+
+The server is not the problem here - the config is fine. This is DPI filtering by the host IP/AS: in-path equipment (in Russia, the TSPU) lets the initial handshake through, then chokes the established flow to near zero. The tell in `awg show`: the client received about 92 bytes (a WireGuard-level handshake response; on the wire the packet is larger due to obfuscation) and nothing more, even though it sent tens of KiB.
+
+From my own measurements Hetzner (AS24940) is consistently affected; large datacenter networks (OVH, AWS, Azure and the like) are also a risk zone - test by the specific IP and route, the block is not total.
+
+Quick way to confirm it is the path, not the config: bring the same config up **from a different network** (mobile data, another country). If the tunnel holds from there, the config works and the route to your current host is being cut.
+
+What to do:
+1. Spin up a test server at a different host or in another country. If the handshake holds there, the issue is your current host's AS.
+2. Move the server to a host with clean IPs that are not flagged as datacenter ranges. My pick is in the [Hosting](README.en.md#hosting-recommendation) section (FreakHosting): I tested it on my own Russian routes, and as of this writing AmneziaWG runs through it reliably, unlike Hetzner. This is not a guarantee - DPI shifts, so test a small VPS before migrating.
+3. Or put a relay/bridge in a "clean" network in front: client -> relay -> exit. The client->relay leg is not subject to the destination filter, and relay->exit runs between data centers.
+</details>
+
+<details>
+<summary><strong>AmneziaWG won't connect: the handshake never completes, though plain WireGuard works on the same server</strong></summary>
+
+Symptom: the client tries to connect, but the server does not process the AmneziaWG handshake - `tcpdump` shows packets arriving on the right port and the server accepting them, yet `latest handshake` in `awg show awg0` stays empty. Meanwhile plain WireGuard comes up fine on the same server. This happens outside Russia too, where DPI is not involved at all.
+
+Since vanilla WireGuard works, the network, the port and the firewall are ruled out. The only difference from AmneziaWG 2.0 is the obfuscation layer: `Jc`/`Jmin`/`Jmax`, `S1`-`S4`, `H1`-`H4`, and in version 2.0 `I1`-`I5`. If any one of these does not match byte-for-byte between server and client, the server cannot parse the incoming handshake and silently drops it - from the outside it looks like "packets arrive but are not processed".
+
+What to check:
+
+1. Compare the obfuscation parameters in the `[Interface]` section on the server and the client - they must be identical. `I1`-`I5` are case-sensitive (uppercase only); if `I1` is present on one side and absent on the other, that side falls back to AWG 1.0 while the other stays on 2.0, and the handshake never agrees.
+2. Compare versions on both ends: `awg --version`. A client built separately (for example `amneziawg-tools` from the AUR on Arch) is often older and does not speak AWG 2.0 - then the server expects a 2.0 envelope while the client sends the old format. See [AWG 2.0 Client Compatibility](#client-compat-adv) for the list of compatible clients.
+
+The specific case (an AWG 2.0 server with `S3`/`S4` > 0 and an old AWG 1.0 client) is a known upstream issue, covered in the [FAQ](#faq-advanced-adv).
+</details>
+
+<details>
 <summary><strong>Port is occupied by another process</strong></summary>
 
 1. Identify the process: `ss -lunp | grep :<port>`
 2. Change the AmneziaWG port or stop the conflicting service
 3. For port change instructions, see the FAQ "How do I change the port"
+</details>
+
+<details>
+<summary><strong>Install aborts at step 6: "Failed to detect network interface"</strong></summary>
+
+Step 6 detects the primary network interface (for NAT/MASQUERADE) via a chain: `ip route get 1.1.1.1`, the default IPv4 route, the first global-IPv4 interface, the default IPv6 route. If every method comes back empty, the provider blocks or null-routes `1.1.1.1`, policy-routing is in use, or egress is IPv6-only (seen on Ubuntu 26.04 / Timeweb).
+
+Set the interface manually and re-run the install:
+
+1. List interface names: `ip -br link` (for example `eth0`, `ens3`)
+2. Re-run the install with the interface on the same command line: `sudo AWG_MAIN_NIC=ens3 bash install_amneziawg_en.sh` - the value is picked up at step 6. A separate `export AWG_MAIN_NIC=...` + `sudo bash ...` does not work: sudo resets the environment (if you are already root, a plain `export` works)
+
+The value is validated (an existing interface with no special characters); on a typo the installer warns in the log and falls back to auto-detection.
 </details>
 
 ---
@@ -893,10 +1001,13 @@ sudo bash /root/awg/manage_amneziawg.sh stats --json
     "rx": 1332477952,
     "tx": 374083174,
     "last_handshake": 1710312180,
-    "status": "active"
+    "status": "Active",
+    "status_code": "active"
   }
 ]
 ```
+
+> **Note:** the `status` field is localized (EN `Active` / `Recent` / `Inactive`, RU `Активен` / `Недавно` / `Неактивен`) and is meant for humans. For automation, use the machine-stable `status_code` field - it does not depend on the script language and takes values from a fixed set: `active` (handshake < 3 min), `recent` (< 24 h), `inactive` (stats: no or stale handshake), `no_handshake` (list: no or stale handshake), `key_error` (list: client key not found in the server config), `no_data` (list: not enough data). The `status_code` field is present in both `list --json` and `stats --json`.
 
 ---
 
@@ -984,6 +1095,81 @@ sudo systemctl restart awg-quick@awg0
 
 > vpn:// URIs for Amnezia Client have always included MTU = 1280 in all script versions.
 
+### Automatic MSS clamp (since v5.17.0)
+
+Starting with v5.17.0 the server additionally clamps the TCP MSS to the tunnel size. This is a `TCPMSS` rule in the `mangle` table's `FORWARD` chain, added as separate commands in the `PostUp`/`PostDown` of `awg0.conf`. The value is derived from `MTU` (1280 by default): MSS 1240 for IPv4 and 1220 for IPv6, in both directions.
+
+**Why:** even with `MTU = 1280`, large pages and downloads sometimes stall on mobile carriers, behind double-NAT, and in a two-server cascade. The cause is a PMTU blackhole: when ICMP "Fragmentation needed" (or ICMPv6 "Packet Too Big" for IPv6) is filtered along the path, oversized TCP segments with the DF flag are silently dropped at the tunnel, and the connection hangs on large transfers (small requests still go through). The MSS clamp tells both sides a tunnel-safe segment size up front, so those packets never appear. It complements `MTU = 1280` rather than replacing it.
+
+The rule is applied automatically on install and reinstall (`--force`) for v5.17.0 and later. It needs no client config regeneration - it lives on the server and applies to every client. The MSS value is derived from `MTU` when the config is generated; if you change `MTU` manually after install, re-run the installer with `--force` (or edit the `PostUp` rule) so the clamp value updates.
+
+> The MSS clamp only affects TCP. Video and QUIC/HTTP3 (UDP) are untouched: if that is the traffic that stalls, the cause is elsewhere - see the obfuscation parameters and carrier presets.
+
+### Carrier blocks the port (no connection)
+
+If the tunnel does not come up at all on cellular (the handshake never completes) while it works fine on Wi-Fi, the problem may be the port rather than the obfuscation. By default the server listens on UDP 39743; some carriers (MTS, for example) drop that non-standard UDP port but reliably pass `443/udp` - it looks like QUIC/HTTP3. In this case `--preset=mobile` does not help (it changes the traffic disguise, not the port).
+
+Set the port at install time - `sudo bash install_amneziawg.sh --port=443 ...`. On an already running server, change the port without reinstalling:
+
+```bash
+sudo sed -i 's/^ListenPort = .*/ListenPort = 443/' /etc/amnezia/amneziawg/awg0.conf
+sudo sed -i 's/^export AWG_PORT=.*/export AWG_PORT=443/' /root/awg/awgsetup_cfg.init
+sudo ufw allow 443/udp
+sudo systemctl restart awg-quick@awg0
+```
+
+Then re-issue the client configs (`sudo bash /root/awg/manage_amneziawg.sh regen <name>`) - the new port lands in `Endpoint` - and re-import them on the devices. Port 443 also works on regular networks, so you can move all devices to it.
+
+> If, on the other hand, the tunnel comes up but some sites (e.g. YouTube) do not open while the VPN is connected, the cause is usually not the port but the device's IPv6 going around the tunnel. See the [IPv6 in IPv4-only mode](#ipv6-tunnel-adv) section for the explanation and fix.
+
+---
+
+<a id="as-blocking-adv"></a>
+## 🚧 Host Unreachable from Russia (Hetzner and others): AS-based Blocking and the I1/CPS Workaround
+
+**Symptom.** A VPN server on Hetzner behaves like this: the handshake completes, the client shows a recent handshake and receives a few kilobytes, after which the flow stops. The in-tunnel ping to the server (`10.x.x.x`) goes to 100% loss, incoming traffic freezes, and new handshakes never complete. It looks like the server died, even though it is alive and reachable over SSH.
+
+**Mechanism.** It looks like this is not a per-IP block but the server address landing in an autonomous system (AS) that is not on the allowlist. According to DPI researcher 0ka ([Habr, article 997088](https://habr.com/ru/articles/997088/)), the filtering relies on an allowlist of roughly 72 ASes; it excludes, for example, Hetzner `AS24940` as well as ranges of OVH, DigitalOcean, AWS and Cloudflare, and traffic to them is degraded at the carrier (TSPU) level. The key point: ordinary junk parameters (`Jc`/`Jmin`/`Jmax`) do not help here, because they change the packet signature rather than the destination AS. In our tests, what got through was an `I1`/CPS packet disguised as a QUIC handshake to an allowlisted SNI. The SNI is chosen per hoster; for Hetzner, `7-zip.org` worked.
+
+**Field test (June 2026).** The recipe was verified live on a clean Hetzner server (AS24940) from a Russian client across three Moscow ISPs, comparing the default configuration (generic `I1 = <r N>`) against the QUIC mimicry (`I1` generated for SNI `7-zip.org`).
+
+| ISP | Default (generic I1) | QUIC I1 (SNI 7-zip.org) |
+|-----|----------------------|--------------------------|
+| Rostelecom | blocked (handshake, then silence) | **access restored**: 0% loss, real web through the tunnel |
+| ecotelecom | blocked | **access restored**: 0% loss |
+| Seven Sky | blocked | **no effect** (two SNIs tested: `7-zip.org` and `www.google.com`) |
+
+Control: a tunnel to a server in a different AS (US) came up and held on all three ISPs, so in our test on Seven Sky it was Hetzner specifically that stayed unreachable, not VPN as such. On Seven Sky the block reproduced consistently, both evening and night, and the QUIC mimicry with two different SNIs did not lift it. In summary: 0ka's method does work, but not universally - the outcome depends on the ISP and the regional TSPU configuration.
+
+**How to apply manually.** The installer does not generate the QUIC mimicry `I1` on its own - this is a manual step:
+
+1. Generate the `I1` string for your hoster in [Mini QUIC Generator](https://sageptr.github.io/mini_quic_generator/) (by SagePtr): enter the SNI (`7-zip.org` for Hetzner) and copy the value from the "AmneziaWG 1.5+ (I1 = )" field.
+2. Replace the `I1 = ...` line in the `[Interface]` section of the server config `/etc/amnezia/amneziawg/awg0.conf` (`I1`-`I5` are case-sensitive, uppercase only).
+3. Restart the service and regenerate clients - `regen` writes the new `I1` into the client configs from `awg0.conf`, then redistribute the updated `.conf` files:
+   ```bash
+   sudo systemctl restart awg-quick@awg0
+   sudo bash /root/awg/manage_amneziawg.sh regen <name>
+   ```
+4. If access is not restored, try a different SNI or a different hoster: on some ISPs (like Seven Sky in our test) the mimicry did not pass with any of the SNIs we tried.
+
+> Method discussion and SNI selection: [ntc.party #12845](https://ntc.party/t/12845). If your Hetzner server goes silent after the handshake, first check whether this is the cause: bring up a test server with a different hoster (for example, in the US), and if the tunnel there works, the cause is destination-AS blocking.
+
+---
+
+<a id="active-probing-adv"></a>
+## 🛡️ Active Probing and Obfuscation Without a Proxy
+
+**What it is.** Deep packet inspection (DPI) does not always work passively. In active-probing mode it sends crafted or replayed packets to the server's UDP port and treats the endpoint's behavior as one signal: a real service answers as expected, while the absence of an expected cover-service response can raise suspicion (though it is not decisive on its own). DPI also passively inspects the signature of the handshake packets themselves.
+
+**What the protocol does on its own (no separate daemon).** AmneziaWG 2.0 conceals the handshake shape at the protocol level and reduces WireGuard-identifying responses for valid AWG traffic, without standing up extra services:
+
+- **`I1`-`I5` (CPS concealment).** Concealment packets can make the handshake resemble allowed traffic - for example QUIC-like traffic associated with a whitelisted SNI, depending on configuration - so the observable handshake signature, and any response to a valid AWG initiation, look unlike stock WireGuard. It does not actively answer arbitrary QUIC/TLS/DNS probes as a real service. This is the mechanism used by the AS-based-blocking recipe; the concrete SNI selection is in [AS-based blocking and the I1/CPS workaround](#as-blocking-adv).
+- **A whitelisted port.** Running the VPN on port 443 or 53 (`--port=443`) places it on commonly allowed service ports, which may reduce simple port-based blocking but does not by itself defeat active probing.
+
+**An honest boundary: where a separate proxy goes further.** In the most aggressive active-probing scenarios a separate responding proxy (for example wiresock's `amneziawg-proxy`) is objectively stronger: it actually answers a probe as a real service - it speaks QUIC/TLS on 443, answers DNS on 53, handles STUN and SIP. That is a different engineering trade-off: an always-on daemon, an extra port, a Rust build, and for full bidirectional masking their own client. Here the obfuscation is built into the protocol itself and targets common passive and mobile DPI patterns without a separate daemon, an extra port, or a paid client; stronger active-probing resistance is the proxy's role. Which one you want depends on how aggressive the probing is on your network.
+
+> A comparison with the official Amnezia app and other tools is on the [comparison page](https://bivlked.github.io/amneziawg-installer/compare/).
+
 ---
 
 <a id="client-compat-adv"></a>
@@ -1012,6 +1198,8 @@ Not all clients support AWG 2.0. Check compatibility before choosing a client:
 | [awg-proxy](https://github.com/timbrs/amneziawg-mikrotik-c) | MikroTik (RouterOS Container) | Docker container bridging MikroTik's native WireGuard to AmneziaWG |
 
 > **Keenetic native AWG 2.0:** Firmware 4.x supports AWG 2.0 natively without extra packages. If the tunnel connects but traffic doesn't flow — the issue is the I1 format. Working options: `I1 = <r 64>` or the DNS-mimicking pattern `I1 = <r 2><b 0x858000010001000000000669636c6f756403636f6d0000010001c00c000100010000105a00044d583737>`. After replacing I1 in the server config: `sudo systemctl restart awg-quick@awg0` + `manage regen <client>`. [Discussion #45](https://github.com/bivlked/amneziawg-installer/discussions/45).
+
+> **Keenetic Speedster (firmware 5.0.6), AmneziaWG won't connect:** older firmware does not yet parse H1-H4 as ranges (`lower-upper`) and raises an `invalid H1` error. Set H1-H4 to concrete numbers - the other obfuscation layers (Jc/Jmin/Jmax, I1, S1-S4) keep working. If the handshake clears but no traffic flows - lower the junk (`Jc=3`, `Jmin=10`, `Jmax=50`), and if needed remove the `I1` line and zero out `S3`/`S4`. A firmware-independent workaround is the userspace [AWG Manager](https://github.com/hoaxisr/awg-manager) (does not depend on the Keenetic firmware version). [Discussion #81](https://github.com/bivlked/amneziawg-installer/discussions/81).
 
 ---
 
@@ -1064,6 +1252,8 @@ Starting with v5.9.0, the installer works on ARM systems alongside x86_64.
 2. If a prebuilt `amneziawg.ko` package matching your kernel exists in the [arm-packages release](https://github.com/bivlked/amneziawg-installer/releases/tag/arm-packages), it is downloaded and installed via `dpkg`. This takes 2-3 minutes.
 3. If no prebuilt package matches, the installer falls back to DKMS compilation from source. This works on any kernel but takes longer (10-30 min depending on hardware).
 
+> **Prebuilt ARM coverage:** prebuilt packages are built for Raspberry Pi (3/4/5), Ubuntu 24.04/25.10 ARM64 and Debian 12/13 ARM64. Ubuntu 26.04 ARM64 has no prebuilt yet - the module is built from source via DKMS (slower on first install, then works normally).
+
 **Raspberry Pi kernel detection:**
 
 Raspberry Pi Foundation kernels have a `+rpt` suffix in their version string (e.g. `6.12.75+rpt-rpi-v8`). The installer maps this suffix to the correct headers package. Standard Debian/Ubuntu ARM64 kernels use their default headers.
@@ -1084,6 +1274,57 @@ Raspberry Pi 3 has 1 GB RAM and 4 cores at 1.2 GHz. Kernel module compilation ca
 <summary><strong>Q: How do I check if the prebuilt module was used?</strong></summary>
 Look for <code>Prebuilt module installed</code> in the install log (<code>/root/awg/install_amneziawg.log</code>). If DKMS was used instead, you'll see <code>dkms install</code> output.
 </details>
+
+---
+
+<a id="linux-client-adv"></a>
+## 🐧 Connecting a Linux machine as a client
+
+Mobile and desktop clients take the config through the app, a QR code, or a vpn:// URI. To connect an ordinary Linux box as a client (a home server, a second machine, a Linux router), you need the same userspace that understands AWG 2.0 obfuscation - plain `wireguard` will not do, it knows nothing about Jc/S/H/I. Two paths.
+
+### 1. Kernel module + tools (Ubuntu / Debian)
+
+On the SERVER, issue a client config and grab it:
+
+```bash
+sudo bash /root/awg/manage_amneziawg.sh add my-linux-box
+# ready config: /root/awg/my-linux-box.conf
+```
+
+On the CLIENT, install the AmneziaWG module and tools. These are the same packages the installer uses, but a client needs no UFW / Fail2Ban / server tuning:
+
+```bash
+# Ubuntu
+sudo add-apt-repository -y ppa:amnezia/ppa
+sudo apt update
+sudo apt install -y amneziawg-dkms amneziawg-tools linux-headers-$(uname -r)
+```
+
+Debian has no separate PPA packages. The installer works around this by remapping the suite to the nearest Ubuntu one (bookworm -> focal, trixie -> noble), but as a manual step on a client that is fragile - for a Debian client prefer userspace `amneziawg-go` (path 2) or build the module from source.
+
+Place the config under the name `awg0` and bring the tunnel up:
+
+```bash
+sudo mkdir -p /etc/amnezia/amneziawg
+sudo cp my-linux-box.conf /etc/amnezia/amneziawg/awg0.conf
+sudo chmod 600 /etc/amnezia/amneziawg/awg0.conf
+sudo awg-quick up awg0
+sudo systemctl enable awg-quick@awg0   # start on boot
+```
+
+Check: `sudo awg show` shows a `latest handshake` - the main sign of a live tunnel. On a full tunnel `curl ifconfig.me` returns the server IP; on a split tunnel verify with traffic to an address covered by `AllowedIPs`. Stop the tunnel with `sudo awg-quick down awg0`.
+
+### 2. amneziawg-go (userspace, no kernel module)
+
+If the module cannot be installed (no kernel headers, DKMS blocked, an exotic architecture), the userspace [`amneziawg-go`](https://github.com/amnezia-vpn/amneziawg-go) runs over `/dev/net/tun` on any Linux at the cost of ~30-50% CPU overhead. The client needs `amneziawg-go` plus `amneziawg-tools`. `awg-quick up awg0` picks up the userspace implementation if the `amneziawg-go` binary is in `PATH` (or set `WG_QUICK_USERSPACE_IMPLEMENTATION=/path/to/amneziawg-go`); it needs access to `/dev/net/tun` and `CAP_NET_ADMIN`. Building and running it is covered in [LXC / Docker via amneziawg-go](#lxc-userspace-adv).
+
+### Careful on a remote machine (risk of losing SSH)
+
+If the Linux client is a remote server you manage over SSH, a full tunnel (`AllowedIPs = 0.0.0.0/0`) pushes all traffic into the tunnel, including your return SSH: the machine starts answering over the VPN, and the current session almost certainly drops.
+
+- For a client that only needs part of its traffic in the VPN, give it a split config: `manage_amneziawg.sh modify my-linux-box AllowedIPs "the-subnets-you-need"`. SSH stays on the direct route.
+- If you do need a full tunnel, before `awg-quick up` add an exception for your admin IP via the original gateway (a policy route), otherwise you lose access to the machine.
+- Test a full tunnel on a machine with a local console or KVM/IPMI, not blind over SSH.
 
 ---
 
@@ -1131,7 +1372,7 @@ sudo sysctl --system
 # Check the latest version: https://github.com/amnezia-vpn/amneziawg-go/releases
 AWG_GO_VERSION="0.2.15"
 ARCH="amd64"  # or arm64 for ARM VPS
-sudo apt install -y iptables git make
+sudo apt install -y iptables git make curl
 sudo curl -fsSL \
   "https://github.com/amnezia-vpn/amneziawg-go/releases/download/v${AWG_GO_VERSION}/amneziawg-go-linux-${ARCH}" \
   -o /usr/local/bin/amneziawg-go
@@ -1261,6 +1502,8 @@ client_body_timeout 10s;
     }
 }
 ```
+
+* **IPv6 Dual-Stack Tunnel - rolling back `ALLOW_IPV6_TUNNEL=0`:** Setting `ALLOW_IPV6_TUNNEL=0` in `awgsetup_cfg.init` (or re-running without `--allow-ipv6-tunnel`) does **not** remove existing dual-stack `AllowedIPs = ..., fddd::.../128` entries from `[Peer]` blocks already written to `awg0.conf`. The entries remain and the kernel keeps IPv6 routes for those peers. `manage_amneziawg.sh regen <name>` (or the full path `/root/awg/manage_amneziawg.sh regen <name>`) after disabling the flag rebuilds only the client `.conf` - it becomes IPv4-only, since `regenerate_client` reads `ALLOW_IPV6_TUNNEL`. But `regen` does **not** remove the IPv6 `AllowedIPs` from the server `[Peer]` block. To clear the server side too, use the sed cleanup across all peers: `awg-quick down awg0; sed -i 's|, fddd:[^/]*/[0-9]*||g' /etc/amnezia/amneziawg/awg0.conf; awg-quick up awg0`, or `manage_amneziawg.sh remove <name>` + `add <name>`.
 
 ---
 

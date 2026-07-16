@@ -2,11 +2,13 @@
 
 A step-by-step guide for deploying an AmneziaWG 2.0 VPN server on a clean Ubuntu or Debian VPS over SSH. Single bash command, no Docker, no web panel. Aimed at headless setups where you want a working DPI-resistant VPN with the lowest possible footprint on a cheap VPS.
 
+> The official [Amnezia VPN](https://amnezia.org/) app deploys the server side for you in Docker. This guide takes a different route on purpose: AmneziaWG as a kernel module, no Docker overhead, and the whole server tuned and hardened for a single-purpose VPN. See [how it differs](https://bivlked.github.io/amneziawg-installer/compare/).
+
 ## TL;DR
 
 - One command, MIT-licensed, fully self-hosted, no third-party dependencies at runtime.
 - Works on Ubuntu 24.04 LTS, Ubuntu 25.10/26.04, Debian 12 (bookworm), Debian 13 (trixie).
-- Built for cheap VPS budgets: $3 to $5 a month, 1 vCPU, 512 MB RAM, 5 GB disk minimum.
+- Built for cheap VPS budgets: $3 to $5 a month, 1 vCPU, 512 MB RAM minimum (1 GB recommended), 2 GB disk minimum (3+ GB recommended).
 - Both x86_64 (amd64) and ARM64 (aarch64), with prebuilt kernel modules covering Raspberry Pi 4/5, Ubuntu 24.04/25.10 ARM64, and Debian 12/13 ARM64 (Hetzner CAX, Oracle Ampere A1, AWS Graviton all run on these stock kernels). Ubuntu 26.04 ARM64 builds the module from source via DKMS.
 - DPI bypass for Russia (ТСПУ), Iran, China, school and corporate firewalls.
 - Survives kernel upgrades automatically via DKMS auto-repair (since v5.12.0).
@@ -32,7 +34,7 @@ Country matters mostly for latency and jurisdiction. ARM versus amd64 has no rea
 
 ## One-command install
 
-Connect as root (or as a sudo-capable user and prepend `sudo`). If your SSH listens on a non-default port, allow it in UFW **before** running the installer, otherwise the firewall step will lock you out of the session:
+Connect as root (or as a sudo-capable user and prepend `sudo`). The installer usually detects the SSH port automatically and allows it in UFW. If SSH runs on a non-standard port or autodetection is unavailable, pass `--ssh-port=YOUR_PORT` to the installer (comma-separated for several ports). As an extra conservative safeguard you can allow the port in UFW **before** running the installer:
 
 ```bash
 sudo ufw allow <your-ssh-port>/tcp
@@ -41,7 +43,7 @@ sudo ufw allow <your-ssh-port>/tcp
 Then:
 
 ```bash
-wget https://raw.githubusercontent.com/bivlked/amneziawg-installer/v5.13.0/install_amneziawg_en.sh
+wget -O install_amneziawg_en.sh https://raw.githubusercontent.com/bivlked/amneziawg-installer/v5.19.2/install_amneziawg_en.sh
 chmod +x install_amneziawg_en.sh
 sudo bash ./install_amneziawg_en.sh
 ```
@@ -50,7 +52,7 @@ The script walks through OS detection, base packages, PPA setup, kernel module i
 
 The script is **idempotent and resume-safe**: after each reboot, run the same command again and it picks up from where it left off. State lives in `/root/awg/setup_state`.
 
-For a non-interactive run pass `--yes` and the routing flag of your choice, e.g. `sudo bash ./install_amneziawg_en.sh --yes --route-amnezia`. Common flags: `--port=39743`, `--subnet=10.9.9.1/24`, `--disallow-ipv6`, `--preset=mobile`, `--endpoint=<public-IP>` (required when the server's public IP differs from its interface IP, typical on Oracle Cloud, GCP, or any NAT'd cloud setup). Full CLI: `--help` or [ADVANCED.en.md](ADVANCED.en.md#install-cli-adv).
+For a non-interactive run pass `--yes` and the routing flag of your choice, e.g. `sudo bash ./install_amneziawg_en.sh --yes --route-amnezia`. Common flags: `--port=39743`, `--subnet=10.9.9.1/24`, `--disallow-ipv6`, `--allow-ipv6-tunnel` (dual-stack IPv6 inside the tunnel), `--preset=mobile`, `--endpoint=<public-IP>` (required when the server's public IP differs from its interface IP, typical on Oracle Cloud, GCP, or any NAT'd cloud setup). Full CLI: `--help` or [ADVANCED.en.md](ADVANCED.en.md#install-cli-adv).
 
 ## First-time client setup
 
@@ -60,7 +62,7 @@ The default install creates two clients (`my_phone`, `my_laptop`) so you can con
 sudo bash /root/awg/manage_amneziawg.sh add my_iphone
 ```
 
-Three import paths land in `/root/awg/`:
+The client import files land in `/root/awg/`:
 
 - `<name>.conf` for desktop AmneziaWG clients, Linux `wg-quick`, and routers.
 - `<name>.png` QR code for the Amnezia VPN mobile app.
@@ -76,10 +78,10 @@ Verify the handshake from the server side with `sudo awg show awg0` after the cl
 
 ## Update flow
 
-Updating to a newer installer release on a server that already has v5.13.0 running:
+Updating to a newer installer release on a server that already has a supported version running:
 
 ```bash
-wget https://raw.githubusercontent.com/bivlked/amneziawg-installer/vX.Y.Z/install_amneziawg_en.sh
+wget -O install_amneziawg_en.sh https://raw.githubusercontent.com/bivlked/amneziawg-installer/vX.Y.Z/install_amneziawg_en.sh
 sudo bash ./install_amneziawg_en.sh --force
 ```
 
@@ -112,8 +114,9 @@ The uninstall path is symmetric: it removes the AmneziaWG service, the kernel mo
 
 ## Related reading
 
-- [Hetzner Community Tutorial #1443](https://community.hetzner.com/tutorials/install-amneziawg-on-ubuntu-debian) - Hetzner-specific deployment guide using this installer.
+- [Hetzner Community: Making a website accessible from restricted regions](https://community.hetzner.com/tutorials/making-website-accessible-from-restricted-regions) - Hetzner tutorial that references this installer.
 - [Pinggy: Top 5 Best Self-Hosted VPNs in 2026](https://pinggy.io/blog/top_5_best_self_hosted_vpns/) - third-party listing.
 - [VPN Status (RU): AmneziaWG catalog](https://vpnstatus.site/protocols/amneziawg) - Russian-language directory of AmneziaWG server-side options.
 - [LowEndTalk Tutorial #217191](https://lowendtalk.com/discussion/217191) - the short version of this guide, with reader Q&A.
+- [README.en.md](README.en.md) - project overview, full feature list, FAQ, and the comparison with similar tools.
 - [ADVANCED.en.md](ADVANCED.en.md) - full FAQ, mobile carrier presets, AWG 2.0 parameter reference, troubleshooting deep-dive.

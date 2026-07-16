@@ -46,29 +46,56 @@ manage_mktempdir() {
     echo "$d"
 }
 
+_manage_cleaned=0
 _manage_cleanup() {
+    # Идемпотентно: на INT/TERM зовётся из сигнального обработчика, затем ещё раз
+    # на EXIT - повтор должен быть no-op.
+    [[ "$_manage_cleaned" -eq 1 ]] && return 0
+    _manage_cleaned=1
     local d
     for d in "${_manage_temp_dirs[@]}"; do
         [[ -d "$d" ]] && rm -rf "$d"
     done
     type _awg_cleanup &>/dev/null && _awg_cleanup
 }
-trap _manage_cleanup EXIT INT TERM
+# На INT/TERM раньше cleanup срабатывал, но скрипт НЕ завершался - выполнение шло
+# дальше после прерванной команды, и cleanup повторялся на EXIT. Теперь сигнал =
+# cleanup + явный выход 130/143. restore_backup на время destructive-фазы ставит
+# СВОЙ INT/TERM-обработчик (с откатом), затем снимает его в _restore_cleanup.
+_manage_on_signal() {
+    _manage_cleanup
+    exit "$1"
+}
+trap _manage_cleanup EXIT
+trap '_manage_on_signal 130' INT
+trap '_manage_on_signal 143' TERM
 
 # --- Обработка аргументов ---
 COMMAND=""
+HELP_EXIT_RC=0   # C1: 0 = явный help (exit 0); ставится в 1 для ошибок использования
 ARGS=()
 while [[ $# -gt 0 ]]; do
     case $1 in
-        -h|--help)         COMMAND="help"; break ;;
+        -h|--help)         COMMAND="help"; HELP_EXIT_RC=0; break ;;
         -v|--verbose)      VERBOSE_LIST=1; shift ;;
         --no-color)        NO_COLOR=1; shift ;;
         --json)            JSON_OUTPUT=1; shift ;;
         --expires=*)       EXPIRES_DURATION="${1#*=}"; shift ;;
         --conf-dir=*)      AWG_DIR="${1#*=}"; shift ;;
         --server-conf=*)   SERVER_CONF_FILE="${1#*=}"; shift ;;
-        --apply-mode=*)    _CLI_APPLY_MODE="${1#*=}"; export AWG_APPLY_MODE="$_CLI_APPLY_MODE"; shift ;;
+        --apply-mode=*)
+            _CLI_APPLY_MODE="${1#*=}"
+            # Валидация сразу при парсинге: опечатка (--apply-mode=restrat)
+            # молча работала бы как syncconf - пользователь, обходящий проблему
+            # режимом restart, не узнал бы, что режим не применился.
+            case "$_CLI_APPLY_MODE" in
+                syncconf|restart) ;;
+                *) echo "Недопустимое значение --apply-mode: '$_CLI_APPLY_MODE' (ожидается: syncconf или restart)" >&2; exit 1 ;;
+            esac
+            export AWG_APPLY_MODE="$_CLI_APPLY_MODE"
+            shift ;;
         --psk)             CLI_ADD_PSK=1; shift ;;
+        --reset-routes)    CLI_RESET_ROUTES=1; shift ;;
         --yes)             CLI_YES=1; shift ;;
         --preset=*)        ROTATE_PRESET="${1#*=}"; shift ;;
         --preset)          ROTATE_PRESET="${2:-}"; shift 2 ;;
@@ -133,9 +160,7 @@ log_msg() {
     local type="$1" msg="$2"
     local ts
     ts=$(date +'%F %T')
-    local safe_msg
-    safe_msg="${msg//%/%%}"
-    local entry="[$ts] $type: $safe_msg"
+    local entry="[$ts] $type: $msg"
     local color_start="" color_end=""
 
     if [[ "$NO_COLOR" -eq 0 ]]; then
@@ -156,6 +181,11 @@ log_msg() {
     # WARN и ERROR в stderr (симметрия с install_amneziawg.sh:110+, важно
     # для CI/automation парсинга: stdout = «данные», stderr = «диагностика»).
     if [[ "$type" == "ERROR" || "$type" == "WARN" ]]; then
+        printf "${color_start}%s${color_end}\n" "$entry" >&2
+    elif [[ "${JSON_OUTPUT:-0}" -eq 1 ]]; then
+        # weaq P2: в режиме --json stdout обязан содержать ТОЛЬКО JSON (jq/automation).
+        # INFO/DEBUG уводим в stderr, иначе list/show/stats --json печатают INFO-строки
+        # перед JSON и ломают парсинг (подтверждено на biHetzner).
         printf "${color_start}%s${color_end}\n" "$entry" >&2
     else
         printf "${color_start}%s${color_end}\n" "$entry"
@@ -193,7 +223,8 @@ confirm_action() {
     if ! is_interactive; then return 0; fi
     local action="$1" subject="$2"
     read -rp "Вы действительно хотите $action $subject? [y/N]: " confirm < /dev/tty
-    if [[ "$confirm" =~ ^[Yy]$ ]]; then
+    # Принимаем y/yes (регистронезависимо) + случайные пробелы/CR по краям.
+    if [[ "$confirm" =~ ^[[:space:]]*[Yy]([Ee][Ss])?[[:space:]]*$ ]]; then
         return 0
     else
         log "Действие отменено."
@@ -261,6 +292,15 @@ check_dependencies() {
 # По успеху устанавливает LAST_BACKUP_PATH (используется restore_backup
 # для rollback snapshot).
 _backup_configs_nolock() {
+    # --no-prune: не удалять старые бэкапы после создания. Используется
+    # pre-restore snapshot'ом: иначе при уже накопленных 10 бэкапах prune
+    # обрезал бы самый старый, которым может оказаться именно выбранный для
+    # восстановления файл (он лежит в той же папке $AWG_DIR/backups).
+    local no_prune=0
+    if [[ "${1:-}" == "--no-prune" ]]; then
+        no_prune=1
+        shift
+    fi
     log "Создание бэкапа..."
     local bd="$AWG_DIR/backups"
     mkdir -p "$bd" || die "Ошибка mkdir $bd"
@@ -371,10 +411,12 @@ _backup_configs_nolock() {
     rm -rf "$td"
     chmod 600 "$bf" || log_warn "Ошибка chmod бэкапа"
 
-    # Оставляем максимум 10 бэкапов
-    find "$bd" -maxdepth 1 -name "awg_backup_*.tar.gz" -printf '%T@ %p\n' | \
-        sort -nr | tail -n +11 | cut -d' ' -f2- | xargs -r rm -f || \
-        log_warn "Ошибка удаления старых бэкапов"
+    # Оставляем максимум 10 бэкапов (кроме режима --no-prune)
+    if [[ "$no_prune" -eq 0 ]]; then
+        find "$bd" -maxdepth 1 -name "awg_backup_*.tar.gz" -printf '%T@ %p\n' | \
+            sort -nr | tail -n +11 | cut -d' ' -f2- | xargs -r rm -f || \
+            log_warn "Ошибка удаления старых бэкапов"
+    fi
 
     LAST_BACKUP_PATH="$bf"
     log "Бэкап создан: $bf"
@@ -389,8 +431,25 @@ backup_configs() {
         exec {backup_lock_fd}>&-
         return 1
     fi
+    # Дополнительно берём конфиг-лок: параллельный `manage add/remove` мог
+    # изменить awg0.conf/keys МЕЖДУ копированием server/ и clients/ в tmpdir -
+    # каждый файл в бэкапе цел (atomic mv), но набор рассинхронизирован
+    # (peer-mismatch при restore). restore_backup держит оба лока - бэкап
+    # должен делать так же. ВАЖНО: в restore _backup_configs_nolock вызывается
+    # под уже взятым конфиг-локом - здесь лок берётся только для прямой
+    # команды backup (flock non-reentrant, см. контракт в awg_common.sh).
+    local config_lockfile="${AWG_DIR}/.awg_config.lock"
+    local config_lock_fd
+    exec {config_lock_fd}>"$config_lockfile"
+    if ! flock -x -w 30 "$config_lock_fd"; then
+        log_error "Таймаут ожидания блокировки конфига (30 сек)."
+        exec {config_lock_fd}>&-
+        exec {backup_lock_fd}>&-
+        return 1
+    fi
     _backup_configs_nolock
     local _rc=$?
+    exec {config_lock_fd}>&-
     exec {backup_lock_fd}>&-
     return "$_rc"
 }
@@ -425,7 +484,7 @@ _restore_do_rollback() {
     [[ -d "$_rtd/keys" ]] && cp -a "$_rtd/keys/"* "$KEYS_DIR/" 2>/dev/null
     [[ -f "$_rtd/server_private.key" ]] && cp -a "$_rtd/server_private.key" "$AWG_DIR/" 2>/dev/null
     [[ -f "$_rtd/server_public.key" ]] && cp -a "$_rtd/server_public.key" "$AWG_DIR/" 2>/dev/null
-    [[ -d "$_rtd/expiry" ]] && cp -a "$_rtd/expiry"/* "${EXPIRY_DIR:-$AWG_DIR/expiry}/" 2>/dev/null
+    [[ -d "$_rtd/expiry" ]] && { mkdir -p "${EXPIRY_DIR:-$AWG_DIR/expiry}"; cp -a "$_rtd/expiry"/* "${EXPIRY_DIR:-$AWG_DIR/expiry}/" 2>/dev/null; }
     [[ -f "$_rtd/awg-expiry" ]] && cp -a "$_rtd/awg-expiry" /etc/cron.d/awg-expiry 2>/dev/null
     rm -rf "$_rtd"
 
@@ -521,7 +580,12 @@ restore_backup() {
         # Реентранс невозможен: `local` и `trap -` не вызывают функций,
         # а после `trap - RETURN` наш trap уже снят.
         local _rc=$?
+        # Снимаем RETURN и ВОССТАНАВЛИВАЕМ глобальные INT/TERM (локальные хуки
+        # restore выставлены ниже). Просто `trap -` сбросил бы их в default и
+        # менеджер после restore потерял бы B1-поведение signal -> cleanup+exit.
         trap - RETURN
+        trap '_manage_on_signal 130' INT
+        trap '_manage_on_signal 143' TERM
         if [[ $_restore_ok -eq 0 && $_destructive_ops_started -eq 1 && -n "$_rollback_snap" ]]; then
             _restore_do_rollback "$_rollback_snap" || true
         fi
@@ -531,9 +595,18 @@ restore_backup() {
         return $_rc
     }
     trap _restore_cleanup RETURN
+    # INT/TERM в ходе restore: тот же rollback+cleanup, что и на обычном return
+    # (_restore_cleanup видит локальные _restore_ok/_rollback_snap/td), затем выход
+    # с сигнальным кодом. Перекрывает глобальный _manage_on_signal, чтобы прерывание
+    # destructive-фазы не оставило систему без отката. _restore_cleanup сам снимет
+    # эти хуки (trap - INT TERM выше).
+    trap '_restore_cleanup; exit 130' INT
+    trap '_restore_cleanup; exit 143' TERM
 
     log "Создание бэкапа текущей..."
-    if ! _backup_configs_nolock; then
+    # --no-prune: выбранный для восстановления $bf лежит в той же папке бэкапов;
+    # prune после создания pre-restore снапшота мог бы удалить именно его.
+    if ! _backup_configs_nolock --no-prune; then
         log_error "Не удалось создать бэкап текущей конфигурации."
         return 1
     fi
@@ -551,7 +624,8 @@ restore_backup() {
     # использовать path traversal (../), абсолютные пути, symlinks или device
     # файлы для перезаписи произвольных системных файлов при распаковке от root.
 
-    # Проверка типов через verbose listing: отклоняем block/char/FIFO/hardlink
+    # Проверка типов через verbose listing: отклоняем block/char/FIFO/symlink ('l')
+    # и hardlink ('h') - оба класса ссылок небезопасны при распаковке.
     local _tar_verbose _vline _tc
     _tar_verbose=$(tar -tvzf "$bf" 2>/dev/null) || {
         log_error "Не удалось прочитать содержимое архива $bf"
@@ -603,6 +677,17 @@ restore_backup() {
         return 1
     fi
 
+    # Проверка полноты бэкапа ДО остановки сервиса. Бэкап без серверного конфига
+    # бесполезен (VPN без него не поднять), а пустой server/ ронял `cp "$td/server/"*`
+    # уже ПОСЛЕ stop и форсил откат рабочей системы. Проверяем до destructive-фазы:
+    # сервис не трогаем, откат не нужен.
+    local _srv_base
+    _srv_base=$(basename "$SERVER_CONF_FILE")
+    if [[ ! -f "$td/server/$_srv_base" ]]; then
+        log_error "Бэкап неполный: отсутствует серверный конфиг ($_srv_base) - восстановление отменено."
+        return 1
+    fi
+
     log "Остановка сервиса..."
     systemctl stop awg-quick@awg0 || log_warn "Сервис не остановлен."
 
@@ -624,26 +709,47 @@ restore_backup() {
 
     if [[ -d "$td/clients" ]]; then
         log "Восстановление файлов клиентов..."
-        if ! cp -a "$td/clients/"* "$AWG_DIR/"; then
-            log_error "Ошибка копирования clients — восстановление прервано (запуск отката)."
-            return 1
+        # C11: чистая замена, не merge. Удаляю stale client-артефакты, которых
+        # нет в бэкапе (иначе клиент, удалённый после снятия бэкапа, остаётся
+        # orphan .conf/.png/.vpnuri). Scope строго managed client-globs - НЕ
+        # трогаю скрипты, server-ключи, backups/, логи, .lock, awgsetup_cfg.init.
+        rm -f "$AWG_DIR"/*.conf "$AWG_DIR"/*.png "$AWG_DIR"/*.vpnuri 2>/dev/null || true
+        # Пустой clients/ - валидный случай (сервер без клиентских конфигов):
+        # prune выше уже дал чистую замену, copy просто пропускаем (без compgen
+        # голый glob "$td/clients/"* остался бы литералом и уронил cp -> откат).
+        if compgen -G "$td/clients/*" > /dev/null; then
+            if ! cp -a "$td/clients/"* "$AWG_DIR/"; then
+                log_error "Ошибка копирования clients — восстановление прервано (запуск отката)."
+                return 1
+            fi
+            chmod 600 "$AWG_DIR"/*.conf 2>/dev/null
+            chmod 600 "$AWG_DIR"/*.png 2>/dev/null
+            chmod 600 "$AWG_DIR"/*.vpnuri 2>/dev/null
+            chmod 600 "$CONFIG_FILE" 2>/dev/null
+            log_debug "Файлы клиентов восстановлены в $AWG_DIR"
+        else
+            log_debug "Бэкап без клиентских файлов (clients/ пуст) - пропуск копирования."
         fi
-        chmod 600 "$AWG_DIR"/*.conf 2>/dev/null
-        chmod 600 "$AWG_DIR"/*.png 2>/dev/null
-        chmod 600 "$AWG_DIR"/*.vpnuri 2>/dev/null
-        chmod 600 "$CONFIG_FILE" 2>/dev/null
-        log_debug "Файлы клиентов восстановлены в $AWG_DIR"
     fi
 
     if [[ -d "$td/keys" ]]; then
         log "Восстановление ключей..."
         mkdir -p "$KEYS_DIR"
-        if ! cp -a "$td/keys/"* "$KEYS_DIR/"; then
+        # C11: удаляю stale client-ключи, которых нет в бэкапе (server-ключи
+        # лежат в AWG_DIR, не в KEYS_DIR, поэтому не затрагиваются).
+        rm -f "$KEYS_DIR"/* 2>/dev/null || true
+        # C2: keys/ в бэкапе может быть пустым (сервер без клиентских ключей).
+        # Без compgen-guard голый glob "$td/keys/*" остался бы литералом, cp упал
+        # бы, и весь restore ушёл бы в откат. Пустой keys/ - не ошибка.
+        if ! compgen -G "$td/keys/*" > /dev/null; then
+            log_debug "Бэкап без клиентских ключей (keys/ пуст) - пропуск, не ошибка."
+        elif ! cp -a "$td/keys/"* "$KEYS_DIR/"; then
             log_error "Ошибка копирования keys — восстановление прервано (запуск отката)."
             return 1
+        else
+            chmod 600 "$KEYS_DIR"/* 2>/dev/null
+            log_debug "Ключи восстановлены в $KEYS_DIR"
         fi
-        chmod 600 "$KEYS_DIR"/* 2>/dev/null
-        log_debug "Ключи восстановлены в $KEYS_DIR"
     fi
 
     # Серверные ключи: cp -a сохраняет mode из архива, поэтому форсируем 600
@@ -666,6 +772,11 @@ restore_backup() {
     if [[ -d "$td/expiry" ]]; then
         log "Восстановление данных expiry..."
         mkdir -p "${EXPIRY_DIR:-$AWG_DIR/expiry}"
+        # C11: expiry НЕ пруним намеренно. Orphan-метки для несуществующих клиентов
+        # безвредны: check_expired_clients при истечении распознаёт отсутствие peer
+        # в конфиге и зачищает метку с артефактами сам. Prune здесь был бы небезопасен:
+        # и rm, и последующий cp - best-effort (|| true), так что сбой copy после
+        # prune молча оставил бы expiry пустым. Сами client-артефакты пруним выше.
         cp -a "$td/expiry/"* "${EXPIRY_DIR:-$AWG_DIR/expiry}/" 2>/dev/null || true
         chmod 600 "${EXPIRY_DIR:-$AWG_DIR/expiry}"/* 2>/dev/null
     fi
@@ -719,27 +830,92 @@ modify_client() {
 
     case "$param" in
         DNS)
-            if ! [[ "$value" =~ ^[0-9a-fA-F.:,\ ]+$ ]]; then
-                log_error "Невалидный DNS: '$value' (допустимы IP-адреса через запятую)"
-                return 1
-            fi ;;
+            # Структурная проверка списка DNS. Старый charset-only regex
+            # ^[0-9a-fA-F.:,\ ]+$ пропускал мусор ('abc' - буквы a-f; '999.999.999.999' -
+            # вне диапазона). DNS по контракту - только IP через запятую (без FQDN),
+            # поэтому каждый элемент = bare IPv4 или IPv6, как у Endpoint/AllowedIPs.
+            case "$value" in
+                *$'\n'*|*$'\r'*|*\\*|*\"*|*\'*|"")
+                    log_error "Невалидный DNS: '$value'"
+                    return 1 ;;
+            esac
+            case "$value" in
+                ,*|*,|*,,*)
+                    log_error "Невалидный DNS '$value': пустой элемент списка (лишняя запятая)"
+                    return 1 ;;
+            esac
+            local _dns_tok _dns_ifs="$IFS"
+            IFS=','
+            for _dns_tok in $value; do
+                _dns_tok="${_dns_tok//[[:space:]]/}"
+                if [[ -z "$_dns_tok" ]]; then
+                    IFS="$_dns_ifs"
+                    log_error "Невалидный DNS '$value': пустой элемент списка (лишняя запятая)"
+                    return 1
+                fi
+                if ! _valid_ipv4 "$_dns_tok" && ! _valid_ipv6 "$_dns_tok"; then
+                    IFS="$_dns_ifs"
+                    log_error "Невалидный DNS '$value': '$_dns_tok' не похож на IPv4/IPv6-адрес"
+                    return 1
+                fi
+            done
+            IFS="$_dns_ifs"
+            ;;
         PersistentKeepalive)
             if ! [[ "$value" =~ ^[0-9]+$ ]] || [[ "$value" -gt 65535 ]]; then
                 log_error "Невалидный PersistentKeepalive: '$value' (допустимо: 0-65535)"
                 return 1
             fi ;;
         Endpoint)
+            # C5: помимо отсечения опасных символов - позитивная проверка host:port.
             case "$value" in
-                *$'\n'*|*$'\r'*|*\\*|*\"*|*\'*|"")
+                *$'\n'*|*$'\r'*|*\\*|*\"*|*\'*|*' '*|*$'\t'*|"")
                     log_error "Невалидный Endpoint: '$value'"
                     return 1 ;;
-            esac ;;
+            esac
+            local _eh _ept
+            if [[ "$value" == \[*\]:* ]]; then
+                _eh="${value%]:*}"; _eh="${_eh#\[}"   # IPv6 без скобок
+                _ept="${value##*]:}"
+                _valid_ipv6 "$_eh" || { log_error "Невалидный Endpoint '$value': некорректный IPv6-хост"; return 1; }
+            else
+                _eh="${value%:*}"; _ept="${value##*:}"
+                _valid_host_or_ipv4 "$_eh" || { log_error "Невалидный Endpoint '$value': ожидается host:port (FQDN / IPv4 / [IPv6])"; return 1; }
+            fi
+            { [[ "$_ept" =~ ^[0-9]+$ ]] && [[ "$_ept" -ge 1 && "$_ept" -le 65535 ]]; } || { log_error "Невалидный Endpoint '$value': порт должен быть 1-65535"; return 1; }
+            ;;
         AllowedIPs)
+            # C5: помимо отсечения опасных символов - позитивная проверка CIDR-списка.
             case "$value" in
                 *$'\n'*|*$'\r'*|*\\*|*\"*|*\'*|"")
                     log_error "Невалидный AllowedIPs: '$value'"
                     return 1 ;;
-            esac ;;
+            esac
+            # Лишние запятые: word-splitting по IFS=',' молча отбрасывает
+            # ХВОСТОВОЙ пустой элемент (например "10.0.0.0/24,"), поэтому проверяем
+            # структуру списка отдельно: ведущая/хвостовая/двойная запятая.
+            case "$value" in
+                ,*|*,|*,,*)
+                    log_error "Невалидный AllowedIPs '$value': пустой элемент списка (лишняя запятая)"
+                    return 1 ;;
+            esac
+            local _aip_tok _aip_ifs="$IFS"
+            IFS=','
+            for _aip_tok in $value; do
+                _aip_tok="${_aip_tok//[[:space:]]/}"
+                if [[ -z "$_aip_tok" ]]; then
+                    IFS="$_aip_ifs"
+                    log_error "Невалидный AllowedIPs '$value': пустой элемент списка (лишняя запятая)"
+                    return 1
+                fi
+                if ! _valid_cidr "$_aip_tok"; then
+                    IFS="$_aip_ifs"
+                    log_error "Невалидный AllowedIPs '$value': '$_aip_tok' не похож на CIDR (IPv4/IPv6 с опциональным префиксом /n)"
+                    return 1
+                fi
+            done
+            IFS="$_aip_ifs"
+            ;;
     esac
 
     # Блокировка перед state-проверками (защита от TOCTOU с concurrent remove)
@@ -782,13 +958,15 @@ modify_client() {
     escaped_value=$(escape_sed "$value")
     if ! sed -i "s#^${param}[[:space:]]*=[[:space:]]*.*#${param} = ${escaped_value}#" "$cf"; then
         log_error "Ошибка sed. Восстановление..."
-        cp "$bak" "$cf" || log_warn "Ошибка восстановления."
+        # После успешного отката .bak идентичен конфигу - удаляем, чтобы
+        # повторные неудачные modify не копили .bak-файлы в $AWG_DIR.
+        if cp "$bak" "$cf"; then rm -f "$bak"; else log_warn "Ошибка восстановления."; fi
         exec {modify_lock_fd}>&-
         return 1
     fi
     if ! grep -q -E "^${param} = " "$cf"; then
         log_error "Замена не выполнена для '$param'. Восстановление..."
-        cp "$bak" "$cf" || log_warn "Ошибка восстановления."
+        if cp "$bak" "$cf"; then rm -f "$bak"; else log_warn "Ошибка восстановления."; fi
         exec {modify_lock_fd}>&-
         return 1
     fi
@@ -829,7 +1007,6 @@ check_server() {
     fi
 
     log "Прослушивание порта:"
-    # shellcheck source=/dev/null
     safe_load_config "$CONFIG_FILE" 2>/dev/null
     local port=${AWG_PORT:-0}
     if [[ "$port" -eq 0 ]]; then
@@ -855,7 +1032,10 @@ check_server() {
 
     log "Правила UFW:"
     if command -v ufw &>/dev/null; then
-        if ! ufw status | grep -qw "${port}/udp"; then
+        if [[ "$port" -eq 0 ]]; then
+            # Порт не определился выше - grep по "0/udp" дал бы ложный warning.
+            log_warn " - Порт не определён, проверка правила UFW пропущена."
+        elif ! ufw status | grep -qw "${port}/udp"; then
             log_warn " - Правило UFW для ${port}/udp не найдено!"
         else
             log " - Правило UFW для ${port}/udp есть."
@@ -1561,7 +1741,11 @@ list_clients() {
     local clients
     clients=$(grep '^#_Name = ' "$SERVER_CONF_FILE" | sed 's/^#_Name = //' | sort) || clients=""
     if [[ -z "$clients" ]]; then
-        log "Клиенты не найдены."
+        if [[ "$JSON_OUTPUT" -eq 1 ]]; then
+            echo "[]"
+        else
+            log "Клиенты не найдены."
+        fi
         return 0
     fi
 
@@ -1607,6 +1791,8 @@ list_clients() {
     local now
     now=$(date +%s)
 
+    local json_entries=()
+
     while IFS= read -r name; do
         name="${name#"${name%%[![:space:]]*}"}"; name="${name%"${name##*[![:space:]]}"}"
         if [[ -z "$name" ]]; then continue; fi
@@ -1643,26 +1829,33 @@ list_clients() {
                         [[ "$NO_COLOR" -eq 0 ]] && color_start="\033[0;33m"
                         ((act++))
                     else
-                        st="Нет handshake"
+                        st="Нет handshake"; st_code="no_handshake"
                         [[ "$NO_COLOR" -eq 0 ]] && color_start="\033[0;37m"
                     fi
                 else
-                    st="Нет handshake"
+                    st="Нет handshake"; st_code="no_handshake"
                     [[ "$NO_COLOR" -eq 0 ]] && color_start="\033[0;37m"
                 fi
             else
                 pk="?"
-                st="Ошибка ключа"
+                st="Ошибка ключа"; st_code="key_error"
                 [[ "$NO_COLOR" -eq 0 ]] && color_start="\033[0;31m"
             fi
         fi
 
-        # Expiry info
+        # Expiry info: только для табличного вывода (JSON его не печатает -
+        # лишнее чтение файла на каждого клиента). Принимаем только числовой
+        # timestamp: повреждённый expiry-файл дал бы ошибку bash-арифметики
+        # из format_remaining прямо в таблице.
         local exp_str=""
-        local exp_ts
-        exp_ts=$(get_client_expiry "$name" 2>/dev/null)
-        if [[ -n "$exp_ts" ]]; then
-            exp_str=" [$(format_remaining "$exp_ts")]"
+        if [[ "$JSON_OUTPUT" -ne 1 ]]; then
+            local exp_ts
+            exp_ts=$(get_client_expiry "$name" 2>/dev/null)
+            if [[ "$exp_ts" =~ ^[0-9]+$ ]]; then
+                exp_str=" [$(format_remaining "$exp_ts")]"
+            elif [[ -n "$exp_ts" ]]; then
+                exp_str=" [expiry повреждён]"
+            fi
         fi
 
         if [[ $verbose -eq 1 ]]; then
@@ -1671,8 +1864,13 @@ list_clients() {
             printf "%-18s | %-15s | %-17s | ${color_start}%s${color_end}%s\n" "$name" "$ip" "$p2p" "$st" "$exp_str"
         fi
     done <<< "$clients"
-    echo ""
-    log "Всего клиентов: $tot, Активных/Недавно: $act"
+
+    if [[ "$JSON_OUTPUT" -eq 1 ]]; then
+        ( IFS=","; echo "[${json_entries[*]}]" )
+    else
+        echo ""
+        log "Всего клиентов: $tot, Активных/Недавно: $act"
+    fi
 }
 
 # ==============================================================================
@@ -1742,6 +1940,10 @@ stats_clients() {
     local json_entries=()
     local table_rows=()
     local total_rx=0 total_tx=0
+    # date +%s один раз до цикла (а не subprocess на каждого пира);
+    # точности секундного среза для статусов active/recent достаточно.
+    local _stats_now
+    _stats_now=$(date +%s)
 
     # awg show dump: каждая строка пира = pubkey psk endpoint allowed-ips latest-handshake rx tx keepalive
     # shellcheck disable=SC2034
@@ -1756,7 +1958,7 @@ stats_clients() {
         [[ -n "$p2p" ]] || p2p="-"
 
         local hs_str="никогда"
-        local status="Неактивен"
+        local status="Неактивен" status_code="inactive"
         if [[ "$handshake" =~ ^[0-9]+$ && "$handshake" -gt 0 ]]; then
             local now
             now=$(date +%s)
@@ -1844,7 +2046,11 @@ EOF
 # ==============================================================================
 
 usage() {
-    exec >&2
+    # C1: явный help (rc=0) -> stdout + exit 0; ошибка использования (rc!=0,
+    # дефолт) -> stderr + exit 1. Явные help-вызовы передают 0, error-вызовы
+    # опускают аргумент (получают 1).
+    local _rc="${1:-1}"
+    [[ "$_rc" -ne 0 ]] && exec >&2
     echo ""
     echo "Скрипт управления AmneziaWG 2.0 (v${SCRIPT_VERSION})"
     echo "=============================================="
@@ -1854,12 +2060,14 @@ usage() {
     echo "  -h, --help            Показать эту справку"
     echo "  -v, --verbose         Расширенный вывод (для команды list)"
     echo "  --no-color            Отключить цветной вывод"
-    echo "  --json                JSON-вывод (для команды stats)"
+    echo "  --json                Машиночитаемый JSON-вывод (для команд list / stats)"
     echo "  --expires=ВРЕМЯ       Срок действия при add (1h, 12h, 1d, 7d, 30d, 4w)"
     echo "  --conf-dir=ПУТЬ       Указать директорию AWG (умолч: $AWG_DIR)"
     echo "  --server-conf=ПУТЬ    Указать файл конфига сервера"
     echo "  --apply-mode=РЕЖИМ    syncconf (умолч.) или restart (обход kernel panic)"
     echo "  --psk                 (только для add) сгенерировать PresharedKey для клиента"
+    echo "  --reset-routes        (только для regen) сбросить AllowedIPs клиентов на текущий"
+    echo "                        глобальный режим маршрутизации (Issue #170)"
     echo "  --yes                 Не спрашивать подтверждение (эквивалент ENV AWG_YES=1)"
     echo "  --carrier=NAME        (только для diagnose) сравнить AWG-параметры с профилем оператора"
     echo "                        Доступные: beeline_msk yota_msk tele2_msk tele2_krasnoyarsk"
@@ -1918,21 +2126,25 @@ usage() {
     echo "  backup                Создать бэкап"
     echo "  restore [файл]        Восстановить из бэкапа"
     echo "  check | status        Проверить состояние сервера"
+    echo "  diagnose [--carrier=N] Self-troubleshooting: kernel/sysctl/UFW + сравнение с оператором"
     echo "  show                  Показать статус \`awg show\`"
     echo "  restart               Перезапустить сервис AmneziaWG"
-    echo "  repair-module         Восстановить модуль ядра после kernel upgrade"
+    echo "  repair-module         Восстановить модуль ядра после kernel upgrade (alias: repair)"
     echo "                        (dkms autoinstall + modprobe + запуск awg-quick)"
     echo "  help                  Показать эту справку"
     echo ""
-    exit 1
+    exit "$_rc"
 }
 
 # ==============================================================================
 # Основная логика
 # ==============================================================================
 
-if [[ "$COMMAND" == "help" || -z "$COMMAND" ]]; then
-    usage
+if [[ -z "$COMMAND" ]]; then
+    usage 1
+fi
+if [[ "$COMMAND" == "help" ]]; then
+    usage "$HELP_EXIT_RC"
 fi
 
 check_dependencies || exit 1
@@ -1950,8 +2162,14 @@ case $COMMAND in
         # AWG_SKIP_APPLY=1 (offline/batch edit без apply): пропускаем проверку модуля —
         # apply_config сам сделает no-op, и команда должна работать на dev-машине.
         if [[ "${AWG_SKIP_APPLY:-0}" != "1" ]]; then
-            ensure_amneziawg_kernel_module \
-                || die "Модуль ядра amneziawg недоступен. Запустите 'manage repair-module' и повторите."
+            # rc=2 (модуль OK, сервис не поднялся) не блокирует add: конфиг
+            # записывается, а apply_config сам явно сообщит о неприменении.
+            ensure_amneziawg_kernel_module; _mod_rc=$?
+            if [[ "$_mod_rc" -eq 1 ]]; then
+                die "Модуль ядра amneziawg недоступен. Запустите 'manage repair-module' и повторите."
+            elif [[ "$_mod_rc" -eq 2 ]]; then
+                log_warn "Сервис awg-quick@awg0 не активен - конфиг будет записан, но применение может не сработать."
+            fi
         fi
 
         # --psk: включить опциональный PresharedKey для каждого нового клиента.
@@ -1963,12 +2181,25 @@ case $COMMAND in
             log "PresharedKey будет сгенерирован для каждого нового клиента (--psk)."
         fi
 
+        # --expires валидируем ОДИН раз ДО создания первого клиента. Иначе при
+        # неверном формате (--expires=bad) клиенты создавались permanent, а
+        # set_client_expiry молча падал per-client - временный клиент незаметно
+        # становился постоянным. Плохой формат теперь рушит команду до изменений.
+        if [[ -n "$EXPIRES_DURATION" ]]; then
+            parse_duration "$EXPIRES_DURATION" >/dev/null \
+                || die "Некорректный --expires='$EXPIRES_DURATION'. Используйте: 1h, 12h, 1d, 7d, 30d, 4w."
+        fi
+
         _added=0
         for _cname in "${ARGS[@]}"; do
             validate_client_name "$_cname" || { _cmd_rc=1; continue; }
 
             if grep -qxF "#_Name = ${_cname}" "$SERVER_CONF_FILE"; then
+                # _cmd_rc=1 - паритет с remove ("Нет клиентов для удаления") и
+                # regen ("не найден, пропуск"): no-op по этому имени должен быть
+                # различим по exit-коду для автоматизации (Issue #175).
                 log_warn "Клиент '$_cname' уже существует, пропуск."
+                _cmd_rc=1
                 continue
             fi
 
@@ -1981,13 +2212,25 @@ case $COMMAND in
             log "Добавление '$_cname'..."
             if generate_client "$_cname"; then
                 log "Клиент '$_cname' добавлен."
-                log "Файлы: $AWG_DIR/${_cname}.conf, $AWG_DIR/${_cname}.png"
+                # .png упоминаем только если QR реально создан (qrencode может
+                # отсутствовать) - симметрично проверке .vpnuri ниже.
+                if [[ -f "$AWG_DIR/${_cname}.png" ]]; then
+                    log "Файлы: $AWG_DIR/${_cname}.conf, $AWG_DIR/${_cname}.png"
+                else
+                    log "Файлы: $AWG_DIR/${_cname}.conf"
+                fi
                 if [[ -f "$AWG_DIR/${_cname}.vpnuri" ]]; then
                     log "vpn:// URI: $AWG_DIR/${_cname}.vpnuri"
                 fi
                 if [[ -n "$EXPIRES_DURATION" ]]; then
                     if set_client_expiry "$_cname" "$EXPIRES_DURATION"; then
-                        install_expiry_cron
+                        install_expiry_cron || { log_error "Клиент '$_cname' создан со сроком, но cron автоудаления НЕ установлен - истёкший клиент сам не удалится."; _cmd_rc=1; }
+                    else
+                        # Формат проверен выше, значит сбой записи expiry (FS/права).
+                        # Клиент создан и рабочий, но БЕЗ авто-срока - сигналим явно,
+                        # чтобы временный клиент не остался незаметно постоянным.
+                        log_error "Клиент '$_cname' создан, но срок действия НЕ установлен (ошибка записи expiry). Клиент постоянный - задайте срок повторно или удалите."
+                        _cmd_rc=1
                     fi
                 fi
                 ((_added++))
@@ -2044,8 +2287,14 @@ case $COMMAND in
             # AWG_SKIP_APPLY=1 (offline/batch edit без apply): пропускаем проверку модуля —
             # apply_config сам сделает no-op, и команда должна работать на dev-машине.
             if [[ "${AWG_SKIP_APPLY:-0}" != "1" ]]; then
-                ensure_amneziawg_kernel_module \
-                    || die "Модуль ядра amneziawg недоступен. Запустите 'manage repair-module' и повторите."
+                # rc=2 (модуль OK, сервис не поднялся) не блокирует remove -
+                # симметрично add: apply_config сам явно сообщит о неприменении.
+                ensure_amneziawg_kernel_module; _mod_rc=$?
+                if [[ "$_mod_rc" -eq 1 ]]; then
+                    die "Модуль ядра amneziawg недоступен. Запустите 'manage repair-module' и повторите."
+                elif [[ "$_mod_rc" -eq 2 ]]; then
+                    log_warn "Сервис awg-quick@awg0 не активен - конфиг будет записан, но применение может не сработать."
+                fi
             fi
 
             _removed=0
@@ -2053,9 +2302,7 @@ case $COMMAND in
                 log "Удаление '$_rname'..."
                 [[ -x "$AWG_DIR/p2p_rules.sh" ]] && bash "$AWG_DIR/p2p_rules.sh" down 2>/dev/null || true
                 if remove_peer_from_server "$_rname"; then
-                    rm -f "$AWG_DIR/$_rname.conf" "$AWG_DIR/$_rname.png" \
-                        "$AWG_DIR/$_rname.vpnuri" "$AWG_DIR/$_rname.vpnuri.png"
-                    rm -f "$KEYS_DIR/${_rname}.private" "$KEYS_DIR/${_rname}.public"
+                    _remove_client_files "$_rname"
                     remove_client_expiry "$_rname"
                     log "Клиент '$_rname' удалён."
                     ((_removed++))
@@ -2454,6 +2701,13 @@ case $COMMAND in
 
     regen)
         log "Перегенерация файлов конфигурации и QR..."
+        # --reset-routes (Issue #170): передаём флаг в regenerate_client через
+        # ENV - обычный regen сохраняет индивидуальные AllowedIPs клиентов, с
+        # флагом ставит всем глобальный режим из awgsetup_cfg.init.
+        if [[ "${CLI_RESET_ROUTES:-0}" == "1" ]]; then
+            export AWG_REGEN_RESET_ROUTES=1
+            log "AllowedIPs всех перегенерируемых клиентов будут сброшены на глобальный режим (--reset-routes)."
+        fi
         if [[ ${#ARGS[@]} -eq 0 ]]; then
             # Без аргументов — все клиенты (сохраняет прежнее поведение).
             all_clients=$(grep '^#_Name = ' "$SERVER_CONF_FILE" | sed 's/^#_Name = //')
@@ -2539,17 +2793,32 @@ case $COMMAND in
         # требовать пересборки DKMS. Здесь разрешаем apt-установку headers
         # (AWG_ALLOW_APT_IN_ENSURE=1) — пользователь явно запросил восстановление.
         log "Восстановление модуля ядра amneziawg (может занять до 5 минут — DKMS rebuild)..."
-        if AWG_ALLOW_APT_IN_ENSURE=1 ensure_amneziawg_kernel_module full; then
-            log "Модуль ядра amneziawg восстановлен, сервис awg-quick@awg0 активен."
-        else
-            log_error "Не удалось восстановить модуль ядра. См. лог выше; при необходимости выполните ручное восстановление."
-            _cmd_rc=1
-        fi
+        AWG_ALLOW_APT_IN_ENSURE=1 ensure_amneziawg_kernel_module full; _mod_rc=$?
+        case "$_mod_rc" in
+            0)
+                log "Модуль ядра amneziawg восстановлен, сервис awg-quick@awg0 активен."
+                ;;
+            2)
+                # Раньше этот случай маскировался под успех: "сервис активен" +
+                # exit 0 при лежащем сервисе (Issue #175).
+                log_error "Модуль ядра в порядке, но сервис awg-quick@awg0 НЕ запустился."
+                log_error "Диагностика: systemctl status awg-quick@awg0; journalctl -u awg-quick@awg0 -n 50"
+                _cmd_rc=1
+                ;;
+            *)
+                log_error "Не удалось восстановить модуль ядра. См. лог выше; при необходимости выполните ручное восстановление."
+                _cmd_rc=1
+                ;;
+        esac
         ;;
 
-    help)
-        usage
+    diagnose)
+        diagnose_server || _cmd_rc=1
         ;;
+
+    # Ветки help) здесь нет намеренно: все пути, выставляющие COMMAND="help"
+    # (-h/--help, неизвестная опция, позиционный help), перехватываются ДО
+    # диспетчера ранним `usage` (он завершает процесс через exit).
 
     *)
         log_error "Неизвестная команда: '$COMMAND'"

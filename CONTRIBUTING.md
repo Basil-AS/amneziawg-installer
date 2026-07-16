@@ -52,7 +52,9 @@ Before submitting a PR, ensure:
    done
    ```
 
-3. **Unit tests (bats-core)** pass. Current expected baseline on `v5.13.0`: **455 tests**.
+   > Note: these two loops cover the six runtime scripts as a quick local shortcut. CI (`shellcheck.yml`) and `scripts/preflight-check.sh` check a wider scope - all tracked `*.sh`, including `scripts/*.sh` and `tests/`. The full local gate is `BASE_REF=origin/main bash scripts/preflight-check.sh`.
+
+3. **Unit tests (bats-core)** pass. The suite grows every release, so there is no fixed count to match - run `bats tests/` and make sure the full suite is green before opening a PR.
    ```bash
    bats tests/
    ```
@@ -94,7 +96,7 @@ When modifying Russian scripts (`*.sh`), update the corresponding English versio
 
 Run `diff install_amneziawg.sh install_amneziawg_en.sh` to verify only text differences remain.
 
-Function counts and line counts should remain equal between the two language versions. Quick sanity check:
+Function counts and the overall structure (the same functions in the same order) should remain equal between the two language versions. Line counts may differ slightly - RU and EN comments are not the same length, so a small line-count delta is normal and not a defect. Quick sanity check (compares function counts):
 
 ```bash
 for pair in "install_amneziawg.sh install_amneziawg_en.sh" "awg_common.sh awg_common_en.sh" "manage_amneziawg.sh manage_amneziawg_en.sh"; do
@@ -116,7 +118,7 @@ The same mirror rule applies to user-facing markdown documents:
 When updating any of them, keep the following in sync between the two versions:
 
 - Section headings and order
-- Commands and code examples (identical — commands are bash)
+- Commands and code examples (identical - commands are bash)
 - Release facts: version numbers, test counts, supported distros
 - Internal links (each RU anchor should have an EN counterpart at the same place)
 - Tables (same rows and columns)
@@ -147,13 +149,13 @@ docs: update CHANGELOG for v5.5
 ## Pull Request Workflow
 
 1. Fill in the PR template completely
-2. Ensure CI checks pass (ShellCheck + syntax)
+2. Ensure CI checks pass: ShellCheck, syntax (`bash -n`), the bats test suite, and documentation consistency (`scripts/check-docs-consistency.sh`). The quickest way to clear the bar locally is the full gate: `BASE_REF=origin/main bash scripts/preflight-check.sh`
 3. **If your PR adds or modifies a GitHub Actions workflow** (`.github/workflows/*.yml`) or a build script (`scripts/*.sh`), run the workflow on your fork and confirm it passes **before** requesting review. `arm-build.yml` supports `workflow_dispatch` for manual triggering; other workflows run automatically on push. This catches environment-specific failures that local testing cannot.
 4. Update **both** `CHANGELOG.md` and `CHANGELOG.en.md` if applicable
-4. Update `[Unreleased]` comparator link in both CHANGELOGs when bumping version
-5. Request a review from `@bivlked`
-6. Address review feedback
-7. Once approved, the maintainer will merge
+5. Update `[Unreleased]` comparator link in both CHANGELOGs when bumping version
+6. Request a review from `@bivlked`
+7. Address review feedback
+8. Once approved, the maintainer will merge
 
 ## Questions?
 

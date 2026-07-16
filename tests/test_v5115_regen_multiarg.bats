@@ -24,7 +24,7 @@
     [[ "$block" == *'for _cname in "${ARGS[@]}"'* ]]
 }
 
-@test "v5.11.5: RU regen has counter and 'Обработано N из M' summary" {
+@test "v5.11.5: RU regen has counter and localized 'Processed N of M' summary" {
     block=$(awk '/^    regen\)/,/^[[:space:]]+;;[[:space:]]*$/' "$BATS_TEST_DIRNAME/../manage_amneziawg.sh")
     [[ "$block" == *'_regen_count'* ]]
     [[ "$block" == *'Обработано'* ]]
@@ -103,7 +103,7 @@
 }
 
 @test "v5.11.5: ppa-tolerant guard requires raw_had_non_src_errors (OOM/silent crash safety)" {
-    # Codex round-2 MEDIUM: don't tolerate when output mentions PPA Amnezia
+    # Review round-2 MEDIUM: don't tolerate when output mentions PPA Amnezia
     # but no E:/Err:/W: lines were classified — that's an OOM/silent crash
     # path that must surface, not be swallowed.
     for f in install_amneziawg.sh install_amneziawg_en.sh; do
@@ -120,6 +120,7 @@
     for f in install_amneziawg.sh install_amneziawg_en.sh manage_amneziawg.sh manage_amneziawg_en.sh; do
         run grep -E 'SCRIPT_VERSION="5\.15\.3-bas\.2"' "$BATS_TEST_DIRNAME/../$f"
         [ "$status" -eq 0 ]
+        [ "$output" = "$ref_version" ]
     done
     run grep -E '# Версия: 5\.15\.3-bas\.2' "$BATS_TEST_DIRNAME/../awg_common.sh"
     [ "$status" -eq 0 ]

@@ -27,6 +27,7 @@ LOG_FILE="$AWG_DIR/manage_amneziawg.log"
 NO_COLOR=0
 VERBOSE_LIST=0
 JSON_OUTPUT=0
+CLI_CARRIER=""
 EXPIRES_DURATION=""
 ROTATE_PRESET="default"
 CLI_CARRIER=""
@@ -46,29 +47,56 @@ manage_mktempdir() {
     echo "$d"
 }
 
+_manage_cleaned=0
 _manage_cleanup() {
+    # Idempotent: on INT/TERM it is called from the signal handler, then again on
+    # EXIT - the repeat must be a no-op.
+    [[ "$_manage_cleaned" -eq 1 ]] && return 0
+    _manage_cleaned=1
     local d
     for d in "${_manage_temp_dirs[@]}"; do
         [[ -d "$d" ]] && rm -rf "$d"
     done
     type _awg_cleanup &>/dev/null && _awg_cleanup
 }
-trap _manage_cleanup EXIT INT TERM
+# On INT/TERM the cleanup used to run but the script did NOT exit - execution
+# continued past the interrupted command and cleanup ran again on EXIT. A signal
+# now means cleanup + explicit 130/143. restore_backup installs its OWN INT/TERM
+# handler (with rollback) for its destructive phase and clears it in _restore_cleanup.
+_manage_on_signal() {
+    _manage_cleanup
+    exit "$1"
+}
+trap _manage_cleanup EXIT
+trap '_manage_on_signal 130' INT
+trap '_manage_on_signal 143' TERM
 
 # --- Argument handling ---
 COMMAND=""
+HELP_EXIT_RC=0   # C1: 0 = explicit help (exit 0); set to 1 for usage errors
 ARGS=()
 while [[ $# -gt 0 ]]; do
     case $1 in
-        -h|--help)         COMMAND="help"; break ;;
+        -h|--help)         COMMAND="help"; HELP_EXIT_RC=0; break ;;
         -v|--verbose)      VERBOSE_LIST=1; shift ;;
         --no-color)        NO_COLOR=1; shift ;;
         --json)            JSON_OUTPUT=1; shift ;;
         --expires=*)       EXPIRES_DURATION="${1#*=}"; shift ;;
         --conf-dir=*)      AWG_DIR="${1#*=}"; shift ;;
         --server-conf=*)   SERVER_CONF_FILE="${1#*=}"; shift ;;
-        --apply-mode=*)    _CLI_APPLY_MODE="${1#*=}"; export AWG_APPLY_MODE="$_CLI_APPLY_MODE"; shift ;;
+        --apply-mode=*)
+            _CLI_APPLY_MODE="${1#*=}"
+            # Validate right at parse time: a typo (--apply-mode=restrat)
+            # would silently act as syncconf - a user working around an issue
+            # with restart mode would never learn the mode did not apply.
+            case "$_CLI_APPLY_MODE" in
+                syncconf|restart) ;;
+                *) echo "Invalid --apply-mode value: '$_CLI_APPLY_MODE' (expected: syncconf or restart)" >&2; exit 1 ;;
+            esac
+            export AWG_APPLY_MODE="$_CLI_APPLY_MODE"
+            shift ;;
         --psk)             CLI_ADD_PSK=1; shift ;;
+        --reset-routes)    CLI_RESET_ROUTES=1; shift ;;
         --yes)             CLI_YES=1; shift ;;
         --preset=*)        ROTATE_PRESET="${1#*=}"; shift ;;
         --preset)          ROTATE_PRESET="${2:-}"; shift 2 ;;
@@ -133,9 +161,7 @@ log_msg() {
     local type="$1" msg="$2"
     local ts
     ts=$(date +'%F %T')
-    local safe_msg
-    safe_msg="${msg//%/%%}"
-    local entry="[$ts] $type: $safe_msg"
+    local entry="[$ts] $type: $msg"
     local color_start="" color_end=""
 
     if [[ "$NO_COLOR" -eq 0 ]]; then
@@ -156,6 +182,11 @@ log_msg() {
     # WARN and ERROR go to stderr (symmetry with install_amneziawg.sh:110+,
     # important for CI/automation parsing: stdout = "data", stderr = "diagnostics").
     if [[ "$type" == "ERROR" || "$type" == "WARN" ]]; then
+        printf "${color_start}%s${color_end}\n" "$entry" >&2
+    elif [[ "${JSON_OUTPUT:-0}" -eq 1 ]]; then
+        # weaq P2: in --json mode stdout must contain ONLY JSON (jq/automation).
+        # Route INFO/DEBUG to stderr, otherwise list/show/stats --json print INFO
+        # lines before the JSON and break parsing (confirmed on biHetzner).
         printf "${color_start}%s${color_end}\n" "$entry" >&2
     else
         printf "${color_start}%s${color_end}\n" "$entry"
@@ -193,7 +224,8 @@ confirm_action() {
     if ! is_interactive; then return 0; fi
     local action="$1" subject="$2"
     read -rp "Are you sure you want to $action $subject? [y/N]: " confirm < /dev/tty
-    if [[ "$confirm" =~ ^[Yy]$ ]]; then
+    # Accept y/yes (case-insensitive) plus stray whitespace/CR around it.
+    if [[ "$confirm" =~ ^[[:space:]]*[Yy]([Ee][Ss])?[[:space:]]*$ ]]; then
         return 0
     else
         log "Action cancelled."
@@ -261,6 +293,15 @@ check_dependencies() {
 # On success, sets LAST_BACKUP_PATH (used by restore_backup for rollback
 # snapshot).
 _backup_configs_nolock() {
+    # --no-prune: do not delete old backups after creating one. Used by the
+    # pre-restore snapshot: otherwise, with 10 backups already present, prune
+    # would drop the oldest one, which may be exactly the backup selected for
+    # restore (it lives in the same $AWG_DIR/backups directory).
+    local no_prune=0
+    if [[ "${1:-}" == "--no-prune" ]]; then
+        no_prune=1
+        shift
+    fi
     log "Creating backup..."
     local bd="$AWG_DIR/backups"
     mkdir -p "$bd" || die "mkdir error $bd"
@@ -372,10 +413,12 @@ _backup_configs_nolock() {
     rm -rf "$td"
     chmod 600 "$bf" || log_warn "chmod error on backup"
 
-    # Keep maximum 10 backups
-    find "$bd" -maxdepth 1 -name "awg_backup_*.tar.gz" -printf '%T@ %p\n' | \
-        sort -nr | tail -n +11 | cut -d' ' -f2- | xargs -r rm -f || \
-        log_warn "Error deleting old backups"
+    # Keep maximum 10 backups (unless --no-prune)
+    if [[ "$no_prune" -eq 0 ]]; then
+        find "$bd" -maxdepth 1 -name "awg_backup_*.tar.gz" -printf '%T@ %p\n' | \
+            sort -nr | tail -n +11 | cut -d' ' -f2- | xargs -r rm -f || \
+            log_warn "Error deleting old backups"
+    fi
 
     LAST_BACKUP_PATH="$bf"
     log "Backup created: $bf"
@@ -390,8 +433,26 @@ backup_configs() {
         exec {backup_lock_fd}>&-
         return 1
     fi
+    # Additionally take the config lock: a concurrent `manage add/remove`
+    # could modify awg0.conf/keys BETWEEN copying server/ and clients/ into
+    # tmpdir - each file in the backup is intact (atomic mv) but the set is
+    # desynchronized (peer mismatch on restore). restore_backup holds both
+    # locks - backup must do the same. IMPORTANT: in restore
+    # _backup_configs_nolock is called under an already-held config lock -
+    # here the lock is taken only for the direct backup command (flock is
+    # non-reentrant, see the contract in awg_common.sh).
+    local config_lockfile="${AWG_DIR}/.awg_config.lock"
+    local config_lock_fd
+    exec {config_lock_fd}>"$config_lockfile"
+    if ! flock -x -w 30 "$config_lock_fd"; then
+        log_error "Config lock timeout (30 sec)."
+        exec {config_lock_fd}>&-
+        exec {backup_lock_fd}>&-
+        return 1
+    fi
     _backup_configs_nolock
     local _rc=$?
+    exec {config_lock_fd}>&-
     exec {backup_lock_fd}>&-
     return "$_rc"
 }
@@ -426,7 +487,7 @@ _restore_do_rollback() {
     [[ -d "$_rtd/keys" ]] && cp -a "$_rtd/keys/"* "$KEYS_DIR/" 2>/dev/null
     [[ -f "$_rtd/server_private.key" ]] && cp -a "$_rtd/server_private.key" "$AWG_DIR/" 2>/dev/null
     [[ -f "$_rtd/server_public.key" ]] && cp -a "$_rtd/server_public.key" "$AWG_DIR/" 2>/dev/null
-    [[ -d "$_rtd/expiry" ]] && cp -a "$_rtd/expiry"/* "${EXPIRY_DIR:-$AWG_DIR/expiry}/" 2>/dev/null
+    [[ -d "$_rtd/expiry" ]] && { mkdir -p "${EXPIRY_DIR:-$AWG_DIR/expiry}"; cp -a "$_rtd/expiry"/* "${EXPIRY_DIR:-$AWG_DIR/expiry}/" 2>/dev/null; }
     [[ -f "$_rtd/awg-expiry" ]] && cp -a "$_rtd/awg-expiry" /etc/cron.d/awg-expiry 2>/dev/null
     rm -rf "$_rtd"
 
@@ -524,7 +585,12 @@ restore_backup() {
         # not invoke functions, and once `trap - RETURN` runs, our
         # trap is off.
         local _rc=$?
+        # Clear RETURN and RESTORE the global INT/TERM (restore's local hooks are
+        # set below). A plain `trap -` would reset them to default and the manager
+        # would lose its B1 signal -> cleanup+exit behavior after a restore.
         trap - RETURN
+        trap '_manage_on_signal 130' INT
+        trap '_manage_on_signal 143' TERM
         if [[ $_restore_ok -eq 0 && $_destructive_ops_started -eq 1 && -n "$_rollback_snap" ]]; then
             _restore_do_rollback "$_rollback_snap" || true
         fi
@@ -534,9 +600,18 @@ restore_backup() {
         return $_rc
     }
     trap _restore_cleanup RETURN
+    # INT/TERM during restore: same rollback+cleanup as a normal return
+    # (_restore_cleanup sees the local _restore_ok/_rollback_snap/td), then exit
+    # with the signal code. Overrides the global _manage_on_signal so interrupting
+    # the destructive phase does not leave the system without a rollback.
+    # _restore_cleanup clears these hooks itself (trap - INT TERM above).
+    trap '_restore_cleanup; exit 130' INT
+    trap '_restore_cleanup; exit 143' TERM
 
     log "Backing up current config..."
-    if ! _backup_configs_nolock; then
+    # --no-prune: the backup selected for restore ($bf) lives in the same
+    # backups dir; pruning after the pre-restore snapshot could delete it.
+    if ! _backup_configs_nolock --no-prune; then
         log_error "Failed to create backup of current configuration."
         return 1
     fi
@@ -554,7 +629,8 @@ restore_backup() {
     # path traversal (../), absolute paths, symlinks or device files to
     # overwrite arbitrary system files when extracted as root.
 
-    # Type check via verbose listing: reject block/char/FIFO/hardlink entries
+    # Type check via verbose listing: reject block/char/FIFO/symlink ('l')
+    # and hardlink ('h') entries - both link classes are unsafe to extract.
     local _tar_verbose _vline _tc
     _tar_verbose=$(tar -tvzf "$bf" 2>/dev/null) || {
         log_error "Cannot read archive contents: $bf"
@@ -606,6 +682,18 @@ restore_backup() {
         return 1
     fi
 
+    # Check backup completeness BEFORE stopping the service. A backup without a
+    # server config is useless (a VPN cannot come up without it), and an empty
+    # server/ used to crash `cp "$td/server/"*` AFTER the stop, forcing a rollback
+    # of a working system. Checking before the destructive phase leaves the
+    # service untouched and needs no rollback.
+    local _srv_base
+    _srv_base=$(basename "$SERVER_CONF_FILE")
+    if [[ ! -f "$td/server/$_srv_base" ]]; then
+        log_error "Incomplete backup: missing server config ($_srv_base) - restore aborted."
+        return 1
+    fi
+
     log "Stopping service..."
     systemctl stop awg-quick@awg0 || log_warn "Service not stopped."
 
@@ -627,26 +715,49 @@ restore_backup() {
 
     if [[ -d "$td/clients" ]]; then
         log "Restoring client files..."
-        if ! cp -a "$td/clients/"* "$AWG_DIR/"; then
-            log_error "Error copying clients — restore aborted (triggering rollback)."
-            return 1
+        # C11: clean replacement, not a merge. Remove stale client artifacts that
+        # are absent from the backup (otherwise a client deleted since the backup
+        # lingers as orphan .conf/.png/.vpnuri). Scope strictly to managed client
+        # globs - never touch scripts, server keys, backups/, logs, .lock,
+        # awgsetup_cfg.init.
+        rm -f "$AWG_DIR"/*.conf "$AWG_DIR"/*.png "$AWG_DIR"/*.vpnuri 2>/dev/null || true
+        # An empty clients/ is a valid case (a server with no client configs):
+        # the prune above already gives a clean replacement, so we just skip the
+        # copy (without compgen the bare glob "$td/clients/"* would stay literal
+        # and crash cp -> rollback).
+        if compgen -G "$td/clients/*" > /dev/null; then
+            if ! cp -a "$td/clients/"* "$AWG_DIR/"; then
+                log_error "Error copying clients — restore aborted (triggering rollback)."
+                return 1
+            fi
+            chmod 600 "$AWG_DIR"/*.conf 2>/dev/null
+            chmod 600 "$AWG_DIR"/*.png 2>/dev/null
+            chmod 600 "$AWG_DIR"/*.vpnuri 2>/dev/null
+            chmod 600 "$CONFIG_FILE" 2>/dev/null
+            log_debug "Client files restored to $AWG_DIR"
+        else
+            log_debug "Backup has no client files (clients/ empty) - skipping copy."
         fi
-        chmod 600 "$AWG_DIR"/*.conf 2>/dev/null
-        chmod 600 "$AWG_DIR"/*.png 2>/dev/null
-        chmod 600 "$AWG_DIR"/*.vpnuri 2>/dev/null
-        chmod 600 "$CONFIG_FILE" 2>/dev/null
-        log_debug "Client files restored to $AWG_DIR"
     fi
 
     if [[ -d "$td/keys" ]]; then
         log "Restoring keys..."
         mkdir -p "$KEYS_DIR"
-        if ! cp -a "$td/keys/"* "$KEYS_DIR/"; then
+        # C11: remove stale client keys absent from the backup (server keys live
+        # in AWG_DIR, not KEYS_DIR, so they are not affected).
+        rm -f "$KEYS_DIR"/* 2>/dev/null || true
+        # C2: the backup's keys/ may be empty (server with no client keys).
+        # Without a compgen guard the bare glob "$td/keys/*" would stay literal,
+        # cp would fail and the whole restore would roll back. Empty keys/ is OK.
+        if ! compgen -G "$td/keys/*" > /dev/null; then
+            log_debug "Backup has no client keys (keys/ empty) - skipping, not an error."
+        elif ! cp -a "$td/keys/"* "$KEYS_DIR/"; then
             log_error "Error copying keys — restore aborted (triggering rollback)."
             return 1
+        else
+            chmod 600 "$KEYS_DIR"/* 2>/dev/null
+            log_debug "Keys restored to $KEYS_DIR"
         fi
-        chmod 600 "$KEYS_DIR"/* 2>/dev/null
-        log_debug "Keys restored to $KEYS_DIR"
     fi
 
     # Server keys: cp -a preserves the mode from the archive, so we force 600
@@ -669,6 +780,13 @@ restore_backup() {
     if [[ -d "$td/expiry" ]]; then
         log "Restoring expiry data..."
         mkdir -p "${EXPIRY_DIR:-$AWG_DIR/expiry}"
+        # C11: expiry is intentionally NOT pruned. Orphan stamps for nonexistent
+        # clients are harmless: check_expired_clients detects on expiry that the
+        # peer is absent from the config and cleans the stamp with the artifacts
+        # itself. A prune here would be unsafe: both the rm and the following cp
+        # are best-effort (|| true), so a copy failure after the prune would
+        # silently leave expiry empty. The client artifacts themselves are
+        # pruned above.
         cp -a "$td/expiry/"* "${EXPIRY_DIR:-$AWG_DIR/expiry}/" 2>/dev/null || true
         chmod 600 "${EXPIRY_DIR:-$AWG_DIR/expiry}"/* 2>/dev/null
     fi
@@ -722,27 +840,92 @@ modify_client() {
 
     case "$param" in
         DNS)
-            if ! [[ "$value" =~ ^[0-9a-fA-F.:,\ ]+$ ]]; then
-                log_error "Invalid DNS: '$value' (expected comma-separated IPs)"
-                return 1
-            fi ;;
+            # Structural validation of the DNS list. The old charset-only regex
+            # ^[0-9a-fA-F.:,\ ]+$ let garbage through ('abc' - a-f letters;
+            # '999.999.999.999' - out of range). DNS is IP-only by contract (no
+            # FQDN), so each element must be a bare IPv4 or IPv6, like Endpoint/AllowedIPs.
+            case "$value" in
+                *$'\n'*|*$'\r'*|*\\*|*\"*|*\'*|"")
+                    log_error "Invalid DNS: '$value'"
+                    return 1 ;;
+            esac
+            case "$value" in
+                ,*|*,|*,,*)
+                    log_error "Invalid DNS '$value': empty list element (stray comma)"
+                    return 1 ;;
+            esac
+            local _dns_tok _dns_ifs="$IFS"
+            IFS=','
+            for _dns_tok in $value; do
+                _dns_tok="${_dns_tok//[[:space:]]/}"
+                if [[ -z "$_dns_tok" ]]; then
+                    IFS="$_dns_ifs"
+                    log_error "Invalid DNS '$value': empty list element (stray comma)"
+                    return 1
+                fi
+                if ! _valid_ipv4 "$_dns_tok" && ! _valid_ipv6 "$_dns_tok"; then
+                    IFS="$_dns_ifs"
+                    log_error "Invalid DNS '$value': '$_dns_tok' is not a valid IPv4/IPv6 address"
+                    return 1
+                fi
+            done
+            IFS="$_dns_ifs"
+            ;;
         PersistentKeepalive)
             if ! [[ "$value" =~ ^[0-9]+$ ]] || [[ "$value" -gt 65535 ]]; then
                 log_error "Invalid PersistentKeepalive: '$value' (expected: 0-65535)"
                 return 1
             fi ;;
         Endpoint)
+            # C5: beyond rejecting dangerous chars - positive host:port check.
             case "$value" in
-                *$'\n'*|*$'\r'*|*\\*|*\"*|*\'*|"")
+                *$'\n'*|*$'\r'*|*\\*|*\"*|*\'*|*' '*|*$'\t'*|"")
                     log_error "Invalid Endpoint: '$value'"
                     return 1 ;;
-            esac ;;
+            esac
+            local _eh _ept
+            if [[ "$value" == \[*\]:* ]]; then
+                _eh="${value%]:*}"; _eh="${_eh#\[}"   # IPv6 without brackets
+                _ept="${value##*]:}"
+                _valid_ipv6 "$_eh" || { log_error "Invalid Endpoint '$value': malformed IPv6 host"; return 1; }
+            else
+                _eh="${value%:*}"; _ept="${value##*:}"
+                _valid_host_or_ipv4 "$_eh" || { log_error "Invalid Endpoint '$value': expected host:port (FQDN / IPv4 / [IPv6])"; return 1; }
+            fi
+            { [[ "$_ept" =~ ^[0-9]+$ ]] && [[ "$_ept" -ge 1 && "$_ept" -le 65535 ]]; } || { log_error "Invalid Endpoint '$value': port must be 1-65535"; return 1; }
+            ;;
         AllowedIPs)
+            # C5: beyond rejecting dangerous chars - positive CIDR-list check.
             case "$value" in
                 *$'\n'*|*$'\r'*|*\\*|*\"*|*\'*|"")
                     log_error "Invalid AllowedIPs: '$value'"
                     return 1 ;;
-            esac ;;
+            esac
+            # Stray commas: word-splitting on IFS=',' silently drops a TRAILING
+            # empty element (e.g. "10.0.0.0/24,"), so check list structure
+            # separately: leading/trailing/doubled comma.
+            case "$value" in
+                ,*|*,|*,,*)
+                    log_error "Invalid AllowedIPs '$value': empty list element (stray comma)"
+                    return 1 ;;
+            esac
+            local _aip_tok _aip_ifs="$IFS"
+            IFS=','
+            for _aip_tok in $value; do
+                _aip_tok="${_aip_tok//[[:space:]]/}"
+                if [[ -z "$_aip_tok" ]]; then
+                    IFS="$_aip_ifs"
+                    log_error "Invalid AllowedIPs '$value': empty list element (stray comma)"
+                    return 1
+                fi
+                if ! _valid_cidr "$_aip_tok"; then
+                    IFS="$_aip_ifs"
+                    log_error "Invalid AllowedIPs '$value': '$_aip_tok' is not a CIDR (IPv4/IPv6 with optional /n prefix)"
+                    return 1
+                fi
+            done
+            IFS="$_aip_ifs"
+            ;;
     esac
 
     # Lock before state checks (TOCTOU protection against concurrent remove)
@@ -785,13 +968,15 @@ modify_client() {
     escaped_value=$(escape_sed "$value")
     if ! sed -i "s#^${param}[[:space:]]*=[[:space:]]*.*#${param} = ${escaped_value}#" "$cf"; then
         log_error "sed error. Restoring..."
-        cp "$bak" "$cf" || log_warn "Restore error."
+        # After a successful rollback the .bak is identical to the config -
+        # remove it so repeated failed modifies do not pile .bak files in $AWG_DIR.
+        if cp "$bak" "$cf"; then rm -f "$bak"; else log_warn "Restore error."; fi
         exec {modify_lock_fd}>&-
         return 1
     fi
     if ! grep -q -E "^${param} = " "$cf"; then
         log_error "Replacement failed for '$param'. Restoring..."
-        cp "$bak" "$cf" || log_warn "Restore error."
+        if cp "$bak" "$cf"; then rm -f "$bak"; else log_warn "Restore error."; fi
         exec {modify_lock_fd}>&-
         return 1
     fi
@@ -832,7 +1017,6 @@ check_server() {
     fi
 
     log "Port listening:"
-    # shellcheck source=/dev/null
     safe_load_config "$CONFIG_FILE" 2>/dev/null
     local port=${AWG_PORT:-0}
     if [[ "$port" -eq 0 ]]; then
@@ -858,7 +1042,10 @@ check_server() {
 
     log "UFW rules:"
     if command -v ufw &>/dev/null; then
-        if ! ufw status | grep -qw "${port}/udp"; then
+        if [[ "$port" -eq 0 ]]; then
+            # The port could not be determined above - grepping for "0/udp" would give a false warning.
+            log_warn " - Port not determined, UFW rule check skipped."
+        elif ! ufw status | grep -qw "${port}/udp"; then
             log_warn " - UFW rule for ${port}/udp not found!"
         else
             log " - UFW rule for ${port}/udp is present."
@@ -1564,7 +1751,11 @@ list_clients() {
     local clients
     clients=$(grep '^#_Name = ' "$SERVER_CONF_FILE" | sed 's/^#_Name = //' | sort) || clients=""
     if [[ -z "$clients" ]]; then
-        log "No clients found."
+        if [[ "$JSON_OUTPUT" -eq 1 ]]; then
+            echo "[]"
+        else
+            log "No clients found."
+        fi
         return 0
     fi
 
@@ -1610,6 +1801,8 @@ list_clients() {
     local now
     now=$(date +%s)
 
+    local json_entries=()
+
     while IFS= read -r name; do
         name="${name#"${name%%[![:space:]]*}"}"; name="${name%"${name##*[![:space:]]}"}"
         if [[ -z "$name" ]]; then continue; fi
@@ -1638,34 +1831,41 @@ list_clients() {
                 if [[ "$handshake" =~ ^[0-9]+$ && "$handshake" -gt 0 ]]; then
                     local diff=$((now - handshake))
                     if [[ $diff -lt 180 ]]; then
-                        st="Active"
+                        st="Active"; st_code="active"
                         [[ "$NO_COLOR" -eq 0 ]] && color_start="\033[0;32m"
                         ((act++))
                     elif [[ $diff -lt 86400 ]]; then
-                        st="Recent"
+                        st="Recent"; st_code="recent"
                         [[ "$NO_COLOR" -eq 0 ]] && color_start="\033[0;33m"
                         ((act++))
                     else
-                        st="No handshake"
+                        st="No handshake"; st_code="no_handshake"
                         [[ "$NO_COLOR" -eq 0 ]] && color_start="\033[0;37m"
                     fi
                 else
-                    st="No handshake"
+                    st="No handshake"; st_code="no_handshake"
                     [[ "$NO_COLOR" -eq 0 ]] && color_start="\033[0;37m"
                 fi
             else
                 pk="?"
-                st="Key error"
+                st="Key error"; st_code="key_error"
                 [[ "$NO_COLOR" -eq 0 ]] && color_start="\033[0;31m"
             fi
         fi
 
-        # Expiry info
+        # Expiry info: table output only (JSON does not print it - a wasted
+        # file read per client). Accept only a numeric timestamp: a corrupted
+        # expiry file would throw a bash arithmetic error from
+        # format_remaining straight into the table.
         local exp_str=""
-        local exp_ts
-        exp_ts=$(get_client_expiry "$name" 2>/dev/null)
-        if [[ -n "$exp_ts" ]]; then
-            exp_str=" [$(format_remaining "$exp_ts")]"
+        if [[ "$JSON_OUTPUT" -ne 1 ]]; then
+            local exp_ts
+            exp_ts=$(get_client_expiry "$name" 2>/dev/null)
+            if [[ "$exp_ts" =~ ^[0-9]+$ ]]; then
+                exp_str=" [$(format_remaining "$exp_ts")]"
+            elif [[ -n "$exp_ts" ]]; then
+                exp_str=" [expiry corrupted]"
+            fi
         fi
 
         if [[ $verbose -eq 1 ]]; then
@@ -1674,8 +1874,13 @@ list_clients() {
             printf "%-18s | %-15s | %-17s | ${color_start}%s${color_end}%s\n" "$name" "$ip" "$p2p" "$st" "$exp_str"
         fi
     done <<< "$clients"
-    echo ""
-    log "Total clients: $tot, Active/Recent: $act"
+
+    if [[ "$JSON_OUTPUT" -eq 1 ]]; then
+        ( IFS=","; echo "[${json_entries[*]}]" )
+    else
+        echo ""
+        log "Total clients: $tot, Active/Recent: $act"
+    fi
 }
 
 # ==============================================================================
@@ -1745,6 +1950,10 @@ stats_clients() {
     local json_entries=()
     local table_rows=()
     local total_rx=0 total_tx=0
+    # date +%s once before the loop (instead of a subprocess per peer);
+    # one-second snapshot precision is enough for active/recent statuses.
+    local _stats_now
+    _stats_now=$(date +%s)
 
     # awg show dump: each peer line = pubkey psk endpoint allowed-ips latest-handshake rx tx keepalive
     # shellcheck disable=SC2034
@@ -1759,15 +1968,13 @@ stats_clients() {
         [[ -n "$p2p" ]] || p2p="-"
 
         local hs_str="never"
-        local status="Inactive"
+        local status="Inactive" status_code="inactive"
         if [[ "$handshake" =~ ^[0-9]+$ && "$handshake" -gt 0 ]]; then
-            local now
-            now=$(date +%s)
-            local diff=$((now - handshake))
+            local diff=$((_stats_now - handshake))
             if [[ $diff -lt 180 ]]; then
-                status="Active"
+                status="Active"; status_code="active"
             elif [[ $diff -lt 86400 ]]; then
-                status="Recent"
+                status="Recent"; status_code="recent"
             fi
             hs_str=$(date -d "@$handshake" '+%F %T' 2>/dev/null || echo "$handshake")
         fi
@@ -1847,7 +2054,11 @@ EOF
 # ==============================================================================
 
 usage() {
-    exec >&2
+    # C1: explicit help (rc=0) -> stdout + exit 0; usage error (rc!=0, default)
+    # -> stderr + exit 1. Explicit-help callers pass 0, error callers omit the
+    # argument (get 1).
+    local _rc="${1:-1}"
+    [[ "$_rc" -ne 0 ]] && exec >&2
     echo ""
     echo "AmneziaWG 2.0 management script (v${SCRIPT_VERSION})"
     echo "=============================================="
@@ -1857,12 +2068,14 @@ usage() {
     echo "  -h, --help            Show this help"
     echo "  -v, --verbose         Verbose output (for list command)"
     echo "  --no-color            Disable colored output"
-    echo "  --json                JSON output (for stats command)"
+    echo "  --json                Machine-readable JSON output (for list / stats)"
     echo "  --expires=DURATION    Expiry time for add (1h, 12h, 1d, 7d, 30d, 4w)"
     echo "  --conf-dir=PATH       Specify AWG directory (default: $AWG_DIR)"
     echo "  --server-conf=PATH    Specify server config file"
     echo "  --apply-mode=MODE     syncconf (default) or restart (bypass kernel panic)"
     echo "  --psk                 (add only) generate a PresharedKey for the new client"
+    echo "  --reset-routes        (regen only) reset client AllowedIPs to the current"
+    echo "                        global routing mode (Issue #170)"
     echo "  --yes                 Skip confirm prompts (equivalent to ENV AWG_YES=1)"
     echo "  --carrier=NAME        (diagnose only) compare AWG params against carrier profile"
     echo "                        Available: beeline_msk yota_msk tele2_msk tele2_krasnoyarsk"
@@ -1871,7 +2084,7 @@ usage() {
     echo "Commands:"
     echo "  add <name> [name2 ...]       Add client(s). --expires applies to all"
     echo "  remove <name> [name2 ...]    Remove client(s)"
-    echo "  list [-v]             List clients"
+    echo "  list [-v] [--json]    List clients (--json: machine-readable, includes client_ipv6)"
     echo "  stats [--json]        Client traffic statistics"
     echo "  diagnose [--carrier=N] Diagnose kernel/sysctl/UFW and fork-specific sections"
     echo "  voice-check           UDP/STUN/NAT diagnostics for calls"
@@ -1921,21 +2134,25 @@ usage() {
     echo "  backup                Create a backup"
     echo "  restore [file]        Restore from backup"
     echo "  check | status        Check server status"
+    echo "  diagnose [--carrier=N] Self-troubleshooting: kernel/sysctl/UFW + carrier comparison"
     echo "  show                  Show \`awg show\` status"
     echo "  restart               Restart AmneziaWG service"
-    echo "  repair-module         Repair the kernel module after a kernel upgrade"
+    echo "  repair-module         Repair the kernel module after a kernel upgrade (alias: repair)"
     echo "                        (dkms autoinstall + modprobe + start awg-quick)"
     echo "  help                  Show this help"
     echo ""
-    exit 1
+    exit "$_rc"
 }
 
 # ==============================================================================
 # Main logic
 # ==============================================================================
 
-if [[ "$COMMAND" == "help" || -z "$COMMAND" ]]; then
-    usage
+if [[ -z "$COMMAND" ]]; then
+    usage 1
+fi
+if [[ "$COMMAND" == "help" ]]; then
+    usage "$HELP_EXIT_RC"
 fi
 
 check_dependencies || exit 1
@@ -1953,8 +2170,14 @@ case $COMMAND in
         # AWG_SKIP_APPLY=1 (offline/batch edit without apply): skip the module check —
         # apply_config will no-op anyway, and the command must work on a dev machine.
         if [[ "${AWG_SKIP_APPLY:-0}" != "1" ]]; then
-            ensure_amneziawg_kernel_module \
-                || die "amneziawg kernel module unavailable. Run 'manage repair-module' and try again."
+            # rc=2 (module OK, service did not start) does not block add: the
+            # config gets written and apply_config reports the failure itself.
+            ensure_amneziawg_kernel_module; _mod_rc=$?
+            if [[ "$_mod_rc" -eq 1 ]]; then
+                die "amneziawg kernel module unavailable. Run 'manage repair-module' and try again."
+            elif [[ "$_mod_rc" -eq 2 ]]; then
+                log_warn "awg-quick@awg0 service is not active - the config will be written but may not be applied."
+            fi
         fi
 
         # --psk: enable optional PresharedKey for every new client.
@@ -1966,12 +2189,25 @@ case $COMMAND in
             log "PresharedKey will be generated for each new client (--psk)."
         fi
 
+        # Validate --expires ONCE before creating the first client. Otherwise a
+        # bad format (--expires=bad) created permanent clients while
+        # set_client_expiry failed silently per-client - a temporary client
+        # quietly became permanent. A bad format now aborts before any change.
+        if [[ -n "$EXPIRES_DURATION" ]]; then
+            parse_duration "$EXPIRES_DURATION" >/dev/null \
+                || die "Invalid --expires='$EXPIRES_DURATION'. Use: 1h, 12h, 1d, 7d, 30d, 4w."
+        fi
+
         _added=0
         for _cname in "${ARGS[@]}"; do
             validate_client_name "$_cname" || { _cmd_rc=1; continue; }
 
             if grep -qxF "#_Name = ${_cname}" "$SERVER_CONF_FILE"; then
+                # _cmd_rc=1 - parity with remove ("No clients to remove") and
+                # regen ("not found, skipping"): a no-op for this name must be
+                # distinguishable via the exit code for automation (Issue #175).
                 log_warn "Client '$_cname' already exists, skipping."
+                _cmd_rc=1
                 continue
             fi
 
@@ -1984,13 +2220,26 @@ case $COMMAND in
             log "Adding '$_cname'..."
             if generate_client "$_cname"; then
                 log "Client '$_cname' added."
-                log "Files: $AWG_DIR/${_cname}.conf, $AWG_DIR/${_cname}.png"
+                # Mention .png only if the QR was actually created (qrencode
+                # may be absent) - symmetric to the .vpnuri check below.
+                if [[ -f "$AWG_DIR/${_cname}.png" ]]; then
+                    log "Files: $AWG_DIR/${_cname}.conf, $AWG_DIR/${_cname}.png"
+                else
+                    log "Files: $AWG_DIR/${_cname}.conf"
+                fi
                 if [[ -f "$AWG_DIR/${_cname}.vpnuri" ]]; then
                     log "vpn:// URI: $AWG_DIR/${_cname}.vpnuri"
                 fi
                 if [[ -n "$EXPIRES_DURATION" ]]; then
                     if set_client_expiry "$_cname" "$EXPIRES_DURATION"; then
-                        install_expiry_cron
+                        install_expiry_cron || { log_error "Client '$_cname' created with an expiry, but the auto-removal cron was NOT installed - the expired client will not be removed automatically."; _cmd_rc=1; }
+                    else
+                        # Format is validated above, so this is a write failure
+                        # (FS/permissions). The client exists and works but has NO
+                        # auto-expiry - signal it so a temporary client does not
+                        # silently stay permanent.
+                        log_error "Client '$_cname' created, but expiry was NOT set (expiry write error). The client is permanent - set the expiry again or remove it."
+                        _cmd_rc=1
                     fi
                 fi
                 ((_added++))
@@ -2001,7 +2250,6 @@ case $COMMAND in
         done
 
         if [[ $_added -gt 0 ]]; then
-            [[ -n "${_CLI_APPLY_MODE:-}" ]] && export AWG_APPLY_MODE="$_CLI_APPLY_MODE"
             if [[ "${AWG_SKIP_APPLY:-0}" == "1" ]]; then
                 apply_config
                 log "Clients added: $_added. Apply deferred (AWG_SKIP_APPLY=1)."
@@ -2045,8 +2293,14 @@ case $COMMAND in
             # AWG_SKIP_APPLY=1 (offline/batch edit without apply): skip the module check —
             # apply_config will no-op anyway, and the command must work on a dev machine.
             if [[ "${AWG_SKIP_APPLY:-0}" != "1" ]]; then
-                ensure_amneziawg_kernel_module \
-                    || die "amneziawg kernel module unavailable. Run 'manage repair-module' and try again."
+                # rc=2 (module OK, service did not start) does not block remove -
+                # symmetric with add: apply_config reports the failure itself.
+                ensure_amneziawg_kernel_module; _mod_rc=$?
+                if [[ "$_mod_rc" -eq 1 ]]; then
+                    die "amneziawg kernel module unavailable. Run 'manage repair-module' and try again."
+                elif [[ "$_mod_rc" -eq 2 ]]; then
+                    log_warn "awg-quick@awg0 service is not active - the config will be written but may not be applied."
+                fi
             fi
 
             _removed=0
@@ -2054,9 +2308,7 @@ case $COMMAND in
                 log "Removing '$_rname'..."
                 [[ -x "$AWG_DIR/p2p_rules.sh" ]] && bash "$AWG_DIR/p2p_rules.sh" down 2>/dev/null || true
                 if remove_peer_from_server "$_rname"; then
-                    rm -f "$AWG_DIR/$_rname.conf" "$AWG_DIR/$_rname.png" \
-                        "$AWG_DIR/$_rname.vpnuri" "$AWG_DIR/$_rname.vpnuri.png"
-                    rm -f "$KEYS_DIR/${_rname}.private" "$KEYS_DIR/${_rname}.public"
+                    _remove_client_files "$_rname"
                     remove_client_expiry "$_rname"
                     log "Client '$_rname' removed."
                     ((_removed++))
@@ -2454,6 +2706,13 @@ case $COMMAND in
 
     regen)
         log "Regenerating config and QR files..."
+        # --reset-routes (Issue #170): pass the flag to regenerate_client via
+        # ENV - a regular regen preserves per-client AllowedIPs, with the flag
+        # every client gets the global routing mode from awgsetup_cfg.init.
+        if [[ "${CLI_RESET_ROUTES:-0}" == "1" ]]; then
+            export AWG_REGEN_RESET_ROUTES=1
+            log "AllowedIPs of all regenerated clients will be reset to the global routing mode (--reset-routes)."
+        fi
         if [[ ${#ARGS[@]} -eq 0 ]]; then
             # No arguments — regenerate all clients (preserves prior behaviour).
             all_clients=$(grep '^#_Name = ' "$SERVER_CONF_FILE" | sed 's/^#_Name = //')
@@ -2540,17 +2799,32 @@ case $COMMAND in
         # need a DKMS rebuild. Allow apt-installing kernel headers here
         # (AWG_ALLOW_APT_IN_ENSURE=1) — the user explicitly requested repair.
         log "Repairing amneziawg kernel module (may take up to 5 minutes — DKMS rebuild)..."
-        if AWG_ALLOW_APT_IN_ENSURE=1 ensure_amneziawg_kernel_module full; then
-            log "amneziawg kernel module repaired, awg-quick@awg0 service is active."
-        else
-            log_error "Could not repair the kernel module. See log above; manual recovery may be required."
-            _cmd_rc=1
-        fi
+        AWG_ALLOW_APT_IN_ENSURE=1 ensure_amneziawg_kernel_module full; _mod_rc=$?
+        case "$_mod_rc" in
+            0)
+                log "amneziawg kernel module repaired, awg-quick@awg0 service is active."
+                ;;
+            2)
+                # Previously this case masqueraded as success: "service is
+                # active" + exit 0 while the service was down (Issue #175).
+                log_error "The kernel module is fine, but the awg-quick@awg0 service did NOT start."
+                log_error "Diagnostics: systemctl status awg-quick@awg0; journalctl -u awg-quick@awg0 -n 50"
+                _cmd_rc=1
+                ;;
+            *)
+                log_error "Could not repair the kernel module. See log above; manual recovery may be required."
+                _cmd_rc=1
+                ;;
+        esac
         ;;
 
-    help)
-        usage
+    diagnose)
+        diagnose_server || _cmd_rc=1
         ;;
+
+    # No help) branch here on purpose: every path that sets COMMAND="help"
+    # (-h/--help, unknown option, positional help) is intercepted BEFORE the
+    # dispatcher by the early `usage` (which terminates the process via exit).
 
     *)
         log_error "Unknown command: '$COMMAND'"

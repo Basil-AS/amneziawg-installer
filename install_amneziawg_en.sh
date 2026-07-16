@@ -50,7 +50,7 @@ declare -A AWG_ASSET_SHA256=(
 )
 
 # CLI flags
-UNINSTALL=0; HELP=0; DIAGNOSTIC=0; VERBOSE=0; NO_COLOR=0; AUTO_YES=0; NO_TWEAKS=0
+UNINSTALL=0; HELP=0; HELP_EXIT_RC=0; DIAGNOSTIC=0; VERBOSE=0; NO_COLOR=0; AUTO_YES=0; NO_TWEAKS=0; NO_CPS=0
 FORCE_REINSTALL=0
 _APT_UPDATED=0
 CLI_PORT=""; CLI_SUBNET=""; CLI_DISABLE_IPV6="default"; CLI_SSH_PORT=""
@@ -83,7 +83,12 @@ CLI_PRESET=""; CLI_JC=""; CLI_JMIN=""; CLI_JMAX=""
 
 # --- Auto-cleanup of temporary files ---
 _install_temp_files=()
+_install_cleaned=0
 _install_cleanup() {
+    # Idempotent: on INT/TERM it is called from the signal handler, then again on
+    # EXIT - the second call must be a no-op.
+    [[ "$_install_cleaned" -eq 1 ]] && return 0
+    _install_cleaned=1
     local f
     for f in "${_install_temp_files[@]}"; do [[ -f "$f" ]] && rm -f "$f"; done
     type ufw_remove_http01_temporary_rule &>/dev/null && ufw_remove_http01_temporary_rule
@@ -160,7 +165,7 @@ while [[ $# -gt 0 ]]; do
         --jc=*)          CLI_JC="${1#*=}" ;;
         --jmin=*)        CLI_JMIN="${1#*=}" ;;
         --jmax=*)        CLI_JMAX="${1#*=}" ;;
-        *) echo "Unknown argument: $1"; HELP=1 ;;
+        *) echo "Unknown argument: $1" >&2; HELP=1; HELP_EXIT_RC=1 ;;
     esac
     shift
 done
@@ -173,9 +178,7 @@ log_msg() {
     local type="$1" msg="$2"
     local ts
     ts=$(date +'%F %T')
-    local safe_msg
-    safe_msg="${msg//%/%%}"
-    local entry="[$ts] $type: $safe_msg"
+    local entry="[$ts] $type: $msg"
     local color_start="" color_end=""
 
     if [[ "$NO_COLOR" -eq 0 ]]; then
@@ -243,10 +246,16 @@ apt_update_tolerant() {
     # Filter error lines. Ignore:
     #   1. Lines about source packages (deb-src / /source/ / Sources)
     #   2. Generic 'Some index files failed to download' — symptom, not cause
+    # Additionally exclude known informational W: lines that are never the
+    # CAUSE of rc!=0 but used to survive the filters and turn a tolerable
+    # failure (e.g. deb-src 404 with duplicated sources) into a false fatal:
+    #   - "Target ... is configured multiple times" (duplicate sources entries)
+    #   - "... stored in legacy trusted.gpg keyring" (old key format)
     non_src_errors=$(printf '%s\n' "$err_output" \
         | grep -E '^(E:|Err:|W:)' \
         | grep -vE '(deb-src|/source/|Sources([^[:alpha:]]|$))' \
-        | grep -vE 'Some index files failed to download' || true)
+        | grep -vE 'Some index files failed to download' \
+        | grep -vE '^W: (Target .* is configured multiple times|.* stored in legacy trusted\.gpg)' || true)
 
     # Remember pre-PPA-filter state — we need to distinguish "real APT errors,
     # but all on Amnezia PPA" (tolerant OK) from "no classifiable errors at all"
@@ -333,7 +342,7 @@ apt_wait_for_ppa_package() {
 show_help() {
     cat << 'EOF'
 Usage: sudo bash install_amneziawg_en.sh [OPTIONS]
-Script for installation and configuration of AmneziaWG 2.0 on Ubuntu (24.04 / 25.10) and Debian (12 / 13).
+Script for installation and configuration of AmneziaWG 2.0 on Ubuntu (24.04 / 25.10 / 26.04) and Debian (12 / 13).
 
 Options:
   -h, --help            Show this help and exit
@@ -396,6 +405,8 @@ Options:
   --jc=N               Set Jc manually (1-128, overrides preset)
   --jmin=N             Set Jmin manually (0-1280, overrides preset)
   --jmax=N             Set Jmax manually (0-1280, overrides preset, must be >= Jmin)
+  --no-cps              Disable CPS (the I1 parameter) - needed if the desktop
+                        AmneziaVPN on macOS hangs on connect (issue #159)
 
 Examples:
   sudo bash install_amneziawg_en.sh                             # Interactive installation
@@ -407,7 +418,8 @@ Examples:
 
 Repository: https://github.com/bivlked/amneziawg-installer
 EOF
-    exit 0
+    # Explicit --help exits 0; an unknown argument exits 1 (false success in CI).
+    exit "${HELP_EXIT_RC:-0}"
 }
 
 # ==============================================================================
@@ -517,7 +529,7 @@ check_os_version() {
     local supported=0
     case "$OS_ID" in
         ubuntu)
-            if [[ "$OS_VERSION" == "24.04" || "$OS_VERSION" == "25.10" ]]; then
+            if [[ "$OS_VERSION" == "24.04" || "$OS_VERSION" == "25.10" || "$OS_VERSION" == "26.04" ]]; then
                 supported=1
             fi
             ;;
@@ -531,13 +543,41 @@ check_os_version() {
     if [[ "$supported" -eq 1 ]]; then
         log "OS: ${OS_ID^} $OS_VERSION ($OS_CODENAME) — supported"
     else
-        log_warn "Detected $OS_ID $OS_VERSION ($OS_CODENAME). Script tested on Ubuntu 24.04/25.10 and Debian 12/13."
+        log_warn "Detected $OS_ID $OS_VERSION ($OS_CODENAME). Script tested on Ubuntu 24.04/25.10/26.04 and Debian 12/13."
         if [[ "$AUTO_YES" -eq 0 ]]; then
             read -rp "Continue? [y/N]: " confirm < /dev/tty
-            if ! [[ "$confirm" =~ ^[Yy]$ ]]; then die "Cancelled."; fi
+            if ! [[ "$confirm" =~ ^[[:space:]]*[Yy]([Ee][Ss])?[[:space:]]*$ ]]; then die "Cancelled."; fi
         else
             log "Continuing on $OS_ID $OS_VERSION (--yes)."
         fi
+    fi
+}
+
+check_kernel_version() {
+    # The AmneziaWG 2.0 module is built via DKMS against the host kernel. On
+    # kernels older than 5.15 (Ubuntu < 22.04, e.g. 5.4 on 20.04) the build
+    # usually fails at step 2 with an opaque package-failure. Warn EXPLICITLY and
+    # early, before updates and reboots (issue #163). Not a die: on some older
+    # kernels the module still builds (HWE and such), so WARN + confirm.
+    local kver kmaj kmin
+    kver=$(uname -r)
+    if [[ "$kver" =~ ^([0-9]+)\.([0-9]+) ]]; then
+        kmaj=${BASH_REMATCH[1]}; kmin=${BASH_REMATCH[2]}
+    else
+        log_warn "Could not parse the kernel version ('$kver') - skipping the minimum-version check."
+        return 0
+    fi
+    if (( kmaj < 5 || (kmaj == 5 && kmin < 15) )); then
+        log_warn "Kernel $kver is older than 5.15 - usually too old for the AmneziaWG 2.0 module."
+        log_warn "The DKMS module build on such a kernel most often fails. Reinstall the VPS on Ubuntu 24.04 LTS or Debian 12 (or newer). Matrix: Ubuntu 24.04/25.10/26.04, Debian 12/13."
+        if [[ "$AUTO_YES" -eq 0 ]]; then
+            read -rp "Continue anyway? [y/N]: " confirm < /dev/tty
+            if ! [[ "$confirm" =~ ^[[:space:]]*[Yy]([Ee][Ss])?[[:space:]]*$ ]]; then die "Cancelled: kernel $kver is too old for the AmneziaWG 2.0 module."; fi
+        else
+            log "Continuing on kernel $kver (--yes)."
+        fi
+    else
+        log "Kernel $kver (OK for the AmneziaWG 2.0 module)."
     fi
 }
 
@@ -554,7 +594,7 @@ check_free_space() {
         log_warn "Available $avail MB. Recommended >= $req MB."
         if [[ "$AUTO_YES" -eq 0 ]]; then
             read -rp "Continue? [y/N]: " confirm < /dev/tty
-            if ! [[ "$confirm" =~ ^[Yy]$ ]]; then die "Cancelled."; fi
+            if ! [[ "$confirm" =~ ^[[:space:]]*[Yy]([Ee][Ss])?[[:space:]]*$ ]]; then die "Cancelled."; fi
         else
             log "Continuing with $avail MB (--yes)."
         fi
@@ -611,7 +651,12 @@ install_packages() {
     fi
     log "Installing: ${to_install[*]}..."
     if [[ "${_APT_UPDATED:-0}" -eq 0 ]]; then
-        apt_update_tolerant || log_warn "Failed to update apt."
+        # C4: a hard apt_update_tolerant failure (GPG / binary-repo network / OOM)
+        # is NOT source noise but a real error; continuing on a stale cache is not
+        # safe (contract line ~138, same as callers 1975/2108). die aborts the
+        # install, so _APT_UPDATED=1 is set only on success - otherwise a later
+        # install_packages call in this session would silently skip the update.
+        apt_update_tolerant || die "apt update error."
         _APT_UPDATED=1
     fi
     if ! DEBIAN_FRONTEND=noninteractive apt install -y "${to_install[@]}"; then
@@ -753,8 +798,12 @@ validate_junk_size() {
 
 validate_port_user() {
     local port="$1"
-    if ! [[ "$port" =~ ^[0-9]+$ ]] || [[ "$port" -lt 1024 ]] || [[ "$port" -gt 65535 ]]; then
-        die "Invalid port: '$port'. Allowed range: 1024-65535."
+    # ^[1-9][0-9]{0,4}$ forbids leading zeros ('0080' would otherwise be parsed as
+    # octal in arithmetic and slip past the range check) and bounds the length:
+    # without a limit 64-bit (( )) arithmetic wraps, so 2^64+51820 would pass the
+    # range check. Comparison uses plain decimal.
+    if ! [[ "$port" =~ ^[1-9][0-9]{0,4}$ ]] || (( port > 65535 )); then
+        die "Invalid port: '$port'. Allowed range: 1-65535."
     fi
 }
 
@@ -819,18 +868,62 @@ generate_default_tunnel_subnet() {
 }
 
 validate_subnet() {
-    local subnet="$1"
-    if ! [[ "$subnet" =~ ^([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})/24$ ]] \
-       || [[ "${BASH_REMATCH[1]}" -gt 255 ]] || [[ "${BASH_REMATCH[2]}" -gt 255 ]] \
-       || [[ "${BASH_REMATCH[3]}" -gt 255 ]] || [[ "${BASH_REMATCH[4]}" -gt 255 ]]; then
-        die "Invalid subnet: '$subnet'. Only /24 is supported."
+    local subnet="$1" o
+    # Self-contained (step 0, BEFORE awg_common.sh is downloaded): does not use
+    # _valid_ipv4/_cidr_bounds. Octets without leading zeros ('010...' would
+    # otherwise be parsed as octal).
+    if ! [[ "$subnet" =~ ^(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,2})/([0-9]{1,2})$ ]]; then
+        die "Invalid subnet: '$subnet'. Expected CIDR /16-/30, e.g. 10.9.0.0/16."
     fi
-    if [[ "${BASH_REMATCH[4]}" -eq 0 ]] || [[ "${BASH_REMATCH[4]}" -eq 255 ]]; then
-        die "Invalid subnet: '$subnet'. Last octet cannot be 0 (network address) or 255 (broadcast)."
+    local a="${BASH_REMATCH[1]}" b="${BASH_REMATCH[2]}" c="${BASH_REMATCH[3]}" d="${BASH_REMATCH[4]}" prefix="${BASH_REMATCH[5]}"
+    for o in "$a" "$b" "$c" "$d"; do
+        (( 10#$o <= 255 )) || die "Invalid subnet: '$subnet'. Octet out of range 0-255."
+    done
+    (( 10#$prefix >= 16 && 10#$prefix <= 30 )) || die "Invalid subnet: '$subnet'. Only /16-/30 masks are supported."
+    # Inline arithmetic: the address must be network or network+1.
+    local ip=$(( (10#$a << 24) | (10#$b << 16) | (10#$c << 8) | 10#$d ))
+    local mask=$(( (0xFFFFFFFF << (32 - 10#$prefix)) & 0xFFFFFFFF ))
+    local network=$(( ip & mask ))
+    local n1=$(( network + 1 ))
+    local srv="$(( (n1 >> 24) & 255 )).$(( (n1 >> 16) & 255 )).$(( (n1 >> 8) & 255 )).$(( n1 & 255 ))"
+    if (( ip != network && ip != n1 )); then
+        die "Invalid subnet: '$subnet'. Server address must be ${srv} (network+1), or specify the network."
     fi
-    if [[ "${BASH_REMATCH[4]}" -ne 1 ]]; then
-        die "Invalid subnet: '$subnet'. Last octet must be 1 (server address in subnet)."
+    # Normalize the global to <network+1>/<prefix> (server = network+1).
+    AWG_TUNNEL_SUBNET="${srv}/${prefix}"
+}
+
+# Subnet-change guard: [Peer] blocks are carried over verbatim on reinstall
+# (render_server_config), and their addresses were issued in the OLD subnet.
+# Changing the subnet under live clients breaks them: old IPv4s can fall
+# outside the new range, and IPv6 suffixes can collide (the decimal /24
+# encoding vs hex for non-/24 masks yields two peers with the same ::x). So the
+# install aborts when peers exist and the subnet differs (PR #167 review).
+# Self-contained (step 0, BEFORE awg_common.sh is downloaded). The old
+# subnet is the first Address value in the awg0.conf [Interface]: it is the
+# normalized <network+1>/<prefix>, and the new AWG_TUNNEL_SUBNET has been
+# normalized by validate_subnet by the time of the call - a plain string
+# comparison is enough.
+guard_subnet_change_with_peers() {
+    [[ -f "$SERVER_CONF_FILE" ]] || return 0
+    grep -q '^\[Peer\]' "$SERVER_CONF_FILE" 2>/dev/null || return 0
+    local old_subnet
+    # Address may be dual-stack ("IPv4/n, IPv6/n") in any order - pick the IPv4
+    # element, not just the first comma field (an IPv6-first Address would
+    # otherwise look like a subnet change). No IPv4 -> empty -> fail closed below.
+    old_subnet=$(sed -n 's/^[[:space:]]*Address[[:space:]]*=[[:space:]]*//p' "$SERVER_CONF_FILE" 2>/dev/null \
+        | tr ',' '\n' | sed 's/[[:space:]]//g' \
+        | grep -m1 -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/[0-9]+$')
+    if [[ -z "$old_subnet" ]]; then
+        # Peers exist but the old subnet cannot be determined - fail closed: a
+        # silent continue would re-render the config in the new subnet and break
+        # the clients.
+        die "${SERVER_CONF_FILE} already contains peers, but the Address line in [Interface] is unreadable - the subnet-change check is impossible. Restore the Address line, or remove the clients (sudo bash $MANAGE_SCRIPT_PATH remove <name>), or run --uninstall and reinstall from scratch."
     fi
+    if [[ "$old_subnet" != "$AWG_TUNNEL_SUBNET" ]]; then
+        die "The tunnel subnet changed (${old_subnet} -> ${AWG_TUNNEL_SUBNET}), but ${SERVER_CONF_FILE} already contains peers: their addresses were issued in the old subnet, and changing it breaks the clients. Options: keep the previous subnet; remove all clients (sudo bash $MANAGE_SCRIPT_PATH remove <name>); or run --uninstall and reinstall from scratch."
+    fi
+    return 0
 }
 
 # Endpoint validation (FQDN / IPv4 / [IPv6]).
@@ -845,9 +938,34 @@ validate_endpoint() {
     [[ "$ep" != *$'\n'* && "$ep" != *$'\r'* && \
        "$ep" != *"'"* && "$ep" != *'"'* && "$ep" != *'\\'* && \
        "$ep" != *' '* && "$ep" != *$'\t'* ]] || return 1
-    # One of three formats: FQDN, IPv4, [IPv6]
-    [[ "$ep" =~ ^([A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)*|[0-9]{1,3}(\.[0-9]{1,3}){3}|\[[0-9A-Fa-f:]+\])$ ]] || return 1
-    # If IPv4 format — additionally validate octet range 0-255
+    # Bracketed [IPv6] form: structural check of the bracket contents. The previous
+    # charset-only test let junk like [:::] / [1:2:3] through. Mirrors _valid_ipv6.
+    if [[ "$ep" == \[*\] ]]; then
+        local inner="${ep#\[}"; inner="${inner%\]}"
+        [[ "$inner" =~ ^[0-9A-Fa-f:]+$ ]] || return 1
+        case "$inner" in
+            *:::*|*::*::*) return 1 ;;
+        esac
+        [[ "$inner" == :* && "$inner" != ::* ]] && return 1
+        [[ "$inner" == *: && "$inner" != *:: ]] && return 1
+        local has_dcolon=0; [[ "$inner" == *::* ]] && has_dcolon=1
+        local IFS=':' parts=() p ngroups=0
+        read -ra parts <<< "$inner"
+        for p in "${parts[@]}"; do
+            [[ -z "$p" ]] && continue
+            [[ "$p" =~ ^[0-9A-Fa-f]{1,4}$ ]] || return 1
+            ngroups=$((ngroups + 1))
+        done
+        if [[ $has_dcolon -eq 1 ]]; then
+            (( ngroups <= 7 )) || return 1
+        else
+            (( ngroups == 8 )) || return 1
+        fi
+        return 0
+    fi
+    # Otherwise FQDN or IPv4
+    [[ "$ep" =~ ^([A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)*|[0-9]{1,3}(\.[0-9]{1,3}){3})$ ]] || return 1
+    # If IPv4 format - additionally validate octet range 0-255
     if [[ "$ep" =~ ^([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})$ ]]; then
         [[ "${BASH_REMATCH[1]}" -le 255 && "${BASH_REMATCH[2]}" -le 255 && \
            "${BASH_REMATCH[3]}" -le 255 && "${BASH_REMATCH[4]}" -le 255 ]] || return 1
@@ -856,18 +974,29 @@ validate_endpoint() {
 }
 
 validate_cidr_list() {
-    local input="$1" cidr
+    local input="$1" cidr o nospace
     input="${input//$'\r'/}"
     input="${input//$'\t'/ }"
+    # A newline means injection into awgsetup_cfg.init (read <<< only sees the
+    # first line, the rest would pass unchecked). Same policy as validate_endpoint.
+    [[ "$input" != *$'\n'* ]] || return 1
+    # Structural comma check before split: bash IFS drops a trailing empty element,
+    # so '10.0.0.0/24,' used to pass. Reject leading/trailing/double comma and empty
+    # input (spaces are ignored for this check).
+    nospace="${input// /}"
+    case "$nospace" in
+        ""|,*|*,|*,,*) return 1 ;;
+    esac
     IFS=',' read -ra cidrs <<< "$input"
     for cidr in "${cidrs[@]}"; do
-        cidr=$(echo "$cidr" | tr -d ' ')
-        if ! [[ "$cidr" =~ ^([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})/([0-9]{1,2})$ ]] \
-           || [[ "${BASH_REMATCH[1]}" -gt 255 ]] || [[ "${BASH_REMATCH[2]}" -gt 255 ]] \
-           || [[ "${BASH_REMATCH[3]}" -gt 255 ]] || [[ "${BASH_REMATCH[4]}" -gt 255 ]] \
-           || [[ "${BASH_REMATCH[5]}" -gt 32 ]]; then
+        cidr="${cidr// /}"
+        # Octets without leading zeros; prefix 0-32 enforced in the regex (no octal).
+        if ! [[ "$cidr" =~ ^(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,2})/([0-9]|[12][0-9]|3[0-2])$ ]]; then
             return 1
         fi
+        for o in "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}" "${BASH_REMATCH[4]}"; do
+            (( o <= 255 )) || return 1
+        done
     done
 }
 
@@ -1218,7 +1347,11 @@ configure_routing_mode() {
            fi
            log "Selected mode: Custom ($ALLOWED_IPS)" ;;
         *) ALLOWED_IPS_MODE=2
-           ALLOWED_IPS="0.0.0.0/5, 8.0.0.0/7, 11.0.0.0/8, 12.0.0.0/6, 16.0.0.0/4, 32.0.0.0/3, 64.0.0.0/2, 128.0.0.0/3, 160.0.0.0/5, 168.0.0.0/6, 172.0.0.0/12, 172.32.0.0/11, 172.64.0.0/10, 172.128.0.0/9, 173.0.0.0/8, 174.0.0.0/7, 176.0.0.0/4, 192.0.0.0/9, 192.128.0.0/11, 192.160.0.0/13, 192.169.0.0/16, 192.170.0.0/15, 192.172.0.0/14, 192.176.0.0/12, 192.192.0.0/10, 193.0.0.0/8, 194.0.0.0/7, 196.0.0.0/6, 200.0.0.0/5, 208.0.0.0/4, 8.8.8.8/32, 1.1.1.1/32"
+           # iOS breaks the tunnel if the list starts with 0.0.0.0/5: that block covers
+           # the reserved 0.0.0.0/8 which the iOS kernel chokes on, so it never reaches the
+           # rest of the routes. 1.0.0.0/8 + 2.0.0.0/7 + 4.0.0.0/6 is the same range minus the
+           # zero block (0.0.0.0/8 is non-routable anyway). Do not revert to 0.0.0.0/5 (Issue #42).
+           ALLOWED_IPS="1.0.0.0/8, 2.0.0.0/7, 4.0.0.0/6, 8.0.0.0/7, 11.0.0.0/8, 12.0.0.0/6, 16.0.0.0/4, 32.0.0.0/3, 64.0.0.0/2, 128.0.0.0/3, 160.0.0.0/5, 168.0.0.0/6, 172.0.0.0/12, 172.32.0.0/11, 172.64.0.0/10, 172.128.0.0/9, 173.0.0.0/8, 174.0.0.0/7, 176.0.0.0/4, 192.0.0.0/9, 192.128.0.0/11, 192.160.0.0/13, 192.169.0.0/16, 192.170.0.0/15, 192.172.0.0/14, 192.176.0.0/12, 192.192.0.0/10, 193.0.0.0/8, 194.0.0.0/7, 196.0.0.0/6, 200.0.0.0/5, 208.0.0.0/4, 8.8.8.8/32, 1.1.1.1/32"
            log "Selected mode: Amnezia List+DNS." ;;
     esac
     if [ -z "$ALLOWED_IPS" ]; then die "Failed to determine AllowedIPs."; fi
@@ -1827,15 +1960,20 @@ rand_range() {
     local random_val
     random_val=$(od -An -tu4 -N4 /dev/urandom | tr -d ' ')
     if [[ -z "$random_val" || ! "$random_val" =~ ^[0-9]+$ ]]; then
-        # Fallback: combining two $RANDOM for 30-bit range
-        random_val=$(( (RANDOM << 15) | RANDOM ))
+        # Fallback: three $RANDOM (15 bits each) with XOR overlap cover bits
+        # 0-30, i.e. the full [0, 2^31-1]. The previous variant
+        # (RANDOM<<15|RANDOM) gave only 30 bits - the upper half of the H
+        # range could never come up.
+        random_val=$(( (RANDOM << 16) ^ (RANDOM << 8) ^ RANDOM ))
     fi
     echo $(( (random_val % range) + min ))
 }
 
 # Generate 4 non-overlapping ranges for AWG H1-H4.
 # Algorithm: 8 random values → sort → 4 (low, high) pairs.
-# Sorting guarantees low ≤ high and non-overlap between pairs.
+# Sorting gives low <= high; the strict checks below guarantee a gap between
+# pairs (touching bounds = overlap at a single point) and a lower bound >= 5
+# (values 1-4 are reserved for vanilla WireGuard message types).
 # Minimum width per range = 1000 (for proper obfuscation).
 # Prints 4 "low-high" lines to stdout. Returns 1 on failure.
 # Mitigates Russian DPI fingerprinting of static H values (#38).
@@ -1879,10 +2017,14 @@ generate_awg_h_ranges() {
         sorted=$(printf '%s\n' "${arr[@]}" | sort -n)
         arr=()
         while IFS= read -r _v; do arr+=("$_v"); done <<< "$sorted"
-        if (( ${arr[1]} - ${arr[0]} >= 1000 )) && \
+        if (( ${arr[0]} >= 5 )) && \
+           (( ${arr[1]} - ${arr[0]} >= 1000 )) && \
            (( ${arr[3]} - ${arr[2]} >= 1000 )) && \
            (( ${arr[5]} - ${arr[4]} >= 1000 )) && \
-           (( ${arr[7]} - ${arr[6]} >= 1000 )); then
+           (( ${arr[7]} - ${arr[6]} >= 1000 )) && \
+           (( ${arr[2]} > ${arr[1]} )) && \
+           (( ${arr[4]} > ${arr[3]} )) && \
+           (( ${arr[6]} > ${arr[5]} )); then
             printf '%s-%s\n' "${arr[0]}" "${arr[1]}"
             printf '%s-%s\n' "${arr[2]}" "${arr[3]}"
             printf '%s-%s\n' "${arr[4]}" "${arr[5]}"
@@ -2504,7 +2646,7 @@ setup_improved_firewall() {
             log_warn "UFW not enabled. Ensure an external firewall opens VPN/Web ports and does not expose AdGuard publicly."
             return 0
         fi
-        if ! ufw enable <<< "y"; then die "UFW enable error."; fi
+        if ! ufw --force enable; then die "UFW enable error."; fi
         log "UFW enabled."
         # Marker: UFW was enabled by our installer (not by the user beforehand).
         # Used in step_uninstall to decide whether disabling UFW is safe.
@@ -2563,10 +2705,27 @@ secure_files() {
 
 setup_fail2ban() {
     log "Configuring Fail2Ban..."
-    if ! command -v fail2ban-client &>/dev/null; then install_packages fail2ban; fi
+    if ! command -v fail2ban-client &>/dev/null; then
+        install_packages fail2ban
+        # Marker: the fail2ban package was installed by our installer (rather
+        # than being present before it). step_uninstall purges fail2ban only
+        # when the marker exists, so it never wipes SSH protection the user
+        # had set up beforehand (symmetric to .ufw_enabled_by_installer).
+        if command -v fail2ban-client &>/dev/null; then
+            touch "$AWG_DIR/.fail2ban_installed_by_installer" 2>/dev/null || \
+                log_warn "Failed to create the fail2ban marker - uninstall will not remove the fail2ban package."
+        fi
+    fi
     if ! command -v fail2ban-client &>/dev/null; then
         log_warn "Fail2Ban not installed, skipping."
         return 1
+    fi
+
+    # banaction=ufw only takes effect with UFW active: if the user declined to
+    # enable UFW at step 4, bans land in an inactive ruleset and effectively
+    # do nothing (while fail2ban itself looks "green").
+    if ufw status 2>/dev/null | grep -q inactive; then
+        log_warn "UFW is not active: fail2ban bans (banaction=ufw) have no effect while UFW is off. Enable with: sudo ufw enable"
     fi
 
     # Debian: journald instead of rsyslog, needs python3-systemd
@@ -2576,11 +2735,8 @@ setup_fail2ban() {
 
     mkdir -p /etc/fail2ban/jail.d 2>/dev/null
 
-    # Backend: systemd for Debian (no rsyslog), auto for Ubuntu
-    local f2b_backend="auto"
-    if [[ "${OS_ID:-}" == "debian" ]]; then
-        f2b_backend="systemd"
-    fi
+    # Backend: systemd for Debian and Ubuntu (no rsyslog)
+    local f2b_backend="systemd"
 
     cat > /etc/fail2ban/jail.d/amneziawg.conf << JAILEOF || { log_warn "jail.d/amneziawg.conf write error"; return 1; }
 # AmneziaWG — SSH protection (managed by amneziawg-installer)
@@ -2593,7 +2749,11 @@ bantime  = 1h
 banaction = ufw
 JAILEOF
 
-    if systemctl restart fail2ban; then
+    systemctl restart fail2ban
+    # Wait a second, service is restarting...
+    sleep 1
+
+    if systemctl is-active --quiet fail2ban; then
         log "Fail2Ban configured and restarted."
     else
         log_warn "fail2ban restart error"
@@ -2658,6 +2818,10 @@ check_service_status() {
 # ==============================================================================
 
 create_diagnostic_report() {
+    # --diagnostic runs BEFORE initialize_setup (home of the main root check):
+    # as a regular user every log_msg write into /root/awg fails, the report
+    # is not created, and exit 0 would look like a false success.
+    if [ "$(id -u)" -ne 0 ]; then die "Run the script as root (sudo bash $0 --diagnostic)."; fi
     log "Creating diagnostics..."
     local rf
     rf="$AWG_DIR/diag_$(date +%F_%T).txt"
@@ -2755,7 +2919,7 @@ step_uninstall() {
     else
         log "Auto-confirming uninstall (--yes)."
     fi
-    if [[ -z "$backup" || "$backup" =~ ^[Yy]$ ]]; then
+    if [[ -z "$backup" || "$backup" =~ ^[[:space:]]*[Yy]([Ee][Ss])?[[:space:]]*$ ]]; then
         local bf
         bf="$HOME/awg_uninstall_backup_$(date +%F_%H-%M-%S).tar.gz"
         log "Creating backup: $bf"
@@ -2892,12 +3056,20 @@ step_uninstall() {
         # If a user still has a jail.local from very old installer versions,
         # leave it for them to deal with.
         rm -f /etc/fail2ban/jail.d/amneziawg.conf 2>/dev/null
+        # If fail2ban was not purged (it predates us) - restart it without our
+        # jail: it was stopped above (systemctl stop fail2ban).
+        if command -v fail2ban-client &>/dev/null && [[ ! -f "$AWG_DIR/.fail2ban_installed_by_installer" ]]; then
+            systemctl restart fail2ban 2>/dev/null || log_warn "Failed to restart fail2ban after removing our jail."
+        fi
     fi
     log "Removing DKMS..."
     rm -rf /var/lib/dkms/amneziawg* || log_warn "DKMS removal error."
     log "Restoring sysctl..."
-    if grep -q "disable_ipv6" /etc/sysctl.conf 2>/dev/null; then
-        sed -i '/disable_ipv6/d' /etc/sysctl.conf || log_warn "sed sysctl.conf error"
+    # Only the exact lines legacy versions of our installer wrote (=1 for
+    # all/default/lo). Previously ANY line containing disable_ipv6 was removed -
+    # including lines added by the user themselves (e.g. an =0 override).
+    if grep -qE '^net\.ipv6\.conf\.(all|default|lo)\.disable_ipv6[[:space:]]*=[[:space:]]*1[[:space:]]*$' /etc/sysctl.conf 2>/dev/null; then
+        sed -i -E '/^net\.ipv6\.conf\.(all|default|lo)\.disable_ipv6[[:space:]]*=[[:space:]]*1[[:space:]]*$/d' /etc/sysctl.conf || log_warn "sed sysctl.conf error"
     fi
     sysctl -p --system 2>/dev/null
     rm -f /etc/apt/sources.list.d/*.bak-* "$AWG_DIR"/ubuntu.sources.bak-* 2>/dev/null || true
@@ -2942,6 +3114,7 @@ initialize_setup() {
     log "Log file: $LOG_FILE"
 
     check_os_version
+    check_kernel_version
     check_free_space
 
     local default_port
@@ -3053,8 +3226,26 @@ initialize_setup() {
         log "Configuration file $CONFIG_FILE not found."
     fi
 
+    # The old port from awgsetup_cfg.init: step 4 needs it to delete the stale
+    # UFW rule on a port change (Issue #175). Captured BEFORE the CLI override,
+    # otherwise the old value is lost for good - uninstall reads the already
+    # rewritten config and never learns the old port. PREV_AWG_PORT may already
+    # be loaded from awgsetup_cfg.init via safe_load_config - that is a pending
+    # delete from a previous run: step 1 ends in request_reboot, only a value
+    # written to disk survives until step 4 (PR #176).
+    PREV_AWG_PORT="${PREV_AWG_PORT:-}"
+    _cfg_awg_port=""
+    if [[ "$config_exists" -eq 1 ]]; then _cfg_awg_port="$AWG_PORT"; fi
+
     # CLI override
     AWG_PORT=${CLI_PORT:-$AWG_PORT}
+    # The port changed in this run - the previous value becomes a pending
+    # delete. If the port was changed back (matches the pending value), the
+    # delete is cancelled: the rule is needed again.
+    if [[ -n "$_cfg_awg_port" && "$_cfg_awg_port" != "$AWG_PORT" ]]; then
+        PREV_AWG_PORT="$_cfg_awg_port"
+    fi
+    if [[ "$PREV_AWG_PORT" == "$AWG_PORT" ]]; then PREV_AWG_PORT=""; fi
     AWG_TUNNEL_SUBNET=${CLI_SUBNET:-$AWG_TUNNEL_SUBNET}
     if [[ "$CLI_DISABLE_IPV6" != "default" ]]; then DISABLE_IPV6=$CLI_DISABLE_IPV6; fi
     [[ "$CLI_ENABLE_NATIVE_IPV6" -eq 1 || "$CLI_UPGRADE_IPV6" -eq 1 ]] && DISABLE_IPV6=0
@@ -3092,6 +3283,12 @@ initialize_setup() {
     fi
     if [[ "$CLI_ROUTING_MODE" != "default" ]]; then
         ALLOWED_IPS_MODE=$CLI_ROUTING_MODE
+        # An explicit CLI mode overrides the list too: previously --route-all/
+        # --route-amnezia on reinstall changed only the mode while ALLOWED_IPS
+        # kept the old value from awgsetup_cfg.init - the flag silently had no
+        # effect (Issue #170). An empty list forces configure_routing_mode to
+        # recompute it for the new mode.
+        ALLOWED_IPS=""
         if [[ "$CLI_ROUTING_MODE" -eq 3 ]]; then ALLOWED_IPS=$CLI_CUSTOM_ROUTES; fi
     fi
     if [[ -n "$CLI_ENDPOINT" ]]; then
@@ -3155,8 +3352,12 @@ initialize_setup() {
         fi
         validate_port_system "$AWG_PORT" || die "Invalid VPN port: '$AWG_PORT'. Allowed range: 1-65535."
         if [[ "$AUTO_YES" -eq 0 ]]; then
-            read -rp "Enter tunnel subnet [${AWG_TUNNEL_SUBNET}]: " input_subnet < /dev/tty
-            if [[ -n "$input_subnet" ]]; then AWG_TUNNEL_SUBNET=$input_subnet; fi
+            while true; do
+                read -rp "Enter tunnel subnet [${AWG_TUNNEL_SUBNET}]: " input_subnet < /dev/tty
+                [[ -z "$input_subnet" ]] && break
+                if ( validate_subnet "$input_subnet" ); then AWG_TUNNEL_SUBNET=$input_subnet; break; fi
+                log_warn "Please re-enter the subnet."
+            done
         fi
         validate_subnet "$AWG_TUNNEL_SUBNET"
         if [[ "$DISABLE_IPV6" == "default" ]]; then configure_ipv6; fi
@@ -3193,6 +3394,7 @@ initialize_setup() {
 
     # Default values
     if [[ "$DISABLE_IPV6" == "default" ]]; then DISABLE_IPV6=1; fi
+    configure_ipv6_tunnel
     if [[ "$ALLOWED_IPS_MODE" == "default" ]]; then ALLOWED_IPS_MODE=2; fi
     if [[ -z "$ALLOWED_IPS" ]]; then configure_routing_mode; fi
     configure_ipv6_client_mode
@@ -3213,6 +3415,14 @@ initialize_setup() {
     validate_server_name "$AWG_SERVER_NAME" || die "Invalid server name: empty, too long, or contains a newline."
     confirm_install_choices
 
+    # Single mandatory AllowedIPs validation before saving the config: CLI
+    # --route-custom on a first run assigned ALLOWED_IPS without checking it
+    # (configure_routing_mode was skipped because the mode was already 3).
+    # Validate any non-empty list regardless of its source (CLI / config / mode).
+    if [[ -n "$ALLOWED_IPS" ]] && ! validate_cidr_list "$ALLOWED_IPS"; then
+        die "Invalid ALLOWED_IPS: '$ALLOWED_IPS'. Expected a list x.x.x.x/y[,x.x.x.x/y]."
+    fi
+
     # Port check (skip if AWG service is already listening on this port)
     if ! systemctl is-active --quiet awg-quick@awg0 2>/dev/null; then
         check_port_availability "$AWG_PORT" || die "Port $AWG_PORT/udp is occupied."
@@ -3225,15 +3435,45 @@ initialize_setup() {
     # Regenerate if: first run OR explicit CLI override (--preset/--jc/--jmin/--jmax)
     if [[ -z "${AWG_Jc:-}" ]] || [[ -n "${CLI_PRESET:-}" ]] || [[ -n "${CLI_JC:-}" ]] \
         || [[ -n "${CLI_JMIN:-}" ]] || [[ -n "${CLI_JMAX:-}" ]]; then
+        # generate_awg_params regenerates the WHOLE set (S1-S4, H1-H4, I1),
+        # not just the requested parameter: on a reinstall over a live server
+        # every issued client config still holds the old H1-H4 and will stop
+        # connecting. Warn loudly.
+        if [[ "$config_exists" -eq 1 && -n "${AWG_Jc:-}" ]]; then
+            log_warn "WARNING: --preset/--jc/--jmin/--jmax on a reinstall regenerate ALL obfuscation parameters (including H1-H4/S1-S4/I1)."
+            log_warn "All existing client configs will stop connecting - reissue them after the install: sudo bash $MANAGE_SCRIPT_PATH regen"
+        fi
         generate_awg_params
     else
         log "AWG 2.0 parameters already set from config."
     fi
 
+    # CPS (I1) toggle (issue #159): --no-cps drops the I1 parameter that makes the
+    # desktop AmneziaVPN on macOS hang on connect (mobile and CLI clients handle
+    # CPS fine). Only I1 is cleared, the rest of the obfuscation set (Jc/S1-S4/
+    # H1-H4) is left intact. Explicit --preset/--jc/--jmin/--jmax without --no-cps
+    # re-enable CPS (a fresh set includes I1). Otherwise keep the state from init.
+    if [[ "${CLI_NO_CPS:-0}" -eq 1 ]]; then
+        NO_CPS=1
+    elif [[ -n "${CLI_PRESET:-}" || -n "${CLI_JC:-}" || -n "${CLI_JMIN:-}" || -n "${CLI_JMAX:-}" ]]; then
+        NO_CPS=0
+    fi
+    if [[ "${NO_CPS:-0}" -eq 1 ]]; then
+        if [[ -n "${AWG_I1:-}" && "$config_exists" -eq 1 ]]; then
+            log_warn "WARNING: --no-cps drops the I1 (CPS) parameter. Existing client configs that still carry I1 will stop connecting - reissue them: sudo bash $MANAGE_SCRIPT_PATH regen"
+        fi
+        AWG_I1=''
+        log "CPS (I1) disabled (--no-cps / persisted NO_CPS=1): the desktop AmneziaVPN on macOS does not support CPS."
+    fi
+
     # Save configuration
     log "Saving settings to $CONFIG_FILE..."
-    local temp_conf
-    temp_conf=$(mktemp) || die "mktemp error."
+    # temp in the target config's directory -> mv = atomic rename on the same
+    # filesystem (not a cross-fs copy+unlink when /tmp is mounted as tmpfs).
+    local temp_conf cfg_dir
+    cfg_dir="$(dirname "$CONFIG_FILE")"
+    mkdir -p "$cfg_dir" 2>/dev/null
+    temp_conf=$(mktemp -p "$cfg_dir") || die "mktemp error."
     _install_temp_files+=("$temp_conf")
     local quoted_server_name
     quoted_server_name=$(shell_quote "$AWG_SERVER_NAME")
@@ -3306,8 +3546,20 @@ export AWG_I4='${AWG_I4:-}'
 export AWG_I5='${AWG_I5:-}'
 export AWG_PRESET='${AWG_PRESET:-default}'
 export NO_TWEAKS=${NO_TWEAKS}
+export NO_CPS=${NO_CPS}
 export AWG_APPLY_MODE='${AWG_APPLY_MODE:-syncconf}'
+export ALLOW_IPV6_TUNNEL=${ALLOW_IPV6_TUNNEL:-0}
+export IPV6_SUBNET='${IPV6_SUBNET}'
+export SERVER_HAS_NATIVE_IPV6=${SERVER_HAS_NATIVE_IPV6:-0}
 EOF
+    # The pending delete of the old port's UFW rule must survive a reboot:
+    # step 4 runs in a different process after 1-2 reboots, a process variable
+    # does not live that long (PR #176). setup_improved_firewall removes the
+    # key after a successful ufw delete.
+    if [[ "$PREV_AWG_PORT" =~ ^[0-9]+$ ]]; then
+        echo "export PREV_AWG_PORT=${PREV_AWG_PORT}" >> "$temp_conf" \
+            || die "Error writing PREV_AWG_PORT to $temp_conf"
+    fi
     if ! mv "$temp_conf" "$CONFIG_FILE"; then
         rm -f "$temp_conf"
         die "Error saving $CONFIG_FILE"
@@ -3332,6 +3584,21 @@ EOF
     log "WireSock hints: ${AWG_WIRESOCK_HINTS:-off}"
     log "Server name: ${AWG_SERVER_NAME}"
     log "AllowedIPs mode: $ALLOWED_IPS_MODE"
+    # Changing the routing mode is a client-config operation: new clients get
+    # the new list, but for existing ones regen deliberately preserves
+    # AllowedIPs (per-client modify customizations). Hint the explicit way to
+    # apply the new mode to everyone (Issue #170).
+    if [[ "$config_exists" -eq 1 && "$CLI_ROUTING_MODE" != "default" ]]; then
+        log_warn "Routing mode changed. Existing client configs keep their old AllowedIPs."
+        log_warn "Apply the new mode to all clients: sudo bash $MANAGE_SCRIPT_PATH regen --reset-routes"
+    fi
+    # Port change: step 6 skips clients that already exist, their Endpoint
+    # keeps the old port and they silently stop connecting. Hint the explicit
+    # reissue - mirrors the routing-mode change warning (#170).
+    if [[ "$config_exists" -eq 1 && -n "$PREV_AWG_PORT" ]]; then
+        log_warn "Port changed (${PREV_AWG_PORT} -> ${AWG_PORT}). Existing client configs keep the old port in Endpoint and will lose connectivity."
+        log_warn "Reissue all clients: sudo bash $MANAGE_SCRIPT_PATH regen"
+    fi
 
     # Loading state
     if [[ -f "$STATE_FILE" ]]; then
@@ -3347,6 +3614,22 @@ EOF
         current_step=1
         log "Starting from step 1."
         update_state 1
+    fi
+
+    # Stale state (an interrupted step 7 leaves setup_state=7/99) + CLI flags
+    # affecting the firewall/configs: without the rollback the loop would skip
+    # steps 4-6, the new values would live only in awgsetup_cfg.init while
+    # awg0.conf, client configs and UFW rules silently kept the old ones
+    # (Issue #175). Roll back to step 4: firewall (port) + config regen (step 6).
+    if (( current_step > 4 )) && { [[ -n "$CLI_PORT" ]] || [[ -n "$CLI_SUBNET" ]] \
+        || [[ -n "$CLI_SSH_PORT" ]] || [[ "$CLI_ROUTING_MODE" != "default" ]] \
+        || [[ -n "$CLI_ENDPOINT" ]] || [[ "$CLI_DISABLE_IPV6" != "default" ]] \
+        || [[ "${CLI_ALLOW_IPV6_TUNNEL:-0}" -eq 1 ]] || [[ -n "${CLI_PRESET:-}" ]] \
+        || [[ -n "${CLI_JC:-}" ]] || [[ -n "${CLI_JMIN:-}" ]] || [[ -n "${CLI_JMAX:-}" ]] \
+        || [[ "${CLI_NO_CPS:-0}" -eq 1 ]]; }; then
+        log_warn "Unfinished install (step $current_step) + configuration CLI flags: rolling back to step 4 so the firewall and configs are regenerated with the new values."
+        current_step=4
+        update_state 4
     fi
     log "Step 0 completed."
 }
@@ -3372,6 +3655,9 @@ step1_update_and_optimize() {
 
     log "Updating package lists..."
     apt_update_tolerant || die "apt update error."
+    # Cache is fresh: install_packages below must not rerun apt update
+    # (sources do not change in step 1).
+    _APT_UPDATED=1
 
     log "Unlocking dpkg..."
     if ! apt-get check &>/dev/null; then
@@ -3523,7 +3809,14 @@ step2_install_amnezia() {
     log "### STEP 2: Installing AmneziaWG and dependencies ###"
     _APT_UPDATED=0  # Reset: new sources will be added in this step
 
-    apt_update_tolerant || die "apt update error."
+    # --ppa-amnezia-tolerant is REQUIRED already here: if a PPA file with a
+    # broken suite is left on disk (404 Release; e.g. questing from an older
+    # version or after an in-place upgrade), a strict update died BEFORE the
+    # repair blocks below ever ran, so the repair never fired (live repro on
+    # Debian 12, v5.16.0 cycle). Base repository errors remain fail-closed;
+    # PPA errors are handled by the repair + post-PPA update +
+    # apt_wait_for_ppa_package below.
+    apt_update_tolerant --ppa-amnezia-tolerant || die "apt update error."
 
     # PPA Amnezia (without software-properties-common)
     log "Adding Amnezia PPA..."
@@ -3609,6 +3902,23 @@ step2_install_amnezia() {
         log_warn "Legacy PPA $legacy_sources (suite='${legacy_suite:-<empty>}') does not match target '${ppa_codename}' — removing."
         rm -f "$legacy_sources" "$legacy_list"
     fi
+    # Same repair for the traditional .list (Debian 12): the suite is the token
+    # after the URL in a 'deb [opts] URL <suite> main' line. Without this check
+    # a file with an old/foreign suite (e.g. after an in-place upgrade
+    # bookworm->trixie) would slip through below as "PPA already added" and apt
+    # would keep pulling the wrong suite.
+    local list_suite=""
+    if [[ -f "$ppa_list" ]]; then
+        list_suite=$(awk '/^deb([[:space:]]|$)/ {
+            for (i = 2; i <= NF; i++) {
+                if ($i ~ /^https?:/) { print $(i+1); exit }
+            }
+        }' "$ppa_list" 2>/dev/null)
+        if [[ -z "$list_suite" || "$list_suite" != "$ppa_codename" ]]; then
+            log_warn "Existing $ppa_list (suite='${list_suite:-<empty>}') does not match target '${ppa_codename}' - recreating."
+            rm -f "$ppa_list"
+        fi
+    fi
     if [[ -f "$legacy_list" ]] || [[ -f "$legacy_sources" ]]; then
         log "PPA already added (legacy format)."
     elif [[ -f "$ppa_sources" ]] || [[ -f "$ppa_list" ]]; then
@@ -3625,10 +3935,24 @@ step2_install_amnezia() {
         # SSH, cloud-init, Ansible, etc.) and must not abort with "File exists"
         # when overwriting the mktemp-created tmp file. Without --yes gpg in
         # batch mode refuses to write into the pre-existing empty tmp file.
-        if ! curl -fsSL "https://keyserver.ubuntu.com/pks/lookup?op=get&search=0x57290828" \
+        # Request by the FULL 40-character fingerprint, not the short ID:
+        # short 32-bit IDs have preimage collisions (evil32), and
+        # keyserver.ubuntu.com accepts uploads of arbitrary keys. A swapped
+        # key would not give RCE (package signatures would not match), but it
+        # would break the install with a cryptic apt error.
+        local _ppa_key_fpr="75C9DD72C799870E310542E24166F2C257290828"
+        if ! curl -fsSL "https://keyserver.ubuntu.com/pks/lookup?op=get&search=0x${_ppa_key_fpr}" \
              | gpg --batch --no-tty --yes --dearmor -o "$_kf_tmp"; then
             rm -f "$_kf_tmp" 2>/dev/null
             die "Amnezia PPA GPG key import error."
+        fi
+        # Verify the downloaded key fingerprint against the expected one (pin).
+        local _got_fpr
+        _got_fpr=$(gpg --batch --no-tty --show-keys --with-colons "$_kf_tmp" 2>/dev/null \
+            | awk -F: '/^fpr:/{print $10; exit}')
+        if [[ "$_got_fpr" != "$_ppa_key_fpr" ]]; then
+            rm -f "$_kf_tmp" 2>/dev/null
+            die "Amnezia PPA GPG key failed the fingerprint check (got: '${_got_fpr:-<empty>}')."
         fi
         chmod 644 "$_kf_tmp" || { rm -f "$_kf_tmp" 2>/dev/null; die "chmod GPG key error."; }
         mv -f "$_kf_tmp" "$keyring_file" \
@@ -3665,6 +3989,10 @@ PPASRC
         log_error "integrity of keys in /etc/apt/keyrings, dpkg lock contention."
         die "apt update returned an error (rc!=0, not the Amnezia PPA)."
     fi
+    # PPA added, cache refreshed: sources do not change further in step 2, so
+    # install_packages must not repeat apt update (on slow mirrors every run
+    # is 10-60 seconds).
+    _APT_UPDATED=1
     # apt-get update is tolerant to an unreachable InRelease (rc=0 even when
     # the PPA is down). So we check that amneziawg-dkms actually appears in
     # apt-cache, with three attempts and 30s/60s backoff (~1.5 min total).
@@ -3692,8 +4020,8 @@ PPASRC
             install_packages "amneziawg-tools" "wireguard-tools" "qrencode" "python3" "python3-geoip2" "openssl"
             installer_ipv6_effective_mode_is_ndp && install_packages "ndppd"
             log "Step 2 completed (prebuilt ARM)."
+            # request_reboot always terminates the process (exit), we never return here.
             request_reboot 3
-            return
         fi
         log "No matching prebuilt — falling back to DKMS build."
     fi
@@ -5162,23 +5490,21 @@ step6_generate_configs() {
         log "Server config backup: $s_bak"
     fi
 
-    # Create AWG 2.0 server config
+    # Create the AWG 2.0 server config, carrying ALL existing [Peer] blocks
+    # over from the backup in ONE atomic write (render_server_config appends
+    # the peers into the temp BEFORE mv). Previously the append ran AFTER
+    # render as a separate operation: a failure in the window between them
+    # left the live config peer-less, and the next run of step 6 backed up
+    # the already peer-less file - all clients were lost on --force reinstall
+    # (recovery only by hand from a timestamped .bak).
+    # C5 history (semantics worth keeping): ALL blocks are restored, including
+    # the defaults my_phone/my_laptop - the idempotent loop below skips peers
+    # that already exist, and the guard in generate_client refuses to recreate
+    # one whose artifacts exist.
     log "Creating server config..."
-    render_server_config || die "Server config creation error."
-
-    # Restore existing [Peer] blocks from backup (excluding defaults)
-    if [[ -n "${s_bak:-}" && -f "$s_bak" ]]; then
-        local restored_peers
-        restored_peers=$(awk '
-            /^\[Peer\]/ { buf=$0"\n"; in_peer=1; skip=0; next }
-            in_peer && /^\[/ { if (!skip) printf "%s\n", buf; buf=""; in_peer=0; next }
-            in_peer { buf=buf $0"\n"; if ($0 ~ /^#_Name = (my_phone|my_laptop)$/) skip=1; next }
-            END { if (in_peer && !skip) printf "%s", buf }
-        ' "$s_bak")
-        if [[ -n "$restored_peers" ]]; then
-            printf '\n%s' "$restored_peers" >> "$SERVER_CONF_FILE"
-            log "Existing peers restored from backup."
-        fi
+    render_server_config "${s_bak:-}" || die "Server config creation error."
+    if [[ -n "${s_bak:-}" && -f "$s_bak" ]] && grep -q '^\[Peer\]' "$s_bak" 2>/dev/null; then
+        log "Existing peers restored from backup."
     fi
 
     # Generate default clients
@@ -5817,8 +6143,10 @@ if [[ "$FORCE_REINSTALL" -ne 1 && "$CLI_UPGRADE_IPV6" -ne 1 ]] && [[ -f "$SERVER
    && systemctl is-active --quiet awg-quick@awg0 2>/dev/null; then
     log_error "AmneziaWG is already installed and running."
     log_error "To reinstall — pass --force (or AWG_FORCE_REINSTALL=1)."
-    log_error "WARNING: a reinstall will rerun Step 1 (sysctl/swap/BBR) and Step 7 (service restart);"
-    log_error "         obfuscation parameters (Jc/Jmin/Jmax/H1-H4/I1) survive."
+    log_error "WARNING: a reinstall will rerun Step 1 (sysctl/swap/BBR) and Step 7 (service restart)."
+    log_error "         Obfuscation parameters (Jc/Jmin/Jmax/H1-H4/I1) survive UNLESS you pass"
+    log_error "         --preset/--jc/--jmin/--jmax (those flags regenerate the whole set - every"
+    log_error "         issued client config would have to be reissued via regen)."
     log_error "To manage clients:  sudo bash $MANAGE_SCRIPT_PATH help"
     log_error "To fully uninstall: sudo bash $0 --uninstall"
     exit 0
