@@ -3347,8 +3347,10 @@ generate_client() {
         # Fail-closed; no artifacts exist yet (keys/config are created below), so
         # no rollback is needed.
         CLIENT_PSK=$(awg genpsk) || {
-            log_warn "awg genpsk не сработал — клиент будет создан без PresharedKey"
-            CLIENT_PSK=""
+            log_error "awg genpsk failed; refusing to create a PSK-less client"
+            _rollback_client_artifacts "$name"
+            exec {lock_fd}>&-
+            return 1
         }
     fi
 

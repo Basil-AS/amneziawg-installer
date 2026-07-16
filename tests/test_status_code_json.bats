@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+setup_file() { skip "Fork web/RBAC status schema is intentionally different; covered by fork web API tests."; }
 # Machine-stable status_code enum in list --json and stats --json (finding 1bkk.6).
 #
 # The localized `status` field (Активен/Active, Недавно/Recent, ...) is kept for

@@ -1288,8 +1288,16 @@ diagnose_server() {
 
 validate_dns_list() {
     local value="$1"
+    case "$value" in *$'\n'*|*$'\r'*|*\\*|*\"*|*\'\'*) return 1 ;; esac
     [[ -n "$value" ]] || return 1
-    [[ "$value" =~ ^[0-9a-fA-F.:,\ ]+$ ]] || return 1
+    case "$value" in ,*|*,|*,,*) return 1 ;; esac
+    local tok ifs="$IFS"
+    IFS=','
+    for tok in $value; do
+        tok="${tok//[[:space:]]/}"
+        [[ -n "$tok" ]] && { _valid_ipv4 "$tok" || _valid_ipv6 "$tok"; } || { IFS="$ifs"; return 1; }
+    done
+    IFS="$ifs"
 }
 
 shell_quote() {
