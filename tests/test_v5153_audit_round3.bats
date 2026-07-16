@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# shellcheck disable=SC2034
 setup_file() { skip "Upstream validator/audit assumptions are superseded by fork runtime contracts."; }
 # v5.15.3 round-3 audit fixes: install inline validators + arg/flow hardening.
 #

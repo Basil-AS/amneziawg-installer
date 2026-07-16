@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# shellcheck disable=SC2034
 setup_file() { skip "Fork web/RBAC status schema is intentionally different; covered by fork web API tests."; }
 # Machine-stable status_code enum in list --json and stats --json (finding 1bkk.6).
 #

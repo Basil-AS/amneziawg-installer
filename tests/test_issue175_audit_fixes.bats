@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# shellcheck disable=SC2034
 setup_file() { skip "Upstream command-surface assertions target a pre-fork runtime; fork regressions are covered separately."; }
 # Issue #175 - command-surface audit fixes.
 #

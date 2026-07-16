@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# shellcheck disable=SC2034
 setup_file() { skip "Superseded by fork AWG_IPV6_* mode contract; covered by fork IPv6/NDP tests."; }
 # v5.15.1 audit fixes - regression locks for:
 #   C8 / weaq P1: detect_native_ipv6 must require a globally-routable (non-ULA)

@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# shellcheck disable=SC2034
 setup_file() { skip "Upstream NIC fallback assertions are superseded by fork network detection and web health checks."; }
 # v5.19.0 hy3g - get_main_nic() interface-detection fallback chain (issue #166).
 #
