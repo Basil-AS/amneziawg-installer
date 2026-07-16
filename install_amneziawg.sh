@@ -109,6 +109,9 @@ handle_interrupt() {
     exit 130
 }
 trap _install_cleanup EXIT
+_install_on_signal() { _install_cleanup; exit "$1"; }
+trap '_install_on_signal 130' INT
+trap '_install_on_signal 143' TERM
 trap handle_interrupt INT TERM
 
 # --- Обработка аргументов ---
