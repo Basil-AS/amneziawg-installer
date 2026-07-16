@@ -114,7 +114,7 @@
 
 # ---------- Version markers ----------
 
-@test "fork uses BAS release version 5.19.2-bas.1" {
+@test "fork uses BAS release version 5.19.2-bas.2" {
     # The numeric prefix follows the upstream sync marker; bas.N is this
     # repository's independent downstream revision.
     for f in install_amneziawg.sh install_amneziawg_en.sh manage_amneziawg.sh manage_amneziawg_en.sh; do
@@ -125,6 +125,6 @@
     [ "$status" -eq 0 ]
     run grep -E '# Version: 5\.19\.2-bas\.1' "$BATS_TEST_DIRNAME/../awg_common_en.sh"
     [ "$status" -eq 0 ]
-    run grep -Fx '5.19.2-bas.1' "$BATS_TEST_DIRNAME/../VERSION"
+    run grep -Fx '5.19.2-bas.2' "$BATS_TEST_DIRNAME/../VERSION"
     [ "$status" -eq 0 ]
 }

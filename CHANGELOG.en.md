@@ -12,6 +12,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [5.19.2-bas.2] - 2026-07-16
+
+### Fixed
+
+- Tunnel-subnet migration now skips historical health history, GeoIP databases, and logs; plan-only mode no longer stalls on large telemetry files.
+- Refreshed the safe Germany subnet migration procedure `10.9.9.1/24 -> 10.9.10.1/24`.
+
 ## [5.19.2-bas.1] - 2026-07-16
 
 **Fork sync** — merged the complete upstream `v5.19.2` history without rewriting existing fork commits or dates. The fork runtime remains opt-in for new features and preserves the BAS fork delta, including the multi-server subnet migrator.
@@ -1581,6 +1588,7 @@ Major security and reliability update after several consecutive code audits. The
 - Full uninstall (`--uninstall`).
 
 [Unreleased]: https://github.com/bivlked/amneziawg-installer/compare/v5.19.2...HEAD
+[5.19.2-bas.2]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.19.2-bas.1...v5.19.2-bas.2
 [5.19.2-bas.1]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.19.2...v5.19.2-bas.1
 [5.15.3-bas.2]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.15.3-bas.1...v5.15.3-bas.2
 [5.15.3-bas.1]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.15.3...v5.15.3-bas.1
