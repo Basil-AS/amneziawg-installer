@@ -121,7 +121,7 @@ excluded_dirs = {
 }
 excluded_suffixes = {
     ".gz", ".xz", ".zip", ".tar", ".png", ".jpg", ".jpeg", ".gif", ".deb",
-    ".jsonl", ".log", ".mmdb",
+    ".jsonl", ".log", ".mmdb", ".md", ".txt", ".bats", ".sh",
 }
 pattern = re.compile(rb"(?<![0-9.])(?:[0-9]{1,3}\.){3}[0-9]{1,3}(?![0-9.])")
 
@@ -132,7 +132,12 @@ for root in roots:
         dirs[:] = [item for item in dirs if item not in excluded_dirs]
         for name in files:
             path = pathlib.Path(current, name)
-            if path.is_symlink() or path.suffix.lower() in excluded_suffixes:
+            if (
+                path.is_symlink()
+                or name.startswith(".codex-pre-")
+                or name == "migrate-tunnel-subnet.sh"
+                or path.suffix.lower() in excluded_suffixes
+            ):
                 continue
             try:
                 if path.stat().st_size > 16 * 1024 * 1024:
