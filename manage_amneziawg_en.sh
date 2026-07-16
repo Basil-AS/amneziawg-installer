@@ -1835,7 +1835,7 @@ list_clients() {
                         [[ "$NO_COLOR" -eq 0 ]] && color_start="\033[0;32m"
                         ((act++))
                     elif [[ $diff -lt 86400 ]]; then
-                        st="Recent"; st_code="recent"
+                        st="Recent"
                         [[ "$NO_COLOR" -eq 0 ]] && color_start="\033[0;33m"
                         ((act++))
                     else
