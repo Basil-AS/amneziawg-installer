@@ -46,7 +46,7 @@ declare -A AWG_ASSET_SHA256=(
     ["web/vendor/apexcharts.min.js"]="a7400cd48b40b4f39d1c15137ae0cc8cbec31dc2b55a606640f1cd11912416dd"
     ["scripts/update_geoip_dbs.py"]="7ca3db88709a7ba8aed79b57c1f7aba834a80c57cacd513604ef2a68582513e3"
     ["scripts/update-installed.sh"]="f9857a9b4ccd43b3741b2140c7676a935cab261ea87c2d4f9895ae6658e81318"
-    ["scripts/migrate-tunnel-subnet.sh"]="0165c140c8f2fb00966ecc4ec80aa5648c53ff95df31ee8914e3ca69400f88e5"
+    ["scripts/migrate-tunnel-subnet.sh"]="a8b40101e8f02627c10d2bb769802bf860fdf41dd2bc8ac38a180e953329c3bb"
 )
 
 # CLI flags
