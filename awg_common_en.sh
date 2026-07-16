@@ -143,9 +143,35 @@ _valid_host_or_ipv4() {
     [[ "${host##*.}" =~ ^[0-9]+$ ]] && return 1
 }
 
+_ipv4_to_int() {
+    _valid_ipv4 "$1" || return 1
+    local IFS=. o; read -ra o <<< "$1"
+    echo $(( (10#${o[0]} << 24) | (10#${o[1]} << 16) | (10#${o[2]} << 8) | 10#${o[3]} ))
+}
+_int_to_ipv4() {
+    local n="$1"
+    echo "$(( (n >> 24) & 255 )).$(( (n >> 16) & 255 )).$(( (n >> 8) & 255 )).$(( n & 255 ))"
+}
+_cidr_bounds() {
+    local cidr="$1" addr prefix ip mask net bcast
+    addr="${cidr%/*}"; prefix="${cidr##*/}"
+    _valid_ipv4 "$addr" || return 1
+    [[ "$prefix" =~ ^[0-9]+$ && 10#$prefix -le 32 ]] || return 1
+    ip=$(_ipv4_to_int "$addr")
+    if ((10#$prefix == 0)); then mask=0; else mask=$(( (0xFFFFFFFF << (32 - 10#$prefix)) & 0xFFFFFFFF )); fi
+    net=$((ip & mask)); bcast=$((net | ((~mask) & 0xFFFFFFFF)))
+    echo "$net $bcast"
+}
+
 # Определение основного сетевого интерфейса
 get_main_nic() {
     ip route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="dev") print $(i+1); exit}'
+}
+
+host_lacks_ipv4_egress() {
+    local nic="$1"
+    [[ -z "$(ip -4 route show default 2>/dev/null)" ]] &&
+        [[ -z "$(ip -o -4 addr show dev "$nic" up scope global 2>/dev/null)" ]]
 }
 
 # Определение внешнего IP-адреса сервера (с кэшированием)

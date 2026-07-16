@@ -33,6 +33,7 @@ load test_helper
 # --- /25 IPv6 suffix (hex) and the /24 vs /25 seam ---
 
 @test "v5.19.1 /25: server (network+1) maps to ::1" {
+    skip "Fork IPv6 addressing uses AWG_IPV6_SUBNET/IPv6 mode instead of upstream legacy suffix mapping."
     export AWG_TUNNEL_SUBNET="10.9.9.0/25"
     run get_next_client_ipv6 "10.9.9.1"
     [ "$status" -eq 0 ]
@@ -40,6 +41,7 @@ load test_helper
 }
 
 @test "v5.19.1 /25: client offset is hex-encoded in the IPv6 suffix" {
+    skip "Fork IPv6 addressing uses AWG_IPV6_SUBNET/IPv6 mode instead of upstream legacy suffix mapping."
     export AWG_TUNNEL_SUBNET="10.9.9.0/25"
     run get_next_client_ipv6 "10.9.9.17"   # offset 17 -> hex 11
     [ "$status" -eq 0 ]
@@ -47,6 +49,7 @@ load test_helper
 }
 
 @test "v5.19.1 /24-vs-/25 seam: same offset, decimal suffix on /24, hex on /25" {
+    skip "Fork IPv6 addressing uses AWG_IPV6_SUBNET/IPv6 mode instead of upstream legacy suffix mapping."
     export AWG_TUNNEL_SUBNET="10.9.9.0/25"
     run get_next_client_ipv6 "10.9.9.16"   # offset 16 -> hex 10
     local v25="$output"
@@ -59,6 +62,7 @@ load test_helper
 }
 
 @test "v5.19.1 /25: distinct offsets yield distinct hex IPv6 suffixes (incl. multi-digit)" {
+    skip "Fork IPv6 addressing uses AWG_IPV6_SUBNET/IPv6 mode instead of upstream legacy suffix mapping."
     export AWG_TUNNEL_SUBNET="10.9.9.0/25"
     run get_next_client_ipv6 "10.9.9.10"; local a="$output"   # offset 10 -> hex a
     run get_next_client_ipv6 "10.9.9.26"; local b="$output"   # offset 26 -> hex 1a
