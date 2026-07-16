@@ -10,6 +10,13 @@ Desktop.ini
 *.swo
 *~
 
+# Local code-intelligence cache
+.serena/
+
+# Local agent/operator instructions (never publish to the project repository)
+/AGENTS.md
+/RTK.md
+
 # Temp
 *.tmp
 *.bak

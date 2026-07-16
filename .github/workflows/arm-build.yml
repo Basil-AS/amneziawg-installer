@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       module_version:
-        description: 'amneziawg-linux-kernel-module tag (leave blank for latest)'
+        description: 'Upstream module tag/branch. Blank = use scripts/arm-module-version.txt pin, then default-branch HEAD.'
         required: false
         default: ''
   push:
@@ -103,10 +103,10 @@ jobs:
             arch: arm64
 
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@ce360397dd3f832beb865e1373c09c0e9f86d70a # v4.0.0
+        uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4.2.0
         with:
           platforms: ${{ matrix.platform }}
 
@@ -119,6 +119,9 @@ jobs:
           EXTRA_SOURCES: ${{ matrix.extra_sources }}
           HEADERS_PKG: ${{ matrix.headers_pkg }}
           MODULE_VERSION: ${{ inputs.module_version }}
+          # On a tag push this records the installer release in the build manifest;
+          # empty on workflow_dispatch.
+          INSTALLER_TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
         uses: addnab/docker-run-action@4f65fabd2431ebc8d299f8e5a018d79a769ae185 # v3
         with:
           image: ${{ matrix.image }}
@@ -131,6 +134,7 @@ jobs:
             -e HEADERS_PKG
             -e OUTPUT_DIR=/output
             -e MODULE_VERSION
+            -e INSTALLER_TAG
           run: |
             bash <<'CONTAINER_SCRIPT'
             set -euo pipefail
@@ -181,4 +185,9 @@ jobs:
             gh release upload arm-packages "${deb}.sha256" \
               --repo "${{ github.repository }}" \
               --clobber
+            if [[ -f "${deb}.manifest.json" ]]; then
+              gh release upload arm-packages "${deb}.manifest.json" \
+                --repo "${{ github.repository }}" \
+                --clobber
+            fi
           done

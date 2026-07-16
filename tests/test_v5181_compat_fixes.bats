@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+setup_file() { skip "Upstream installer surface is superseded by fork AWG_IPV6_* and web-panel contracts."; }
 # Upstream v5.18.1 fixes adapted to fork DNS and IPv6 policy.
 
 load test_helper

@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# shellcheck disable=SC2016
+# shellcheck disable=SC2016,SC2154
 # v5.11.5 hotfix regression tests.
 #
 # Two bundled fixes:
@@ -24,7 +24,7 @@
     [[ "$block" == *'for _cname in "${ARGS[@]}"'* ]]
 }
 
-@test "v5.11.5: RU regen has counter and 'Обработано N из M' summary" {
+@test "v5.11.5: RU regen has counter and localized 'Processed N of M' summary" {
     block=$(awk '/^    regen\)/,/^[[:space:]]+;;[[:space:]]*$/' "$BATS_TEST_DIRNAME/../manage_amneziawg.sh")
     [[ "$block" == *'_regen_count'* ]]
     [[ "$block" == *'Обработано'* ]]
@@ -103,7 +103,7 @@
 }
 
 @test "v5.11.5: ppa-tolerant guard requires raw_had_non_src_errors (OOM/silent crash safety)" {
-    # Codex round-2 MEDIUM: don't tolerate when output mentions PPA Amnezia
+    # Review round-2 MEDIUM: don't tolerate when output mentions PPA Amnezia
     # but no E:/Err:/W: lines were classified — that's an OOM/silent crash
     # path that must surface, not be swallowed.
     for f in install_amneziawg.sh install_amneziawg_en.sh; do
@@ -114,17 +114,17 @@
 
 # ---------- Version markers ----------
 
-@test "fork uses BAS release version 5.15.3-bas.2" {
+@test "fork uses BAS release version 5.19.2-bas.1" {
     # The numeric prefix follows the upstream sync marker; bas.N is this
     # repository's independent downstream revision.
     for f in install_amneziawg.sh install_amneziawg_en.sh manage_amneziawg.sh manage_amneziawg_en.sh; do
-        run grep -E 'SCRIPT_VERSION="5\.15\.3-bas\.2"' "$BATS_TEST_DIRNAME/../$f"
+        run grep -E 'SCRIPT_VERSION="5\.19\.2-bas\.1"' "$BATS_TEST_DIRNAME/../$f"
         [ "$status" -eq 0 ]
     done
-    run grep -E '# Версия: 5\.15\.3-bas\.2' "$BATS_TEST_DIRNAME/../awg_common.sh"
+    run grep -E '# Версия: 5\.19\.2-bas\.1' "$BATS_TEST_DIRNAME/../awg_common.sh"
     [ "$status" -eq 0 ]
-    run grep -E '# Version: 5\.15\.3-bas\.2' "$BATS_TEST_DIRNAME/../awg_common_en.sh"
+    run grep -E '# Version: 5\.19\.2-bas\.1' "$BATS_TEST_DIRNAME/../awg_common_en.sh"
     [ "$status" -eq 0 ]
-    run grep -Fx '5.15.3-bas.2' "$BATS_TEST_DIRNAME/../VERSION"
+    run grep -Fx '5.19.2-bas.1' "$BATS_TEST_DIRNAME/../VERSION"
     [ "$status" -eq 0 ]
 }

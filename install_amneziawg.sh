@@ -9,7 +9,7 @@ fi
 # ==============================================================================
 # Скрипт для установки и настройки AmneziaWG 2.0 на Ubuntu/Debian серверах
 # Автор: @bivlked
-# Версия: 5.15.3-bas.2
+# Версия: 5.19.2-bas.1
 # Дата: 2026-05-13
 # Репозиторий: https://github.com/bivlked/amneziawg-installer
 # ==============================================================================
@@ -17,7 +17,7 @@ fi
 # --- Безопасный режим и Константы ---
 set -o pipefail
 
-SCRIPT_VERSION="5.15.3-bas.2"
+SCRIPT_VERSION="5.19.2-bas.1"
 AWG_DIR="/root/awg"
 INSTALLER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)"
 CONFIG_FILE="$AWG_DIR/awgsetup_cfg.init"
@@ -34,8 +34,8 @@ MANAGE_SCRIPT_PATH="$AWG_DIR/manage_amneziawg.sh"
 # используются первыми; remote download разрешён только с pinned SHA256 либо
 # при явном AWG_ALLOW_UNVERIFIED_DOWNLOAD=1 для разработки.
 declare -A AWG_ASSET_SHA256=(
-    ["awg_common.sh"]="fb3d0aa6267b578fb7bd7b1e678d886e80fb9d8e43a0130cf5ddc314b203a801"
-    ["manage_amneziawg.sh"]="fad317c15ab95b2463af94a469660261af6ac7d3c2d1a33646aff7abf26eebee"
+    ["awg_common.sh"]="73f5602ac907dcd0bbbfdf904277188af83b26b52c3a36e71ea3dd5a39a15d7a"
+    ["manage_amneziawg.sh"]="caf63bce04a44a9f836cfd840426d3e805c7a141d38f41badc629d261dcf735b"
     ["web/server.py"]="279c5bf134d86668f734981f53976c3b86ef97067d72c28ddbde9b4ace19d7c3"
     ["web/index.html"]="7c07ed1d1991e08c0f9fc31e86ed8eb2bba5fa96387088f1f18918396cf7e662"
     ["web/app.js"]="2bff893e8c6733850d4944371ed0821167be4ea96e075f1ef3c5f890831b1154"
@@ -50,7 +50,7 @@ declare -A AWG_ASSET_SHA256=(
 )
 
 # Флаги CLI
-UNINSTALL=0; HELP=0; DIAGNOSTIC=0; VERBOSE=0; NO_COLOR=0; AUTO_YES=0; NO_TWEAKS=0
+UNINSTALL=0; HELP=0; HELP_EXIT_RC=0; DIAGNOSTIC=0; VERBOSE=0; NO_COLOR=0; AUTO_YES=0; NO_TWEAKS=0; NO_CPS=0
 FORCE_REINSTALL=0
 _APT_UPDATED=0
 CLI_PORT=""; CLI_SUBNET=""; CLI_DISABLE_IPV6="default"; CLI_SSH_PORT=""
@@ -83,7 +83,12 @@ CLI_PRESET=""; CLI_JC=""; CLI_JMIN=""; CLI_JMAX=""
 
 # --- Автоочистка временных файлов ---
 _install_temp_files=()
+_install_cleaned=0
 _install_cleanup() {
+    # Идемпотентно: на INT/TERM зовётся из сигнального обработчика, затем ещё раз
+    # на EXIT - второй вызов должен быть no-op.
+    [[ "$_install_cleaned" -eq 1 ]] && return 0
+    _install_cleaned=1
     local f
     for f in "${_install_temp_files[@]}"; do [[ -f "$f" ]] && rm -f "$f"; done
     type ufw_remove_http01_temporary_rule &>/dev/null && ufw_remove_http01_temporary_rule
@@ -104,6 +109,9 @@ handle_interrupt() {
     exit 130
 }
 trap _install_cleanup EXIT
+_install_on_signal() { _install_cleanup; exit "$1"; }
+trap '_install_on_signal 130' INT
+trap '_install_on_signal 143' TERM
 trap handle_interrupt INT TERM
 
 # --- Обработка аргументов ---
@@ -160,7 +168,7 @@ while [[ $# -gt 0 ]]; do
         --jc=*)          CLI_JC="${1#*=}" ;;
         --jmin=*)        CLI_JMIN="${1#*=}" ;;
         --jmax=*)        CLI_JMAX="${1#*=}" ;;
-        *) echo "Неизвестный аргумент: $1"; HELP=1 ;;
+        *) echo "Неизвестный аргумент: $1" >&2; HELP=1; HELP_EXIT_RC=1 ;;
     esac
     shift
 done
@@ -173,9 +181,7 @@ log_msg() {
     local type="$1" msg="$2"
     local ts
     ts=$(date +'%F %T')
-    local safe_msg
-    safe_msg="${msg//%/%%}"
-    local entry="[$ts] $type: $safe_msg"
+    local entry="[$ts] $type: $msg"
     local color_start="" color_end=""
 
     if [[ "$NO_COLOR" -eq 0 ]]; then
@@ -242,10 +248,16 @@ apt_update_tolerant() {
     # Фильтруем строки ошибок. Игнорируем:
     #   1. Строки про source-пакеты (deb-src / /source/ / Sources)
     #   2. Generic 'Some index files failed to download' — симптом, не причина
+    # Дополнительно исключаем заведомо информационные W:-строки, которые не
+    # бывают ПРИЧИНОЙ rc!=0, но переживали фильтры и превращали tolerable-сбой
+    # (например deb-src 404 при задвоенных sources) в ложный fatal:
+    #   - "Target ... is configured multiple times" (дубль sources-записей)
+    #   - "... stored in legacy trusted.gpg keyring" (старый формат ключей)
     non_src_errors=$(printf '%s\n' "$err_output" \
         | grep -E '^(E:|Err:|W:)' \
         | grep -vE '(deb-src|/source/|Sources([^[:alpha:]]|$))' \
-        | grep -vE 'Some index files failed to download' || true)
+        | grep -vE 'Some index files failed to download' \
+        | grep -vE '^W: (Target .* is configured multiple times|.* stored in legacy trusted\.gpg)' || true)
 
     # Запоминаем pre-PPA filter состояние: нужно различать «были реальные APT-ошибки,
     # но все на PPA Amnezia» (tolerant OK) от «классифицируемых ошибок не было
@@ -330,7 +342,7 @@ apt_wait_for_ppa_package() {
 show_help() {
     cat << 'EOF'
 Использование: sudo bash install_amneziawg.sh [ОПЦИИ]
-Скрипт для установки и настройки AmneziaWG 2.0 на Ubuntu (24.04 / 25.10) и Debian (12 / 13).
+Скрипт для установки и настройки AmneziaWG 2.0 на Ubuntu (24.04 / 25.10 / 26.04) и Debian (12 / 13).
 
 Опции:
   -h, --help            Показать эту справку и выйти
@@ -393,6 +405,8 @@ show_help() {
   --jc=N               Задать Jc вручную (1-128, поверх preset)
   --jmin=N             Задать Jmin вручную (0-1280, поверх preset)
   --jmax=N             Задать Jmax вручную (0-1280, поверх preset, должно быть >= Jmin)
+  --no-cps              Отключить CPS (параметр I1) - нужно, если десктопный
+                        AmneziaVPN на macOS виснет при подключении (issue #159)
 
 Примеры:
   sudo bash install_amneziawg.sh                             # Интерактивная установка
@@ -404,7 +418,8 @@ show_help() {
 
 Репозиторий: https://github.com/bivlked/amneziawg-installer
 EOF
-    exit 0
+    # Явный --help завершается с 0; неизвестный аргумент - с 1 (ложный успех в CI).
+    exit "${HELP_EXIT_RC:-0}"
 }
 
 # ==============================================================================
@@ -512,7 +527,7 @@ check_os_version() {
     local supported=0
     case "$OS_ID" in
         ubuntu)
-            if [[ "$OS_VERSION" == "24.04" || "$OS_VERSION" == "25.10" ]]; then
+            if [[ "$OS_VERSION" == "24.04" || "$OS_VERSION" == "25.10" || "$OS_VERSION" == "26.04" ]]; then
                 supported=1
             fi
             ;;
@@ -526,13 +541,41 @@ check_os_version() {
     if [[ "$supported" -eq 1 ]]; then
         log "ОС: ${OS_ID^} $OS_VERSION ($OS_CODENAME) — поддерживается"
     else
-        log_warn "Обнаружена $OS_ID $OS_VERSION ($OS_CODENAME). Скрипт протестирован на Ubuntu 24.04/25.10 и Debian 12/13."
+        log_warn "Обнаружена $OS_ID $OS_VERSION ($OS_CODENAME). Скрипт протестирован на Ubuntu 24.04/25.10/26.04 и Debian 12/13."
         if [[ "$AUTO_YES" -eq 0 ]]; then
             read -rp "Продолжить? [y/N]: " confirm < /dev/tty
-            if ! [[ "$confirm" =~ ^[Yy]$ ]]; then die "Отмена."; fi
+            if ! [[ "$confirm" =~ ^[[:space:]]*[Yy]([Ee][Ss])?[[:space:]]*$ ]]; then die "Отмена."; fi
         else
             log "Продолжаем на $OS_ID $OS_VERSION (--yes)."
         fi
+    fi
+}
+
+check_kernel_version() {
+    # Модуль AmneziaWG 2.0 собирается через DKMS против ядра хоста. На ядрах
+    # старше 5.15 (Ubuntu < 22.04, напр. 5.4 на 20.04) сборка обычно падает уже
+    # на шаге 2 - невнятным package-failure. Предупреждаем ЯВНО и рано, до
+    # обновлений и перезагрузок (issue #163). Не die: на части старых ядер модуль
+    # всё же собирается (HWE и подобное), поэтому WARN + подтверждение.
+    local kver kmaj kmin
+    kver=$(uname -r)
+    if [[ "$kver" =~ ^([0-9]+)\.([0-9]+) ]]; then
+        kmaj=${BASH_REMATCH[1]}; kmin=${BASH_REMATCH[2]}
+    else
+        log_warn "Не удалось разобрать версию ядра ('$kver') - пропускаю проверку минимальной версии."
+        return 0
+    fi
+    if (( kmaj < 5 || (kmaj == 5 && kmin < 15) )); then
+        log_warn "Ядро $kver старее 5.15 - для модуля AmneziaWG 2.0 это обычно слишком старо."
+        log_warn "DKMS-сборка модуля на таком ядре чаще всего падает. Рекомендуется переустановить VPS на Ubuntu 24.04 LTS или Debian 12 (либо новее). Матрица: Ubuntu 24.04/25.10/26.04, Debian 12/13."
+        if [[ "$AUTO_YES" -eq 0 ]]; then
+            read -rp "Всё равно продолжить? [y/N]: " confirm < /dev/tty
+            if ! [[ "$confirm" =~ ^[[:space:]]*[Yy]([Ee][Ss])?[[:space:]]*$ ]]; then die "Отмена: ядро $kver слишком старое для модуля AmneziaWG 2.0."; fi
+        else
+            log "Продолжаем на ядре $kver (--yes)."
+        fi
+    else
+        log "Ядро $kver (OK для модуля AmneziaWG 2.0)."
     fi
 }
 
@@ -549,7 +592,7 @@ check_free_space() {
         log_warn "Доступно $avail МБ. Рекомендуется >= $req МБ."
         if [[ "$AUTO_YES" -eq 0 ]]; then
             read -rp "Продолжить? [y/N]: " confirm < /dev/tty
-            if ! [[ "$confirm" =~ ^[Yy]$ ]]; then die "Отмена."; fi
+            if ! [[ "$confirm" =~ ^[[:space:]]*[Yy]([Ee][Ss])?[[:space:]]*$ ]]; then die "Отмена."; fi
         else
             log "Продолжаем с $avail МБ (--yes)."
         fi
@@ -581,7 +624,7 @@ check_web_port_availability() {
         if [[ "$AUTO_YES" -eq 0 && -z "$CLI_WEB_PORT" && "$ENV_AWG_WEB_PORT_SET" -eq 0 ]]; then
             local fallback
             read -rp "Порт 443/tcp занят. Использовать 8443 вместо 443? [y/N]: " fallback < /dev/tty
-            if [[ "$fallback" =~ ^[Yy]$ ]]; then
+            if [[ "$fallback" =~ ^[[:space:]]*[Yy]([Ee][Ss])?[[:space:]]*$ ]]; then
                 AWG_WEB_PORT=8443
                 return 0
             fi
@@ -606,7 +649,12 @@ install_packages() {
     fi
     log "Установка: ${to_install[*]}..."
     if [[ "${_APT_UPDATED:-0}" -eq 0 ]]; then
-        apt_update_tolerant || log_warn "Не удалось обновить apt."
+        # C4: жёсткая ошибка apt_update_tolerant (GPG / сеть на binary-репо / OOM) -
+        # это НЕ source-шум, а реальный сбой; продолжать на устаревшем кэше нельзя
+        # (контракт стр.138, как у вызовов 1975/2108). die завершает установку, так
+        # что _APT_UPDATED=1 проставляется только при успехе - иначе повторный
+        # install_packages в этой сессии молча пропустил бы update.
+        apt_update_tolerant || die "Ошибка apt update."
         _APT_UPDATED=1
     fi
     if ! DEBIAN_FRONTEND=noninteractive apt install -y "${to_install[@]}"; then
@@ -748,7 +796,11 @@ validate_junk_size() {
 
 validate_port_user() {
     local port="$1"
-    if ! [[ "$port" =~ ^[0-9]+$ ]] || [[ "$port" -lt 1024 ]] || [[ "$port" -gt 65535 ]]; then
+    # ^[1-9][0-9]{0,4}$ запрещает ведущие нули ('0080' иначе трактуется как octal
+    # в арифметике и проскакивает проверку диапазона) и ограничивает длину: без
+    # лимита 64-битная арифметика (( )) переполняется и 2^64+51820 проходил бы
+    # range-check. Сравнение - на чистом decimal.
+    if ! [[ "$port" =~ ^[1-9][0-9]{0,4}$ ]] || (( port < 1024 || port > 65535 )); then
         die "Некорректный порт: '$port'. Допустимый диапазон: 1024-65535."
     fi
 }
@@ -814,18 +866,59 @@ generate_default_tunnel_subnet() {
 }
 
 validate_subnet() {
-    local subnet="$1"
-    if ! [[ "$subnet" =~ ^([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})/24$ ]] \
-       || [[ "${BASH_REMATCH[1]}" -gt 255 ]] || [[ "${BASH_REMATCH[2]}" -gt 255 ]] \
-       || [[ "${BASH_REMATCH[3]}" -gt 255 ]] || [[ "${BASH_REMATCH[4]}" -gt 255 ]]; then
-        die "Некорректная подсеть: '$subnet'. Поддерживается только /24."
+    local subnet="$1" o
+    # Самодостаточно (шаг 0, ДО загрузки awg_common.sh): не используем _valid_ipv4/
+    # _cidr_bounds. Октеты без ведущих нулей ('010...' иначе трактуется как octal).
+    if ! [[ "$subnet" =~ ^(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,2})/([0-9]{1,2})$ ]]; then
+        die "Некорректная подсеть: '$subnet'. Ожидается CIDR /16-/30, напр. 10.9.0.0/16."
     fi
-    if [[ "${BASH_REMATCH[4]}" -eq 0 ]] || [[ "${BASH_REMATCH[4]}" -eq 255 ]]; then
-        die "Некорректная подсеть: '$subnet'. Последний октет не может быть 0 (сетевой адрес) или 255 (broadcast)."
+    local a="${BASH_REMATCH[1]}" b="${BASH_REMATCH[2]}" c="${BASH_REMATCH[3]}" d="${BASH_REMATCH[4]}" prefix="${BASH_REMATCH[5]}"
+    for o in "$a" "$b" "$c" "$d"; do
+        (( 10#$o <= 255 )) || die "Некорректная подсеть: '$subnet'. Октет вне диапазона 0-255."
+    done
+    (( 10#$prefix >= 16 && 10#$prefix <= 30 )) || die "Некорректная подсеть: '$subnet'. Поддерживается только маска /16-/30."
+    # Инлайн-арифметика: адрес обязан быть network или network+1.
+    local ip=$(( (10#$a << 24) | (10#$b << 16) | (10#$c << 8) | 10#$d ))
+    local mask=$(( (0xFFFFFFFF << (32 - 10#$prefix)) & 0xFFFFFFFF ))
+    local network=$(( ip & mask ))
+    local n1=$(( network + 1 ))
+    local srv="$(( (n1 >> 24) & 255 )).$(( (n1 >> 16) & 255 )).$(( (n1 >> 8) & 255 )).$(( n1 & 255 ))"
+    if (( ip != network && ip != n1 )); then
+        die "Некорректная подсеть: '$subnet'. Адрес сервера должен быть ${srv} (network+1) или укажите сеть."
     fi
-    if [[ "${BASH_REMATCH[4]}" -ne 1 ]]; then
-        die "Некорректная подсеть: '$subnet'. Последний октет должен быть 1 (адрес сервера в подсети)."
+    # Нормализация глобала к <network+1>/<prefix> (сервер = network+1).
+    AWG_TUNNEL_SUBNET="${srv}/${prefix}"
+}
+
+# Guard смены подсети: [Peer]-блоки переносятся при переустановке как есть
+# (render_server_config), их адреса выданы в СТАРОЙ подсети. Смена подсети
+# под живыми клиентами ломает их: старые IPv4 могут выпасть из нового
+# диапазона, а IPv6-суффиксы - столкнуться (decimal-кодировка /24 против
+# hex у не-/24 масок даёт два пира с одним ::x). Поэтому при наличии пиров
+# установка с другой подсетью прерывается (ревью PR #167). Самодостаточно
+# (шаг 0, ДО загрузки awg_common.sh). Старая подсеть - первое значение
+# Address в [Interface] awg0.conf: это нормализованный <network+1>/<prefix>,
+# а новый AWG_TUNNEL_SUBNET к моменту вызова нормализован validate_subnet -
+# строкового сравнения достаточно.
+guard_subnet_change_with_peers() {
+    [[ -f "$SERVER_CONF_FILE" ]] || return 0
+    grep -q '^\[Peer\]' "$SERVER_CONF_FILE" 2>/dev/null || return 0
+    local old_subnet
+    # Address может быть dual-stack ("IPv4/n, IPv6/n") в любом порядке - берём
+    # именно IPv4-элемент, а не просто первый через запятую (иначе IPv6-первый
+    # Address дал бы ложную смену подсети). Нет IPv4 -> пусто -> fail-closed ниже.
+    old_subnet=$(sed -n 's/^[[:space:]]*Address[[:space:]]*=[[:space:]]*//p' "$SERVER_CONF_FILE" 2>/dev/null \
+        | tr ',' '\n' | sed 's/[[:space:]]//g' \
+        | grep -m1 -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/[0-9]+$')
+    if [[ -z "$old_subnet" ]]; then
+        # Пиры есть, а старую подсеть определить нельзя - fail-closed: молчаливое
+        # продолжение перерендерило бы конфиг в новой подсети и сломало клиентов.
+        die "В ${SERVER_CONF_FILE} уже есть пиры, но строка Address в [Interface] не читается - проверить смену подсети невозможно. Восстановите Address, либо удалите клиентов (sudo bash $MANAGE_SCRIPT_PATH remove <имя>), либо --uninstall и чистая установка."
     fi
+    if [[ "$old_subnet" != "$AWG_TUNNEL_SUBNET" ]]; then
+        die "Подсеть туннеля изменена (${old_subnet} -> ${AWG_TUNNEL_SUBNET}), но в ${SERVER_CONF_FILE} уже есть пиры: их адреса выданы в старой подсети, смена сломает клиентов. Варианты: оставьте прежнюю подсеть; удалите всех клиентов (sudo bash $MANAGE_SCRIPT_PATH remove <имя>); либо --uninstall и чистая установка."
+    fi
+    return 0
 }
 
 # Валидация endpoint (FQDN / IPv4 / [IPv6]).
@@ -840,9 +933,34 @@ validate_endpoint() {
     [[ "$ep" != *$'\n'* && "$ep" != *$'\r'* && \
        "$ep" != *"'"* && "$ep" != *'"'* && "$ep" != *'\\'* && \
        "$ep" != *' '* && "$ep" != *$'\t'* ]] || return 1
-    # Один из трёх форматов: FQDN, IPv4, [IPv6]
-    [[ "$ep" =~ ^([A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)*|[0-9]{1,3}(\.[0-9]{1,3}){3}|\[[0-9A-Fa-f:]+\])$ ]] || return 1
-    # Если IPv4 формат — дополнительно проверяем диапазон октетов 0-255
+    # Форма [IPv6]: структурная проверка содержимого скобок. Прежний charset-only
+    # пропускал мусор вроде [:::] / [1:2:3]. Зеркало _valid_ipv6 из awg_common.sh.
+    if [[ "$ep" == \[*\] ]]; then
+        local inner="${ep#\[}"; inner="${inner%\]}"
+        [[ "$inner" =~ ^[0-9A-Fa-f:]+$ ]] || return 1
+        case "$inner" in
+            *:::*|*::*::*) return 1 ;;
+        esac
+        [[ "$inner" == :* && "$inner" != ::* ]] && return 1
+        [[ "$inner" == *: && "$inner" != *:: ]] && return 1
+        local has_dcolon=0; [[ "$inner" == *::* ]] && has_dcolon=1
+        local IFS=':' parts=() p ngroups=0
+        read -ra parts <<< "$inner"
+        for p in "${parts[@]}"; do
+            [[ -z "$p" ]] && continue
+            [[ "$p" =~ ^[0-9A-Fa-f]{1,4}$ ]] || return 1
+            ngroups=$((ngroups + 1))
+        done
+        if [[ $has_dcolon -eq 1 ]]; then
+            (( ngroups <= 7 )) || return 1
+        else
+            (( ngroups == 8 )) || return 1
+        fi
+        return 0
+    fi
+    # Иначе FQDN или IPv4
+    [[ "$ep" =~ ^([A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)*|[0-9]{1,3}(\.[0-9]{1,3}){3})$ ]] || return 1
+    # Если IPv4 формат - дополнительно проверяем диапазон октетов 0-255
     if [[ "$ep" =~ ^([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})$ ]]; then
         [[ "${BASH_REMATCH[1]}" -le 255 && "${BASH_REMATCH[2]}" -le 255 && \
            "${BASH_REMATCH[3]}" -le 255 && "${BASH_REMATCH[4]}" -le 255 ]] || return 1
@@ -851,18 +969,29 @@ validate_endpoint() {
 }
 
 validate_cidr_list() {
-    local input="$1" cidr
+    local input="$1" cidr o nospace
     input="${input//$'\r'/}"
     input="${input//$'\t'/ }"
+    # Перевод строки = инъекция в awgsetup_cfg.init (read <<< видит только первую
+    # строку, остальное прошло бы без проверки). Аналогично validate_endpoint.
+    [[ "$input" != *$'\n'* ]] || return 1
+    # Структурная проверка запятых до split: bash IFS отбрасывает хвостовой пустой
+    # элемент, поэтому '10.0.0.0/24,' раньше проходил. Отвергаем ведущую/хвостовую/
+    # двойную запятую и пустой ввод (пробелы игнорируем при этой проверке).
+    nospace="${input// /}"
+    case "$nospace" in
+        ""|,*|*,|*,,*) return 1 ;;
+    esac
     IFS=',' read -ra cidrs <<< "$input"
     for cidr in "${cidrs[@]}"; do
-        cidr=$(echo "$cidr" | tr -d ' ')
-        if ! [[ "$cidr" =~ ^([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})/([0-9]{1,2})$ ]] \
-           || [[ "${BASH_REMATCH[1]}" -gt 255 ]] || [[ "${BASH_REMATCH[2]}" -gt 255 ]] \
-           || [[ "${BASH_REMATCH[3]}" -gt 255 ]] || [[ "${BASH_REMATCH[4]}" -gt 255 ]] \
-           || [[ "${BASH_REMATCH[5]}" -gt 32 ]]; then
+        cidr="${cidr// /}"
+        # Октеты без ведущих нулей; префикс 0-32 прямо в regex (без octal-арифметики).
+        if ! [[ "$cidr" =~ ^(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,2})/([0-9]|[12][0-9]|3[0-2])$ ]]; then
             return 1
         fi
+        for o in "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}" "${BASH_REMATCH[4]}"; do
+            (( o <= 255 )) || return 1
+        done
     done
 }
 
@@ -1213,7 +1342,11 @@ configure_routing_mode() {
            fi
            log "Выбран режим: Пользовательский ($ALLOWED_IPS)" ;;
         *) ALLOWED_IPS_MODE=2
-           ALLOWED_IPS="0.0.0.0/5, 8.0.0.0/7, 11.0.0.0/8, 12.0.0.0/6, 16.0.0.0/4, 32.0.0.0/3, 64.0.0.0/2, 128.0.0.0/3, 160.0.0.0/5, 168.0.0.0/6, 172.0.0.0/12, 172.32.0.0/11, 172.64.0.0/10, 172.128.0.0/9, 173.0.0.0/8, 174.0.0.0/7, 176.0.0.0/4, 192.0.0.0/9, 192.128.0.0/11, 192.160.0.0/13, 192.169.0.0/16, 192.170.0.0/15, 192.172.0.0/14, 192.176.0.0/12, 192.192.0.0/10, 193.0.0.0/8, 194.0.0.0/7, 196.0.0.0/6, 200.0.0.0/5, 208.0.0.0/4, 8.8.8.8/32, 1.1.1.1/32"
+           # iOS рвёт туннель, если список начинается с 0.0.0.0/5: этот блок включает
+           # служебный 0.0.0.0/8, на котором ядро iOS спотыкается и не доходит до остальных
+           # маршрутов. 1.0.0.0/8 + 2.0.0.0/7 + 4.0.0.0/6 = тот же охват без нулевого блока
+           # (0.0.0.0/8 всё равно не маршрутизируется). Не возвращать к 0.0.0.0/5 (Issue #42).
+           ALLOWED_IPS="1.0.0.0/8, 2.0.0.0/7, 4.0.0.0/6, 8.0.0.0/7, 11.0.0.0/8, 12.0.0.0/6, 16.0.0.0/4, 32.0.0.0/3, 64.0.0.0/2, 128.0.0.0/3, 160.0.0.0/5, 168.0.0.0/6, 172.0.0.0/12, 172.32.0.0/11, 172.64.0.0/10, 172.128.0.0/9, 173.0.0.0/8, 174.0.0.0/7, 176.0.0.0/4, 192.0.0.0/9, 192.128.0.0/11, 192.160.0.0/13, 192.169.0.0/16, 192.170.0.0/15, 192.172.0.0/14, 192.176.0.0/12, 192.192.0.0/10, 193.0.0.0/8, 194.0.0.0/7, 196.0.0.0/6, 200.0.0.0/5, 208.0.0.0/4, 8.8.8.8/32, 1.1.1.1/32"
            log "Выбран режим: Список Amnezia+DNS." ;;
     esac
     if [ -z "$ALLOWED_IPS" ]; then die "Не удалось определить AllowedIPs."; fi
@@ -1822,15 +1955,19 @@ rand_range() {
     local random_val
     random_val=$(od -An -tu4 -N4 /dev/urandom | tr -d ' ')
     if [[ -z "$random_val" || ! "$random_val" =~ ^[0-9]+$ ]]; then
-        # Fallback: комбинация двух $RANDOM для 30-битного диапазона
-        random_val=$(( (RANDOM << 15) | RANDOM ))
+        # Fallback: три $RANDOM (15 бит каждый) с XOR-перекрытием покрывают
+        # биты 0-30, т.е. весь [0, 2^31-1]. Прежний вариант (RANDOM<<15|RANDOM)
+        # давал только 30 бит - верхняя половина диапазона H никогда не выпадала.
+        random_val=$(( (RANDOM << 16) ^ (RANDOM << 8) ^ RANDOM ))
     fi
     echo $(( (random_val % range) + min ))
 }
 
 # Генерация 4 непересекающихся диапазонов для AWG H1-H4.
 # Алгоритм: 8 случайных значений → sort → 4 пары (low, high).
-# Сортировка гарантирует low ≤ high и непересечение между парами.
+# Сортировка даёт low <= high; строгие проверки ниже гарантируют зазор между
+# парами (касание границ = пересечение в одной точке) и нижнюю границу >= 5
+# (значения 1-4 зарезервированы под типы сообщений vanilla WireGuard).
 # Минимальная ширина каждого диапазона = 1000 (для нормальной обфускации).
 # Печатает 4 строки формата "low-high" в stdout.
 # Возвращает 1 если за 20 попыток не удалось получить корректные диапазоны.
@@ -1874,10 +2011,14 @@ generate_awg_h_ranges() {
         sorted=$(printf '%s\n' "${arr[@]}" | sort -n)
         arr=()
         while IFS= read -r _v; do arr+=("$_v"); done <<< "$sorted"
-        if (( ${arr[1]} - ${arr[0]} >= 1000 )) && \
+        if (( ${arr[0]} >= 5 )) && \
+           (( ${arr[1]} - ${arr[0]} >= 1000 )) && \
            (( ${arr[3]} - ${arr[2]} >= 1000 )) && \
            (( ${arr[5]} - ${arr[4]} >= 1000 )) && \
-           (( ${arr[7]} - ${arr[6]} >= 1000 )); then
+           (( ${arr[7]} - ${arr[6]} >= 1000 )) && \
+           (( ${arr[2]} > ${arr[1]} )) && \
+           (( ${arr[4]} > ${arr[3]} )) && \
+           (( ${arr[6]} > ${arr[5]} )); then
             printf '%s-%s\n' "${arr[0]}" "${arr[1]}"
             printf '%s-%s\n' "${arr[2]}" "${arr[3]}"
             printf '%s-%s\n' "${arr[4]}" "${arr[5]}"
@@ -2500,7 +2641,7 @@ setup_improved_firewall() {
             log_warn "UFW не включён. Убедитесь, что внешний firewall открывает VPN/Web ports и не открывает AdGuard наружу."
             return 0
         fi
-        if ! ufw enable <<< "y"; then die "Ошибка включения UFW."; fi
+        if ! ufw --force enable; then die "Ошибка включения UFW."; fi
         log "UFW включен."
         # Маркер: UFW был включён нашим установщиком (а не пользователем заранее).
         # Используется в step_uninstall чтобы решить, безопасно ли отключать UFW.
@@ -2559,10 +2700,27 @@ secure_files() {
 
 setup_fail2ban() {
     log "Настройка Fail2Ban..."
-    if ! command -v fail2ban-client &>/dev/null; then install_packages fail2ban; fi
+    if ! command -v fail2ban-client &>/dev/null; then
+        install_packages fail2ban
+        # Маркер: пакет fail2ban доустановлен нашим установщиком (а не стоял
+        # до него). step_uninstall выполняет purge fail2ban только при наличии
+        # маркера, чтобы не снести SSH-защиту, настроенную пользователем заранее
+        # (симметрично .ufw_enabled_by_installer).
+        if command -v fail2ban-client &>/dev/null; then
+            touch "$AWG_DIR/.fail2ban_installed_by_installer" 2>/dev/null || \
+                log_warn "Не удалось создать fail2ban marker - uninstall не будет удалять пакет fail2ban."
+        fi
+    fi
     if ! command -v fail2ban-client &>/dev/null; then
         log_warn "Fail2ban не установлен, пропускаем."
         return 1
+    fi
+
+    # banaction=ufw действует только при активном UFW: если на шаге 4
+    # пользователь отказался включать UFW, баны добавляются в неактивный
+    # набор правил и фактически не работают (fail2ban при этом "зелёный").
+    if ufw status 2>/dev/null | grep -q inactive; then
+        log_warn "UFW не активен: fail2ban-баны (banaction=ufw) не действуют, пока UFW выключен. Включить: sudo ufw enable"
     fi
 
     # Debian: journald вместо rsyslog, нужен python3-systemd
@@ -2572,11 +2730,8 @@ setup_fail2ban() {
 
     mkdir -p /etc/fail2ban/jail.d 2>/dev/null
 
-    # Backend: systemd для Debian (нет rsyslog), auto для Ubuntu
-    local f2b_backend="auto"
-    if [[ "${OS_ID:-}" == "debian" ]]; then
-        f2b_backend="systemd"
-    fi
+    # Backend: systemd для Debian и Ubuntu (нет rsyslog)
+    local f2b_backend="systemd"
 
     cat > /etc/fail2ban/jail.d/amneziawg.conf << JAILEOF || { log_warn "Ошибка записи jail.d/amneziawg.conf"; return 1; }
 # AmneziaWG — SSH protection (managed by amneziawg-installer)
@@ -2589,7 +2744,11 @@ bantime  = 1h
 banaction = ufw
 JAILEOF
 
-    if systemctl restart fail2ban; then
+    systemctl restart fail2ban
+    # Одну секунду, сервис перезапускается...
+    sleep 1
+
+    if systemctl is-active --quiet fail2ban; then
         log "Fail2Ban настроен и перезапущен."
     else
         log_warn "Ошибка перезапуска fail2ban"
@@ -2654,6 +2813,10 @@ check_service_status() {
 # ==============================================================================
 
 create_diagnostic_report() {
+    # --diagnostic вызывается ДО initialize_setup (где живёт основной root-check):
+    # под обычным пользователем запись в /root/awg падает на каждом log_msg,
+    # отчёт не создаётся, а exit 0 выглядел бы как ложный успех.
+    if [ "$(id -u)" -ne 0 ]; then die "Запустите скрипт от root (sudo bash $0 --diagnostic)."; fi
     log "Создание диагностики..."
     local rf
     rf="$AWG_DIR/diag_$(date +%F_%T).txt"
@@ -2751,7 +2914,7 @@ step_uninstall() {
     else
         log "Автоматическое подтверждение деинсталляции (--yes)."
     fi
-    if [[ -z "$backup" || "$backup" =~ ^[Yy]$ ]]; then
+    if [[ -z "$backup" || "$backup" =~ ^[[:space:]]*[Yy]([Ee][Ss])?[[:space:]]*$ ]]; then
         local bf
         bf="$HOME/awg_uninstall_backup_$(date +%F_%H-%M-%S).tar.gz"
         log "Создание бэкапа: $bf"
@@ -2888,12 +3051,20 @@ step_uninstall() {
         # Если у юзера остался jail.local от очень старых версий нашего
         # инсталлятора — пусть сам решает что с ним делать.
         rm -f /etc/fail2ban/jail.d/amneziawg.conf 2>/dev/null
+        # Если fail2ban не purge-ился (стоял до нас) - перезапускаем его без
+        # нашего jail: выше он был остановлен (systemctl stop fail2ban).
+        if command -v fail2ban-client &>/dev/null && [[ ! -f "$AWG_DIR/.fail2ban_installed_by_installer" ]]; then
+            systemctl restart fail2ban 2>/dev/null || log_warn "Не удалось перезапустить fail2ban после удаления нашего jail."
+        fi
     fi
     log "Удаление DKMS..."
     rm -rf /var/lib/dkms/amneziawg* || log_warn "Ошибка удаления DKMS."
     log "Восстановление sysctl..."
-    if grep -q "disable_ipv6" /etc/sysctl.conf 2>/dev/null; then
-        sed -i '/disable_ipv6/d' /etc/sysctl.conf || log_warn "Ошибка sed sysctl.conf"
+    # Только точные строки, которые писали legacy-версии нашего инсталлятора
+    # (=1 для all/default/lo). Раньше удалялась ЛЮБАЯ строка с disable_ipv6 -
+    # включая добавленные самим пользователем (например =0 override).
+    if grep -qE '^net\.ipv6\.conf\.(all|default|lo)\.disable_ipv6[[:space:]]*=[[:space:]]*1[[:space:]]*$' /etc/sysctl.conf 2>/dev/null; then
+        sed -i -E '/^net\.ipv6\.conf\.(all|default|lo)\.disable_ipv6[[:space:]]*=[[:space:]]*1[[:space:]]*$/d' /etc/sysctl.conf || log_warn "Ошибка sed sysctl.conf"
     fi
     sysctl -p --system 2>/dev/null
     rm -f /etc/apt/sources.list.d/*.bak-* "$AWG_DIR"/ubuntu.sources.bak-* 2>/dev/null || true
@@ -2937,6 +3108,7 @@ initialize_setup() {
     log "Лог файл: $LOG_FILE"
 
     check_os_version
+    check_kernel_version
     check_free_space
 
     local default_port
@@ -3048,8 +3220,26 @@ initialize_setup() {
         log "Файл конфигурации $CONFIG_FILE не найден."
     fi
 
+    # Старый порт из awgsetup_cfg.init: нужен шагу 4, чтобы удалить устаревшее
+    # UFW-правило при смене порта (Issue #175). Захват ДО CLI-override, иначе
+    # старое значение теряется навсегда - uninstall читает уже перезаписанный
+    # конфиг и старый порт не узнает. PREV_AWG_PORT мог уже загрузиться из
+    # awgsetup_cfg.init через safe_load_config - это отложенное удаление с
+    # прошлого запуска: шаг 1 завершается request_reboot, до шага 4 доживает
+    # только значение, записанное на диск (PR #176).
+    PREV_AWG_PORT="${PREV_AWG_PORT:-}"
+    _cfg_awg_port=""
+    if [[ "$config_exists" -eq 1 ]]; then _cfg_awg_port="$AWG_PORT"; fi
+
     # Переопределение из CLI
     AWG_PORT=${CLI_PORT:-$AWG_PORT}
+    # Порт изменился этим запуском - прежнее значение становится отложенным
+    # удалением. Если порт вернули обратно (совпал с отложенным) - удаление
+    # снимается: правило снова нужно.
+    if [[ -n "$_cfg_awg_port" && "$_cfg_awg_port" != "$AWG_PORT" ]]; then
+        PREV_AWG_PORT="$_cfg_awg_port"
+    fi
+    if [[ "$PREV_AWG_PORT" == "$AWG_PORT" ]]; then PREV_AWG_PORT=""; fi
     AWG_TUNNEL_SUBNET=${CLI_SUBNET:-$AWG_TUNNEL_SUBNET}
     if [[ "$CLI_DISABLE_IPV6" != "default" ]]; then DISABLE_IPV6=$CLI_DISABLE_IPV6; fi
     [[ "$CLI_ENABLE_NATIVE_IPV6" -eq 1 || "$CLI_UPGRADE_IPV6" -eq 1 ]] && DISABLE_IPV6=0
@@ -3087,6 +3277,11 @@ initialize_setup() {
     fi
     if [[ "$CLI_ROUTING_MODE" != "default" ]]; then
         ALLOWED_IPS_MODE=$CLI_ROUTING_MODE
+        # Явный CLI-режим вытесняет и список: раньше --route-all/--route-amnezia
+        # при переустановке меняли только режим, а ALLOWED_IPS оставался старым
+        # из awgsetup_cfg.init - флаг молча не действовал (Issue #170). Пустой
+        # список заставит configure_routing_mode пересчитать его под новый режим.
+        ALLOWED_IPS=""
         if [[ "$CLI_ROUTING_MODE" -eq 3 ]]; then ALLOWED_IPS=$CLI_CUSTOM_ROUTES; fi
     fi
     if [[ -n "$CLI_ENDPOINT" ]]; then
@@ -3150,8 +3345,12 @@ initialize_setup() {
         fi
         validate_port_system "$AWG_PORT" || die "Некорректный VPN порт: '$AWG_PORT'. Допустимый диапазон: 1-65535."
         if [[ "$AUTO_YES" -eq 0 ]]; then
-            read -rp "Введите подсеть туннеля [${AWG_TUNNEL_SUBNET}]: " input_subnet < /dev/tty
-            if [[ -n "$input_subnet" ]]; then AWG_TUNNEL_SUBNET=$input_subnet; fi
+            while true; do
+                read -rp "Введите подсеть туннеля [${AWG_TUNNEL_SUBNET}]: " input_subnet < /dev/tty
+                [[ -z "$input_subnet" ]] && break
+                if ( validate_subnet "$input_subnet" ); then AWG_TUNNEL_SUBNET=$input_subnet; break; fi
+                log_warn "Повторите ввод подсети."
+            done
         fi
         validate_subnet "$AWG_TUNNEL_SUBNET"
         if [[ "$DISABLE_IPV6" == "default" ]]; then configure_ipv6; fi
@@ -3188,6 +3387,7 @@ initialize_setup() {
 
     # Значения по умолчанию
     if [[ "$DISABLE_IPV6" == "default" ]]; then DISABLE_IPV6=1; fi
+    configure_ipv6_tunnel
     if [[ "$ALLOWED_IPS_MODE" == "default" ]]; then ALLOWED_IPS_MODE=2; fi
     if [[ -z "$ALLOWED_IPS" ]]; then configure_routing_mode; fi
     configure_ipv6_client_mode
@@ -3208,6 +3408,14 @@ initialize_setup() {
     validate_server_name "$AWG_SERVER_NAME" || die "Некорректное имя сервера: пустое, слишком длинное или содержит перевод строки."
     confirm_install_choices
 
+    # Единая обязательная валидация AllowedIPs до сохранения конфига: CLI
+    # --route-custom на первом запуске присваивал ALLOWED_IPS без проверки
+    # (configure_routing_mode пропускался, т.к. режим уже был 3). Проверяем
+    # любой непустой список независимо от источника (CLI / конфиг / выбор режима).
+    if [[ -n "$ALLOWED_IPS" ]] && ! validate_cidr_list "$ALLOWED_IPS"; then
+        die "Некорректный ALLOWED_IPS: '$ALLOWED_IPS'. Ожидается список x.x.x.x/y[,x.x.x.x/y]."
+    fi
+
     # Проверка порта (пропускаем если AWG-сервис уже слушает этот порт)
     if ! systemctl is-active --quiet awg-quick@awg0 2>/dev/null; then
         check_port_availability "$AWG_PORT" || die "Порт $AWG_PORT/udp занят."
@@ -3220,15 +3428,45 @@ initialize_setup() {
     # Перегенерация если: первый запуск ИЛИ явный CLI override (--preset/--jc/--jmin/--jmax)
     if [[ -z "${AWG_Jc:-}" ]] || [[ -n "${CLI_PRESET:-}" ]] || [[ -n "${CLI_JC:-}" ]] \
         || [[ -n "${CLI_JMIN:-}" ]] || [[ -n "${CLI_JMAX:-}" ]]; then
+        # generate_awg_params перегенерирует ВЕСЬ набор (S1-S4, H1-H4, I1), а
+        # не только запрошенный параметр: при переустановке поверх живого
+        # сервера все выданные клиентские конфиги хранят старые H1-H4 и
+        # перестанут подключаться. Предупреждаем громко.
+        if [[ "$config_exists" -eq 1 && -n "${AWG_Jc:-}" ]]; then
+            log_warn "ВНИМАНИЕ: --preset/--jc/--jmin/--jmax при переустановке перегенерируют ВСЕ параметры обфускации (включая H1-H4/S1-S4/I1)."
+            log_warn "Все существующие клиентские конфиги перестанут подключаться - перевыпустите их после установки: sudo bash $MANAGE_SCRIPT_PATH regen"
+        fi
         generate_awg_params
     else
         log "AWG 2.0 параметры уже заданы из конфига."
     fi
 
+    # CPS (I1) toggle (issue #159): --no-cps убирает параметр I1, из-за которого
+    # десктопный AmneziaVPN на macOS виснет при подключении (мобильные и CLI-клиенты
+    # CPS понимают). Обнуляем ТОЛЬКО I1, остальной набор обфускации (Jc/S1-S4/H1-H4)
+    # не трогаем. Явные --preset/--jc/--jmin/--jmax без --no-cps возвращают CPS
+    # (свежая генерация набора включает I1). Иначе держим состояние из init.
+    if [[ "${CLI_NO_CPS:-0}" -eq 1 ]]; then
+        NO_CPS=1
+    elif [[ -n "${CLI_PRESET:-}" || -n "${CLI_JC:-}" || -n "${CLI_JMIN:-}" || -n "${CLI_JMAX:-}" ]]; then
+        NO_CPS=0
+    fi
+    if [[ "${NO_CPS:-0}" -eq 1 ]]; then
+        if [[ -n "${AWG_I1:-}" && "$config_exists" -eq 1 ]]; then
+            log_warn "ВНИМАНИЕ: --no-cps убирает параметр I1 (CPS). Существующие клиентские конфиги с I1 перестанут подключаться - перевыпустите их: sudo bash $MANAGE_SCRIPT_PATH regen"
+        fi
+        AWG_I1=''
+        log "CPS (I1) отключён (--no-cps / сохранённый NO_CPS=1): десктопный AmneziaVPN на macOS не поддерживает CPS."
+    fi
+
     # Сохранение конфигурации
     log "Сохранение настроек в $CONFIG_FILE..."
-    local temp_conf
-    temp_conf=$(mktemp) || die "Ошибка mktemp."
+    # temp в каталоге итогового конфига -> mv = атомарный rename на той же ФС
+    # (а не cross-fs copy+unlink, если /tmp смонтирован как tmpfs).
+    local temp_conf cfg_dir
+    cfg_dir="$(dirname "$CONFIG_FILE")"
+    mkdir -p "$cfg_dir" 2>/dev/null
+    temp_conf=$(mktemp -p "$cfg_dir") || die "Ошибка mktemp."
     _install_temp_files+=("$temp_conf")
     local quoted_server_name
     quoted_server_name=$(shell_quote "$AWG_SERVER_NAME")
@@ -3301,8 +3539,20 @@ export AWG_I4='${AWG_I4:-}'
 export AWG_I5='${AWG_I5:-}'
 export AWG_PRESET='${AWG_PRESET:-default}'
 export NO_TWEAKS=${NO_TWEAKS}
+export NO_CPS=${NO_CPS}
 export AWG_APPLY_MODE='${AWG_APPLY_MODE:-syncconf}'
+export ALLOW_IPV6_TUNNEL=${ALLOW_IPV6_TUNNEL:-0}
+export IPV6_SUBNET='${IPV6_SUBNET}'
+export SERVER_HAS_NATIVE_IPV6=${SERVER_HAS_NATIVE_IPV6:-0}
 EOF
+    # Отложенное удаление UFW-правила старого порта обязано пережить reboot:
+    # шаг 4 выполняется в другом процессе после 1-2 перезагрузок, переменная
+    # процесса до него не доживает (PR #176). Ключ снимает
+    # setup_improved_firewall после успешного ufw delete.
+    if [[ "$PREV_AWG_PORT" =~ ^[0-9]+$ ]]; then
+        echo "export PREV_AWG_PORT=${PREV_AWG_PORT}" >> "$temp_conf" \
+            || die "Ошибка записи PREV_AWG_PORT в $temp_conf"
+    fi
     if ! mv "$temp_conf" "$CONFIG_FILE"; then
         rm -f "$temp_conf"
         die "Ошибка сохранения $CONFIG_FILE"
@@ -3327,6 +3577,21 @@ EOF
     log "WireSock hints: ${AWG_WIRESOCK_HINTS:-off}"
     log "Имя сервера: ${AWG_SERVER_NAME}"
     log "Режим AllowedIPs: $ALLOWED_IPS_MODE"
+    # Смена режима маршрутизации - операция над клиентскими конфигами: новые
+    # клиенты получат новый список, но у существующих regen сознательно
+    # сохраняет AllowedIPs (индивидуальные настройки modify). Подсказываем
+    # явный способ применить новый режим ко всем (Issue #170).
+    if [[ "$config_exists" -eq 1 && "$CLI_ROUTING_MODE" != "default" ]]; then
+        log_warn "Режим маршрутизации изменён. Существующие клиентские конфиги сохраняют старые AllowedIPs."
+        log_warn "Применить новый режим ко всем клиентам: sudo bash $MANAGE_SCRIPT_PATH regen --reset-routes"
+    fi
+    # Смена порта: шаг 6 пропускает уже существующих клиентов, их Endpoint
+    # остаётся со старым портом и они молча перестают подключаться. Подсказываем
+    # явный перевыпуск - по аналогии с предупреждением о смене режима (#170).
+    if [[ "$config_exists" -eq 1 && -n "$PREV_AWG_PORT" ]]; then
+        log_warn "Порт изменён (${PREV_AWG_PORT} -> ${AWG_PORT}). Существующие клиентские конфиги сохраняют старый порт в Endpoint и потеряют связь."
+        log_warn "Перевыпустить всех клиентов: sudo bash $MANAGE_SCRIPT_PATH regen"
+    fi
 
     # Загрузка состояния
     if [[ -f "$STATE_FILE" ]]; then
@@ -3342,6 +3607,22 @@ EOF
         current_step=1
         log "Начало с шага 1."
         update_state 1
+    fi
+
+    # Stale state (прерванный шаг 7 оставляет setup_state=7/99) + CLI-параметры,
+    # влияющие на firewall/конфиги: без отката цикл пропустил бы шаги 4-6, новые
+    # значения остались бы только в awgsetup_cfg.init, а awg0.conf, клиентские
+    # конфиги и правила UFW продолжили бы жить со старыми - молча (Issue #175).
+    # Возврат к шагу 4: firewall (порт) + перегенерация конфигов (шаг 6).
+    if (( current_step > 4 )) && { [[ -n "$CLI_PORT" ]] || [[ -n "$CLI_SUBNET" ]] \
+        || [[ -n "$CLI_SSH_PORT" ]] || [[ "$CLI_ROUTING_MODE" != "default" ]] \
+        || [[ -n "$CLI_ENDPOINT" ]] || [[ "$CLI_DISABLE_IPV6" != "default" ]] \
+        || [[ "${CLI_ALLOW_IPV6_TUNNEL:-0}" -eq 1 ]] || [[ -n "${CLI_PRESET:-}" ]] \
+        || [[ -n "${CLI_JC:-}" ]] || [[ -n "${CLI_JMIN:-}" ]] || [[ -n "${CLI_JMAX:-}" ]] \
+        || [[ "${CLI_NO_CPS:-0}" -eq 1 ]]; }; then
+        log_warn "Незавершённая установка (шаг $current_step) + CLI-параметры конфигурации: возврат к шагу 4, чтобы firewall и конфиги были перегенерированы с новыми значениями."
+        current_step=4
+        update_state 4
     fi
     log "Шаг 0 завершен."
 }
@@ -3367,6 +3648,9 @@ step1_update_and_optimize() {
 
     log "Обновление списка пакетов..."
     apt_update_tolerant || die "Ошибка apt update."
+    # Кэш свежий: install_packages ниже не должен гонять apt update повторно
+    # (источники в шаге 1 не меняются).
+    _APT_UPDATED=1
 
     log "Разблокировка dpkg..."
     if ! apt-get check &>/dev/null; then
@@ -3509,7 +3793,13 @@ step2_install_amnezia() {
     log "### ШАГ 2: Установка AmneziaWG и зависимостей ###"
     _APT_UPDATED=0  # Reset: new sources will be added in this step
 
-    apt_update_tolerant || die "Ошибка apt update."
+    # --ppa-amnezia-tolerant ОБЯЗАТЕЛЕН уже здесь: если на диске остался
+    # PPA-файл с битым suite (404 Release; например questing от старой версии
+    # или после in-place upgrade), строгий update умирал ДО repair-блоков ниже
+    # и ремонт никогда не срабатывал (live-репро на Debian 12, v5.16.0 cycle).
+    # Ошибки базовых репозиториев по-прежнему fail-closed; PPA-ошибки чинит
+    # repair + post-PPA update + apt_wait_for_ppa_package ниже.
+    apt_update_tolerant --ppa-amnezia-tolerant || die "Ошибка apt update."
 
     # PPA Amnezia (без software-properties-common)
     log "Добавление PPA Amnezia..."
@@ -3594,6 +3884,22 @@ step2_install_amnezia() {
         log_warn "Устаревший PPA-файл $legacy_sources (suite='${legacy_suite:-<пусто>}') не соответствует целевому '${ppa_codename}' — удаление."
         rm -f "$legacy_sources" "$legacy_list"
     fi
+    # Тот же ремонт для traditional .list (Debian 12): suite - токен после URL
+    # в строке 'deb [opts] URL <suite> main'. Без проверки файл со старым/чужим
+    # suite (например после in-place upgrade bookworm->trixie) проскочил бы
+    # ниже как "PPA уже добавлен", и apt продолжил бы тянуть не тот suite.
+    local list_suite=""
+    if [[ -f "$ppa_list" ]]; then
+        list_suite=$(awk '/^deb([[:space:]]|$)/ {
+            for (i = 2; i <= NF; i++) {
+                if ($i ~ /^https?:/) { print $(i+1); exit }
+            }
+        }' "$ppa_list" 2>/dev/null)
+        if [[ -z "$list_suite" || "$list_suite" != "$ppa_codename" ]]; then
+            log_warn "Существующий $ppa_list (suite='${list_suite:-<пусто>}') не соответствует целевому '${ppa_codename}' - пересоздание."
+            rm -f "$ppa_list"
+        fi
+    fi
     if [[ -f "$legacy_list" ]] || [[ -f "$legacy_sources" ]]; then
         log "PPA уже добавлен (legacy-формат)."
     elif [[ -f "$ppa_sources" ]] || [[ -f "$ppa_list" ]]; then
@@ -3610,10 +3916,24 @@ step2_install_amnezia() {
         # SSH, cloud-init, Ansible и т.п.) и не падает с "File exists" при
         # overwrite mktemp-файла. Без этих флагов gpg в батч-режиме откажется
         # писать в уже существующий пустой tmp-файл от mktemp.
-        if ! curl -fsSL "https://keyserver.ubuntu.com/pks/lookup?op=get&search=0x57290828" \
+        # Запрос по ПОЛНОМУ 40-символьному fingerprint, не по короткому ID:
+        # для коротких 32-битных ID существуют preimage-коллизии (evil32), а
+        # keyserver.ubuntu.com принимает загрузку чужих ключей. Подменённый
+        # ключ не дал бы RCE (подпись пакетов не сойдётся), но ломал бы
+        # установку малопонятной ошибкой apt.
+        local _ppa_key_fpr="75C9DD72C799870E310542E24166F2C257290828"
+        if ! curl -fsSL "https://keyserver.ubuntu.com/pks/lookup?op=get&search=0x${_ppa_key_fpr}" \
              | gpg --batch --no-tty --yes --dearmor -o "$_kf_tmp"; then
             rm -f "$_kf_tmp" 2>/dev/null
             die "Ошибка импорта GPG ключа Amnezia PPA."
+        fi
+        # Сверка fingerprint скачанного ключа с ожидаемым (pin).
+        local _got_fpr
+        _got_fpr=$(gpg --batch --no-tty --show-keys --with-colons "$_kf_tmp" 2>/dev/null \
+            | awk -F: '/^fpr:/{print $10; exit}')
+        if [[ "$_got_fpr" != "$_ppa_key_fpr" ]]; then
+            rm -f "$_kf_tmp" 2>/dev/null
+            die "GPG ключ Amnezia PPA не прошёл проверку fingerprint (получен: '${_got_fpr:-<пусто>}')."
         fi
         chmod 644 "$_kf_tmp" || { rm -f "$_kf_tmp" 2>/dev/null; die "Ошибка chmod GPG ключа."; }
         mv -f "$_kf_tmp" "$keyring_file" \
@@ -3650,6 +3970,10 @@ PPASRC
         log_error "целостность ключей в /etc/apt/keyrings, занятость dpkg lock."
         die "apt update вернул ошибку (rc!=0, не PPA Amnezia)."
     fi
+    # PPA добавлен, кэш обновлён: дальше в шаге 2 источники не меняются,
+    # поэтому install_packages не должен повторять apt update (на медленных
+    # зеркалах каждый прогон = 10-60 секунд).
+    _APT_UPDATED=1
     # apt-get update толерантен к недоступному InRelease (rc=0 даже когда PPA
     # лежит). Поэтому проверяем именно появление пакета amneziawg-dkms в
     # apt-cache, с тремя попытками и backoff 30с/60с (≈1.5 мин total).
@@ -3677,8 +4001,8 @@ PPASRC
             install_packages "amneziawg-tools" "wireguard-tools" "qrencode" "python3" "python3-geoip2" "openssl"
             installer_ipv6_effective_mode_is_ndp && install_packages "ndppd"
             log "Шаг 2 завершен (prebuilt ARM)."
+            # request_reboot всегда завершает процесс (exit), сюда не вернёмся.
             request_reboot 3
-            return
         fi
         log "Совпадений не найдено — откат на DKMS."
     fi
@@ -4792,7 +5116,7 @@ preflight_letsencrypt_domain() {
             return 1
         fi
         read -rp "Продолжить попытку Let's Encrypt несмотря на DNS mismatch? [y/N]: " confirm < /dev/tty
-        [[ "$confirm" =~ ^[Yy]$ ]]
+        [[ "$confirm" =~ ^[[:space:]]*[Yy]([Ee][Ss])?[[:space:]]*$ ]]
         return $?
     fi
     log "DNS preflight: $domain -> $resolved"
@@ -5145,23 +5469,21 @@ step6_generate_configs() {
         log "Бэкап серверного конфига: $s_bak"
     fi
 
-    # Создание серверного конфига AWG 2.0
+    # Создание серверного конфига AWG 2.0 с переносом ВСЕХ существующих
+    # [Peer]-блоков из бэкапа ОДНОЙ атомарной записью (render_server_config
+    # доклеивает пиры в temp ДО mv). Раньше append шёл ПОСЛЕ render отдельной
+    # операцией: сбой в окне между ними оставлял живой конфиг без пиров, а
+    # повторный запуск шага 6 бэкапил уже безпировый файл - все клиенты
+    # терялись при --force reinstall (восстановление только вручную из
+    # timestamped .bak).
+    # C5-история (важно сохранить семантику): восстанавливаются ВСЕ блоки,
+    # включая дефолтные my_phone/my_laptop - идемпотентный цикл ниже
+    # пропускает уже существующие пиры, а guard в generate_client отвергает
+    # повторное создание при наличии артефактов.
     log "Создание серверного конфига..."
-    render_server_config || die "Ошибка создания серверного конфига."
-
-    # Восстановление существующих [Peer] блоков из бэкапа (кроме дефолтных)
-    if [[ -n "${s_bak:-}" && -f "$s_bak" ]]; then
-        local restored_peers
-        restored_peers=$(awk '
-            /^\[Peer\]/ { buf=$0"\n"; in_peer=1; skip=0; next }
-            in_peer && /^\[/ { if (!skip) printf "%s\n", buf; buf=""; in_peer=0; next }
-            in_peer { buf=buf $0"\n"; if ($0 ~ /^#_Name = (my_phone|my_laptop)$/) skip=1; next }
-            END { if (in_peer && !skip) printf "%s", buf }
-        ' "$s_bak")
-        if [[ -n "$restored_peers" ]]; then
-            printf '\n%s' "$restored_peers" >> "$SERVER_CONF_FILE"
-            log "Существующие пиры восстановлены из бэкапа."
-        fi
+    render_server_config "${s_bak:-}" || die "Ошибка создания серверного конфига."
+    if [[ -n "${s_bak:-}" && -f "$s_bak" ]] && grep -q '^\[Peer\]' "$s_bak" 2>/dev/null; then
+        log "Существующие пиры восстановлены из бэкапа."
     fi
 
     # Генерация клиентов по умолчанию
@@ -5800,8 +6122,10 @@ if [[ "$FORCE_REINSTALL" -ne 1 && "$CLI_UPGRADE_IPV6" -ne 1 ]] && [[ -f "$SERVER
    && systemctl is-active --quiet awg-quick@awg0 2>/dev/null; then
     log_error "AmneziaWG уже установлен и запущен."
     log_error "Чтобы переустановить — добавьте --force (или AWG_FORCE_REINSTALL=1)."
-    log_error "ВНИМАНИЕ: переустановка снова прогонит шаги 1 (sysctl/swap/BBR) и 7 (рестарт сервиса),"
-    log_error "          параметры обфускации (Jc/Jmin/Jmax/H1-H4/I1) сохранятся."
+    log_error "ВНИМАНИЕ: переустановка снова прогонит шаги 1 (sysctl/swap/BBR) и 7 (рестарт сервиса)."
+    log_error "          Параметры обфускации (Jc/Jmin/Jmax/H1-H4/I1) сохранятся, ЕСЛИ не передавать"
+    log_error "          --preset/--jc/--jmin/--jmax (эти флаги перегенерируют весь набор - все"
+    log_error "          выданные клиентские конфиги придётся перевыпустить через regen)."
     log_error "Для управления клиентами:  sudo bash $MANAGE_SCRIPT_PATH help"
     log_error "Для полного удаления:      sudo bash $0 --uninstall"
     exit 0

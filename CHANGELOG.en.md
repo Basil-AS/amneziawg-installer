@@ -12,6 +12,564 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [5.19.2-bas.1] - 2026-07-16
+
+**Fork sync** — merged the complete upstream `v5.19.2` history without rewriting existing fork commits or dates. The fork runtime remains opt-in for new features and preserves the BAS fork delta, including the multi-server subnet migrator.
+
+## [5.19.2] - 2026-07-15
+
+**v5.19.2** - stale UFW rule cleanup on a port change (contributed by @ekuraev), config regeneration after an interrupted install, and an honest repair-module exit code.
+
+### Fixed
+
+- Resuming an interrupted install (a stale `setup_state=7/99` after a step 7 failure) with configuration CLI flags (`--port`, `--subnet`, `--route-*`, `--endpoint`, `--ssh-port`, obfuscation flags) no longer skips steps 4-6: previously the new values were written to `awgsetup_cfg.init` while `awg0.conf`, client configs and UFW rules silently kept the old ones. The installer now rolls the state back to step 4 and regenerates the firewall and the server config. Existing client configs are deliberately left alone by step 6 - on a port change the installer warns that their `Endpoint` still holds the old port and points at `manage regen` (#175)
+- Reinstalling with a new `--port` deletes the old port's UFW rule: previously the old UDP port stayed open forever - the only `ufw delete` lives in uninstall and reads the already rewritten config, so even `--uninstall` never removed it. The old port is persisted in `awgsetup_cfg.init` (the `PREV_AWG_PORT` key) and survives the step 1-2 reboots; the key is removed only after the rule is successfully deleted, so a failed attempt retries on the next run. SSH limit rules are deliberately left alone (auto-removal on a misdetected port would cut off server access) (#175)
+- `manage repair-module` no longer reports "service is active" with exit 0 while the service is down: `ensure_amneziawg_kernel_module full` now returns a distinct code 2 for "module OK but awg-quick@awg0 did not start", and repair-module turns it into an explicit error with diagnostics hints. `add`/`remove` keep their previous behavior (warning + config written; apply_config reports the apply failure itself) (#175)
+- `manage add` exits non-zero when a requested client already exists (no-op): parity with `remove`/`regen`, automation can distinguish "created" from "nothing was done" (#175)
+- The `NO_CPS` key was added to the `safe_load_config` whitelist in `awg_common.sh` - aligned with the installer's copy of the function (#175)
+
+## [5.19.1] - 2026-07-13
+
+**v5.19.1** - changing the routing mode after install works again (contributed by @ekuraev), an early check for a too-old kernel, and subnet-guard hardening.
+
+### Added
+
+- Early kernel-version check: on kernels older than 5.15 (for example Ubuntu 20.04 with kernel 5.4) the installer warns clearly and up front that the AmneziaWG 2.0 module usually will not build on such a kernel and suggests reinstalling the VPS on a supported OS, instead of an opaque package-install failure at the module build step ([#163](https://github.com/bivlked/amneziawg-installer/issues/163)).
+
+- **`manage regen --reset-routes` flag.** A regular `regen` deliberately preserves the client's individual `AllowedIPs` (`modify` customizations), so a new global routing mode never reached existing clients. With `--reset-routes` regenerated clients get the `AllowedIPs` of the current global mode from `awgsetup_cfg.init` (DNS and PersistentKeepalive are still preserved). After a mode change on reinstall the installer prints a hint with this command (#170)
+
+### Fixed
+
+- Changing the routing mode after install works again: `--route-all` / `--route-amnezia` on reinstall (`--force`) changed only `ALLOWED_IPS_MODE` while the `ALLOWED_IPS` list kept the old value from `awgsetup_cfg.init` - the flag silently had no effect, and new clients still got the old routes. An explicit CLI mode now clears the list so it is recomputed for the new mode (#170)
+- The live-peer subnet-change guard now picks the IPv4 element from a dual-stack `Address` line in any order. Previously it took the first comma field, so an `Address` with IPv6 first could trigger a false install block.
+
+## [5.19.0] - 2026-07-11
+
+**v5.19.0** - full CIDR /16-/30 tunnel subnets (contributed by @ekuraev), a `--no-cps` switch for the macOS desktop client, and more robust network-interface detection.
+
+### Added
+
+- **Full CIDR for the tunnel subnet.** `--subnet` and the interactive prompt now accept /16-/30 masks (previously /24 only). The server address is the first host (network+1); input is in network or network+1 form. The `10.9.9.1/24` default and existing installs are unaffected. The IPv6 tunnel maps clients by host offset (no collisions on masks wider than /24).
+- **Subnet-change guard.** A reinstall (`--force`) with a different tunnel subnet aborts when awg0.conf already contains peers: their addresses were issued in the old subnet (old IPv4s can fall outside the new range, IPv6 suffixes can collide). Remove the clients or run `--uninstall` and reinstall from scratch before changing the subnet. When peers exist but the Address line is unreadable, the install also aborts (fail-closed).
+- **IPv6-only host warning.** When the server has no IPv4 egress (no default IPv4 route and no global IPv4 on the interface), the installer warns that IPv4 client traffic will not leave the host: the tunnel is IPv4 and NATed via MASQUERADE, so a host with an IPv4 address (dual-stack) or NAT64 is required. Does not block the install (#166)
+- **`--no-cps` flag (disable CPS for the desktop AmneziaVPN on macOS).** Drops the I1 parameter from the server config and clients: the desktop AmneziaVPN app on macOS does not support CPS yet and hangs on connect (mobile and CLI clients are unaffected). The rest of the obfuscation (Jc/S1-S4/H1-H4) is kept. On a reinstall `--force --no-cps` drops I1 without touching the other parameters; re-enable CPS with a reinstall using `--preset`/`--jc`/`--jmin`/`--jmax`. After disabling on a live server, reissue clients with `manage regen` (#159)
+
+### Fixed
+
+- Network-interface detection no longer aborts the install on hosts where the `1.1.1.1` probe returns no interface - the provider blocks or null-routes that address, policy-routing, or IPv6-only egress (seen on Ubuntu 26.04 / Timeweb). `get_main_nic` now tries a chain: `ip route get`, the default IPv4 route, the first global-IPv4 interface, the default IPv6 route; on total failure it prints the available interfaces and a hint. The interface can be set manually with `AWG_MAIN_NIC=<iface>` (an invalid value is now rejected with a log warning instead of silently). The interface fallback skips tunnel and virtual interfaces (awg0/wg*/docker0/br-* etc.) - otherwise a reinstall on an IPv6-only host could NAT into the tunnel itself. Previously step 6 aborted with "Failed to detect network interface" (#166)
+- The vpn:// QR is now generated with `-8` (single 8-bit byte mode). Large configs with I1-I5/CPS parameters failed with "Input data too large" even though the data itself (the URI is around 2929 bytes) fit the QR capacity: qrencode's optimizer split the base64 into alternating segments and the mode-switch overhead pushed the stream past the v40-L limit (2953 bytes). If a config still does not fit a single QR, the error now suggests importing the vpn:// from the `.vpnuri` file manually
+
+### Documentation
+
+- New ADVANCED section "Connecting a Linux machine as a client": installing the AmneziaWG module and tools or userspace `amneziawg-go`, bringing it up with `awg-quick`, and a warning about losing SSH on a full tunnel to a remote machine (#165)
+- ADVANCED FAQ: why the AmneziaVPN client says "this server does not support split tunneling" and how to enable the feature (full tunnel `0.0.0.0/0, ::/0`, no docker needed)
+
+---
+
+## [5.18.4] - 2026-07-06
+
+**v5.18.4** - cascade reliability and documentation. Cascade split-routing now survives ipdeny being unreachable: a snapshot of the Russian network list (`cascade/ru.zone`) is bundled in the repository, and the `awg-routing.sh` script uses it when `www.ipdeny.com` is blocked by the provider and no local copy exists yet - previously a fresh server in that situation would not bring the cascade up at all. The script also gained a workaround for the route error on VPSes whose default gateway sits outside the server subnet (Hetzner Cloud and similar with a `/32` interface). The installer itself is functionally unchanged, so existing installs do not need updating. Support matrix unchanged: Ubuntu 24.04 / 25.10 / 26.04, Debian 12 / 13, x86_64 + ARM.
+
+### Documentation
+
+- Cascade: bundled a snapshot of Russian networks `cascade/ru.zone` (ipdeny aggregated zone, snapshot 2026-07-06, 8626 networks) as a fallback source. The order in `awg-routing.sh` is now: ipdeny (the live list) -> the repo snapshot over `raw.githubusercontent.com` -> the previous local list; it aborts only if all three are unavailable. This brings the cascade up on a fresh server even when ipdeny is blocked (from Discussion #120)
+- Cascade: `awg-routing.sh` retries adding the route to the exit server with the `onlink` flag when the default gateway sits outside the server subnet - otherwise on VPSes like Hetzner (real public IP on a `/32` interface, private gateway) the route failed with `Error: Nexthop has invalid gateway` (#158, Discussion #120)
+- Added a `cascade/README.md` note for the snapshot (source, date, how to refresh) and an Ask DeepWiki badge in both READMEs for quick code navigation (#161)
+
+### Infrastructure
+
+- CI: bumped `docker/setup-qemu-action` from 4.1 to 4.2 in the ARM package build (#157)
+
+---
+
+## [5.18.3] - 2026-07-02
+
+**v5.18.3** - convenience and documentation. Confirmation prompts (for example, when removing a client or enabling UFW) now accept not only `y` but also `yes` in any case and with stray surrounding whitespace. UFW is enabled more reliably via `ufw --force enable`, so on some systems the firewall is no longer left disabled. The docs gain the T-Mobile (Moscow) mobile carrier and a Keenetic Speedster router note. Existing installs are unaffected. Support matrix unchanged: Ubuntu 24.04 / 25.10 / 26.04, Debian 12 / 13, x86_64 + ARM.
+
+### Fixed
+
+- Confirmation prompts accept `yes`, not only `y`. Previously `confirm_action` (in `manage`) and five installer prompts (reboot, unsupported OS, low disk space, UFW enable, backup on removal) matched a bare `y` only, and answering `yes` read as "no". They now accept `y`/`Y`/`yes`/`YES` with any surrounding whitespace (issue #154)
+- UFW is enabled via `ufw --force enable`. The old approach (feeding `y` into `ufw enable`) silently left the firewall off on some systems - only `--force` helped, and the installer now uses it directly (issue #154)
+
+### Documentation
+
+- Added **T-Mobile (Moscow)** to the mobile carrier table: a narrow app-style profile (Jc=6, Jmin=10, Jmax=50 + DNS-mimic I1 + full tunnel); the `diagnose --carrier=tmobile_us` profile checks Jc/Jmin/Jmax and that I1 is binary-shaped (Discussion #45)
+- Added a **Keenetic Speedster** (firmware 5.0.6) router note: older firmware does not parse H1-H4 as ranges (`invalid H1`), needs concrete values and calmer junk, with a userspace AWG Manager workaround (Discussion #81)
+- Added a diagnostics tip: the ByeByeVPN scanner helps tell whether a carrier blocks the server IP itself, separating an obfuscation issue from an AS/IP-level block
+
+## [5.18.2] - 2026-07-01
+
+**v5.18.2** - installation robustness. On fresh Ubuntu servers the built-in `unattended-upgrades` often holds the `dpkg` lock for several minutes on first boot, which made the installer fail at the system-update step with an `apt full-upgrade` error. The installer now waits for the lock to be released instead of failing immediately. Existing installations are unaffected. Support matrix unchanged: Ubuntu 24.04 / 25.10 / 26.04, Debian 12 / 13, x86_64 + ARM.
+
+### Fixed
+
+- A fresh-server install no longer aborts when the `dpkg` lock is busy. At the start of step 1 the installer sets `DPkg::Lock::Timeout` (via `/etc/apt/apt.conf.d`), so every `apt` call waits for the lock that `unattended-upgrades` / `apt-daily` hold on first boot. If `apt full-upgrade` still does not go through, the installer logs the process holding the lock, runs `dpkg --configure -a` and retries, and on a repeated failure exits with a clear message and recovery steps (issue #150)
+
+## [5.18.1] - 2026-06-27
+
+**v5.18.1** - bug-fix release. Fixes `--port` on reinstall: `install --force --port=N` now actually changes the server port (previously the new port was silently ignored). Full-tunnel clients now get `0.0.0.0/0, ::/0` so AmneziaVPN on iOS accepts the "all traffic" mode. The default DNS is now a resolver pair `1.1.1.1, 1.0.0.1`. `--port` now accepts any port 1-65535, including 443 (useful for mobile carriers that drop a non-standard high UDP port). Plus documentation fixes. Behaviour of existing installs and connected clients is unchanged; the improvements apply to new and re-issued (`manage regen`) configs. Support matrix unchanged: Ubuntu 24.04 / 25.10 / 26.04, Debian 12 / 13, x86_64 + ARM.
+
+### Fixed
+
+- `install --force --port=N` now changes the server port. Previously the new port was silently ignored: when rendering the server config, the port was re-read from the old `awg0.conf`, overwriting the value passed via `--port`. The port for the new config is now taken from the saved install parameters (the user's intent), which correctly survives the reboots during `--force`. Client `regen` is unaffected - it still reads the port from the live `awg0.conf`
+- Full-tunnel clients (`AllowedIPs = 0.0.0.0/0`) now get `0.0.0.0/0, ::/0`. With a bare `0.0.0.0/0`, AmneziaVPN on iOS treated the config as incomplete split tunneling and refused to bring the tunnel up. `::/0` sends IPv6 into the tunnel (and drops it if the server has no native IPv6), so nothing leaks past the VPN. Split tunneling (a custom route list) is not affected
+
+### Changed
+
+- The default DNS in client configs is now a pair `1.1.1.1, 1.0.0.1` instead of a single resolver (a fallback DNS in case the first one is unreachable)
+- `--port` now accepts ports 1-65535 (previously only 1024-65535). Low ports like 443/80/53 help with DPI evasion on mobile carriers: MTS, for example, drops a non-standard high UDP port but passes 443/udp. The VPN service runs as root, so privileged ports bind fine
+
+### Documentation
+
+- ADVANCED: fixed the `S3`/`S4` range in the minimal-config example (`S3`: 0-64, `S4`: 0-32 instead of the wrong 0-127); removed the stale link of the active-probing section to the already-closed issue #71; added notes on the mobile port and on direct IPv6 traffic bypassing the tunnel
+- README: added Ubuntu 26.04 to the subtitle; clarified the `--force` gate in the re-run FAQ
+
+### Tests
+
+- Added `tests/test_v5181_bugfix.bats` - the port from the saved parameters wins over the old `awg0.conf` on render; a full-tunnel client gets `::/0`, a split one does not; the default DNS pair; RU/EN parity of all three fixes
+
+---
+
+## [5.18.0] - 2026-06-26
+
+**v5.18.0** - the special-junk params `I2`-`I5` now reach clients. Previously only `I1` made it into the client config; `I2`-`I5` were hard-coded empty in the `vpn://` URI and never rendered into the `.conf`, so even if the admin set them in `awg0.conf` they could not reach the client. Now all five CPS params are carried into the client `.conf`, the QR code, and the `vpn://` link. Workflow: set `I2`-`I5` in the `[Interface]` of `awg0.conf`, restart the service, and distribute to clients with `manage regen`. No new install flags; when `I2`-`I5` are unset, behavior is identical to before. Support matrix unchanged: Ubuntu 24.04 / 25.10 / 26.04, Debian 12 / 13, x86_64 + ARM (issue #71).
+
+### Added
+
+- Pass-through of `I1`-`I5` (not just `I1`) from the server `awg0.conf` into client configs on generation and `regen`: the live-config parser reads `I2`-`I5`, the client `.conf` render appends the set values, and the previously hard-coded empty `I2`-`I5` in the `vpn://` URI are replaced with the real ones. Values are carried verbatim; the admin picks the tag format (`<r N>`, `<b 0xHEX>`, `<c>`, `<t>`) - see the VoidWaifu list. `I2`-`I5` are optional and independent: unset ones are simply not emitted
+- The params inherit the same preservation semantics as the rest of the obfuscation: `--force` without `--preset/--jc/--jmin/--jmax` reads `I2`-`I5` from the live `awg0.conf` and keeps them; `--preset`/`--jc` regenerate the whole obfuscation set, which drops manually set `I2`-`I5` (same as `H1-H4/S1-S4/I1`)
+
+### Tests
+
+- Added `tests/test_v5180_i2i5_passthrough.bats` - parsing `I2`-`I5` from `awg0.conf`, anti-stale protection across calls, client `.conf` render (present when set, absent when empty), and a real `vpn://` decode (values present in both the structured fields and the embedded raw config), plus RU/EN parity of every touched site
+
+---
+
+## [5.17.0] - 2026-06-24
+
+**v5.17.0** - the server firewall now clamps the TCP MSS to the tunnel MTU so large pages and downloads no longer hang on paths that filter ICMP (mobile carriers, double-NAT, two-server cascade). The install behavior is otherwise unchanged; update an existing server by re-running the installer. Support matrix unchanged: Ubuntu 24.04 / 25.10 / 26.04, Debian 12 / 13, x86_64 + ARM.
+
+### Added
+
+- MSS/PMTU clamp in the server config PostUp/PostDown: a `TCPMSS --set-mss` rule in the `mangle` table's `FORWARD` chain caps the advertised TCP MSS to a tunnel-safe value in both directions (`-o %i` and `-i %i`). This removes the PMTU blackhole - when ICMP "Fragmentation needed" is filtered along the path, oversized TCP segments with DF set are silently dropped at the 1280 tunnel and the page or download stalls. A common complaint on mobile carriers, behind double-NAT, and in cascade setups
+- The MSS value is derived from `AWG_MTU` when the config is generated (IPv4: MTU-40 = 1240, IPv6: MTU-60 = 1220); a manual MTU change is picked up by re-running the installer with `--force`. IPv6 rules are only added when the IPv6 tunnel is enabled. It complements the existing conservative `MTU = 1280` rather than replacing it
+
+### Tests
+
+- Added `tests/test_v5170_mss_clamp.bats` - asserts the rules in both directions, the mirrored `-D` in PostDown, IPv6 gating, and MSS auto-derivation from `AWG_MTU`
+
+---
+
+## [5.16.1] - 2026-06-16
+
+**v5.16.1** - hotfix: iOS tunnel drop on the default routing mode (Issue #42). The default install behavior is otherwise unchanged. Support matrix unchanged: Ubuntu 24.04 / 25.10 / 26.04, Debian 12 / 13, x86_64 + ARM.
+
+### Fixed
+
+- iOS: on the default routing mode (mode 2, "Amnezia List + DNS") the tunnel came up but traffic stopped after ~10 seconds (easy to mistake for DPI). The AllowedIPs list started with the `0.0.0.0/5` range, which covers the reserved `0.0.0.0/8`; the iOS kernel chokes on that block and never reaches the rest of the routes. The first range is split into `1.0.0.0/8, 2.0.0.0/7, 4.0.0.0/6` - the same coverage without the problematic zero block, and split-tunnel is preserved. Traced and fixed by @LiaNdrY (Issue #42)
+- The `--expires` error message now lists `30d` among the valid formats (matching `--help`)
+
+### Documentation
+
+- README and ADVANCED (RU + EN): added an FAQ entry about the iOS drop with instructions for already-installed servers (before v5.16.1)
+- Cascade (CASCADE.md / CASCADE.en.md): the client config example now uses this installer's default Endpoint port `39743` (was `51820` from upstream WireGuard); the troubleshooting section no longer references a nonexistent `after-awg1.conf` drop-in - the autostart check now points at the `awg-routing.service` unit; removed a duplicated paragraph in step 1
+- Full documentation audit: fixed minor inaccuracies (a duplicated pointer line in ADVANCED.en.md, an install-link anchor mismatch between README RU and EN, the import-files wording in INSTALL_VPS.md)
+
+### CI
+
+- The ShellCheck workflow ("Lint and syntax check") is no longer path-filtered: the required status check now runs on docs-only PRs too, so it no longer blocks them (previously needed an admin override)
+
+### Tests
+
+- Added `tests/test_v5161_ios_allowedips.bats` - a structural guard against the mode-2 list reverting to `0.0.0.0/5`
+
+---
+
+## [5.16.0] - 2026-06-12
+
+**v5.16.0** - security and reliability hardening from a full code audit. This release closes the findings of a full review of all six scripts of the AmneziaWG 2.0 VPN installer for Ubuntu and Debian: it eliminates the peer-loss window on `--force` reinstall, removes secrets from process argv, pins the PPA GPG key by full fingerprint, makes the AWG parameter validator check H1-H4 non-overlap, and stops expired orphan clients from looping the cron job forever. The default install behavior is unchanged. Support matrix unchanged: Ubuntu 24.04 / 25.10 / 26.04, Debian 12 / 13, x86_64 + ARM.
+
+### Security
+
+- The temp-file registry moved from world-writable `/tmp` into `$AWG_DIR` (0700): a predictable name in `/tmp` would let a local user plant a list of arbitrary paths that cleanup would then delete as root; registry reads are additionally guarded against symlink swaps
+- Private keys (client and server) are now born with 0600 permissions via `umask 077` - the brief world-readable window between write and `chmod` is gone; the `keys/` directory is created with 0700
+- The client private key and PSK are passed to the perl vpn:// URI generator via environment variables instead of argv (a process command line is visible to all users in `/proc/<pid>/cmdline`)
+- The Amnezia PPA GPG key is requested by its full 40-character fingerprint instead of the short 32-bit ID (short IDs have known evil32 collisions) and is verified against the pin after download
+- `uninstall` no longer purges the `fail2ban` package if it was installed before our installer (the `.fail2ban_installed_by_installer` marker, symmetric to the UFW marker); a user-owned fail2ban is restarted without our jail
+- `uninstall` removes only the exact lines written by legacy versions of this installer from `/etc/sysctl.conf` instead of any line containing `disable_ipv6` (it could previously wipe user-added settings)
+- Library functions `generate_client` / `add_peer_to_server` / `remove_peer_from_server` / `regenerate_client` now validate the client name themselves (defense-in-depth for cron and third-party scripts sourcing the library)
+
+### Fixed
+
+- Step 6: existing [Peer] blocks are now carried over inside a single atomic write of the server config (`render_server_config` appends peers before the `mv`). Previously a crash between render and the separate append left the config without peers, and a re-run of the step backed up the already peer-less file - all clients were lost on `--force` reinstall
+- `remove_peer_from_server` checks the awk exit code and the presence of `[Interface]` in the result before replacing the server config - an awk failure on a full disk can no longer atomically replace a working config with a broken one
+- An expired client whose peer was already removed from the config manually or by a restore (an orphan expiry label) is now cleaned up properly: previously cron retried the failing removal every 5 minutes forever and the client artifacts were never reclaimed
+- `regen` recovers the PresharedKey from the server config when the client `.conf` is lost - previously the recreated config came out without a PSK while the server peer still had one, silently breaking the handshake
+- The public IP detection cache actually works now (file-based, survives subshells): previously the assignment inside `$(...)` was lost, so `regen` over all clients performed a full curl round (up to 6 services, 5 s each) per client
+- `validate_awg_config` checks pairwise non-overlap of the H1-H4 ranges (the key AWG 2.0 invariant) and parses parameters the same way the loader does: arbitrary whitespace around `=`, last-wins on duplicates - a hand-edited `Jc=4` no longer produces a false "parameter not found"
+- H1-H4 generation guarantees a strict gap between ranges (boundary touching is excluded) and a lower bound >= 5 (values 1-4 are reserved by the WireGuard protocol)
+- `--apply-mode` is validated at argument parse time: a typo like `--apply-mode=restrat` used to silently behave as `syncconf`
+- `--diagnostic` checks for root before doing anything (previously it failed on every log write under a regular user and exited with a false success)
+- Debian 12: the PPA suite-mismatch repair now also covers the traditional `.list` format (previously only DEB822 `.sources` was handled)
+- Step 2: the early apt update is now tolerant to Amnezia PPA errors - a leftover PPA file with a broken suite (404 Release) no longer kills the install BEFORE the repair logic runs (live repro on Debian 12); base repository errors remain fatal
+- `check`: when the port cannot be determined, the UFW rule check is skipped (previously it printed a meaningless warning about `0/udp`)
+- `list`: a corrupted expiry file no longer causes a bash arithmetic error in the table
+- `generate_vpn_uri` verifies the port is numeric before generating the URI (an empty port produced syntactically broken JSON that Amnezia Client silently refused to import)
+- The public-IP detection error message in `manage add` no longer suggests the `--endpoint` flag that manage does not have
+
+### Improved
+
+- Installer steps 1-2 no longer re-run `apt-get update` without a sources change (saves 10-60 seconds per run on slow mirrors, up to two redundant runs per install)
+- `backup` additionally takes the config lock: a parallel `add`/`remove` can no longer produce a desynchronized file set inside the backup
+- Interactive port and subnet prompts during install re-ask on a typo instead of aborting the whole installation
+- Reinstalling with `--preset`/`--jc`/`--jmin`/`--jmax` prints an explicit warning that the ENTIRE obfuscation parameter set is regenerated and existing client configs will need `regen` (the idempotency-guard message was clarified too)
+- `setup_fail2ban` warns when UFW is inactive (bans with `banaction=ufw` are effectively inert in that case)
+- The `apt-get update` error classification ignores known informational lines `W: Target ... is configured multiple times` and `W: ... legacy trusted.gpg` - they no longer turn a tolerable failure into a false fatal
+- `diagnose` makes one `awg show` call instead of four; `stats` no longer spawns `date` per peer; `list --json` does not read expiry files (the field is not part of the JSON output)
+- The expiry cron job runs the temp-file cleanup (fixes a registry-file leak on every firing)
+- The random number generator fallback (when `/dev/urandom` is unavailable) covers the full 31-bit range instead of 30 bits
+- `manage` help: `regen` documents accepting multiple names, `repair-module` lists its `repair` alias; the client-creation message mentions `.png` only when the QR was actually created
+- Dead code removed: the unreachable `help)` dispatcher branch in manage, the unreachable `return` after `request_reboot` in the installer, two redundant `AWG_APPLY_MODE` re-exports, stale shellcheck directives
+- CI/release scripts: `update-sha-pins.sh` preserves file permissions on rewrite; `build-arm-deb.sh` surfaces xz stderr on failure; `build-release-notes.sh` validates the version format before interpolating it into awk
+
+---
+
+## [5.15.6] - 2026-06-08
+
+**v5.15.6** - input validation, atomicity and a JSON status field. This release continues the code-audit hardening cycle: it sharpens input validation in `manage`, makes client-artifact writes atomic, refines interrupt handling, and adds a stable machine-readable `status_code` to `list`/`stats --json`. The default install is unchanged. Support matrix unchanged: Ubuntu 24.04 / 25.10 / 26.04, Debian 12 / 13, x86_64 + ARM.
+
+### Added
+
+- `list --json` and `stats --json` now emit an extra `status_code` field with a stable, language-independent value (`active` | `recent` | `inactive` | `no_handshake` | `key_error` | `no_data`). The existing localized `status` field is kept - the change is additive and backward-compatible, and convenient for `jq` and automation (the contract is documented in `ADVANCED.en.md`)
+
+### Improved
+
+- `manage modify <client>` validates each DNS entry as a real IPv4/IPv6 address (via the shared `_valid_ipv4`/`_valid_ipv6` helpers) rather than a character set, so values like `abc` or `999.999.999.999` are no longer accepted. The same octet-range check (0-255) now applies to the auto-detected server public IP
+- `--expires` duration is validated once before the client is created: an invalid value aborts the command up front without changing anything. A failure to write the expiry after creation is now reflected in a non-zero result and the log
+- `--psk` is treated as an explicit request for a key: if the PSK cannot be generated, the command fails instead of silently degrading to a PSK-less client, and no artifacts are created
+- `.vpnuri` and the temporary QR PNGs are written through the shared safe-temp mechanism with an atomic `mv`, so an interrupted write cannot leave an empty or truncated file over a working one. Client removal (manual and automatic on expiry) uses one shared helper that covers every client artifact
+- The expired-client auto-removal cron is compared by content and refreshed when the working directory changes (for example after a restore), not only when the file is absent
+- Restore checks for the server config before stopping the service (an interruption no longer touches a working system), and an empty clients directory is treated as a valid case
+- Ctrl+C or a termination signal now aborts the script with the correct exit code (130/143) instead of continuing past the interrupted operation; an interrupted restore still rolls back
+
+### Documentation
+
+- Installer built-in help and the option tables in `ADVANCED.en.md`: `--endpoint` accepts an FQDN, IPv4 or `[IPv6]`; clarified that `--no-tweaks` still applies the minimal forwarding sysctl
+- The command tables in `README.en.md` now include `diagnose` and `repair-module`
+- ARM support for Ubuntu 26.04 (built via DKMS) is documented; the OS / architecture / prebuilt-package matrix is now checked automatically for consistency
+
+### Tests
+
+- Expanded automated coverage (bats): input validators, file-operation atomicity, signal handling, and the `status_code` contract
+
+---
+
+## [5.15.5] - 2026-06-07
+
+**v5.15.5** - fail2ban bugfix on Ubuntu 24.04 (thanks @stereomonk).
+
+### Fixed
+
+- fail2ban failed to start on minimal Ubuntu 24.04 without rsyslog ("Have not found any log file for sshd jail"): the sshd jail now uses `backend = systemd` on Ubuntu as well, matching Debian since v5.7.12 (PR #106, thanks @stereomonk)
+- fail2ban status after restart is now checked honestly: `systemctl restart` returns 0 even when the service dies right after start, so the installer used to report success on a crashed service. The state is now verified via `systemctl is-active` (PR #106)
+
+---
+
+## [5.15.4] - 2026-06-06
+
+**v5.15.4** - a companion release: a new documentation section on a host being unreachable from Russia (autonomous-system blocking) and the I1/CPS workaround, plus housekeeping. The default install behavior and the support matrix are unchanged.
+
+### Documentation
+
+- **ADVANCED: a new section on host blocking by autonomous system (AS).** It covers the symptom (the handshake completes, then traffic stalls), the AS-level cut on the operator's network, and the workaround via I1/CPS QUIC mimicry with an allowlisted SNI. The section includes field observations across several operators and links to the relevant discussion (Issue #71).
+
+### Internal
+
+- **Two bats test names were converted to ASCII.** The full suite of 790 checks now also runs under bats on Windows (two tests with non-ASCII names were previously skipped there); the Linux CI always ran the full suite.
+
+---
+
+## [5.15.3] - 2026-06-04
+
+**v5.15.3** - a hardening release following four rounds of external code and documentation audits. No new features: it tightens the installer's input validators, fixes a number of correctness issues in `manage`, and hardens file-operation atomicity and the release process. A default install is unchanged. Support matrix unchanged: Ubuntu 24.04 / 25.10 / 26.04, Debian 12 / 13, x86_64 + ARM.
+
+### Fixed
+
+- **Early installer validators now match the canonical ones.** The step-0 checks for port, subnet, endpoint and CIDR lists (before the shared library is downloaded) now reject ports with leading zeros (`0080` is no longer accepted via octal interpretation), numbers longer than 5 digits (64-bit overflow guard), non-canonical subnet octets, edge-case bracketed IPv6 endpoints (`[:::]`, double `::`), and newlines or empty items in route lists.
+- **`--route-custom` is validated on the first run regardless of where the value came from:** an invalid route list stops the install before the configuration is written.
+- **An unknown command-line argument exits the installer with code 1** (it used to print help and exit 0); an explicit `--help` still returns 0.
+- **`manage restore` is robust against incomplete backups:** restoring from an empty key set or a truncated backup no longer removes live clients.
+- **Re-running the installer keeps all existing peers** and the default clients when regenerating the server config.
+- **`manage modify` validates IP and CIDR values by range**, not just by shape.
+- **File-operation atomicity:** config temp files are created on the destination filesystem (so `mv` is actually atomic), the client QR PNG is written via temp + `mv`, and temp cleanup, comma validation in lists, and `vpn://` URI QR generation were tightened.
+
+### Internal
+
+- **Reproducible ARM builds:** the upstream module is pinned to an explicit ref, and a build manifest is published alongside the packages.
+- **`release.yml` builds bilingual release notes** (RU + EN from both changelogs) and a descriptive release title automatically.
+- **Preflight and CI hardened:** correct bats verdict, full OS/arch test matrix, the docs checker runs on path triggers, new guards against stale IPv6 wording and version placeholders.
+- **The documentation consistency check is about 8x faster** (single-pass Unicode heading slugger) and now covers the ROADMAP.
+- The test suite grew to 790 checks (new scenarios for the validators, restore, atomicity, the slugger and release notes).
+
+### Documentation
+
+- Corrected descriptions of IPv6 routing, native IPv6 detection, `--json` scope and the supported OS count; the CLI reference in ADVANCED is synced with the actual flags.
+- README and INSTALL_VPS point at `--ssh-port` for changing the SSH port; mobile carrier advice and the script integrity note were refreshed; the ROADMAP was brought up to date.
+- The release process is documented without contradictions (release-notes source, neutral review gate, checklist sync); Code of Conduct reports go to a private channel; blank issues are disabled - questions go to Discussions.
+
+### Verification
+
+- Live runs on clean VPSes: Ubuntu 24.04 (x86_64, full cycle: negative validator tests, install with 2 reboot-resumes, the whole `manage` CRUD), Ubuntu 26.04 (ARM64: PPA questing -> noble remap, DKMS module build), Debian 13 (custom routes via `--route-custom`, kernel headers fallback, DKMS against a kernel upgraded during the install). Real cross-continent AWG 2.0 handshakes and DNS through the tunnel confirmed.
+
+---
+
+## [5.15.2] - 2026-06-02
+
+**v5.15.2** - a small maintenance release. It points the install and update commands in the documentation at the current tag. No installer or management code changed, behavior is unchanged. Support matrix is unchanged: Ubuntu 24.04 / 25.10 / 26.04, Debian 12 / 13, x86_64 + ARM.
+
+### Fixed
+
+- **Install and update commands in the documentation point at the current release.** The `wget` / `curl` examples in README, INSTALL_VPS and ADVANCED were pinned to the previous tag, so copying a command downloaded the previous version. They now point at this release, so following the instructions installs it.
+
+### Internal
+
+- The documentation consistency check now verifies that pinned `raw.githubusercontent.com` links match the current version, so install commands do not fall behind the release in the future.
+
+---
+
+## [5.15.1] - 2026-06-02
+
+**v5.15.1** - a maintenance release after a round of external code and documentation audits. No new features: it hardens the v5.15.0 dual-stack IPv6 work, tightens several management commands, and fixes a number of correctness and robustness issues. A default install is unchanged. Support matrix unchanged: Ubuntu 24.04 / 25.10 / 26.04, Debian 12 / 13, x86_64 + ARM.
+
+### Changed
+
+- **Split tunnel + IPv6 now mirrors the IPv4 intent (behavior change).** When a client uses a custom `ALLOWED_IPS` (split tunnel), the dual-stack config keeps that IPv4 split list and adds only the tunnel ULA for IPv6 - it no longer forces a full `::/0` IPv6 route. A full tunnel (`ALLOWED_IPS=0.0.0.0/0`) still gets `::/0` with native IPv6, or the tunnel ULA without it. This affects only clients created with both a split tunnel and `--allow-ipv6-tunnel`. If you relied on the old behavior of IPv6 going full-tunnel while IPv4 stayed split, recreate the client to pick up the new routing.
+
+### Fixed
+
+- **`vpn://` URI now carries the server's real MTU, keepalive, and DNS** instead of fixed values, so a config imported from the URI matches the `.conf` even after the server settings or a `manage modify` changed them.
+- **Stricter native-IPv6 detection.** The server is treated as natively IPv6-capable only when it has a global (non-ULA) IPv6 address and a default IPv6 route, so a client gets a full `::/0` route only when it will actually work.
+- **The IPv6 host stack is re-enabled before detection** when the tunnel needs it, so a server that had IPv6 disabled via sysctl still gets a working dual-stack tunnel.
+- **`install` fails fast if `apt update` errors out**, instead of continuing a multi-step install against a stale package cache.
+- **`manage modify` validates the Endpoint and AllowedIPs** it is given (host:port, CIDR list) before writing them.
+- **`manage add` is safe against name reuse:** it refuses a name that already exists and cleans up partial key or config artifacts if creation fails partway.
+- **`manage restore` prunes stale clients and keys** that are absent from the backup, so a restore yields exactly the backed-up state.
+- **`manage help` exits 0** for an explicit help request and 1 only for a real usage error.
+- **`manage --json` keeps stdout pure JSON** by routing info and debug logging to stderr.
+- **Log messages no longer double percent signs** ("95%" stays "95%").
+- **`manage restore` recreates the expiry directory** before restoring expiry timestamps.
+
+### Documentation
+
+- `--subnet` help states the `/24`-only requirement; `install --help` lists Ubuntu 26.04.
+- `manage --help` and the README document `list --json` (including the `client_ipv6` field).
+- Restored the changelog compare-links for 5.11.0-5.15.0, fixed several broken in-page anchors, refreshed `SECURITY.md` and `CONTRIBUTING.md`, and added `docs/RELEASE_PROCESS.md`.
+
+### Internal
+
+- Tagging a release now runs a full preflight gate (syntax, shellcheck, tests, punctuation, version and SHA-pin consistency, documentation checks) before the GitHub Release is published, plus a lightweight documentation-consistency workflow. The signing design doc was aligned with the asset-upload draft.
+
+---
+
+## [5.15.0] - 2026-06-01
+
+**v5.15.0** - optional dual-stack IPv6 inside the tunnel. Requested by users in [#24](https://github.com/bivlked/amneziawg-installer/issues/24): the new `--allow-ipv6-tunnel` flag hands clients an IPv6 address from the private ULA subnet `fddd:2c4:2c4:2c4::/64` alongside the usual IPv4. Off by default - without the flag the install is identical to v5.14.x. Support matrix unchanged: Ubuntu 24.04 / 25.10 / 26.04, Debian 12 / 13, x86_64 + ARM.
+
+### Highlights
+
+- 🆕 **`--allow-ipv6-tunnel` flag** in `install_amneziawg.sh` (opt-in, off by default). Enables dual-stack IPv6 inside the VPN tunnel: the server and clients get addresses from the ULA subnet `fddd:2c4:2c4:2c4::/64` next to IPv4. The subnet can be overridden via `IPV6_SUBNET=` in `awgsetup_cfg.init`. This is separate from the existing `--allow-ipv6` (host-level IPv6 via sysctl); the behavior of `--allow-ipv6` / `--disallow-ipv6` is unchanged.
+- 🌐 **Dual-stack server and client configuration**. With the flag on, the server `awg0.conf` gets IPv6 in `Address` and `AllowedIPs`, an ip6tables MASQUERADE rule on the public NIC is set up, and the client `.conf` plus `vpn://` URI become dual-stack. The installer detects native IPv6 on the server (`ip -6 addr show scope global`): with native IPv6 the client gets a full `::/0` route, without native IPv6 only the tunnel subnet, so IPv6 traffic does not vanish into a black hole (a warning is logged in that case).
+- 🔧 **`manage list` and `manage regen` are dual-stack aware**. The client list shows a mixed state (new dual-stack clients next to legacy IPv4-only ones), and config regeneration correctly preserves the IPv6 address.
+
+### Migration
+
+- **Existing clients are unaffected.** After upgrading and enabling IPv6, already-issued IPv4-only configs keep working as before - the server does nothing to them automatically.
+- To add IPv6 to a client that already existed, after enabling `--allow-ipv6-tunnel` (re-run the installer with the flag or set `ALLOW_IPV6_TUNNEL=1` in `awgsetup_cfg.init`) recreate that client: `manage remove <name>`, then `manage add <name>`. Only recreation allocates an IPv6 for the client on the server and issues a dual-stack config. A plain `regen` keeps the client IPv4-only, because its `[Peer]` entry on the server has no IPv6 yet. The new `.conf` must be re-imported on the device.
+- Details and troubleshooting are in [ADVANCED.en.md](ADVANCED.en.md#ipv6-tunnel-adv).
+
+### Tests
+
+- New file `tests/test_v515_sha_pins_lockstep.bats` (4 tests): checks the real `sha256sum` of the four helper scripts against the `COMMON_SCRIPT_SHA256` / `MANAGE_SCRIPT_SHA256` pins in both installers, so a partial bump cannot ship an installer with drifted pins.
+- New helper `scripts/update-sha-pins.sh` (with a `--verify` flag) to recompute and verify the SHA pins, and `scripts/preflight-check.sh` for a single pre-tag check run (syntax, shellcheck, bats, punctuation, version consistency, SHA pins).
+
+### Verification
+
+- The automated test suite (bats) was extended with dual-stack coverage: server and client config rendering, IPv6 allocation, dual-stack `vpn://` URI, `manage list`/`regen`, and the no-native-IPv6 path. The no-flag regression is identical to v5.14.x.
+- Verified on clean servers: the happy path on ARM64 / Ubuntu 26.04 with native IPv6 (the client gets a full `::/0` route, ip6tables MASQUERADE, IPv6 internet egress), and the warning path on x86_64 / Debian 13 without native IPv6 (the client gets the tunnel subnet only). A cross-host tunnel was confirmed live: both IPv4 and IPv6 pass through it (loss-free ping6 to the server's in-tunnel address).
+
+---
+
+## [5.14.5] - 2026-05-25
+
+**v5.14.5** - the installer now detects the real SSH port and opens exactly that one in UFW. Previously, with SSH on a non-standard port, the firewall opened only port 22, and access to the server could be lost once it was enabled on the final step. No architectural changes, support matrix unchanged: Ubuntu 24.04 / 25.10 / 26.04, Debian 12 / 13, x86_64 + ARM.
+
+### Highlights
+
+- 🔧 **Automatic SSH port detection for the UFW rule** in `install_amneziawg.sh`. As observed by @userosos on Debian 13 ([#91](https://github.com/bivlked/amneziawg-installer/issues/91)): with SSH on a non-standard port, the installer opened only the default port 22 in UFW, and access was lost once the firewall was enabled (`ufw enable`). Added real-port detection: first the `--ssh-port` flag, then the effective `sshd -T` config (the `Port` directive and `ListenAddress host:port`, honouring drop-in files in `sshd_config.d`), then the real `sshd` listening sockets via `ss`, then `sshd_config` parsing, and port 22 as the default. UFW now opens every detected SSH port, the pre-enable warning names them explicitly, and the `--yes` mode also detects the port instead of assuming 22.
+- 🆕 **`--ssh-port=PORT` flag** to set the SSH port manually (comma-separated list allowed) for non-standard setups where auto-detection is not desired.
+
+### Tests
+
+- New file `tests/test_ssh_port_detect.bats` (18 tests): port detection from `--ssh-port`, from `sshd -T` (the `Port` directive and `ListenAddress`, IPv4 and bracketed IPv6), union with `ss` sockets, port normalisation and deduplication, UFW rule application in both branches (fresh setup and update), and parity between the RU and EN branches.
+
+### Verification
+
+- Verified on clean servers with SSH on a non-standard port and a `--yes` install: Ubuntu 24.04 (x86_64) and Ubuntu 26.04 (ARM64). UFW opens the right port and server access is preserved.
+
+---
+
+## [5.14.4] - 2026-05-24
+
+**v5.14.4** - small installer refinement: declining UFW activation during an interactive install (answering `N` to "Enable UFW?") now correctly continues the installation. A minor user-choice handling improvement, no architectural changes. Support matrix unchanged: Ubuntu 24.04 / 25.10 / 26.04, Debian 12 / 13, x86_64 + ARM.
+
+### Highlights
+
+- 🔧 **Declining UFW now continues the install correctly** in `install_amneziawg.sh`. As observed by @jay0x on Ubuntu 24.04 ([#89](https://github.com/bivlked/amneziawg-installer/issues/89)): answering `N` to the interactive "Enable UFW?" prompt stopped the installer instead of continuing. Adjusted the decline handling: the UFW rules stay configured (deny incoming, SSH rate limit, VPN port allow, routing) but the firewall is not activated, the install proceeds, and a hint is logged that the server is running without a firewall, along with the command to enable it later (`sudo ufw enable`). With the `--yes` flag the behaviour is unchanged - UFW is enabled automatically. Affects only the interactive path where the user declines the firewall themselves.
+
+### Tests
+
+- New file `tests/test_v5144_ufw_optional.bats` (6 tests): declining UFW continues the install and does not call `ufw enable`; accepting enables UFW; `--yes` mode enables automatically without reading input; structural parity between the RU and EN branches.
+
+---
+
+## [5.14.3] - 2026-05-21
+
+**v5.14.3** - patch release with one fix: `cleanup_system()` no longer calls `apt-get autoremove` after purging `cloud-init`, which on clean Ubuntu 26.04 server in VirtualBox (subiquity, no cloud-init network management) could remove `netplan-generator` as a transitive dependency and leave the server unable to obtain an IP via DHCP after reboot. No architectural changes. Support matrix unchanged: Ubuntu 24.04 / 25.10 / 26.04, Debian 12 / 13, x86_64 + ARM.
+
+### Highlights
+
+- 🛡️ **Network stack protection in `cleanup_system`** in `install_amneziawg.sh`. Reported in [#84](https://github.com/bivlked/amneziawg-installer/issues/84) by @jay0x on a clean Ubuntu 26.04 server in VirtualBox: after the installer the server did not obtain an IP via DHCP. Root cause: an aggressive `apt-get autoremove` after `apt-get purge cloud-init` cascaded into removing `netplan-generator` as a transitive cloud-init dependency. Without `netplan-generator` the `/etc/netplan/00-installer-config.yaml` file (subiquity creates it on ISO installs) was no longer translated into `/run/systemd/network/*.network`, and `systemd-networkd` started with empty configuration. Changes in `cleanup_system()`: the `apt-get autoremove` call is dropped; before any `apt-get purge` an `apt-mark hold` is applied to critical network stack packages (`netplan.io`, `netplan-generator`, `systemd-resolved`, `netcfg`, `ifupdown`) - we first snapshot the user's existing holds via `apt-mark showhold` and only add our own hold on packages the user has not already locked (and on unhold we release strictly the ones we placed); a default-route snapshot is taken before and after cleanup - if the route is lost, the installer attempts recovery (`netplan.io` is reinstalled unconditionally, `netplan-generator` only when it is available in the archive via `apt-cache show`, so Debian 12 - which does not ship that package - does not abort the apt transaction), restart `systemd-networkd`, `netplan apply`, then a wait loop polling the route every 1-5 seconds for up to ~26 seconds; then on failure a last-ditch interface bring-up via `ip link set up`, first `networkctl renew` with a route re-check, then `dhclient -4` if needed, and only then the installer stops with a hint to restore the network from the console (`sudo dhclient -4 <iface>`) and retry the installer with `--no-tweaks`. Orphan packages now stay in the system after `purge` (~50-200 MB) - acceptable trade-off for stability; users can manually run `apt-get autoremove --no-install-recommends` after installation.
+- 🪟 **Ubuntu 26.04 whitelisted in `check_os_version`**. Previously 26.04 fell into the warning branch with an interactive prompt (passed automatically with `--yes`). Now it is recognised as a supported OS alongside 24.04 / 25.10. The release is tested on 26.04 server in VirtualBox after the Issue #84 fix.
+
+### Tests
+
+**+14 new bats** (532 planned in `bats tests/`, up from 518 on v5.14.2):
+
+- `test_v5143_cleanup_no_autoremove.bats` (+14) - functional checks via mocks of `dpkg-query`, `apt-get`, `apt-mark`, `apt-cache`, `ip`, `systemctl`, `netplan`, `networkctl`, `dhclient`, `sleep`: `apt-get autoremove` is never invoked; `apt-mark hold` fires for the netplan and systemd-resolved packages before any `purge` (without `systemd-networkd` - that is not a standalone package on Ubuntu 24+, the binary lives inside `systemd`); pre-existing user apt-mark holds are left alone (our hold/unhold cycle skips them); recovery path when default route is lost (install `netplan.io` unconditionally, `netplan-generator` only behind an `apt-cache show` gate, `netplan apply` + wait loop); last-ditch path after primary recovery fails (`ip link set up` + `networkctl renew` with a route re-check, then `dhclient -4` as fallback); `die` path on total failure with the `--no-tweaks` hint; existing cloud-init guard (three marker checks) preserved. Structural checks: RU/EN line parity of `cleanup_system`, presence of `apt-mark hold` / `unhold` / `die` in both files, absence of a real `apt-get autoremove` line (rationale comments are excluded).
+
+### Compatibility
+
+- **Backward compatible** with v5.14.x. Behaviour on cloud images that carry cloud-init markers (Hetzner, Oracle Cloud) is unchanged. ISO installs of Ubuntu 26.04 in VirtualBox now correctly handle the absence of cloud-init netplan markers.
+- The **`--no-tweaks`** workaround still works but is no longer required for the @jay0x scenario.
+
+### Upgrade
+
+From v5.14.2 to v5.14.3:
+
+```bash
+wget https://raw.githubusercontent.com/bivlked/amneziawg-installer/v5.14.3/install_amneziawg_en.sh
+sudo bash ./install_amneziawg_en.sh --force --yes
+```
+
+Step 5 of the installer pulls the latest `manage_amneziawg.sh` and `awg_common.sh` with SHA256 verification.
+
+Thanks to @jay0x for the detailed repro with `dpkg`, `journalctl`, and `ls /etc/netplan/` output - the root cause would have taken longer to pin without it.
+
+[Full list of changes since v5.14.2](https://github.com/bivlked/amneziawg-installer/compare/v5.14.2...v5.14.3)
+
+---
+
+## [5.14.2] - 2026-05-21
+
+**v5.14.2** - patch release with two small fixes: the `.vpnuri.png` QR is now scannable with a phone camera from a computer screen (long URIs with PSK used to trigger error 900 in AmneziaVPN on iOS), and the ARM .deb build script no longer silently picks the "first" `/lib/modules/*/build` directory on hosts with multiple installed kernels. No architectural changes. Support matrix unchanged: Ubuntu 24.04 / 25.10 / 26.04, Debian 12 / 13, x86_64 + ARM.
+
+### Highlights
+
+- 📱 **`.vpnuri.png` QR is now scannable off a screen**. `awg_common.sh:generate_qr_vpnuri` now invokes `qrencode` with an explicit `-s 6` (the previous default was `3`). This is the real fix: at the default scale the PNG modules were too small for the iPhone camera to resolve when scanning off a computer screen, which produced error 900 ImportInvalidConfigError in AmneziaVPN on iOS for @haritos90 in issue [#72](https://github.com/bivlked/amneziawg-installer/issues/72) (Debian 12 + AmneziaVPN iOS 4.8.15.4). Increasing the module scale does not change QR data capacity - it makes each module physically larger so the camera can distinguish black/white blocks reliably. The current `qrencode` defaults are also pinned explicitly: `-l L` (lowest error-correction level) and `-m 4` (standard quiet zone) - so future default changes in `libqrencode` cannot regress this fix. Pasting the text of `.vpnuri` into the app already worked; the fix restores the primary camera-scan path.
+- 🛠️ **`scripts/build-arm-deb.sh`: explicit `KERNEL_VERSION` + fail on ambiguity**. The ARM .deb builder used to pick the first matching `/lib/modules/*/build` directory through a simple loop; on developer hosts with several installed kernels this could build against an unintended target. An external code review on 8 May raised the risk. Version resolution has been extracted into a `_resolve_kernel_version` helper with three paths: when `KERNEL_VERSION` is set, the helper validates `/lib/modules/$KERNEL_VERSION/build` and uses it; otherwise it counts candidates - zero is an error (unchanged), exactly one is the unambiguous choice (unchanged), two or more produce an explicit failure that lists every found version and asks the caller to set `KERNEL_VERSION`. The AmneziaWG CI matrix is unaffected because each QEMU container installs exactly one headers package; the defensive behaviour is needed when the script runs on user hosts.
+
+### Tests
+
+**+18 new bats** (528 total, up from 510 on v5.14.1):
+
+- `test_v5142_qr_high_density.bats` (+7) - asserts that `qrencode` receives `-l L`, `-s 6`, `-m 4`, that `-t png` is still passed, regression check that the PNG file is still produced from the `.vpnuri` payload, and byte-identical parity of the invocation line between RU and EN.
+- `test_v5142_build_arm_deb.bats` (+11) - functional tests for `_resolve_kernel_version`: exactly one candidate, zero candidates, multiple candidates with an explicit list on stderr, directories without a `build/` subdir ignored; `KERNEL_VERSION` env path (valid, used to disambiguate, missing target dir, empty string falls back to auto-detect); structural checks that the function exists, the source-guard allows safe `source` from tests, and the old inline detection loop is gone from the main body.
+
+### Compatibility
+
+- **Backward compatible** with v5.14.x. Default behaviour is unchanged: `qrencode` still produces `.vpnuri.png`, and on CI hosts with exactly one installed kernel `_resolve_kernel_version` returns the same result as the previous loop.
+- The **workaround** previously required for long QRs (manually copying `.vpnuri` contents into the app) is no longer needed.
+
+### Upgrade
+
+From v5.14.1 to v5.14.2:
+
+```bash
+wget https://raw.githubusercontent.com/bivlked/amneziawg-installer/v5.14.2/install_amneziawg_en.sh
+sudo bash ./install_amneziawg_en.sh --force --yes
+```
+
+Step 5 of the installer pulls the latest `manage_amneziawg.sh` and `awg_common.sh` with SHA256 verification.
+
+[Full list of changes since v5.14.1](https://github.com/bivlked/amneziawg-installer/compare/v5.14.1...v5.14.2)
+
+---
+
+## [5.14.1] - 2026-05-19
+
+**v5.14.1** - patch release: `manage regen` now picks up the MTU from the server `awg0.conf` when regenerating client configs and no longer hardcodes `1280` in the client file. No architectural changes; default behaviour (`MTU = 1280` on the server) is unchanged. Support matrix unchanged: Ubuntu 24.04 / 25.10 / 26.04, Debian 12 / 13, x86_64 + ARM (Raspberry Pi, Oracle Ampere, Hetzner CAX).
+
+### Highlights
+
+- 📐 **MTU sync between server and client configs on `regen`**. Before v5.14.1 both `awg_common.sh:render_client_config` and `render_server_config` hardcoded `MTU = 1280`. If the user hand-edited MTU in `/etc/amnezia/amneziawg/awg0.conf`, `manage_amneziawg.sh regen` still wrote the stale `1280` into the new client `.conf`. MTU resolution is now ordered: value from the `[Interface]` section of server `awg0.conf` (the source of truth for a running server), then `AWG_MTU` from `awgsetup_cfg.init`, then `1280` as fallback. The live-config parser (`load_awg_params` for AWG parameters from awg0.conf) also reads the `MTU = ...` line now and exports `AWG_MTU`. Values outside the sane range `576..9100` at any stage fall back to `1280`. Reported in Discussion [#38](https://github.com/bivlked/amneziawg-installer/discussions/38) by @E-lmedano.
+- 🔧 **Installer: `AWG_MTU` variable** in `awgsetup_cfg.init`. Fresh installs write `AWG_MTU=1280` into the config file; the user can override via environment before running the installer (`AWG_MTU=1380 sudo bash install_amneziawg.sh ...`) and the value is preserved. The variable is also added to the `safe_load_config` whitelist.
+
+### Tests
+
+**+18 new bats** (510 in the matrix, was 492 on v5.14.0):
+
+- `test_v5141_mtu_resolution.bats` (+18) - functional tests for `_extract_mtu_from_server_conf` (valid MTU from `[Interface]`, whitespace around `=`, no MTU, ignored MTU in `[Peer]`, last-wins on duplicates, missing server file, non-numeric value); functional tests for `_validate_mtu` (accepts 1280, boundary 576 and 9100, rejects 0 / -1 / 9101 / 575 / `abc` / empty); structural checks on `render_client_config` (no `MTU = 1280` hardcode, uses `${mtu}` substitution), `render_server_config` (uses `${AWG_MTU:-1280}`); `safe_load_config` whitelist contains `AWG_MTU` in all 4 files; installer writes `AWG_MTU` to `awgsetup_cfg.init` (RU + EN); byte-identical `_extract_mtu_from_server_conf` between RU and EN.
+
+### Compatibility
+
+- **Backwards-compatible** with v5.13.x and v5.14.0. Default scenario behaviour is unchanged: with `MTU = 1280` on the server, `regen` still produces `1280` in the client config.
+- **The previous workaround** (hand-editing `/root/awg/<name>.conf` after `regen`) is no longer needed - regen picks up whatever is in `awg0.conf`.
+
+### Updating
+
+From v5.13.x / v5.14.0 to v5.14.1:
+
+```bash
+wget https://raw.githubusercontent.com/bivlked/amneziawg-installer/v5.14.1/install_amneziawg_en.sh
+sudo bash ./install_amneziawg_en.sh --force --yes
+```
+
+Step 5 of the installer pulls fresh `manage_amneziawg.sh` and `awg_common.sh` with SHA256 verification.
+
+[Full diff against v5.14.0](https://github.com/bivlked/amneziawg-installer/compare/v5.14.0...v5.14.1)
+
+---
+
+## [5.14.0] - 2026-05-19
+
+**v5.14.0** - small feature release: more reliable public IP detection (extra fallback services for AWS / NAT'd cloud) plus a new `manage diagnose` subcommand for one-line self-troubleshooting. Backwards-compatible with v5.13.x installs; no architectural changes. Support matrix unchanged: Ubuntu 24.04 / 25.10 / 26.04, Debian 12 / 13, x86_64 + ARM (Raspberry Pi, Oracle Ampere, Hetzner CAX).
+
+### Highlights
+
+- 🌐 **Extended public IP detection** in `awg_common.sh:get_server_public_ip`. The fallback cascade grew from 4 to 6 services - `api.ipify.org`, `checkip.amazonaws.com`, `icanhazip.com`, `ifconfig.io`, `ifconfig.me`, `ipinfo.io/ip` (alphabetical order, deterministic for diffs and tests). `checkip.amazonaws.com` is reachable from AWS / GCP / OCI private subnets behind a NAT Gateway where `ifconfig.me` can rate-limit; `ifconfig.io` is a backup for `ifconfig.me` downtime. First-wins behaviour preserved: when a service returns a valid IPv4, the rest are skipped. Successful detection is now traced into `/root/awg/install_amneziawg.log` (or the manage log file) - written directly to file, never to stdout, so the function's `$()` capture contract is preserved and the generated client `Endpoint =` line is not corrupted.
+- 🩺 **`manage diagnose [--carrier=NAME]`** - new subcommand for one-line server self-troubleshooting. Without arguments it runs 6 health checks (kernel module loaded / service active / interface UP / sysctl ip_forward / BBR / UFW + AWG port + peer count). With `--carrier=NAME` it additionally compares the current AWG 2.0 obfuscation parameters (Jc / Jmin / Jmax / I1) against a known carrier profile and prints OK/WARN/FAIL per check with a Fix: hint. Seven confirmed carriers from `ADVANCED.en.md` operator matrix: `beeline_msk` (default preset); `yota_msk`, `tele2_msk`, `tattelecom` (mobile preset, random I1); `tele2_krasnoyarsk`, `megafon_regions` (mobile preset, I1 must be absent); `tmobile_us` (binary I1, from Discussion #45). Exit code 1 only on FAIL or unknown carrier; WARN does not change the rc. Bilingual RU + EN.
+- 🔒 **Release signing design** ([docs/SIGNING_DESIGN.md](docs/SIGNING_DESIGN.md), planning only). Threat model, tool choice (minisign over cosign / GPG), signing flow with trusted-comment binding to tag + filename for rollback protection, and a draft `release-sign.yml` workflow that uploads pre-generated `.minisig` files. Activation is gated on the maintainer generating an offline keypair and committing `KEYS.txt` to the repository root; until then the section in `SECURITY.md` describes the planned path.
+
+### Tests
+
+**+37 new bats** (492 in the matrix, was 455 on v5.13.0):
+
+- `test_v5140_public_ip_services.bats` (+11) - structural RU/EN parity on the 6 endpoints, byte-identical service list across RU and EN, alphabetical-order assertions (first = `api.ipify.org`, last = `ipinfo.io/ip`), functional fallthrough (first service success / first fails-second succeeds / all 6 fail / invalid IP format skip / last-in-list success / cache short-circuit).
+- `test_v5140_diagnose.bats` (+16) - structural RU/EN parity on `diagnose_server` and the `_diagnose_carrier_known`, `_diagnose_carrier_list`, `_diag_line` helpers; CLI parser accepts `--carrier=NAME`; command dispatcher wires up `diagnose`; usage help mentions diagnose; functional checks on the carrier map (`beeline_msk` row matches default-preset shape, `tele2_krasnoyarsk` has `i1=absent`, `tmobile_us` has `i1=binary` + Jc=6; unknown carrier returns 1); carrier list has 7 distinct confirmed entries; previously-included unconfirmed `mts_msk` + `megafon_msk` are intentionally removed.
+
+### Compatibility
+
+- **OS**: Ubuntu 24.04 LTS, 25.10, 26.04 (with noble fallback). Debian 12 (bookworm), 13 (trixie).
+- **Arch**: amd64, arm64 (Raspberry Pi 4/5, Oracle Cloud Ampere, Hetzner CAX, AWS Graviton, other ARM VPS).
+- **Russian carriers** matrix in `ADVANCED.en.md`. The new `diagnose --carrier=NAME` recognises 7 confirmed rows; "🔄 testing" rows (Megafon Moscow, MTS Moscow) intentionally excluded until the operator range is confirmed and locked.
+
+### Out of scope
+
+- v5.14.1+: minor cleanups uncovered by post-release feedback.
+- v5.15.x: minisign signature activation (after maintainer keypair generation), per-client CPS profiles (Issue #71), `--preset=mobile-awg1` for I1=none carriers.
+
+[Full diff against v5.13.0](https://github.com/bivlked/amneziawg-installer/compare/v5.13.0...v5.14.0)
+
 ---
 
 ## [5.15.3-bas.2] — 2026-07-15
@@ -66,7 +624,7 @@ sudo bash ./install_amneziawg_en.sh
 
 ### Upgrading an existing server
 
-Run the latest `install_amneziawg.sh` with `--force` (if AmneziaWG is already running) — Step 5 fetches the fresh `manage_amneziawg.sh` and `awg_common.sh` with SHA256 verification. Full commands — [ADVANCED.en.md → Updating the scripts](ADVANCED.en.md#-updating-scripts).
+Run the latest `install_amneziawg.sh` with `--force` (if AmneziaWG is already running) — Step 5 fetches the fresh `manage_amneziawg.sh` and `awg_common.sh` with SHA256 verification. Full commands — [ADVANCED.en.md → Updating the scripts](ADVANCED.en.md#update-scripts-adv).
 
 ### Tests
 
@@ -109,11 +667,11 @@ chmod +x install_amneziawg_en.sh
 sudo bash ./install_amneziawg_en.sh
 ```
 
-3 commands → ~20 minutes → a ready-to-use VPN server with traffic obfuscation. Details — [README → Install](README.en.md#install).
+3 commands → ~20 minutes → a ready-to-use VPN server with traffic obfuscation. Details — [README → Install](README.en.md#installation).
 
 ### Upgrading an existing server
 
-Run a fresh `install_amneziawg_en.sh` — at step 5, `manage_amneziawg.sh` and `awg_common.sh` are updated automatically (with SHA256 verification). Full commands — [ADVANCED.en.md → How to update the scripts](ADVANCED.en.md#-how-to-update-the-scripts).
+Run a fresh `install_amneziawg_en.sh` — at step 5, `manage_amneziawg.sh` and `awg_common.sh` are updated automatically (with SHA256 verification). Full commands — [ADVANCED.en.md → How to update the scripts](ADVANCED.en.md#update-scripts-adv).
 
 ### Tests
 
@@ -198,11 +756,11 @@ chmod +x install_amneziawg_en.sh
 sudo bash ./install_amneziawg_en.sh
 ```
 
-3 commands → ~20 minutes → a working VPN server with traffic obfuscation. Details — [README → Install](README.en.md#install).
+3 commands → ~20 minutes → a working VPN server with traffic obfuscation. Details — [README → Install](README.en.md#installation).
 
 ### Upgrading an existing server
 
-Run the fresh `install_amneziawg_en.sh` — at step 5 `manage_amneziawg.sh` and `awg_common.sh` are refreshed automatically (with SHA256 verification). Full commands — [ADVANCED.en.md → Updating the scripts](ADVANCED.en.md#-updating-the-scripts).
+Run the fresh `install_amneziawg_en.sh` — at step 5 `manage_amneziawg.sh` and `awg_common.sh` are refreshed automatically (with SHA256 verification). Full commands — [ADVANCED.en.md → Updating the scripts](ADVANCED.en.md#update-scripts-adv).
 
 ### Tests
 
@@ -234,11 +792,11 @@ chmod +x install_amneziawg_en.sh
 sudo bash ./install_amneziawg_en.sh
 ```
 
-3 commands → ~20 minutes → a working VPN server with traffic obfuscation. Details — [README → Install](README.en.md#install).
+3 commands → ~20 minutes → a working VPN server with traffic obfuscation. Details — [README → Install](README.en.md#installation).
 
 ### Upgrading an existing server
 
-Run the fresh `install_amneziawg_en.sh` — at step 5 `manage_amneziawg.sh` and `awg_common.sh` are refreshed automatically (with SHA256 verification). Full commands — [ADVANCED.en.md → Updating the scripts](ADVANCED.en.md#-updating-the-scripts).
+Run the fresh `install_amneziawg_en.sh` — at step 5 `manage_amneziawg.sh` and `awg_common.sh` are refreshed automatically (with SHA256 verification). Full commands — [ADVANCED.en.md → Updating the scripts](ADVANCED.en.md#update-scripts-adv).
 
 ### Tests
 
@@ -278,7 +836,7 @@ sudo bash ./install_amneziawg_en.sh
 
 ### Upgrading an existing server
 
-Re-run the latest `install_amneziawg_en.sh` — step 5 refreshes `manage_amneziawg.sh` and `awg_common.sh` automatically (with SHA256 verification). Full commands — [ADVANCED.en.md → How to Update Scripts](ADVANCED.en.md#-how-to-update-scripts).
+Re-run the latest `install_amneziawg_en.sh` — step 5 refreshes `manage_amneziawg.sh` and `awg_common.sh` automatically (with SHA256 verification). Full commands — [ADVANCED.en.md → How to Update Scripts](ADVANCED.en.md#update-scripts-adv).
 
 ### Tests
 
@@ -1022,7 +1580,43 @@ Major security and reliability update after several consecutive code audits. The
 - Diagnostic report (`--diagnostic`).
 - Full uninstall (`--uninstall`).
 
-[Unreleased]: https://github.com/bivlked/amneziawg-installer/compare/v5.10.2...HEAD
+[Unreleased]: https://github.com/bivlked/amneziawg-installer/compare/v5.19.2...HEAD
+[5.19.2-bas.1]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.19.2...v5.19.2-bas.1
+[5.15.3-bas.2]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.15.3-bas.1...v5.15.3-bas.2
+[5.15.3-bas.1]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.15.3...v5.15.3-bas.1
+[5.19.2]: https://github.com/bivlked/amneziawg-installer/compare/v5.19.1...v5.19.2
+[5.19.1]: https://github.com/bivlked/amneziawg-installer/compare/v5.19.0...v5.19.1
+[5.19.0]: https://github.com/bivlked/amneziawg-installer/compare/v5.18.4...v5.19.0
+[5.18.4]: https://github.com/bivlked/amneziawg-installer/compare/v5.18.3...v5.18.4
+[5.18.3]: https://github.com/bivlked/amneziawg-installer/compare/v5.18.2...v5.18.3
+[5.18.2]: https://github.com/bivlked/amneziawg-installer/compare/v5.18.1...v5.18.2
+[5.18.1]: https://github.com/bivlked/amneziawg-installer/compare/v5.18.0...v5.18.1
+[5.18.0]: https://github.com/bivlked/amneziawg-installer/compare/v5.17.0...v5.18.0
+[5.17.0]: https://github.com/bivlked/amneziawg-installer/compare/v5.16.1...v5.17.0
+[5.16.1]: https://github.com/bivlked/amneziawg-installer/compare/v5.16.0...v5.16.1
+[5.16.0]: https://github.com/bivlked/amneziawg-installer/compare/v5.15.6...v5.16.0
+[5.15.6]: https://github.com/bivlked/amneziawg-installer/compare/v5.15.5...v5.15.6
+[5.15.5]: https://github.com/bivlked/amneziawg-installer/compare/v5.15.4...v5.15.5
+[5.15.4]: https://github.com/bivlked/amneziawg-installer/compare/v5.15.3...v5.15.4
+[5.15.3]: https://github.com/bivlked/amneziawg-installer/compare/v5.15.2...v5.15.3
+[5.15.2]: https://github.com/bivlked/amneziawg-installer/compare/v5.15.1...v5.15.2
+[5.15.1]: https://github.com/bivlked/amneziawg-installer/compare/v5.15.0...v5.15.1
+[5.15.0]: https://github.com/bivlked/amneziawg-installer/compare/v5.14.5...v5.15.0
+[5.14.5]: https://github.com/bivlked/amneziawg-installer/compare/v5.14.4...v5.14.5
+[5.14.4]: https://github.com/bivlked/amneziawg-installer/compare/v5.14.3...v5.14.4
+[5.14.3]: https://github.com/bivlked/amneziawg-installer/compare/v5.14.2...v5.14.3
+[5.14.2]: https://github.com/bivlked/amneziawg-installer/compare/v5.14.1...v5.14.2
+[5.14.1]: https://github.com/bivlked/amneziawg-installer/compare/v5.14.0...v5.14.1
+[5.14.0]: https://github.com/bivlked/amneziawg-installer/compare/v5.13.0...v5.14.0
+[5.13.0]: https://github.com/bivlked/amneziawg-installer/compare/v5.12.1...v5.13.0
+[5.12.1]: https://github.com/bivlked/amneziawg-installer/compare/v5.12.0...v5.12.1
+[5.12.0]: https://github.com/bivlked/amneziawg-installer/compare/v5.11.5...v5.12.0
+[5.11.5]: https://github.com/bivlked/amneziawg-installer/compare/v5.11.4...v5.11.5
+[5.11.4]: https://github.com/bivlked/amneziawg-installer/compare/v5.11.3...v5.11.4
+[5.11.3]: https://github.com/bivlked/amneziawg-installer/compare/v5.11.2...v5.11.3
+[5.11.2]: https://github.com/bivlked/amneziawg-installer/compare/v5.11.1...v5.11.2
+[5.11.1]: https://github.com/bivlked/amneziawg-installer/compare/v5.11.0...v5.11.1
+[5.11.0]: https://github.com/bivlked/amneziawg-installer/compare/v5.10.2...v5.11.0
 [5.10.2]: https://github.com/bivlked/amneziawg-installer/compare/v5.10.1...v5.10.2
 [5.10.1]: https://github.com/bivlked/amneziawg-installer/compare/v5.10.0...v5.10.1
 [5.10.0]: https://github.com/bivlked/amneziawg-installer/compare/v5.9.0...v5.10.0

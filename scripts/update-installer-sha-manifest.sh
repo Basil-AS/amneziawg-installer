@@ -4,13 +4,18 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 
+PYTHON_BIN="${PYTHON_BIN:-python3}"
+if ! command -v "$PYTHON_BIN" >/dev/null 2>&1 || ! "$PYTHON_BIN" -c 'import pathlib' >/dev/null 2>&1; then
+    PYTHON_BIN=python
+fi
+
 sha() {
     sha256sum "$1" | awk '{print $1}'
 }
 
 replace_sha() {
     local file="$1" key="$2" value="$3"
-    python3 - "$file" "$key" "$value" <<'PY'
+    "$PYTHON_BIN" - "$file" "$key" "$value" <<'PY'
 import re
 import sys
 from pathlib import Path
