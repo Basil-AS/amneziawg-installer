@@ -1829,16 +1829,16 @@ list_clients() {
                         [[ "$NO_COLOR" -eq 0 ]] && color_start="\033[0;33m"
                         ((act++))
                     else
-                        st="Нет handshake"; st_code="no_handshake"
+                        st="Нет handshake"
                         [[ "$NO_COLOR" -eq 0 ]] && color_start="\033[0;37m"
                     fi
                 else
-                    st="Нет handshake"; st_code="no_handshake"
+                    st="Нет handshake"
                     [[ "$NO_COLOR" -eq 0 ]] && color_start="\033[0;37m"
                 fi
             else
                 pk="?"
-                st="Ошибка ключа"; st_code="key_error"
+                st="Ошибка ключа"
                 [[ "$NO_COLOR" -eq 0 ]] && color_start="\033[0;31m"
             fi
         fi
@@ -2810,10 +2810,6 @@ case $COMMAND in
                 _cmd_rc=1
                 ;;
         esac
-        ;;
-
-    diagnose)
-        diagnose_server || _cmd_rc=1
         ;;
 
     # Ветки help) здесь нет намеренно: все пути, выставляющие COMMAND="help"

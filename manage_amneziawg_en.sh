@@ -1839,16 +1839,16 @@ list_clients() {
                         [[ "$NO_COLOR" -eq 0 ]] && color_start="\033[0;33m"
                         ((act++))
                     else
-                        st="No handshake"; st_code="no_handshake"
+                        st="No handshake"
                         [[ "$NO_COLOR" -eq 0 ]] && color_start="\033[0;37m"
                     fi
                 else
-                    st="No handshake"; st_code="no_handshake"
+                    st="No handshake"
                     [[ "$NO_COLOR" -eq 0 ]] && color_start="\033[0;37m"
                 fi
             else
                 pk="?"
-                st="Key error"; st_code="key_error"
+                st="Key error"
                 [[ "$NO_COLOR" -eq 0 ]] && color_start="\033[0;31m"
             fi
         fi
@@ -2345,10 +2345,6 @@ case $COMMAND in
 
     stats)
         stats_clients || _cmd_rc=1
-        ;;
-
-    diagnose)
-        diagnose_server || _cmd_rc=1
         ;;
 
     voice-check|udp-check)
