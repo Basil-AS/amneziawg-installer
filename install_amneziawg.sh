@@ -46,7 +46,7 @@ declare -A AWG_ASSET_SHA256=(
     ["web/vendor/apexcharts.min.js"]="a7400cd48b40b4f39d1c15137ae0cc8cbec31dc2b55a606640f1cd11912416dd"
     ["scripts/update_geoip_dbs.py"]="7ca3db88709a7ba8aed79b57c1f7aba834a80c57cacd513604ef2a68582513e3"
     ["scripts/update-installed.sh"]="f9857a9b4ccd43b3741b2140c7676a935cab261ea87c2d4f9895ae6658e81318"
-    ["scripts/migrate-tunnel-subnet.sh"]="d73778e320e5f77457b28e4b62301dee322190080e60aa12a76715c5e0133632"
+    ["scripts/migrate-tunnel-subnet.sh"]="2a4a7c6ff03ca00ff1469cfc1a78bf9929b0ee00c2abd28e9ece77cb8a7d57aa"
 )
 
 # Флаги CLI
