@@ -1,5 +1,6 @@
 #!/usr/bin/env bats
 setup_file() { skip "Superseded by fork AWG_IPV6_* mode contract; covered by fork IPv6/NDP tests."; }
+# shellcheck disable=SC2034
 # v5.19.0 - host_lacks_ipv4_egress() IPv6-only egress detection (issue #166).
 #
 # On an IPv6-only VPS (Timeweb / Ubuntu 26.04) get_main_nic now succeeds via the

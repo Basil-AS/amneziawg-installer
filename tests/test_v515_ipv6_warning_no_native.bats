@@ -1,5 +1,6 @@
 #!/usr/bin/env bats
 setup_file() { skip "Superseded by fork AWG_IPV6_* mode contract; covered by fork IPv6/NDP tests."; }
+# shellcheck disable=SC2034
 # Phase 3 (v5.15.0): when --allow-ipv6-tunnel is requested on a VPS without
 # native IPv6, configure_ipv6_tunnel() must log a warning and continue (not die),
 # and SERVER_HAS_NATIVE_IPV6=0 must be recorded.

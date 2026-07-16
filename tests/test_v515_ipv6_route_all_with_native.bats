@@ -1,5 +1,6 @@
 #!/usr/bin/env bats
 setup_file() { skip "Superseded by fork AWG_IPV6_* mode contract; covered by fork IPv6/NDP tests."; }
+# shellcheck disable=SC2034
 # Phase 4 (review finding 4.6) - render_client_config with native IPv6:
 # SERVER_HAS_NATIVE_IPV6=1 must produce AllowedIPs = 0.0.0.0/0, ::/0
 # and a dual-stack Address line.
