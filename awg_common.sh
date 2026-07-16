@@ -82,7 +82,7 @@ install_nginx_awg0_wait_dropin() {
     local tmp
 
     [[ "$iface" =~ ^[A-Za-z0-9_.:-]+$ ]] || { log_error "Некорректный VPN interface для nginx wait drop-in: $iface"; return 1; }
-    [[ "$bind_ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || { log_error "Некорректный IPv4 bind address для nginx wait drop-in: $bind_ip"; return 1; }
+    _valid_ipv4 "$bind_ip" || { log_error "Некорректный IPv4 bind address для nginx wait drop-in: $bind_ip"; return 1; }
     [[ "$timeout" =~ ^[0-9]+$ && "$timeout" -ge 1 && "$timeout" -le 600 ]] || { log_error "Некорректный timeout для nginx wait drop-in: $timeout"; return 1; }
 
     mkdir -p "$dropin_dir" || { log_error "Ошибка создания $dropin_dir"; return 1; }
@@ -3543,6 +3543,7 @@ generate_qr_vpnuri() {
         return 1
     fi
 
+    tmp_png=$(awg_mktemp "$AWG_DIR") || { log_error "Ошибка mktemp для QR vpn:// '$name'"; return 1; }
     if ! qrencode -t png -l L -s 6 -m 4 -o "$tmp_png" < "$uri_file"; then
         log_error "Ошибка генерации QR vpn:// для '$name'"
         rm -f "$tmp_png"

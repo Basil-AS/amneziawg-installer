@@ -78,7 +78,7 @@ install_nginx_awg0_wait_dropin() {
     local tmp
 
     [[ "$iface" =~ ^[A-Za-z0-9_.:-]+$ ]] || { log_error "Invalid VPN interface for nginx wait drop-in: $iface"; return 1; }
-    [[ "$bind_ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || { log_error "Invalid IPv4 bind address for nginx wait drop-in: $bind_ip"; return 1; }
+    _valid_ipv4 "$bind_ip" || { log_error "Invalid IPv4 bind address for nginx wait drop-in: $bind_ip"; return 1; }
     [[ "$timeout" =~ ^[0-9]+$ && "$timeout" -ge 1 && "$timeout" -le 600 ]] || { log_error "Invalid timeout for nginx wait drop-in: $timeout"; return 1; }
 
     mkdir -p "$dropin_dir" || { log_error "Failed to create $dropin_dir"; return 1; }
@@ -3407,7 +3407,6 @@ generate_client() {
         CLIENT_PSK=$(awg genpsk) || {
             log_error "awg genpsk failed; client NOT created (refusing a PSK-less client)"
             _rollback_client_artifacts "$name"
-            exec {lock_fd}>&-
             return 1
         }
     fi
