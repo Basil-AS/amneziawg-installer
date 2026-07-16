@@ -118,7 +118,7 @@ EOF
         grep -qF "PrivateKey = preserved-client-secret" "$WORK_DIR/stage$AWG_DIR/linux.conf"
         grep -qF "AllowedIPs = 10.9.10.4/32, 2a09:9340:808:4::4/128" "$WORK_DIR/stage$SERVER_CONF_FILE"
         grep -qF "10.9.10.0/24" "$WORK_DIR/stage$AWG_DIR/web/access_policy.json"
-        [[ "$(awk -F"\t" "{total += \$2} END {print total}" "$WORK_DIR/replacements.tsv")" -eq 9 ]]
+        [[ "$(awk -F"\t" "{total += \$2} END {print total}" "$WORK_DIR/replacements.tsv")" -eq 7 ]]
         rm -rf "$WORK_DIR"
     ' _ "$fixture" "$BATS_TEST_DIRNAME/../scripts/migrate-tunnel-subnet.sh"
     [ "$status" -eq 0 ]
@@ -140,6 +140,8 @@ EOF
     local script="$BATS_TEST_DIRNAME/../scripts/migrate-tunnel-subnet.sh"
     grep -qF '"health_history", "geoip"' "$script"
     grep -qF '".jsonl", ".log", ".mmdb"' "$script"
+    grep -qF 'name.startswith(".codex-pre-")' "$script"
+    grep -qF '".md", ".txt", ".bats", ".sh"' "$script"
 }
 
 @test "migration plan computes network labels without stdin script confusion" {
