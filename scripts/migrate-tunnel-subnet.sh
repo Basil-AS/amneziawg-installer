@@ -83,11 +83,11 @@ PY
 }
 
 old_network() {
-    python3 - "$OLD_SUBNET" -c 'import ipaddress,sys; print(ipaddress.ip_interface(sys.argv[1]).network)'
+    python3 -c 'import ipaddress,sys; print(ipaddress.ip_interface(sys.argv[1]).network)' "$OLD_SUBNET"
 }
 
 new_network() {
-    python3 - "$NEW_SUBNET" -c 'import ipaddress,sys; print(ipaddress.ip_interface(sys.argv[1]).network)'
+    python3 -c 'import ipaddress,sys; print(ipaddress.ip_interface(sys.argv[1]).network)' "$NEW_SUBNET"
 }
 
 old_gateway() { printf '%s\n' "${OLD_SUBNET%/*}"; }

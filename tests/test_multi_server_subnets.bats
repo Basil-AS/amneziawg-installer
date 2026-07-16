@@ -141,3 +141,9 @@ EOF
     grep -qF '"health_history", "geoip"' "$script"
     grep -qF '".jsonl", ".log", ".mmdb"' "$script"
 }
+
+@test "migration plan computes network labels without stdin script confusion" {
+    local script="$BATS_TEST_DIRNAME/../scripts/migrate-tunnel-subnet.sh"
+    grep -qF "python3 -c 'import ipaddress,sys; print(ipaddress.ip_interface(sys.argv[1]).network)' \"\$OLD_SUBNET\"" "$script"
+    grep -qF "python3 -c 'import ipaddress,sys; print(ipaddress.ip_interface(sys.argv[1]).network)' \"\$NEW_SUBNET\"" "$script"
+}
