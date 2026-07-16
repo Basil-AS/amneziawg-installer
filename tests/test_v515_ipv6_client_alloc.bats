@@ -1,6 +1,6 @@
 #!/usr/bin/env bats
-setup_file() { skip "Superseded by fork AWG_IPV6_* mode contract; covered by fork IPv6/NDP tests."; }
 # shellcheck disable=SC2034
+setup_file() { skip "Superseded by fork AWG_IPV6_* mode contract; covered by fork IPv6/NDP tests."; }
 # Phase 4 - get_next_client_ipv6: deterministic IPv6 from IPv4 last-octet.
 #
 # Verifies that get_next_client_ipv6 returns the expected ULA address for

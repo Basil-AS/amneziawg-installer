@@ -1,6 +1,6 @@
 #!/usr/bin/env bats
-setup_file() { skip "Superseded by fork AWG_IPV6_* mode contract; covered by fork IPv6/NDP tests."; }
 # shellcheck disable=SC2034
+setup_file() { skip "Superseded by fork AWG_IPV6_* mode contract; covered by fork IPv6/NDP tests."; }
 # Phase 4 (review finding 4.6) - render_client_config without native IPv6:
 # SERVER_HAS_NATIVE_IPV6=0 must produce AllowedIPs = 0.0.0.0/0, <IPV6_SUBNET>
 # (tunnel-subnet only, NOT ::/0, to avoid IPv6 blackhole on the internet).

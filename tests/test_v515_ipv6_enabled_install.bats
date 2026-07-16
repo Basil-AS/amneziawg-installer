@@ -1,6 +1,6 @@
 #!/usr/bin/env bats
-setup_file() { skip "Superseded by fork AWG_IPV6_* mode contract; covered by fork IPv6/NDP tests."; }
 # shellcheck disable=SC2034
+setup_file() { skip "Superseded by fork AWG_IPV6_* mode contract; covered by fork IPv6/NDP tests."; }
 # Phase 3 (v5.15.0): render_server_config produces a dual-stack [Interface]
 # Address and activates the ip6tables PostUp/PostDown rules when the IPv6
 # tunnel is enabled (ALLOW_IPV6_TUNNEL=1).

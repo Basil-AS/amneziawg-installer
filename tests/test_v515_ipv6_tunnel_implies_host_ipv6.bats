@@ -1,6 +1,6 @@
 #!/usr/bin/env bats
-setup_file() { skip "Superseded by fork AWG_IPV6_* mode contract; covered by fork IPv6/NDP tests."; }
 # shellcheck disable=SC2034
+setup_file() { skip "Superseded by fork AWG_IPV6_* mode contract; covered by fork IPv6/NDP tests."; }
 # Invariant guard: --allow-ipv6-tunnel forces host IPv6 forwarding on.
 # When ALLOW_IPV6_TUNNEL=1 and DISABLE_IPV6=1, configure_ipv6_tunnel()
 # must override DISABLE_IPV6 to 0.

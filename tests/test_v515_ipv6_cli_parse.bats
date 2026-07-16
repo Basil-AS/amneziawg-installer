@@ -1,6 +1,6 @@
 #!/usr/bin/env bats
-setup_file() { skip "Superseded by fork AWG_IPV6_* mode contract; covered by fork IPv6/NDP tests."; }
 # shellcheck disable=SC2034
+setup_file() { skip "Superseded by fork AWG_IPV6_* mode contract; covered by fork IPv6/NDP tests."; }
 # Regression guard: --allow-ipv6-tunnel flag is parsed in both installers.
 # Tests configure_ipv6_tunnel() function behavior via extracted function.
 # shellcheck disable=SC2034,SC2154

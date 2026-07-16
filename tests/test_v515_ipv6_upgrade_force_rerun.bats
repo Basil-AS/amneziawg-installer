@@ -1,6 +1,6 @@
 #!/usr/bin/env bats
-setup_file() { skip "Superseded by fork AWG_IPV6_* mode contract; covered by fork IPv6/NDP tests."; }
 # shellcheck disable=SC2034
+setup_file() { skip "Superseded by fork AWG_IPV6_* mode contract; covered by fork IPv6/NDP tests."; }
 # Phase 4 (review finding 4.7) - upgrade / force-rerun scenario.
 #
 # Verifies that an existing IPv4-only peer in awg0.conf is NOT automatically
