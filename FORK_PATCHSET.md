@@ -2,7 +2,10 @@
 
 This repository is a fork of `bivlked/amneziawg-installer`.
 
-Current upstream sync marker is `5.15.3` (`upstream/main` short hash `13203c6`) with selected upstream fixes manually ported on top of the fork; this file is the fork-delta map for future sync work.
+Current upstream sync marker is `5.19.2` (`upstream/main` short hash `134553d`).
+The fork tree is ancestry-synchronized with upstream (`0` commits behind) while
+retaining the documented BAS runtime delta; this file is the fork-delta map for
+future sync work.
 
 Fork releases use `<upstream-sync>-bas.<revision>`. Current fork version is `5.19.2-bas.1`; `bas.N` increments for fork-only releases and resets to `bas.1` when the upstream sync marker changes. This sync marker now corresponds to the complete upstream `v5.19.2` history plus the fork delta.
 
@@ -28,6 +31,32 @@ Fork releases use `<upstream-sync>-bas.<revision>`. Current fork version is `5.1
 - `5.14.2`: ARM build `_resolve_kernel_version`, preserving fork atomic xz hardening.
 - `5.14.3`: `cleanup_system` network safety: no cleanup autoremove, network package holds, default route check and recovery.
 - `5.14.5`: `detect_ssh_ports` and UFW SSH lockout guard, adapted to keep fork Web/AdGuard firewall rules. The fork also includes the current `SSH_CONNECTION` server port as a safety source when available.
+
+## Residual tree delta against upstream v5.19.2
+
+At the synchronized heads (`origin/main` and `upstream/main`), a direct tree
+comparison reports 130 differing paths: 80 modified and 50 deleted on the fork
+side. These are not unreviewed upstream drift:
+
+- `web/**` and its tests are fork-only HTTPS/RBAC/AdGuard/GeoIP functionality;
+  upstream does not provide an equivalent runtime, so replacing it would remove
+  user-facing features and security boundaries.
+- `scripts/migrate-tunnel-subnet.sh`, `scripts/update-installed.sh`, and related
+  tests are fork-only operational safety tooling; they are required for the BAS
+  server fleet and have independent CI coverage.
+- `awg_common*.sh`, `install_amneziawg*.sh`, and `manage_amneziawg*.sh` are
+  intentionally modified rather than copied: the fork keeps upstream CIDR,
+  kernel, route and command-surface fixes while adding the runtime contracts
+  listed above in both RU and EN.
+- Upstream-only documentation, cascade assets, and tests that target the
+  upstream command surface remain represented through the ancestry merge; tests
+  incompatible with the fork API are explicitly skipped with reasons in their
+  Bats files, while fork-native regressions remain active.
+
+Reconciliation rule: every future upstream sync must first compare this tree
+delta, then port compatible fixes into both language branches and add/retain a
+fork-native regression test. A raw `ours` merge is not considered sufficient
+without this review.
 
 ## Upstream Sync Notes
 
