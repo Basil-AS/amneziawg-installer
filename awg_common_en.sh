@@ -116,6 +116,33 @@ fi
 # Утилиты
 # ==============================================================================
 
+# IP/CIDR validators shared by installer and manager.
+_valid_ipv4() {
+    local ip="$1" o
+    [[ "$ip" =~ ^([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})$ ]] || return 1
+    for o in "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}" "${BASH_REMATCH[4]}"; do ((10#$o <= 255)) || return 1; done
+}
+_valid_ipv6() {
+    local ip="$1" p ngroups=0 has_dcolon=0
+    [[ "$ip" =~ ^[0-9A-Fa-f:]+$ ]] || return 1
+    case "$ip" in *:::*|*::*::*) return 1 ;; esac
+    [[ "$ip" == :* && "$ip" != ::* ]] && return 1; [[ "$ip" == *: && "$ip" != *:: ]] && return 1
+    [[ "$ip" == *::* ]] && has_dcolon=1
+    local IFS=':' parts=(); read -ra parts <<< "$ip"
+    for p in "${parts[@]}"; do [[ -z "$p" ]] && continue; [[ "$p" =~ ^[0-9A-Fa-f]{1,4}$ ]] || return 1; ((ngroups++)); done
+    if ((has_dcolon)); then ((ngroups <= 7)) || return 1; else ((ngroups == 8)) || return 1; fi
+}
+_valid_cidr() {
+    local tok="$1" addr prefix
+    if [[ "$tok" == */* ]]; then addr="${tok%/*}"; prefix="${tok##*/}"; [[ "$prefix" =~ ^[0-9]+$ ]] || return 1; else addr="$tok"; prefix=""; fi
+    if _valid_ipv4 "$addr"; then [[ -z "$prefix" ]] || ((10#$prefix <= 32)); elif _valid_ipv6 "$addr"; then [[ -z "$prefix" ]] || ((10#$prefix <= 128)); else return 1; fi
+}
+_valid_host_or_ipv4() {
+    local host="$1"; _valid_ipv4 "$host" && return 0
+    [[ "$host" =~ ^([A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)(\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)*$ ]] || return 1
+    [[ "${host##*.}" =~ ^[0-9]+$ ]] && return 1
+}
+
 # Определение основного сетевого интерфейса
 get_main_nic() {
     ip route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="dev") print $(i+1); exit}'
@@ -3050,6 +3077,7 @@ generate_qr() {
     local name="$1"
     local conf_file="$AWG_DIR/${name}.conf"
     local png_file="$AWG_DIR/${name}.png"
+    local tmp_png
 
     if [[ ! -f "$conf_file" ]]; then
         log_error "Конфиг клиента '$name' не найден: $conf_file"
@@ -3061,12 +3089,15 @@ generate_qr() {
         return 1
     fi
 
-    qrencode -t png -o "$png_file" < "$conf_file" || {
+    tmp_png=$(awg_mktemp "$AWG_DIR") || return 1
+    qrencode -t png -o "$tmp_png" < "$conf_file" || {
         log_error "Ошибка генерации QR-кода для '$name'"
+        rm -f "$tmp_png"
         return 1
     }
 
-    chmod 600 "$png_file"
+    chmod 600 "$tmp_png" || { rm -f "$tmp_png"; return 1; }
+    mv -f "$tmp_png" "$png_file" || { rm -f "$tmp_png"; return 1; }
     log_debug "QR-код для '$name' создан: $png_file"
     return 0
 }
@@ -3347,7 +3378,7 @@ generate_client() {
         # Fail-closed; no artifacts exist yet (keys/config are created below), so
         # no rollback is needed.
         CLIENT_PSK=$(awg genpsk) || {
-            log_error "awg genpsk failed; refusing to create a PSK-less client"
+            log_error "awg genpsk failed; client NOT created (refusing a PSK-less client)"
             _rollback_client_artifacts "$name"
             exec {lock_fd}>&-
             return 1
@@ -4729,8 +4760,7 @@ check_expired_clients() {
         if [[ $now -ge $expires_at ]]; then
             log "Клиент '$name' истёк. Удаление..."
             if remove_peer_from_server "$name" 2>/dev/null; then
-                rm -f "$AWG_DIR/$name.conf" "$AWG_DIR/$name.png" "$AWG_DIR/$name.vpnuri"
-                rm -f "$KEYS_DIR/${name}.private" "$KEYS_DIR/${name}.public"
+                _remove_client_files "$name"
                 rm -f "$efile"
                 log "Клиент '$name' удалён (истёк)."
                 ((removed++))
