@@ -140,7 +140,8 @@ EOF
     local script="$BATS_TEST_DIRNAME/../scripts/migrate-tunnel-subnet.sh"
     grep -qF '"health_history", "geoip"' "$script"
     grep -qF '".jsonl", ".log", ".mmdb"' "$script"
-    grep -qF 'name.startswith(".codex-pre-")' "$script"
+    grep -qF '".codex-pre-" in name' "$script"
+    grep -qF '"health_history", "geoip", "tests"' "$script"
     grep -qF '".md", ".txt", ".bats", ".sh"' "$script"
 }
 

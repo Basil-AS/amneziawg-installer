@@ -117,7 +117,7 @@ old = ipaddress.ip_interface(sys.argv[1]).network
 roots = [pathlib.Path(item) for item in sys.argv[2:]]
 excluded_dirs = {
     ".git", "backups", "backup", "logs", "log", "updates", ".update-work",
-    "health_history", "geoip",
+    "health_history", "geoip", "tests",
 }
 excluded_suffixes = {
     ".gz", ".xz", ".zip", ".tar", ".png", ".jpg", ".jpeg", ".gif", ".deb",
@@ -134,7 +134,7 @@ for root in roots:
             path = pathlib.Path(current, name)
             if (
                 path.is_symlink()
-                or name.startswith(".codex-pre-")
+                or ".codex-pre-" in name
                 or name == "migrate-tunnel-subnet.sh"
                 or path.suffix.lower() in excluded_suffixes
             ):
