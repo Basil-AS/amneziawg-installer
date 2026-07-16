@@ -621,7 +621,7 @@ check_web_port_availability() {
         if [[ "$AUTO_YES" -eq 0 && -z "$CLI_WEB_PORT" && "$ENV_AWG_WEB_PORT_SET" -eq 0 ]]; then
             local fallback
             read -rp "Порт 443/tcp занят. Использовать 8443 вместо 443? [y/N]: " fallback < /dev/tty
-            if [[ "$fallback" =~ ^[Yy]$ ]]; then
+            if [[ "$fallback" =~ ^[[:space:]]*[Yy]([Ee][Ss])?[[:space:]]*$ ]]; then
                 AWG_WEB_PORT=8443
                 return 0
             fi
@@ -797,8 +797,8 @@ validate_port_user() {
     # в арифметике и проскакивает проверку диапазона) и ограничивает длину: без
     # лимита 64-битная арифметика (( )) переполняется и 2^64+51820 проходил бы
     # range-check. Сравнение - на чистом decimal.
-    if ! [[ "$port" =~ ^[1-9][0-9]{0,4}$ ]] || (( port > 65535 )); then
-        die "Некорректный порт: '$port'. Допустимый диапазон: 1-65535."
+    if ! [[ "$port" =~ ^[1-9][0-9]{0,4}$ ]] || (( port < 1024 || port > 65535 )); then
+        die "Некорректный порт: '$port'. Допустимый диапазон: 1024-65535."
     fi
 }
 
@@ -5113,7 +5113,7 @@ preflight_letsencrypt_domain() {
             return 1
         fi
         read -rp "Продолжить попытку Let's Encrypt несмотря на DNS mismatch? [y/N]: " confirm < /dev/tty
-        [[ "$confirm" =~ ^[Yy]$ ]]
+        [[ "$confirm" =~ ^[[:space:]]*[Yy]([Ee][Ss])?[[:space:]]*$ ]]
         return $?
     fi
     log "DNS preflight: $domain -> $resolved"
