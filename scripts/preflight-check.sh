@@ -199,7 +199,7 @@ done
 # Заголовки-комментарии версии во всех 6 скриптах (# Версия: / # Version:).
 # awg_common*.sh не имеют SCRIPT_VERSION-переменной, только этот заголовок.
 for f in "${SCRIPTS[@]}"; do
-    hv=$(grep -m1 -oE '^# (Версия|Version):[[:space:]]*[0-9]+\.[0-9]+\.[0-9]+' "$f" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+$')
+    hv=$(grep -m1 -oE '^# (Версия|Version):[[:space:]]*[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.]+)?' "$f" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.]+)?$')
     if [[ "$hv" != "$ref_ver" ]]; then
         echo "$f version header='$hv' != '$ref_ver'" >&2
         ver_fail=1
