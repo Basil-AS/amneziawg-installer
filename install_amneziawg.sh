@@ -9,7 +9,7 @@ fi
 # ==============================================================================
 # Скрипт для установки и настройки AmneziaWG 2.0 на Ubuntu/Debian серверах
 # Автор: @bivlked
-# Версия: 5.19.2-bas.2
+# Версия: 5.19.2-bas.3
 # Дата: 2026-05-13
 # Репозиторий: https://github.com/bivlked/amneziawg-installer
 # ==============================================================================
@@ -17,7 +17,7 @@ fi
 # --- Безопасный режим и Константы ---
 set -o pipefail
 
-SCRIPT_VERSION="5.19.2-bas.2"
+SCRIPT_VERSION="5.19.2-bas.3"
 AWG_DIR="/root/awg"
 INSTALLER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)"
 CONFIG_FILE="$AWG_DIR/awgsetup_cfg.init"
@@ -34,8 +34,8 @@ MANAGE_SCRIPT_PATH="$AWG_DIR/manage_amneziawg.sh"
 # используются первыми; remote download разрешён только с pinned SHA256 либо
 # при явном AWG_ALLOW_UNVERIFIED_DOWNLOAD=1 для разработки.
 declare -A AWG_ASSET_SHA256=(
-    ["awg_common.sh"]="cea6cdce80cf6527c2f642f19a3f22eb725bed7dd82d06d2a526de806aac06c2"
-    ["manage_amneziawg.sh"]="0f2a1540c66a13ae6586e78ba8d90fda6e70fbcf69bf8e7952aeb0412f05f706"
+    ["awg_common.sh"]="7da314760592567f63902a2884b4dd0e70036667bc0ec547810708eb5ee47721"
+    ["manage_amneziawg.sh"]="b5a1c8dbde8e9944342dae5ff0d9b57cb0cdb2c3f544be5365f9e917a5537b96"
     ["web/server.py"]="279c5bf134d86668f734981f53976c3b86ef97067d72c28ddbde9b4ace19d7c3"
     ["web/index.html"]="7c07ed1d1991e08c0f9fc31e86ed8eb2bba5fa96387088f1f18918396cf7e662"
     ["web/app.js"]="2bff893e8c6733850d4944371ed0821167be4ea96e075f1ef3c5f890831b1154"

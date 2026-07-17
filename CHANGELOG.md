@@ -12,6 +12,13 @@
 
 ## [Unreleased]
 
+## [5.19.2-bas.3] - 2026-07-17
+
+### Added
+
+- Optional Telegram control-plane microservice with admin RBAC, user registration, dual Finland/Germany token bindings, panel API connectors, and restricted SSH fallback.
+- Safe installer integration, systemd deployment unit, and bilingual documentation.
+
 ## [5.19.2-bas.2] - 2026-07-16
 
 ### Исправлено
@@ -1587,7 +1594,8 @@ Hardening-фиксы надёжности и безопасности по ре�
 - Диагностический отчет (`--diagnostic`).
 - Полная деинсталляция (`--uninstall`).
 
-[Unreleased]: https://github.com/bivlked/amneziawg-installer/compare/v5.19.2...HEAD
+[Unreleased]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.19.2-bas.3...HEAD
+[5.19.2-bas.3]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.19.2-bas.2...v5.19.2-bas.3
 [5.19.2-bas.2]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.19.2-bas.1...v5.19.2-bas.2
 [5.19.2-bas.1]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.19.2...v5.19.2-bas.1
 [5.15.3-bas.2]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.15.3-bas.1...v5.15.3-bas.2
