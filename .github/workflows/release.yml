@@ -65,6 +65,8 @@ jobs:
         id: changelog
         run: |
           VERSION="${GITHUB_REF#refs/tags/v}"
+          ESCAPED="${VERSION//./\\.}"
+          TITLE="AmneziaWG installer v${VERSION}"
 
           FILE_VERSION="$(tr -d '\r\n' < VERSION)"
           if [[ "$FILE_VERSION" != "$VERSION" ]]; then
