@@ -1260,7 +1260,7 @@ class MiniAppServer:
                     # read-only data views. Diagnostics, logs, token lists and
                     # mutations require the administrator identity below.
                     read_actions = {"status", "snapshot", "clients", "regenerate", "access-link", "client-toggle", "p2p-toggle", "ports-toggle", "remove"}
-                    admin_actions = read_actions | {"restart", "add", "remove", "regenerate"}
+                    admin_actions = read_actions | {"restart", "add", "remove", "regenerate", "health", "health-history", "latency", "provider-traffic", "geoip-status", "geoip-providers", "geoip-databases", "nettest-reports", "web-policy", "web-cert", "update", "update-check", "update-apply"}
                     admin_id = int(os.environ.get("ADMIN_CHAT_ID", "0"))
                     is_admin = int(user["id"]) == admin_id
                     if action not in (admin_actions if is_admin else read_actions):
