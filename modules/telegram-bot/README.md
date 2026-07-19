@@ -21,6 +21,9 @@ User: `/me`, `/servers`, `/menu`, `/help`.
 
 The bot uses the compact `/api/bot/snapshot` endpoint for status and client
 views. Requests to both panels run concurrently and read-only snapshots are
-cached for five seconds. Inline buttons are available from `/start` or
-`/menu`. Configure `var/panels.json` with one bearer token per panel to avoid
-the slower restricted-SSH compatibility fallback.
+cached for five seconds. `/start` opens the persistent bottom keyboard and an
+inline main menu; tapping a button sends a callback (it does not create a
+manual `/command` message). The callback is acknowledged immediately and
+supports a separate administrator submenu for diagnostics. `/menu` remains a
+text fallback. Configure `var/panels.json` with one bearer token per panel to
+avoid the slower restricted-SSH compatibility fallback.
