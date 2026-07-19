@@ -103,13 +103,14 @@ class Server:
     port: str
     user: str
     identity: str
+    web_port: str
 
 
 class ServerManager:
     def __init__(self) -> None:
         self.servers = {
-            "finland": Server("finland", "Sunny-Finland", os.getenv("FINLAND_SSH_HOST", ""), os.getenv("FINLAND_SSH_PORT", "22"), os.getenv("FINLAND_SSH_USER", "root"), os.getenv("FINLAND_SSH_IDENTITY", "")),
-            "germany": Server("germany", "Sunny-German", os.getenv("GERMANY_SSH_HOST", ""), os.getenv("GERMANY_SSH_PORT", "22"), os.getenv("GERMANY_SSH_USER", "root"), os.getenv("GERMANY_SSH_IDENTITY", "")),
+            "finland": Server("finland", "Sunny-Finland", os.getenv("FINLAND_SSH_HOST", ""), os.getenv("FINLAND_SSH_PORT", "22"), os.getenv("FINLAND_SSH_USER", "root"), os.getenv("FINLAND_SSH_IDENTITY", ""), os.getenv("FINLAND_WEB_PORT", "8443")),
+            "germany": Server("germany", "Sunny-German", os.getenv("GERMANY_SSH_HOST", ""), os.getenv("GERMANY_SSH_PORT", "22"), os.getenv("GERMANY_SSH_USER", "root"), os.getenv("GERMANY_SSH_IDENTITY", ""), os.getenv("GERMANY_WEB_PORT", "443")),
         }
 
     def tunnel_argv(self, key: str, local_port: int) -> list[str] | None:
@@ -120,7 +121,7 @@ class ServerManager:
             "ssh", "-N", "-T", "-o", "BatchMode=yes", "-o", "ExitOnForwardFailure=yes",
             "-o", "ServerAliveInterval=30", "-o", "ServerAliveCountMax=3",
             "-o", "StrictHostKeyChecking=accept-new", "-i", server.identity,
-            "-L", f"127.0.0.1:{local_port}:127.0.0.1:8443", "-p", server.port,
+            "-L", f"127.0.0.1:{local_port}:127.0.0.1:{server.web_port}", "-p", server.port,
             f"{server.user}@{server.host}",
         ]
 
