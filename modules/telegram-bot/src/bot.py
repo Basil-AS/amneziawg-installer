@@ -383,10 +383,7 @@ class PanelManager:
 
 def server_result(panel: PanelManager, key: str, action: str, token: str | object | None = None, value: str = "") -> str:
     """Execute a bot action exclusively through the authenticated panel API."""
-    result = panel.run(key, action, token, value)
-    if result is not None:
-        return result
-    return f"{key}: panel API unavailable"
+    return panel_text(panel, key, action, token, value)
 
 
 def parallel_results(panel: PanelManager, keys: tuple[str, ...], action: str, tokens: dict[str, str | object | None] | None = None) -> list[str]:
@@ -712,8 +709,8 @@ def handle_navigation(telegram: Telegram, store: Store, panels: PanelManager, ch
             render_navigation(telegram, store, chat_id, "<b>🔄 Обновления проекта</b>\n\n" + "\n\n".join(blocks), keyboard, "admin:update", callback_message_id=callback_message_id)
             return True
         if action == "update-check":
-            results = [panels.run(key, "update-check", PANEL_TOKEN) or "API недоступен" for key in ("finland", "germany")]
-            render_navigation(telegram, store, chat_id, "<b>🔎 Проверка обновлений запущена</b>\n\n" + "\n\n".join(html.escape(item) for item in results), [[{"text": "🔄 Обновления", "callback_data": "admin:update"}, {"text": "⬅️ Админка", "callback_data": "menu:admin"}]], "admin:update-check", callback_message_id=callback_message_id)
+            results = [panel_text(panels, key, "update-check", PANEL_TOKEN) for key in ("finland", "germany")]
+            render_navigation(telegram, store, chat_id, "<b>🔎 Проверка обновлений запущена</b>\n\n" + "\n\n".join(results), [[{"text": "🔄 Обновления", "callback_data": "admin:update"}, {"text": "⬅️ Админка", "callback_data": "menu:admin"}]], "admin:update-check", callback_message_id=callback_message_id)
             return True
         server = parts[2].lower() if len(parts) > 2 else ""
         if action == "restart":
@@ -722,12 +719,12 @@ def handle_navigation(telegram: Telegram, store: Store, panels: PanelManager, ch
             render_navigation(telegram, store, chat_id, f"<b>Перезапустить {html.escape(server)}?</b>\nВсе VPN-клиенты временно потеряют соединение.", [[{"text": "✅ Подтвердить", "callback_data": f"admin:restart-confirm:{server}"}], [{"text": "Отмена", "callback_data": "menu:admin"}]], "admin:restart", callback_message_id=callback_message_id)
             return True
         if action == "restart-confirm" and server in {"finland", "germany"}:
-            result = panels.run(server, "restart", PANEL_TOKEN) or "API недоступен"
-            render_navigation(telegram, store, chat_id, f"<b>♻️ Перезапуск отправлен</b>\n{html.escape(result)}", [[{"text": "⬅️ Админка", "callback_data": "menu:admin"}]], "admin:restart-done", callback_message_id=callback_message_id)
+            result = panel_text(panels, server, "restart", PANEL_TOKEN)
+            render_navigation(telegram, store, chat_id, f"<b>♻️ Перезапуск отправлен</b>\n{result}", [[{"text": "⬅️ Админка", "callback_data": "menu:admin"}]], "admin:restart-done", callback_message_id=callback_message_id)
             return True
         if action == "update-apply":
-            results = [panels.run(key, "update-apply", PANEL_TOKEN) or "API недоступен" for key in ("finland", "germany")]
-            render_navigation(telegram, store, chat_id, "<b>⬆️ Обновление запущено</b>\nОно выполняется безопасным updater-ом панели.\n\n" + "\n\n".join(html.escape(item) for item in results), [[{"text": "🔄 Обновления", "callback_data": "admin:update"}, {"text": "⬅️ Админка", "callback_data": "menu:admin"}]], "admin:update-apply", callback_message_id=callback_message_id)
+            results = [panel_text(panels, key, "update-apply", PANEL_TOKEN) for key in ("finland", "germany")]
+            render_navigation(telegram, store, chat_id, "<b>⬆️ Обновление запущено</b>\nОно выполняется безопасным updater-ом панели.\n\n" + "\n\n".join(results), [[{"text": "🔄 Обновления", "callback_data": "admin:update"}, {"text": "⬅️ Админка", "callback_data": "menu:admin"}]], "admin:update-apply", callback_message_id=callback_message_id)
             return True
     row = store.get(principal_id)
     tokens = {"finland": row["finland_token"] if row else None, "germany": row["germany_token"] if row else None}
@@ -784,8 +781,8 @@ def handle_navigation(telegram: Telegram, store: Store, panels: PanelManager, ch
             render_navigation(telegram, store, chat_id, f"<b>Перегенерировать конфиг {html.escape(name)}?</b>\nСтарый конфиг перестанет работать до повторного скачивания.", [[{"text": "✅ Подтвердить", "callback_data": f"client:regenerate-confirm:{ref}"}], [{"text": "Отмена", "callback_data": f"client:open:{ref}"}]], f"client:regenerate:{ref}", callback_message_id=callback_message_id)
             return True
         if action == "regenerate-confirm":
-            result = panels.run(server, "regenerate", token, value=name) or "API недоступен"
-            render_navigation(telegram, store, chat_id, f"<b>♻️ Конфиг обновлён</b>\n{html.escape(result)}", client_keyboard(server, name, ref, admin=is_admin), f"client:regenerate-done:{ref}", callback_message_id=callback_message_id)
+            result = panel_text(panels, server, "regenerate", token, value=name)
+            render_navigation(telegram, store, chat_id, f"<b>♻️ Конфиг обновлён</b>\n{result}", client_keyboard(server, name, ref, admin=is_admin), f"client:regenerate-done:{ref}", callback_message_id=callback_message_id)
             return True
         if action == "artifact":
             kind_name = parts[3].lower() if len(parts) > 3 else "config"
@@ -835,7 +832,7 @@ def handle_navigation(telegram: Telegram, store: Store, panels: PanelManager, ch
         elif action == "clients":
             output = "\n\n".join(compact_clients(panels.request(key, "snapshot", PANEL_TOKEN if is_admin else tokens[key]) or {"panel": key, "error": "недоступен"}) for key in keys)
         else:
-            output = "\n\n".join(html.escape(parallel_results(panels, keys, action)[index]) for index in range(len(keys)))
+            output = "\n\n".join(panel_text(panels, key, action, PANEL_TOKEN if is_admin else tokens[key]) for key in keys)
         title = {"status": "Статус", "clients": "Клиенты", "health": "Проверка", "readiness": "Готовность VPN", "dns": "DNS", "info": "Информация", "resolver": "Resolver", "audit": "Аудит", "tokens": "Токены", "logs": "Логи"}[action]
         render_navigation(telegram, store, chat_id, f"<b>{title}</b>\n{output[:3900]}", navigation_keyboard("result", is_admin), f"server:{action}:{server}", callback_message_id=callback_message_id)
         return True
@@ -867,6 +864,90 @@ def format_bytes(value: Any) -> str:
         amount /= 1024
         index += 1
     return f"{amount:.1f} {units[index]}" if index else f"{int(amount)} B"
+
+
+def status_icon(value: Any) -> str:
+    normalized = str(value or "unknown").lower()
+    if normalized in {"ok", "active", "healthy", "ready", "up", "enabled", "running", "pass"}:
+        return "✅"
+    if normalized in {"warn", "warning", "degraded", "unknown", "pending"}:
+        return "⚠️"
+    if normalized in {"error", "failed", "inactive", "down", "critical", "fail"}:
+        return "❌"
+    return "◽"
+
+
+def metric_line(label: str, value: Any, state: Any = None) -> str:
+    suffix = f" {status_icon(state)}" if state is not None else ""
+    return f"{html.escape(label)}: <b>{html.escape(str(value))}</b>{suffix}"
+
+
+def format_panel_payload(payload: dict[str, Any], action: str) -> str:
+    """Render API diagnostics as compact Telegram cards, never raw JSON."""
+    panel = html.escape(str(payload.get("panel", "Сервер")))
+    if payload.get("error"):
+        return f"<b>{panel}</b>\n❌ {html.escape(str(payload['error']))}"
+    lines: list[str] = [f"<b>{panel}</b>"]
+    if action in {"status", "snapshot"}:
+        return compact_snapshot(payload)
+    if action == "health":
+        lines.append(f"Общий статус: {status_icon(payload.get('status'))} <b>{html.escape(str(payload.get('status', 'unknown')))}</b>")
+        cpu, memory, disk = payload.get("cpu") or {}, payload.get("memory") or {}, payload.get("disk") or {}
+        load = payload.get("load") or {}
+        lines.extend([metric_line("CPU", f"{cpu.get('usage_percent', '—')}%", cpu.get("status")), metric_line("RAM", f"{memory.get('used_percent', '—')}%", memory.get("status")), metric_line("Диск", f"{disk.get('used_percent', '—')}%", disk.get("status")), metric_line("Load", f"{load.get('one', '—')} / {load.get('five', '—')}", load.get("status"))])
+        services = payload.get("services") or {}
+        if services:
+            lines.append("<b>Сервисы</b>")
+            for name, service in list(services.items())[:8]:
+                service = service if isinstance(service, dict) else {"status": service}
+                lines.append(f"{status_icon(service.get('status'))} {html.escape(str(name))}: {html.escape(str(service.get('status', 'unknown')))}")
+        network = payload.get("network") or {}
+        lines.append(f"Сеть: drops {network.get('drops_delta', 0)} · errors {network.get('errors_delta', 0)}")
+    elif action == "info":
+        for label, key in (("Публичный IPv4", "public_ipv4"), ("Публичный IPv6", "public_ipv6"), ("VPN IPv4", "vpn_ipv4"), ("Шлюз", "vpn_gateway_ipv4"), ("DNS", "dns_resolver"), ("Route mode", "route_mode")):
+            lines.append(metric_line(label, payload.get(key) or "—"))
+    elif action == "readiness":
+        lines.append(f"Готовность: {status_icon(payload.get('status'))} <b>{html.escape(str(payload.get('status', 'unknown')))}</b>")
+        for section in ("kernel", "crypto", "virtualization", "ip_forwarding", "udp_buffers", "ipv6_routing", "ndp_proxy"):
+            item = payload.get(section) or {}
+            if isinstance(item, dict):
+                detail = item.get("detail") or item.get("release") or item.get("mode") or item.get("type") or item.get("status", "unknown")
+                lines.append(f"{status_icon(item.get('status'))} {html.escape(section.replace('_', ' '))}: {html.escape(str(detail))}")
+    elif action in {"dns", "resolver"}:
+        for label, key in (("Mode", "mode"), ("Client DNS", "client_dns"), ("Service", "adguard_service" if action == "dns" else "managed_service"), ("Port", "adguard_port" if action == "dns" else "managed_port"), ("URL", "managed_url")):
+            if key in payload:
+                lines.append(metric_line(label, payload.get(key) or "—"))
+    elif action == "audit":
+        summary = payload.get("summary") or {}
+        lines.append("<b>Сводка аудита</b>")
+        for label, key in (("Всего", "total"), ("Активных", "active"), ("Без назначения", "unassigned"), ("Сиротские файлы", "orphan_files"), ("Проблемы firewall", "orphan_firewall_rules")):
+            lines.append(metric_line(label, summary.get(key, 0)))
+        bad = [item for item in payload.get("clients", []) if str(item.get("status", "")).lower() not in {"ok", "active", "healthy", ""}]
+        if bad:
+            lines.append("<b>Проблемные клиенты</b>")
+            lines.extend(f"⚠️ <code>{html.escape(str(item.get('config_name', '?')))}</code>: {html.escape(str(item.get('status')))}" for item in bad[:8])
+    elif action == "tokens":
+        users = payload.get("users") or []
+        lines.append(f"Пользовательских токенов: <b>{len(users)}</b>")
+        for item in users[:12]:
+            clients = item.get("clients") or []
+            lines.append(f"🔐 {html.escape(str(item.get('name') or 'Без имени'))} · клиентов: {len(clients)}")
+    elif action == "logs":
+        log_lines = payload.get("lines") or []
+        lines.append("<pre>" + html.escape("\n".join(str(line) for line in log_lines[-18:]))[:3000] + "</pre>")
+    else:
+        if payload.get("message"):
+            lines.append(html.escape(str(payload["message"])))
+        elif payload.get("ok") is not None:
+            lines.append(f"Результат: {status_icon(payload.get('ok'))} {html.escape(str(payload.get('ok')))}")
+    return "\n".join(lines)[:4096]
+
+
+def panel_text(panel: PanelManager, key: str, action: str, token: str | object | None = None, value: str = "") -> str:
+    payload = panel.request(key, action, token, value)
+    if payload is None:
+        return f"{html.escape(key)}: API недоступен или токен не имеет права"
+    return format_panel_payload(payload, action)
 
 
 def compact_clients(payload: dict[str, Any]) -> str:
@@ -1129,9 +1210,9 @@ def main() -> None:
                         if not is_admin or not candidate or len(candidate) > 48 or not all(char.isalnum() or char in "_-" for char in candidate):
                             telegram.send(chat_id, "Имя клиента некорректно. Используйте латиницу, цифры, `-` или `_` (до 48 символов). Повторите ввод.", force_reply=True)
                             continue
-                        result = panels.run(prompt["server"], "add", PANEL_TOKEN, value=candidate) or "API недоступен"
+                        result = panel_text(panels, prompt["server"], "add", PANEL_TOKEN, value=candidate)
                         store.clear_prompt(actor_id)
-                        render_navigation(telegram, store, chat_id, f"<b>✅ Клиент создан</b>\n{html.escape(result)}", admin_keyboard(), "admin:add-done", reply=True)
+                        render_navigation(telegram, store, chat_id, f"<b>✅ Клиент создан</b>\n{result}", admin_keyboard(), "admin:add-done", reply=True)
                         continue
                 if callback and handle_navigation(telegram, store, panels, chat_id, is_admin, str(callback.get("data", "")), actor_id=actor_id, callback_message_id=int((callback.get("message") or {}).get("message_id", 0) or 0)):
                     continue
@@ -1174,7 +1255,7 @@ def main() -> None:
                     elif name in {"/info", "/readiness", "/dns", "/resolver", "/audit", "/tokens"}:
                         action = name[1:]
                         raw = "\n\n".join(parallel_results(panels, ("finland", "germany"), action, {"finland": PANEL_TOKEN, "germany": PANEL_TOKEN}))
-                        telegram.send(chat_id, html.escape(raw)[:4096])
+                        telegram.send(chat_id, raw[:4096])
                     elif name == "/restart" and len(parts) == 2:
                         telegram.send(chat_id, server_result(panels, parts[1].lower(), "restart", PANEL_TOKEN))
                     elif name in {"/add", "/remove", "/regenerate"} and len(parts) == 3:
