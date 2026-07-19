@@ -395,6 +395,15 @@ class PanelManager:
         elif action == "geoip-databases-update":
             endpoint_info = ("POST", "/api/geoip/databases/update")
             body = b"{}"
+        elif action == "geoip-refresh":
+            endpoint_info = ("POST", "/api/geoip/refresh")
+            body = b"{}"
+        elif action == "geoip-providers-test":
+            endpoint_info = ("POST", "/api/geoip/providers/test")
+            body = b"{}"
+        elif action == "geoip-auto-update":
+            endpoint_info = ("POST", "/api/geoip/auto-update")
+            body = b"{}"
         elif action == "web-cert-renew":
             endpoint_info = ("POST", "/api/web-cert/renew")
             body = b"{}"
@@ -738,6 +747,7 @@ def maintenance_keyboard() -> list[list[dict[str, str]]]:
         [{"text": "🧭 DNS режим FI", "callback_data": "admin:dns-mode:finland"}, {"text": "🧭 DNS режим DE", "callback_data": "admin:dns-mode:germany"}],
         [{"text": "🌐 NDP Финляндии", "callback_data": "admin:ndp-restart:finland"}, {"text": "🌐 NDP Германии", "callback_data": "admin:ndp-restart:germany"}],
         [{"text": "🗺 Обновить GeoIP", "callback_data": "admin:geoip-update:all"}, {"text": "🔒 Продлить TLS", "callback_data": "admin:cert-renew:all"}],
+        [{"text": "🔎 Проверить GeoIP", "callback_data": "admin:geoip-providers-test:all"}, {"text": "⚙️ Авто-GeoIP", "callback_data": "admin:geoip-auto-update:all"}],
         [{"text": "🛡 Проверить web policy", "callback_data": "admin:policy-test:all"}],
         [{"text": "⚠️ Перезагрузка сервера", "callback_data": "admin:reboot:all"}],
         [{"text": "⬅️ Админка", "callback_data": "menu:admin"}],
@@ -1011,7 +1021,7 @@ def handle_navigation(telegram: Telegram, store: Store, panels: PanelManager, ch
             return True
         render_navigation(telegram, store, chat_id, "<b>🛠 Обслуживание инфраструктуры</b>\nОперации выполняются только через API панели. Перезагрузка требует отдельного подтверждения.", maintenance_keyboard(), "admin:maintenance", callback_message_id=callback_message_id)
         return True
-    if kind == "admin" and action in {"dns-restart", "dns-mode", "dns-mode-apply", "ndp-restart", "geoip-update", "cert-renew", "policy-test", "reboot", "reboot-confirm"}:
+    if kind == "admin" and action in {"dns-restart", "dns-mode", "dns-mode-apply", "ndp-restart", "geoip-update", "geoip-refresh", "geoip-providers-test", "geoip-auto-update", "cert-renew", "policy-test", "reboot", "reboot-confirm"}:
         if not is_admin:
             render_navigation(telegram, store, chat_id, "Недостаточно прав.", menu_keyboard(False), "home", callback_message_id=callback_message_id)
             return True
@@ -1043,8 +1053,8 @@ def handle_navigation(telegram: Telegram, store: Store, panels: PanelManager, ch
             result = panel_text(panels, server, action, PANEL_TOKEN)
             render_navigation(telegram, store, chat_id, f"<b>✅ Операция отправлена</b>\n{result}", maintenance_keyboard(), f"admin:{action}-done", callback_message_id=callback_message_id)
             return True
-        if action in {"geoip-update", "cert-renew"}:
-            panel_action = {"geoip-update": "geoip-databases-update", "cert-renew": "web-cert-renew"}[action]
+        if action in {"geoip-update", "geoip-refresh", "geoip-providers-test", "geoip-auto-update", "cert-renew"}:
+            panel_action = {"geoip-update": "geoip-databases-update", "geoip-refresh": "geoip-refresh", "geoip-providers-test": "geoip-providers-test", "geoip-auto-update": "geoip-auto-update", "cert-renew": "web-cert-renew"}[action]
             results = parallel_results(panels, ("finland", "germany"), panel_action, {"finland": PANEL_TOKEN, "germany": PANEL_TOKEN})
             render_navigation(telegram, store, chat_id, f"<b>✅ Операция отправлена</b>\n" + "\n\n".join(results), maintenance_keyboard(), f"admin:{action}-done", callback_message_id=callback_message_id)
             return True
