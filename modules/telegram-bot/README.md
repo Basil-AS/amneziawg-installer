@@ -12,5 +12,13 @@ Never commit the real token or SSH keys.
 
 ## Commands
 
-Admin: `/status`, `/servers`, `/clients`, `/users`, `/bind <tg_id> <fin_token> <ger_token>`, `/restart <finland|germany>`.
-User: `/me`, `/servers`, `/help`.
+Admin: `/status`, `/health`, `/servers`, `/clients [finland|germany]`,
+`/logs [finland|germany]`, `/users`, `/bind <tg_id> <fin_token> <ger_token>`,
+`/add`, `/remove`, `/regenerate`, `/restart <finland|germany>`.
+User: `/me`, `/servers`, `/menu`, `/help`.
+
+The bot uses the compact `/api/bot/snapshot` endpoint for status and client
+views. Requests to both panels run concurrently and read-only snapshots are
+cached for five seconds. Inline buttons are available from `/start` or
+`/menu`. Configure `var/panels.json` with one bearer token per panel to avoid
+the slower restricted-SSH compatibility fallback.

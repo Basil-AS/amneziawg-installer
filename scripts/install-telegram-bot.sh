@@ -11,6 +11,9 @@ API_ROOT="${TELEGRAM_API_ROOT:-https://api.telegram.org}"
 SOURCE_DIR="${GAULLEBOT_SOURCE_DIR:-}"
 SSH_KEY="${GAULLEBOT_SSH_KEY:-}"
 PANELS_CONFIG="${GAULLEBOT_PANELS_CONFIG:-$BOT_ROOT/var/panels.json}"
+PANELS_CONFIG_SOURCE="${GAULLEBOT_PANELS_CONFIG_SOURCE:-}"
+FINLAND_PANEL_TOKEN="${FINLAND_PANEL_TOKEN:-}"
+GERMANY_PANEL_TOKEN="${GERMANY_PANEL_TOKEN:-}"
 
 die() { printf '[gaullebot] ERROR: %s\n' "$*" >&2; exit 1; }
 log() { printf '[gaullebot] %s\n' "$*"; }
@@ -27,7 +30,9 @@ Options:
   --help
 
 The module is disabled unless this script is explicitly run. It installs only
-the bot service; the VPN web panel remains a separate process.
+the bot service; the VPN web panel remains a separate process. For low-latency
+panel API access, provide GAULLEBOT_PANELS_CONFIG_SOURCE or set
+FINLAND_PANEL_TOKEN and GERMANY_PANEL_TOKEN in the environment.
 EOF
 }
 
@@ -79,6 +84,7 @@ trap 'rm -f "$env_tmp"' EXIT
     printf 'TELEGRAM_API_ROOT=%q\n' "$API_ROOT"
     printf 'DB_PATH=%q\n' "$BOT_ROOT/data/gaullebot.sqlite3"
     printf 'POLL_TIMEOUT=30\n'
+    printf 'PANEL_TUNNELS_ENABLED=1\n'
     printf 'PANELS_CONFIG=%q\n' "$PANELS_CONFIG"
     printf 'FINLAND_SSH_HOST=194.180.189.244\nFINLAND_SSH_PORT=22\nFINLAND_SSH_USER=root\n'
     printf 'GERMANY_SSH_HOST=77.90.29.231\nGERMANY_SSH_PORT=22\nGERMANY_SSH_USER=root\n'
@@ -88,6 +94,24 @@ trap 'rm -f "$env_tmp"' EXIT
     fi
 } > "$env_tmp"
 install -o root -g gaullebot -m 0640 "$env_tmp" /etc/gaullebot.env
+
+# Prefer bearer API connectors when an operator supplied a protected config or
+# both panel tokens.  Without it the bot remains functional through the
+# restricted SSH fallback, but every command pays an SSH connection setup cost.
+if [[ -n "$PANELS_CONFIG_SOURCE" ]]; then
+    [[ -f "$PANELS_CONFIG_SOURCE" ]] || die "panel config source not found"
+    install -o root -g gaullebot -m 0640 "$PANELS_CONFIG_SOURCE" "$PANELS_CONFIG"
+elif [[ -n "$FINLAND_PANEL_TOKEN" && -n "$GERMANY_PANEL_TOKEN" ]]; then
+    [[ "$FINLAND_PANEL_TOKEN" =~ ^[A-Za-z0-9._~+/-]+=*$ ]] || die "Finland panel token contains unsafe characters"
+    [[ "$GERMANY_PANEL_TOKEN" =~ ^[A-Za-z0-9._~+/-]+=*$ ]] || die "Germany panel token contains unsafe characters"
+    install -d -o root -g gaullebot -m 0750 "$(dirname "$PANELS_CONFIG")"
+    panel_tmp="$(mktemp)"
+    trap 'rm -f "$env_tmp" "$panel_tmp"' EXIT
+    printf '{"panels":[{"id":"finland","name":"Sunny-Finland","url":"https://127.0.0.1:18443","token":"%s","verify_tls":false},{"id":"germany","name":"Sunny-German","url":"https://127.0.0.1:18444","token":"%s","verify_tls":false}]}\n' \
+        "$FINLAND_PANEL_TOKEN" "$GERMANY_PANEL_TOKEN" > "$panel_tmp"
+    install -o root -g gaullebot -m 0640 "$panel_tmp" "$PANELS_CONFIG"
+    rm -f "$panel_tmp"
+fi
 
 install -o root -g root -m 0644 "$BOT_ROOT/deploy/gaullebot.service" /etc/systemd/system/gaullebot.service
 systemctl daemon-reload

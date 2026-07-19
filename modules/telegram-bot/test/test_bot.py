@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from src.bot import PanelManager, Settings, Store
+from src.bot import PanelManager, ServerManager, Settings, Store, compact_snapshot, menu_keyboard
 
 
 class BotTests(unittest.TestCase):
@@ -43,6 +43,36 @@ class BotTests(unittest.TestCase):
             manager = PanelManager(path)
             self.assertEqual(manager.keys(), ["finland"])
             self.assertNotIn("secret", manager.run("finland", "unsupported") or "")
+
+    def test_compact_snapshot_is_small_and_human_readable(self):
+        text = compact_snapshot({
+            "panel": "Sunny-Finland",
+            "display_name": "Sunny-Finland",
+            "version": "5.19.2-bas.3",
+            "service": "active",
+            "summary": {"online": 2, "total": 5},
+        })
+        self.assertIn("Sunny-Finland", text)
+        self.assertIn("2/5", text)
+        self.assertLess(len(text), 500)
+
+    def test_menu_contains_admin_actions(self):
+        callback_data = {item["callback_data"] for row in menu_keyboard(True) for item in row}
+        self.assertTrue({"status", "health", "clients", "users"}.issubset(callback_data))
+
+    def test_tunnel_argv_uses_loopback_forward(self):
+        old = {key: os.environ.get(key) for key in ("FINLAND_SSH_HOST", "FINLAND_SSH_IDENTITY")}
+        os.environ["FINLAND_SSH_HOST"] = "vpn.example"
+        os.environ["FINLAND_SSH_IDENTITY"] = "/tmp/key"
+        try:
+            argv = ServerManager().tunnel_argv("finland", 18443)
+            self.assertIn("127.0.0.1:18443:127.0.0.1:8443", argv)
+        finally:
+            for key, value in old.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
 
 
 if __name__ == "__main__":
