@@ -9,7 +9,7 @@ from unittest.mock import patch
 from urllib.parse import urlencode
 from pathlib import Path
 
-from src.bot import PANEL_TOKEN, PanelManager, ServerManager, Settings, Store, admin_keyboard, callback_command, compact_snapshot, help_text, maintenance_keyboard, menu_keyboard, navigation_keyboard, panel_client_names, reply_keyboard, result_navigation_keyboard, token_client_scope, verify_init_data, client_keyboard, clients_keyboard, format_bytes, format_panel_payload, format_timestamp, parallel_payloads, sparkline, usage_bar
+from src.bot import PANEL_TOKEN, PanelManager, ServerManager, Settings, Store, admin_keyboard, callback_command, compact_snapshot, help_text, maintenance_keyboard, menu_keyboard, navigation_keyboard, panel_client_names, reply_keyboard, result_navigation_keyboard, token_client_scope, uri_keyboard, verify_init_data, client_keyboard, clients_keyboard, format_bytes, format_panel_payload, format_timestamp, parallel_payloads, sparkline, usage_bar
 
 
 class BotTests(unittest.TestCase):
@@ -314,6 +314,11 @@ class BotTests(unittest.TestCase):
         self.assertIn("WG Tunnel", text)
         self.assertIn("https://example.test/app", text)
         self.assertNotIn('"groups"', text)
+
+    def test_uri_keyboard_uses_copy_text_button(self):
+        keyboard = uri_keyboard("vpn://example", "ref123")
+        self.assertEqual(keyboard[0][0]["copy_text"]["text"], "vpn://example")
+        self.assertEqual(keyboard[1][0]["callback_data"], "client:open:ref123")
 
     def test_callback_payloads_are_command_safe(self):
         self.assertEqual(callback_command("nav:status"), "/status")
