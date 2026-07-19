@@ -1454,12 +1454,7 @@ def handle_navigation(telegram: Telegram, store: Store, panels: PanelManager, ch
         payload = panels.request(server, "clients", token) or {}
         client = next((item for item in payload.get("clients", []) if str(item.get("name") or item.get("id") or item.get("config_name")) == name), None)
         if action == "stats":
-            client = client or {}
-            total = client.get("traffic_total") or client.get("traffic") or {}
-            recent = client.get("traffic_30d") or {}
-            text = (f"<b>📈 {html.escape(name)}</b>\nСервер: {html.escape(server)}\n"
-                    f"Всего: ↓ {html.escape(format_bytes(total.get('rx', total.get('download', 0))))} · ↑ {html.escape(format_bytes(total.get('tx', total.get('upload', 0))))}\n"
-                    f"За 30 дней: ↓ {html.escape(format_bytes(recent.get('rx', recent.get('download', 0))))} · ↑ {html.escape(format_bytes(recent.get('tx', recent.get('upload', 0))))}")
+            text = client_stats_card(name, server, client or {})
         else:
             client = client or {}
             marker = "🟢 онлайн" if client.get("online") else "⚪ не в сети"
@@ -1748,6 +1743,33 @@ def compact_clients(payload: dict[str, Any]) -> str:
         suffix = f" · ports: {html.escape(ports)}" if ports else ""
         lines.append(f"{marker} <code>{html.escape(str(item.get('name', '')))}</code> · {html.escape(str(item.get('ipv4', '')))}{suffix}")
     return "\n".join(lines)[:4096]
+
+
+def client_stats_card(name: str, server: str, client: dict[str, Any]) -> str:
+    """Render one client's traffic and connectivity as a compact Telegram card."""
+    total = client.get("traffic_total") or client.get("traffic") or {}
+    recent = client.get("traffic_30d") or client.get("traffic_7d") or {}
+    total_rx = total.get("rx", total.get("download", 0))
+    total_tx = total.get("tx", total.get("upload", 0))
+    recent_rx = recent.get("rx", recent.get("download", 0))
+    recent_tx = recent.get("tx", recent.get("upload", 0))
+    try:
+        total_bytes = max(0.0, float(total_rx or 0) + float(total_tx or 0))
+        recent_bytes = max(0.0, float(recent_rx or 0) + float(recent_tx or 0))
+    except (TypeError, ValueError):
+        total_bytes, recent_bytes = 0.0, 0.0
+    ports = client.get("p2p_ports") or client.get("p2p") or []
+    if isinstance(ports, dict):
+        ports = ports.get("ports") or []
+    port_text = ", ".join(str(port) for port in ports) if isinstance(ports, (list, tuple, set)) else str(ports or "—")
+    return (f"<b>📈 {html.escape(name)}</b>\n"
+            f"{('🟢 онлайн' if client.get('online') else '⚪ не в сети')} · сервер: <code>{html.escape(server)}</code>\n"
+            f"IPv4: <code>{html.escape(str(client.get('ipv4') or '—'))}</code>\n"
+            f"Последний handshake: <code>{html.escape(str(client.get('latestHandshakeAt', client.get('last_handshake', '—'))))}</code>\n"
+            f"P2P: <code>{html.escape(port_text)}</code>\n\n"
+            f"<b>Всего</b> · ↓ {html.escape(format_bytes(total_rx))} · ↑ {html.escape(format_bytes(total_tx))}\n"
+            f"<b>30 дней</b> · ↓ {html.escape(format_bytes(recent_rx))} · ↑ {html.escape(format_bytes(recent_tx))}\n"
+            f"<code>{usage_bar(recent_bytes, total_bytes or recent_bytes, width=18)}</code> активность за период")
 
 
 def panel_client_names(payload: dict[str, Any]) -> list[str] | None:
