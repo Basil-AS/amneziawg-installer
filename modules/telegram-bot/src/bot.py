@@ -105,6 +105,13 @@ class Store:
                 PRIMARY KEY (telegram_id, ref)
             )"""
         )
+        self.db.execute(
+            """CREATE TABLE IF NOT EXISTS access_requests (
+                telegram_id INTEGER PRIMARY KEY,
+                requested_at INTEGER NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending'
+            )"""
+        )
         self.db.commit()
 
     def close(self) -> None:
@@ -121,6 +128,7 @@ class Store:
                    germany_token=excluded.germany_token, updated_at=excluded.updated_at""",
                 (telegram_id, username, first_name, finland, germany, now, now),
             )
+            self.db.execute("UPDATE access_requests SET status='approved' WHERE telegram_id=?", (telegram_id,))
             self.db.commit()
 
     def touch(self, telegram_id: int, username: str, first_name: str) -> None:
@@ -136,6 +144,16 @@ class Store:
     def all(self) -> list[sqlite3.Row]:
         with self.lock:
             return list(self.db.execute("SELECT * FROM users ORDER BY telegram_id"))
+
+    def request_access(self, telegram_id: int, cooldown: int = 900) -> bool:
+        now = int(time.time())
+        with self.lock:
+            row = self.db.execute("SELECT requested_at, status FROM access_requests WHERE telegram_id=?", (telegram_id,)).fetchone()
+            if row and row["status"] == "pending" and now - int(row["requested_at"]) < cooldown:
+                return False
+            self.db.execute("INSERT INTO access_requests VALUES (?, ?, 'pending') ON CONFLICT(telegram_id) DO UPDATE SET requested_at=excluded.requested_at, status='pending'", (telegram_id, now))
+            self.db.commit()
+            return True
 
     def navigation(self, telegram_id: int) -> sqlite3.Row | None:
         with self.lock:
@@ -513,6 +531,7 @@ def menu_keyboard(admin: bool) -> list[list[dict[str, str]]]:
     rows = [
         [{"text": "📡 Серверы", "callback_data": "menu:servers"}, {"text": "👥 Мои устройства", "callback_data": "user:clients"}],
         [{"text": "📈 Статистика", "callback_data": "user:traffic"}, {"text": "👤 Профиль", "callback_data": "menu:profile"}],
+        [{"text": "🔐 Запросить доступ", "callback_data": "user:request"}],
     ]
     if admin:
         rows = [[{"text": "📊 Статус", "callback_data": "server:status:all"}, {"text": "🩺 Проверка", "callback_data": "server:health:all"}], [{"text": "✅ Готовность", "callback_data": "server:readiness:all"}, {"text": "🌐 DNS", "callback_data": "server:dns:all"}], [{"text": "👥 Клиенты", "callback_data": "server:clients:all"}, {"text": "👤 Пользователи", "callback_data": "admin:users:0"}], [{"text": "⚙️ Ещё", "callback_data": "menu:admin"}]] + rows
@@ -622,6 +641,24 @@ def handle_navigation(telegram: Telegram, store: Store, panels: PanelManager, ch
         text = "<b>Пользователи</b>\n" + ("\n".join(f"<code>{r['telegram_id']}</code> @{html.escape(r['username'] or '-')} · fin={'✅' if r['finland_token'] else '—'} · ger={'✅' if r['germany_token'] else '—'}" for r in rows) or "Пользователей пока нет.")
         render_navigation(telegram, store, chat_id, text[:4096], [[{"text": "⬅️ Главное меню", "callback_data": "menu:home"}]], "admin:users", callback_message_id=callback_message_id)
         return True
+    if kind == "admin" and action == "request":
+        if not is_admin or len(parts) < 3:
+            render_navigation(telegram, store, chat_id, "Недостаточно прав.", menu_keyboard(False), "home", callback_message_id=callback_message_id)
+            return True
+        try:
+            requested_id = int(parts[2])
+        except ValueError:
+            return True
+        requested = store.get(requested_id)
+        if requested is None:
+            render_navigation(telegram, store, chat_id, "Заявка устарела или пользователь ещё не написал боту.", admin_keyboard(), "admin", callback_message_id=callback_message_id)
+            return True
+        text = (f"<b>🔐 Запрос доступа</b>\nTelegram ID: <code>{requested_id}</code>\n"
+                f"Пользователь: @{html.escape(requested['username'] or 'без username')}\n\n"
+                "Выдайте ему токены панелей командой:\n"
+                f"<code>/bind {requested_id} &lt;finland_token&gt; &lt;germany_token&gt;</code>")
+        render_navigation(telegram, store, chat_id, text, [[{"text": "👥 Пользователи", "callback_data": "admin:users:0"}, {"text": "⬅️ Админка", "callback_data": "menu:admin"}]], "admin:request", callback_message_id=callback_message_id)
+        return True
     if kind == "admin" and action in {"update", "update-check", "update-apply", "restart", "restart-confirm"}:
         if not is_admin:
             render_navigation(telegram, store, chat_id, "Недостаточно прав.", menu_keyboard(False), "home", callback_message_id=callback_message_id)
@@ -654,6 +691,20 @@ def handle_navigation(telegram: Telegram, store: Store, panels: PanelManager, ch
             return True
     row = store.get(principal_id)
     tokens = {"finland": row["finland_token"] if row else None, "germany": row["germany_token"] if row else None}
+    if kind == "user" and action == "request":
+        if is_admin:
+            render_navigation(telegram, store, chat_id, "Администратору доступ выдаётся автоматически.", menu_keyboard(True), "home", callback_message_id=callback_message_id)
+            return True
+        if row and (tokens["finland"] or tokens["germany"]):
+            render_navigation(telegram, store, chat_id, "Доступ уже выдан. Откройте устройства или статистику.", menu_keyboard(False), "home", callback_message_id=callback_message_id)
+            return True
+        created = store.request_access(principal_id)
+        admin_id = int(os.environ.get("ADMIN_CHAT_ID", "0"))
+        if created and admin_id:
+            telegram.send(admin_id, f"<b>Новая заявка на доступ</b>\nTelegram ID: <code>{principal_id}</code>\nПользователь: @{html.escape(str(row['username'] if row and row['username'] else 'без username'))}", keyboard=[[{"text": "👤 Открыть заявку", "callback_data": f"admin:request:{principal_id}"}]])
+        message = "Заявка отправлена администратору. После привязки токенов здесь появятся устройства." if created else "Заявка уже ожидает обработки. Повторная отправка будет доступна позже."
+        render_navigation(telegram, store, chat_id, f"<b>🔐 Доступ</b>\n{message}", [[{"text": "🔄 Проверить снова", "callback_data": "user:clients"}, {"text": "🏠 Меню", "callback_data": "menu:home"}]], "user:request", callback_message_id=callback_message_id)
+        return True
     if kind == "user" and action in {"clients", "traffic"}:
         if not is_admin and (not row or not (tokens["finland"] or tokens["germany"])):
             render_navigation(telegram, store, chat_id, "<b>Доступ ещё не выдан</b>\nОбратитесь к администратору для привязки токена.", menu_keyboard(False), "home", callback_message_id=callback_message_id)

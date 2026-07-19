@@ -31,6 +31,15 @@ class BotTests(unittest.TestCase):
             self.assertIsNone(store.resolve_client_ref(43, ref))
             store.close()
 
+    def test_access_request_is_rate_limited_until_binding(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = Store(Path(directory) / "state.sqlite3")
+            self.assertTrue(store.request_access(42))
+            self.assertFalse(store.request_access(42))
+            store.bind(42, "user", "Name", "fin", "ger")
+            self.assertEqual(store.get(42)["finland_token"], "fin")
+            store.close()
+
     def test_touch_registers_unbound_user_without_tokens(self):
         with tempfile.TemporaryDirectory() as directory:
             store = Store(Path(directory) / "state.sqlite3")
