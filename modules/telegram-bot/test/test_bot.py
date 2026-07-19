@@ -9,7 +9,7 @@ from unittest.mock import patch
 from urllib.parse import urlencode
 from pathlib import Path
 
-from src.bot import PANEL_TOKEN, PanelManager, ServerManager, Settings, Store, admin_keyboard, callback_command, compact_snapshot, help_text, maintenance_keyboard, menu_keyboard, navigation_keyboard, panel_client_names, reply_keyboard, result_navigation_keyboard, token_client_scope, uri_keyboard, verify_init_data, client_keyboard, clients_keyboard, format_bytes, format_panel_payload, format_timestamp, parallel_payloads, sparkline, usage_bar
+from src.bot import PANEL_TOKEN, PanelManager, ServerManager, Settings, Store, admin_keyboard, callback_command, client_stats_card, compact_snapshot, help_text, maintenance_keyboard, menu_keyboard, navigation_keyboard, panel_client_names, reply_keyboard, result_navigation_keyboard, token_client_scope, uri_keyboard, verify_init_data, client_keyboard, clients_keyboard, format_bytes, format_panel_payload, format_timestamp, parallel_payloads, sparkline, usage_bar
 
 
 class BotTests(unittest.TestCase):
@@ -183,6 +183,21 @@ class BotTests(unittest.TestCase):
         self.assertEqual(len(sparkline([1, 2, 3, 4], width=12)), 4)
         self.assertEqual(sparkline([5, 5, 5]), "▁▁▁")
         self.assertEqual(usage_bar(50, 100, width=10), "█████░░░░░")
+
+    def test_client_stats_card_contains_visual_traffic_and_connectivity(self):
+        rendered = client_stats_card("Телефон <test>", "germany", {
+            "online": True,
+            "ipv4": "10.9.10.36",
+            "latestHandshakeAt": "2026-07-19T12:00:00Z",
+            "p2p_ports": [20045],
+            "traffic_total": {"rx": 10 * 1024 * 1024, "tx": 2 * 1024 * 1024},
+            "traffic_30d": {"rx": 5 * 1024 * 1024, "tx": 1 * 1024 * 1024},
+        })
+        self.assertIn("🟢 онлайн", rendered)
+        self.assertIn("20045", rendered)
+        self.assertIn("████", rendered)
+        self.assertNotIn("<test>", rendered)
+        self.assertNotIn('"traffic_total"', rendered)
 
     def test_parallel_payloads_preserve_panel_order(self):
         class FakePanel:
