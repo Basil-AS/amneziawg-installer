@@ -268,14 +268,20 @@ class BotTests(unittest.TestCase):
             self.assertIn(command, text)
 
     def test_reply_keyboard_is_compact(self):
-        keyboard = reply_keyboard()
-        self.assertEqual(sum(len(row) for row in keyboard), 6)
+        keyboard = reply_keyboard(False)
+        self.assertEqual(sum(len(row) for row in keyboard), 5)
         self.assertIn("🏠 Меню", keyboard[0])
+        self.assertNotIn("⚙️ Админка", [item for row in keyboard for item in row])
+        admin_keyboard_rows = reply_keyboard(True)
+        self.assertEqual(sum(len(row) for row in admin_keyboard_rows), 6)
+        self.assertIn("⚙️ Админка", admin_keyboard_rows[-1])
 
     def test_result_navigation_has_refresh_action(self):
         keyboard = result_navigation_keyboard("health", "all", False)
         self.assertEqual(keyboard[0][0]["callback_data"], "server:health:all")
         self.assertIn("menu:home", {item["callback_data"] for row in keyboard for item in row})
+        admin_keyboard_rows = result_navigation_keyboard("health", "all", True)
+        self.assertIn("menu:admin", {item["callback_data"] for row in admin_keyboard_rows for item in row})
 
     def test_maintenance_exposes_scoped_dns_mode_controls(self):
         callbacks = {item["callback_data"] for row in maintenance_keyboard() for item in row}
