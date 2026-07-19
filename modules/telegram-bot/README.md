@@ -56,6 +56,8 @@ the secret URL. The panel invalidates it after expiry or first use.
 Diagnostics are rendered as Telegram cards (health metrics, services, DNS,
 readiness, audit summaries, load history, latency and provider traffic, plus
 redacted token counts); raw panel JSON is not sent to users.
+Load history now includes compact Unicode CPU/RAM/load charts, and user traffic
+cards include relative volume bars so trends are readable directly in Telegram.
 
 Administrators can create a client from the inline menu: choose the target
 server, enter the profile name in the prompted reply, and the bot calls

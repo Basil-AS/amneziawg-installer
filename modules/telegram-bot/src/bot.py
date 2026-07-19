@@ -780,12 +780,21 @@ def handle_navigation(telegram: Telegram, store: Store, panels: PanelManager, ch
             render_navigation(telegram, store, chat_id, "<b>Доступ ещё не выдан</b>\nОбратитесь к администратору для привязки токена.", menu_keyboard(False), "home", callback_message_id=callback_message_id)
             return True
         if action == "traffic":
-            blocks = []
+            rows = []
             for key in ("finland", "germany"):
                 payload = panels.request(key, "traffic", PANEL_TOKEN if is_admin else tokens[key]) or {}
                 total = payload.get("total") or payload.get("current") or {}
-                blocks.append(f"<b>{html.escape(str(payload.get('panel', key)))}</b>\n↓ {html.escape(format_bytes(total.get('rx', total.get('download', 0))))}  ·  ↑ {html.escape(format_bytes(total.get('tx', total.get('upload', 0))))}")
-            render_navigation(telegram, store, chat_id, "<b>📈 Статистика трафика</b>\n\n" + "\n\n".join(blocks), [[{"text": "👥 Устройства", "callback_data": "user:clients"}, {"text": "🏠 Меню", "callback_data": "menu:home"}]], "user:traffic", callback_message_id=callback_message_id)
+                rx, tx = total.get("rx", total.get("download", 0)), total.get("tx", total.get("upload", 0))
+                rows.append((payload, rx, tx))
+            peak_values = []
+            for _payload, rx, tx in rows:
+                try:
+                    peak_values.append(float(rx or 0) + float(tx or 0))
+                except (TypeError, ValueError):
+                    peak_values.append(0.0)
+            peak = max(peak_values, default=0)
+            blocks = [f"<b>{html.escape(str(payload.get('panel', key)))}</b>\n<code>{usage_bar(float(rx or 0) + float(tx or 0), peak)}</code>\n↓ {html.escape(format_bytes(rx))}  ·  ↑ {html.escape(format_bytes(tx))}" for (payload, rx, tx), key in zip(rows, ("finland", "germany"))]
+            render_navigation(telegram, store, chat_id, "<b>📈 Статистика трафика</b>\nШкала: относительный объём между серверами.\n\n" + "\n\n".join(blocks), [[{"text": "👥 Устройства", "callback_data": "user:clients"}, {"text": "🏠 Меню", "callback_data": "menu:home"}]], "user:traffic", callback_message_id=callback_message_id)
             return True
         available: list[tuple[str, str, str]] = []
         for key in ("finland", "germany"):
@@ -920,6 +929,33 @@ def format_bytes(value: Any) -> str:
     return f"{amount:.1f} {units[index]}" if index else f"{int(amount)} B"
 
 
+def sparkline(values: Any, width: int = 12) -> str:
+    """Render numeric telemetry as a compact Telegram-safe Unicode chart."""
+    try:
+        numbers = [float(value) for value in (values or []) if value is not None]
+    except (TypeError, ValueError):
+        return "—"
+    if not numbers:
+        return "—"
+    if len(numbers) > width:
+        step = len(numbers) / width
+        numbers = [numbers[min(len(numbers) - 1, int(index * step))] for index in range(width)]
+    low, high = min(numbers), max(numbers)
+    glyphs = "▁▂▃▄▅▆▇█"
+    if high <= low:
+        return glyphs[0] * len(numbers)
+    return "".join(glyphs[min(len(glyphs) - 1, int((value - low) / (high - low) * (len(glyphs) - 1)))] for value in numbers)
+
+
+def usage_bar(value: Any, maximum: Any, width: int = 10) -> str:
+    try:
+        current, limit = max(0.0, float(value or 0)), max(0.0, float(maximum or 0))
+    except (TypeError, ValueError):
+        return "░" * width
+    filled = 0 if limit <= 0 else min(width, round(current / limit * width))
+    return "█" * filled + "░" * (width - filled)
+
+
 def status_icon(value: Any) -> str:
     normalized = str(value or "unknown").lower()
     if normalized in {"ok", "active", "healthy", "ready", "up", "enabled", "running", "pass"}:
@@ -994,6 +1030,12 @@ def format_panel_payload(payload: dict[str, Any], action: str) -> str:
         lines.append(f"Период: <b>{html.escape(str(payload.get('range', '1h')))}</b> · samples: <b>{summary.get('counts', {}).get('samples', 0)}</b>")
         cpu, memory, disk, load = summary.get("cpu") or {}, summary.get("memory") or {}, summary.get("disk") or {}, summary.get("load") or {}
         lines.extend([metric_line("CPU average/max", f"{cpu.get('avg', '—')}% / {cpu.get('max', '—')}%"), metric_line("RAM average/max", f"{memory.get('avg_used_percent', '—')}% / {memory.get('max_used_percent', '—')}%"), metric_line("Disk", f"{disk.get('current_used_percent', '—')}%"), metric_line("Load avg/max", f"{load.get('avg1', '—')} / {load.get('max1', '—')}")])
+        series = payload.get("series") or []
+        if series:
+            lines.append("<b>Динамика</b>")
+            lines.append(f"CPU   <code>{sparkline([item.get('cpu') for item in series])}</code>")
+            lines.append(f"RAM   <code>{sparkline([item.get('memory') for item in series])}</code>")
+            lines.append(f"Load  <code>{sparkline([item.get('load1') for item in series])}</code>")
         lines.append(f"События: ⚠️ {summary.get('counts', {}).get('warn', 0)} · ❌ {summary.get('counts', {}).get('critical', 0)}")
     elif action == "latency":
         overview = payload.get("overview") or payload.get("diagnostics") or {}
