@@ -112,6 +112,14 @@ class Store:
                 status TEXT NOT NULL DEFAULT 'pending'
             )"""
         )
+        self.db.execute(
+            """CREATE TABLE IF NOT EXISTS input_prompts (
+                telegram_id INTEGER PRIMARY KEY,
+                action TEXT NOT NULL,
+                server TEXT NOT NULL,
+                updated_at INTEGER NOT NULL
+            )"""
+        )
         self.db.commit()
 
     def close(self) -> None:
@@ -154,6 +162,20 @@ class Store:
             self.db.execute("INSERT INTO access_requests VALUES (?, ?, 'pending') ON CONFLICT(telegram_id) DO UPDATE SET requested_at=excluded.requested_at, status='pending'", (telegram_id, now))
             self.db.commit()
             return True
+
+    def set_prompt(self, telegram_id: int, action: str, server: str) -> None:
+        with self.lock:
+            self.db.execute("INSERT OR REPLACE INTO input_prompts VALUES (?, ?, ?, ?)", (telegram_id, action, server, int(time.time())))
+            self.db.commit()
+
+    def prompt(self, telegram_id: int) -> sqlite3.Row | None:
+        with self.lock:
+            return self.db.execute("SELECT * FROM input_prompts WHERE telegram_id=?", (telegram_id,)).fetchone()
+
+    def clear_prompt(self, telegram_id: int) -> None:
+        with self.lock:
+            self.db.execute("DELETE FROM input_prompts WHERE telegram_id=?", (telegram_id,))
+            self.db.commit()
 
     def navigation(self, telegram_id: int) -> sqlite3.Row | None:
         with self.lock:
@@ -450,12 +472,14 @@ class Telegram:
     def send_photo(self, chat_id: int, filename: str, content: bytes, caption: str = "") -> dict[str, Any]:
         return self._upload("sendPhoto", "photo", filename, content, chat_id=chat_id, caption=caption)
 
-    def send(self, chat_id: int, text: str, *, keyboard: list[list[dict[str, str]]] | None = None, reply_keyboard: list[list[str]] | None = None) -> dict[str, Any]:
+    def send(self, chat_id: int, text: str, *, keyboard: list[list[dict[str, str]]] | None = None, reply_keyboard: list[list[str]] | None = None, force_reply: bool = False) -> dict[str, Any]:
         params: dict[str, Any] = {"chat_id": chat_id, "text": text[:4096], "parse_mode": "HTML"}
         if keyboard:
             params["reply_markup"] = json.dumps({"inline_keyboard": keyboard}, ensure_ascii=False)
         elif reply_keyboard:
             params["reply_markup"] = json.dumps({"keyboard": [[{"text": item} for item in row] for row in reply_keyboard], "is_persistent": True, "resize_keyboard": True}, ensure_ascii=False)
+        elif force_reply:
+            params["reply_markup"] = json.dumps({"force_reply": True, "selective": True}, ensure_ascii=False)
         try:
             return self.call("sendMessage", **params)
         except RuntimeError as exc:
@@ -543,6 +567,7 @@ def admin_keyboard() -> list[list[dict[str, str]]]:
         [{"text": "ℹ️ Информация", "callback_data": "server:info:all"}, {"text": "🧪 Аудит", "callback_data": "server:audit:all"}],
         [{"text": "🧭 Resolver", "callback_data": "server:resolver:all"}, {"text": "🔑 Токены", "callback_data": "server:tokens:all"}],
         [{"text": "📈 Трафик", "callback_data": "user:traffic"}, {"text": "🔄 Обновления", "callback_data": "admin:update"}],
+        [{"text": "➕ Клиент Финляндии", "callback_data": "admin:add:finland"}, {"text": "➕ Клиент Германии", "callback_data": "admin:add:germany"}],
         [{"text": "♻️ Перезапуск Финляндии", "callback_data": "admin:restart:finland"}, {"text": "♻️ Перезапуск Германии", "callback_data": "admin:restart:germany"}],
         [{"text": "📜 Логи Финляндии", "callback_data": "server:logs:finland"}, {"text": "📜 Логи Германии", "callback_data": "server:logs:germany"}],
         [{"text": "⬅️ Главное меню", "callback_data": "menu:home"}],
@@ -658,6 +683,14 @@ def handle_navigation(telegram: Telegram, store: Store, panels: PanelManager, ch
                 "Выдайте ему токены панелей командой:\n"
                 f"<code>/bind {requested_id} &lt;finland_token&gt; &lt;germany_token&gt;</code>")
         render_navigation(telegram, store, chat_id, text, [[{"text": "👥 Пользователи", "callback_data": "admin:users:0"}, {"text": "⬅️ Админка", "callback_data": "menu:admin"}]], "admin:request", callback_message_id=callback_message_id)
+        return True
+    if kind == "admin" and action == "add":
+        if not is_admin or len(parts) < 3 or parts[2].lower() not in {"finland", "germany"}:
+            render_navigation(telegram, store, chat_id, "Недостаточно прав.", menu_keyboard(False), "home", callback_message_id=callback_message_id)
+            return True
+        server = parts[2].lower()
+        store.set_prompt(principal_id, "add_client", server)
+        telegram.send(chat_id, f"<b>➕ Новый клиент · {html.escape(server)}</b>\nВведите короткое имя (латиница, цифры, `-` или `_`, до 48 символов).", force_reply=True)
         return True
     if kind == "admin" and action in {"update", "update-check", "update-apply", "restart", "restart-confirm"}:
         if not is_admin:
@@ -1082,6 +1115,17 @@ def main() -> None:
                 parts = command.split()
                 name = parts[0].split("@", 1)[0].lower()
                 is_admin = actor_id == settings.admin_chat_id
+                prompt = store.prompt(actor_id) if actor_id and not callback else None
+                if prompt and not command.startswith("/") and not reply_action:
+                    if prompt["action"] == "add_client":
+                        candidate = command.strip()
+                        if not is_admin or not candidate or len(candidate) > 48 or not all(char.isalnum() or char in "_-" for char in candidate):
+                            telegram.send(chat_id, "Имя клиента некорректно. Используйте латиницу, цифры, `-` или `_` (до 48 символов). Повторите ввод.", force_reply=True)
+                            continue
+                        result = panels.run(prompt["server"], "add", PANEL_TOKEN, value=candidate) or "API недоступен"
+                        store.clear_prompt(actor_id)
+                        render_navigation(telegram, store, chat_id, f"<b>✅ Клиент создан</b>\n{html.escape(result)}", admin_keyboard(), "admin:add-done", reply=True)
+                        continue
                 if callback and handle_navigation(telegram, store, panels, chat_id, is_admin, str(callback.get("data", "")), actor_id=actor_id, callback_message_id=int((callback.get("message") or {}).get("message_id", 0) or 0)):
                     continue
                 if reply_action and handle_navigation(telegram, store, panels, chat_id, is_admin, reply_action, actor_id=actor_id):
