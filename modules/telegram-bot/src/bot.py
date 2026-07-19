@@ -4,14 +4,12 @@
 from __future__ import annotations
 
 import json
-import base64
 import atexit
 import hmac
 import html
 import logging
 import os
 import queue
-import shlex
 import sqlite3
 import subprocess
 import threading
@@ -29,7 +27,6 @@ from urllib.request import Request, urlopen
 
 LOG = logging.getLogger("gaullebot")
 PANEL_TOKEN = object()
-SSH_FALLBACK_ENABLED = os.getenv("GAULLEBOT_SSH_FALLBACK", "0").lower() in {"1", "true", "yes"}
 
 
 @dataclass(frozen=True)
@@ -180,47 +177,6 @@ class ServerManager:
             f"{server.user}@{server.host}",
         ]
 
-    def run(self, key: str, action: str, value: str = "") -> str:
-        server = self.servers.get(key)
-        if server is None:
-            return "unknown server"
-        if not server.host or not server.identity:
-            return f"{server.label}: SSH connector is not configured"
-        commands = {
-            "status": "version=$(cat /root/awg/VERSION); printf 'VERSION=%s\\n' \"$version\"; ip -brief addr show awg0; systemctl is-active awg-quick@awg0 awg-web AdGuardHome",
-            "health": "/root/awg/update-installed.sh --check",
-            "info": "version=$(cat /root/awg/VERSION); printf 'VERSION=%s\\n' \"$version\"; ip -brief addr show awg0; uname -srmo",
-            "readiness": "/root/awg/update-installed.sh --check; systemctl is-active awg-quick@awg0 awg-web AdGuardHome",
-            "dns": "systemctl is-active AdGuardHome; resolvectl status 2>/dev/null | head -n 24",
-            "resolver": "systemctl is-active AdGuardHome; ss -lunp | grep -E ':(53|5353)\\b' || true",
-            "audit": "printf 'CONFIGS='; find /root/awg -maxdepth 1 -type f -name '*.conf' ! -name awg0.conf | wc -l; systemctl is-active awg-quick@awg0 awg-web AdGuardHome",
-            "tokens": "printf 'PANEL_TOKEN_STORE='; stat -c '%a %s bytes' /root/awg/web/tokens.json 2>/dev/null || true; grep -c '^[[:space:]]*\"[0-9a-f]\\{64\\}\"' /root/awg/web/tokens.json 2>/dev/null || true",
-            "restart": "systemctl restart awg-quick@awg0 awg-web AdGuardHome",
-            "clients": "for f in /root/awg/*.conf; do n=$(basename \"$f\" .conf); [ \"$n\" = awg0 ] && continue; a=$(awk -F'= *' '/^Address/{print $2; exit}' \"$f\"); printf '%s|%s\\n' \"$n\" \"$a\"; done",
-            "logs": "tail -n 100 /root/awg/manage_amneziawg.log /root/awg/install_amneziawg.log 2>/dev/null",
-        }
-        if action in {"add", "remove", "regenerate"}:
-            if not value or not value.replace("_", "").replace("-", "").isalnum() or len(value) > 48:
-                return f"{server.label}: invalid client name"
-            command = {"add": f"/root/awg/manage_amneziawg.sh client add --yes {shlex.quote(value)}", "remove": f"AWG_YES=1 /root/awg/manage_amneziawg.sh client remove --yes {shlex.quote(value)}", "regenerate": f"/root/awg/manage_amneziawg.sh client regenerate {shlex.quote(value)}"}[action]
-        else:
-            command = commands.get(action)
-        if command is None:
-            return "unsupported action"
-        encoded = base64.b64encode(command.encode()).decode("ascii")
-        remote = f"printf '%s' {encoded} | base64 -d | bash"
-        argv = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8", "-o", "StrictHostKeyChecking=accept-new", "-i", server.identity, "-p", server.port, f"{server.user}@{server.host}", remote]
-        try:
-            completed = subprocess.run(argv, capture_output=True, text=True, timeout=30, check=False)
-        except (OSError, subprocess.TimeoutExpired) as exc:
-            return f"{server.label}: connector error: {type(exc).__name__}"
-        output = (completed.stdout + completed.stderr).strip()
-        if completed.returncode:
-            return f"{server.label}: command failed ({completed.returncode})\n{output[-1200:]}"
-        limit = 3500 if action == "clients" else 1200
-        return f"{server.label}\n{output[-limit:]}"
-
-
 @dataclass(frozen=True)
 class Panel:
     key: str
@@ -291,7 +247,7 @@ class PanelManager:
                 payload = json.loads(response.read())
         except HTTPError as exc:
             if exc.code in {401, 403}:
-                LOG.info("panel action requires elevated scope; using SSH fallback panel=%s action=%s", key, action)
+                LOG.info("panel API denied request panel=%s action=%s", key, action)
                 return None
             LOG.warning("panel request failed panel=%s action=%s status=%s", key, action, exc.code)
             return {"error": f"API HTTP {exc.code}", "panel": panel.label}
@@ -316,22 +272,20 @@ class PanelManager:
         return list(self.panels)
 
 
-def server_result(panel: PanelManager, ssh: ServerManager, key: str, action: str, token: str | object | None = None, value: str = "") -> str:
-    """Use the authenticated panel API; SSH is opt-in emergency compatibility only."""
+def server_result(panel: PanelManager, key: str, action: str, token: str | object | None = None, value: str = "") -> str:
+    """Execute a bot action exclusively through the authenticated panel API."""
     result = panel.run(key, action, token, value)
     if result is not None:
         return result
-    if SSH_FALLBACK_ENABLED:
-        return ssh.run(key, action, value)
-    return f"{key}: panel API unavailable; SSH fallback is disabled"
+    return f"{key}: panel API unavailable"
 
 
-def parallel_results(panel: PanelManager, ssh: ServerManager, keys: tuple[str, ...], action: str, tokens: dict[str, str | object | None] | None = None) -> list[str]:
+def parallel_results(panel: PanelManager, keys: tuple[str, ...], action: str, tokens: dict[str, str | object | None] | None = None) -> list[str]:
     """Query panels concurrently; one slow region must not block the other."""
     tokens = tokens or {}
 
     def fetch(key: str) -> str:
-        return server_result(panel, ssh, key, action, tokens.get(key, PANEL_TOKEN))
+        return server_result(panel, key, action, tokens.get(key, PANEL_TOKEN))
 
     with ThreadPoolExecutor(max_workers=len(keys)) as pool:
         futures = [pool.submit(fetch, key) for key in keys]
@@ -527,7 +481,7 @@ def render_navigation(telegram: Telegram, store: Store, chat_id: int, text: str,
         store.set_navigation(chat_id, message_id, screen)
 
 
-def handle_navigation(telegram: Telegram, store: Store, panels: PanelManager, manager: ServerManager, chat_id: int, is_admin: bool, data: str, *, actor_id: int | None = None, callback_message_id: int | None = None) -> bool:
+def handle_navigation(telegram: Telegram, store: Store, panels: PanelManager, chat_id: int, is_admin: bool, data: str, *, actor_id: int | None = None, callback_message_id: int | None = None) -> bool:
     """Render button-first VPN screens and edit the current menu in place."""
     parts = [part for part in str(data or "").split(":")]
     principal_id = actor_id or chat_id
@@ -577,7 +531,7 @@ def handle_navigation(telegram: Telegram, store: Store, panels: PanelManager, ma
         elif action == "clients":
             output = "\n\n".join(compact_clients(panels.request(key, "snapshot", PANEL_TOKEN if is_admin else tokens[key]) or {"panel": key, "error": "недоступен"}) for key in keys)
         else:
-            output = "\n\n".join(html.escape(parallel_results(panels, manager, keys, action)[index]) for index in range(len(keys)))
+            output = "\n\n".join(html.escape(parallel_results(panels, keys, action)[index]) for index in range(len(keys)))
         title = {"status": "Статус", "clients": "Клиенты", "health": "Проверка", "readiness": "Готовность VPN", "dns": "DNS", "info": "Информация", "resolver": "Resolver", "audit": "Аудит", "tokens": "Токены", "logs": "Логи"}[action]
         render_navigation(telegram, store, chat_id, f"<b>{title}</b>\n{output[:3900]}", navigation_keyboard("result", is_admin), f"server:{action}:{server}", callback_message_id=callback_message_id)
         return True
@@ -639,10 +593,10 @@ def verify_init_data(raw: str, bot_token: str, max_age: int = 86400) -> dict[str
 class MiniAppServer:
     """Local Mini App/API gateway, normally published through an HTTPS proxy."""
 
-    def __init__(self, bind: str, port: int, token: str, store: Store, panels: PanelManager, manager: ServerManager) -> None:
+    def __init__(self, bind: str, port: int, token: str, store: Store, panels: PanelManager) -> None:
         root = Path(__file__).resolve().parents[1] / "web"
-        self.store, self.panels, self.manager, self.token = store, panels, manager, token
-        store_ref, panels_ref, manager_ref, token_ref = store, panels, manager, token
+        self.store, self.panels, self.token = store, panels, token
+        store_ref, panels_ref, token_ref = store, panels, token
 
         class Handler(BaseHTTPRequestHandler):
             def log_message(self, fmt: str, *args: Any) -> None:
@@ -801,7 +755,7 @@ def main() -> None:
     manager = ServerManager()
     tunnels = TunnelManager(manager, enabled=os.getenv("PANEL_TUNNELS_ENABLED", "1").lower() not in {"0", "false", "no"})
     panels = PanelManager(settings.panels_path)
-    mini_app = MiniAppServer(settings.mini_app_bind, settings.mini_app_port, settings.token, store, panels, manager)
+    mini_app = MiniAppServer(settings.mini_app_bind, settings.mini_app_port, settings.token, store, panels)
     mini_app.start()
     LOG.info("Mini App/API gateway listening bind=%s port=%s", settings.mini_app_bind, settings.mini_app_port)
     webhook = None
@@ -851,16 +805,16 @@ def main() -> None:
                 parts = command.split()
                 name = parts[0].split("@", 1)[0].lower()
                 is_admin = actor_id == settings.admin_chat_id
-                if callback and handle_navigation(telegram, store, panels, manager, chat_id, is_admin, str(callback.get("data", "")), actor_id=actor_id, callback_message_id=int((callback.get("message") or {}).get("message_id", 0) or 0)):
+                if callback and handle_navigation(telegram, store, panels, chat_id, is_admin, str(callback.get("data", "")), actor_id=actor_id, callback_message_id=int((callback.get("message") or {}).get("message_id", 0) or 0)):
                     continue
-                if reply_action and handle_navigation(telegram, store, panels, manager, chat_id, is_admin, reply_action, actor_id=actor_id):
+                if reply_action and handle_navigation(telegram, store, panels, chat_id, is_admin, reply_action, actor_id=actor_id):
                     continue
                 try:
                     def snapshot_text(key: str, token: str | None = None, clients: bool = False) -> str:
                         payload = panels.request(key, "snapshot", PANEL_TOKEN if is_admin and token is None else token)
                         if payload is not None:
                             return compact_clients(payload) if clients else compact_snapshot(payload)
-                        return server_result(panels, manager, key, "status", token)
+                        return server_result(panels, key, "status", token)
 
                     if name == "/start":
                         render_navigation(telegram, store, chat_id, "<b>GaulleBot</b>\nУправление VPN-серверами без ручного ввода команд.", menu_keyboard(is_admin), "home")
@@ -888,16 +842,16 @@ def main() -> None:
                         if name == "/status":
                             telegram.send(chat_id, "\n\n".join(snapshot_text(key) for key in ("finland", "germany")))
                         else:
-                            telegram.send(chat_id, "\n\n".join(parallel_results(panels, manager, ("finland", "germany"), "health", {"finland": PANEL_TOKEN, "germany": PANEL_TOKEN})))
+                            telegram.send(chat_id, "\n\n".join(parallel_results(panels, ("finland", "germany"), "health", {"finland": PANEL_TOKEN, "germany": PANEL_TOKEN})))
                     elif name in {"/info", "/readiness", "/dns", "/resolver", "/audit", "/tokens"}:
                         action = name[1:]
-                        raw = "\n\n".join(parallel_results(panels, manager, ("finland", "germany"), action, {"finland": PANEL_TOKEN, "germany": PANEL_TOKEN}))
+                        raw = "\n\n".join(parallel_results(panels, ("finland", "germany"), action, {"finland": PANEL_TOKEN, "germany": PANEL_TOKEN}))
                         telegram.send(chat_id, html.escape(raw)[:4096])
                     elif name == "/restart" and len(parts) == 2:
-                        telegram.send(chat_id, server_result(panels, manager, parts[1].lower(), "restart", PANEL_TOKEN))
+                        telegram.send(chat_id, server_result(panels, parts[1].lower(), "restart", PANEL_TOKEN))
                     elif name in {"/add", "/remove", "/regenerate"} and len(parts) == 3:
                         action = name[1:]
-                        telegram.send(chat_id, server_result(panels, manager, parts[1].lower(), action, PANEL_TOKEN, value=parts[2]))
+                        telegram.send(chat_id, server_result(panels, parts[1].lower(), action, PANEL_TOKEN, value=parts[2]))
                     elif name == "/bind" and len(parts) == 4:
                         store.bind(int(parts[1]), str(sender.get("username", "")), str(sender.get("first_name", "")), parts[2], parts[3])
                         telegram.send(chat_id, "Привязка сохранена.")
@@ -914,7 +868,7 @@ def main() -> None:
                         telegram.send(chat_id, "\n\n".join(snapshot_text(key, tokens[key], clients=True) for key in keys))
                     elif name == "/logs":
                         keys = (parts[1].lower(),) if len(parts) == 2 and parts[1].lower() in {"finland", "germany"} else ("finland", "germany")
-                        telegram.send(chat_id, "\n\n".join(parallel_results(panels, manager, keys, "logs")))
+                        telegram.send(chat_id, "\n\n".join(parallel_results(panels, keys, "logs")))
                     else:
                         telegram.send(chat_id, help_text(True))
                 except (ValueError, RuntimeError) as exc:

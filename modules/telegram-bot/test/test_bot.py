@@ -88,6 +88,9 @@ class BotTests(unittest.TestCase):
                 else:
                     os.environ[key] = value
 
+    def test_ssh_manager_is_transport_only(self):
+        self.assertFalse(hasattr(ServerManager, "run"))
+
     def test_admin_help_lists_panel_diagnostics(self):
         text = help_text(True)
         for command in ("/info", "/readiness", "/dns", "/resolver", "/audit", "/tokens"):
