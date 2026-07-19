@@ -121,6 +121,7 @@ class BotTests(unittest.TestCase):
         callbacks = [button["callback_data"] for row in buttons for button in row]
         self.assertTrue(all(len(value.encode()) <= 64 for value in callbacks))
         self.assertTrue(all(len(button["callback_data"].encode()) <= 64 for row in clients_keyboard([("germany", "a" * 48, "0123456789")]) for button in row))
+        self.assertTrue({"client:toggle:0123456789", "client:p2p-toggle:0123456789", "client:ports-toggle:0123456789", "client:remove:0123456789"}.issubset({button["callback_data"] for row in buttons for button in row}))
 
     def test_tunnel_argv_uses_loopback_forward(self):
         old = {key: os.environ.get(key) for key in ("FINLAND_SSH_HOST", "FINLAND_SSH_IDENTITY")}

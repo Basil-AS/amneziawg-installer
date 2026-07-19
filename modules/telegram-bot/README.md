@@ -75,6 +75,7 @@ dedicated super API token or the user's bound panel token. Unbound users get
 fallback.
 
 The Mini App is a dependency-free Telegram Web App: it presents server cards,
-online counts, per-client traffic, QR preview and config downloads. Artifact
+online counts, per-client traffic, QR preview, config downloads and client
+state/P2P/port controls. Artifact
 requests go through the bot's signed `/api/artifact` gateway; panel URLs and
 bearer tokens are never exposed to browser JavaScript.
