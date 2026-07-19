@@ -341,6 +341,12 @@ class PanelManager:
         if action in {"status", "snapshot", "clients"}:
             with self._cache_lock:
                 self._cache[cache_key] = (time.monotonic(), dict(payload))
+        elif action not in {"update", "update-check"}:
+            # Mutations must be visible on the next card render; do not let a
+            # previously cached snapshot survive add/remove/toggle actions.
+            with self._cache_lock:
+                for cached_key in [item for item in self._cache if item[0] == key]:
+                    self._cache.pop(cached_key, None)
         return payload
 
     def run(self, key: str, action: str, token: str | object | None = None, value: str = "") -> str | None:
