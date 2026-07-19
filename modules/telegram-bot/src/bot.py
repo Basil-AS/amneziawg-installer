@@ -463,6 +463,41 @@ class PanelManager:
             LOG.warning("panel artifact failed panel=%s kind=%s", key, kind)
             return None
 
+    def nettest(self, key: str, kind: str, token: str | object | None = None, *, test_id: str = "", size: int = 0, body: bytes | None = None, payload: dict[str, Any] | None = None) -> tuple[bytes, str] | dict[str, Any] | None:
+        """Proxy the bounded network-test API without exposing panel credentials."""
+        panel = self.panels.get(key)
+        if panel is None:
+            return None
+        effective_token = panel.token if token is PANEL_TOKEN else str(token or "")
+        if not effective_token or kind not in {"context", "ping", "download", "upload", "report", "cancel"}:
+            return None
+        query = ""
+        if test_id:
+            query += "?test_id=" + quote(test_id, safe="")
+        if kind == "download":
+            query += ("&" if query else "?") + "size=" + str(max(1, min(int(size or 1_000_000), 4_000_000)));
+        endpoint = f"/api/nettest/{kind}{query}"
+        request_body = body
+        headers = {"Authorization": f"Bearer {effective_token}", "Accept": "application/json"}
+        if payload is not None:
+            request_body = json.dumps(payload, ensure_ascii=False).encode()
+            headers["Content-Type"] = "application/json"
+        elif kind == "upload":
+            headers["Content-Type"] = "application/octet-stream"
+            headers["X-Nettest-Id"] = test_id
+        request = Request(panel.base_url + endpoint, headers=headers, data=request_body, method="POST" if kind in {"upload", "report", "cancel"} else "GET")
+        context = None if panel.verify_tls else ssl._create_unverified_context()
+        try:
+            with urlopen(request, timeout=30, context=context) as response:
+                data = response.read(4_000_000)
+                if kind == "download":
+                    return data, response.headers.get_content_type() or "application/octet-stream"
+                result = json.loads(data)
+                return result if isinstance(result, dict) else None
+        except (HTTPError, OSError, ValueError, json.JSONDecodeError) as exc:
+            LOG.info("panel nettest failed panel=%s kind=%s error=%s", key, kind, type(exc).__name__)
+            return None
+
     def keys(self) -> list[str]:
         return list(self.panels)
 
@@ -1483,6 +1518,34 @@ class MiniAppServer:
                     data = (root / "style.css").read_bytes()
                     self.send_response(200); self.send_header("Content-Type", "text/css; charset=utf-8"); self.send_header("Content-Length", str(len(data))); self.end_headers(); self.wfile.write(data); return
                 parsed = urlparse(self.path)
+                if parsed.path == "/api/nettest":
+                    try:
+                        user = self.user(); query = parse_qs(parsed.query)
+                        server = str((query.get("server") or [""])[0]).lower()
+                        kind = str((query.get("kind") or [""])[0]).lower()
+                        test_id = str((query.get("test_id") or [""])[0])[:64]
+                        if server not in {"finland", "germany"} or kind not in {"context", "ping", "download"} or (kind == "download" and not test_id) or (test_id and not re.fullmatch(r"[A-Za-z0-9_.-]+", test_id)):
+                            raise ValueError("invalid nettest request")
+                        row = store_ref.get(int(user["id"])); is_admin = int(user["id"]) == int(os.environ.get("ADMIN_CHAT_ID", "0"))
+                        token = PANEL_TOKEN if is_admin else (row[f"{server}_token"] if row else "")
+                        if not token:
+                            self.reply({"error": "panel_not_bound"}, 403); return
+                        try:
+                            size = int((query.get("size") or ["1000000"])[0])
+                        except (TypeError, ValueError):
+                            raise ValueError("invalid nettest size")
+                        result = panels_ref.nettest(server, kind, token, test_id=test_id, size=size)
+                        if result is None:
+                            self.reply({"error": "nettest_unavailable"}, 502); return
+                        if isinstance(result, tuple):
+                            content, content_type = result
+                            self.send_response(200); self.send_header("Content-Type", content_type); self.send_header("Cache-Control", "no-store"); self.send_header("Content-Length", str(len(content))); self.end_headers(); self.wfile.write(content); return
+                        self.reply(result)
+                    except ValueError:
+                        self.reply({"error": "bad_request"}, 400)
+                    except OSError:
+                        self.reply({"error": "backend_unavailable"}, 503)
+                    return
                 if parsed.path == "/api/artifact":
                     try:
                         user = self.user()
@@ -1535,6 +1598,44 @@ class MiniAppServer:
                     self.reply({"error": "unauthorized" if isinstance(exc, ValueError) else "backend_unavailable"}, 401 if isinstance(exc, ValueError) else 503)
 
             def do_POST(self) -> None:
+                parsed = urlparse(self.path)
+                if parsed.path == "/api/nettest":
+                    try:
+                        user = self.user(); query = parse_qs(parsed.query)
+                        server = str((query.get("server") or [""])[0]).lower()
+                        kind = str((query.get("kind") or [""])[0]).lower()
+                        test_id = str((query.get("test_id") or [""])[0])[:64]
+                        if server not in {"finland", "germany"} or kind not in {"upload", "report", "cancel"} or not test_id or not re.fullmatch(r"[A-Za-z0-9_.-]+", test_id):
+                            raise ValueError("invalid nettest request")
+                        row = store_ref.get(int(user["id"])); is_admin = int(user["id"]) == int(os.environ.get("ADMIN_CHAT_ID", "0"))
+                        token = PANEL_TOKEN if is_admin else (row[f"{server}_token"] if row else "")
+                        if not token:
+                            self.reply({"error": "panel_not_bound"}, 403); return
+                        try:
+                            size = int(self.headers.get("Content-Length", "0") or 0)
+                        except (TypeError, ValueError):
+                            raise ValueError("invalid nettest payload")
+                        if kind == "upload":
+                            if size <= 0 or size > 4_000_000:
+                                raise ValueError("nettest upload is limited to 4 MiB")
+                            body = self.rfile.read(size)
+                            result = panels_ref.nettest(server, kind, token, test_id=test_id, body=body)
+                        else:
+                            if size <= 0 or size > 32_000:
+                                raise ValueError("invalid nettest report")
+                            payload = json.loads(self.rfile.read(size))
+                            if not isinstance(payload, dict):
+                                raise ValueError("invalid nettest report")
+                            payload["test_id"] = test_id
+                            result = panels_ref.nettest(server, kind, token, test_id=test_id, payload=payload)
+                        if result is None:
+                            self.reply({"error": "nettest_unavailable"}, 502); return
+                        self.reply(result if isinstance(result, dict) else {"ok": True})
+                    except (ValueError, json.JSONDecodeError):
+                        self.reply({"error": "bad_request"}, 400)
+                    except OSError:
+                        self.reply({"error": "backend_unavailable"}, 503)
+                    return
                 if self.path == "/api/access-request":
                     try:
                         user = self.user()
