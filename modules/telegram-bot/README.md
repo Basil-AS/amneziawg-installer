@@ -62,6 +62,8 @@ the secret URL. The panel invalidates it after expiry or first use.
 Diagnostics are rendered as Telegram cards (health metrics, services, DNS,
 readiness, audit summaries, load history, latency and provider traffic, plus
 redacted token counts); raw panel JSON is not sent to users.
+Two-panel summary screens fan out concurrently and preserve Finland/Germany
+ordering, so a slow region does not add its latency to the other result.
 Load history now includes compact Unicode CPU/RAM/load charts, and user traffic
 cards include relative volume bars so trends are readable directly in Telegram.
 The admin diagnostics menu also reads GeoIP provider/database status, nettest

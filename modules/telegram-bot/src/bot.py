@@ -423,6 +423,19 @@ def parallel_results(panel: PanelManager, keys: tuple[str, ...], action: str, to
         return [future.result() for future in futures]
 
 
+def parallel_payloads(panel: PanelManager, keys: tuple[str, ...], action: str, tokens: dict[str, str | object | None] | None = None) -> list[dict[str, Any]]:
+    """Fetch structured API payloads concurrently for multi-panel screens."""
+    tokens = tokens or {}
+
+    def fetch(key: str) -> dict[str, Any]:
+        payload = panel.request(key, action, tokens.get(key, PANEL_TOKEN))
+        return payload if isinstance(payload, dict) else {"panel": key, "error": "API недоступен"}
+
+    with ThreadPoolExecutor(max_workers=max(1, len(keys))) as pool:
+        futures = [pool.submit(fetch, key) for key in keys]
+        return [future.result() for future in futures]
+
+
 class TunnelManager:
     """Keep panel API forwards alive inside the bot process.
 
@@ -803,8 +816,8 @@ def handle_navigation(telegram: Telegram, store: Store, panels: PanelManager, ch
             return True
         if action == "traffic":
             rows = []
-            for key in ("finland", "germany"):
-                payload = panels.request(key, "traffic", PANEL_TOKEN if is_admin else tokens[key]) or {}
+            traffic_payloads = parallel_payloads(panels, ("finland", "germany"), "traffic", {key: PANEL_TOKEN if is_admin else tokens[key] for key in ("finland", "germany")})
+            for key, payload in zip(("finland", "germany"), traffic_payloads):
                 total = payload.get("total") or payload.get("current") or {}
                 rx, tx = total.get("rx", total.get("download", 0)), total.get("tx", total.get("upload", 0))
                 rows.append((payload, rx, tx))
@@ -930,11 +943,11 @@ def handle_navigation(telegram: Telegram, store: Store, panels: PanelManager, ch
         row = store.get(principal_id)
         tokens = {"finland": row["finland_token"] if row else None, "germany": row["germany_token"] if row else None}
         if action == "status":
-            output = "\n\n".join(compact_snapshot(panels.request(key, "snapshot", PANEL_TOKEN if is_admin else tokens[key]) or {"panel": key, "error": "недоступен"}) for key in keys)
+            output = "\n\n".join(compact_snapshot(payload) for payload in parallel_payloads(panels, keys, "snapshot", {key: PANEL_TOKEN if is_admin else tokens[key] for key in keys}))
         elif action == "clients":
-            output = "\n\n".join(compact_clients(panels.request(key, "snapshot", PANEL_TOKEN if is_admin else tokens[key]) or {"panel": key, "error": "недоступен"}) for key in keys)
+            output = "\n\n".join(compact_clients(payload) for payload in parallel_payloads(panels, keys, "snapshot", {key: PANEL_TOKEN if is_admin else tokens[key] for key in keys}))
         else:
-            output = "\n\n".join(panel_text(panels, key, action, PANEL_TOKEN if is_admin else tokens[key]) for key in keys)
+            output = "\n\n".join(parallel_results(panels, keys, action, {key: PANEL_TOKEN if is_admin else tokens[key] for key in keys}))
         title = {"status": "Статус", "clients": "Клиенты", "health": "Проверка", "readiness": "Готовность VPN", "dns": "DNS", "info": "Информация", "resolver": "Resolver", "audit": "Аудит", "tokens": "Токены", "logs": "Логи", "health-history": "История нагрузки", "latency": "Latency клиентов", "provider-traffic": "Provider traffic", "geoip-status": "GeoIP", "geoip-providers": "GeoIP providers", "geoip-databases": "GeoIP databases", "nettest-reports": "Nettest отчёты", "web-policy": "Web access policy", "web-cert": "TLS-сертификат"}[action]
         render_navigation(telegram, store, chat_id, f"<b>{title}</b>\n{output[:3900]}", navigation_keyboard("result", is_admin), f"server:{action}:{server}", callback_message_id=callback_message_id)
         return True
