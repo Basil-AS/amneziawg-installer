@@ -16,6 +16,7 @@ let clientPathState = {results: {}, running: {}, batchRunning: false, batchSumma
 let readinessState = null;
 let readinessLoadedAt = 0;
 let serverInfoState = null;
+let projectUpdateState = null;
 let nettestContextState = null;
 let nettestReportsState = [];
 let latestClients = [];
@@ -2509,6 +2510,23 @@ async function renderPanel() {
       </div>
     </section>
 
+    <section id="projectUpdatePanel" ${collapsibleSectionAttrs("projectUpdatePanel", "Project Updates")} class="mt-3 rounded-lg border border-[var(--line)] bg-[var(--panel)] p-4 ${statusState.role === "super" ? "" : "hidden"}">
+      <div class="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h2 class="text-base font-semibold">Project Updates</h2>
+          <p class="text-sm text-[var(--muted)]">Verified release bundle with backup, health checks, and automatic rollback.</p>
+        </div>
+        <div class="flex flex-wrap items-center justify-end gap-2">
+          <button id="checkProjectUpdate" class="${buttonClasses()}">${icon("refresh")}<span>Check updates</span></button>
+          <button id="applyProjectUpdate" class="${primaryButtonClasses()}" disabled>${icon("download")}<span>Update safely</span></button>
+          ${collapseToggle("projectUpdatePanel", "Project Updates")}
+        </div>
+      </div>
+      <div ${collapsibleSectionBody("projectUpdatePanel", "mt-3")}>
+        <div id="projectUpdateStatus" class="rounded-md border border-[var(--line)] bg-[var(--soft)] p-3 text-sm text-[var(--muted)]">Checking updater status…</div>
+      </div>
+    </section>
+
     <section id="networkTesterPanel" ${collapsibleSectionAttrs("networkTesterPanel", "Network Tester")} class="mt-3 rounded-lg border border-[var(--line)] bg-[var(--panel)] p-4">
       <div class="flex flex-wrap items-center justify-between gap-3">
         <div>
@@ -2634,6 +2652,8 @@ async function renderPanel() {
     document.querySelector("#saveGeoipProviders").onclick = saveGeoipProviders;
     document.querySelector("#clearNettestReports").onclick = clearAllNettestReports;
     document.querySelector("#rebootServer").onclick = rebootServer;
+    document.querySelector("#checkProjectUpdate").onclick = checkProjectUpdate;
+    document.querySelector("#applyProjectUpdate").onclick = applyProjectUpdate;
   }
   if (nettestPage) {
     for (const selector of [
@@ -2641,6 +2661,7 @@ async function renderPanel() {
       "#trafficPanel",
       "#topTrafficPanel",
       "#serverHealthPanel",
+      "#projectUpdatePanel",
       "#accessPanel",
       "#webAccessPanel",
       "#advancedPanel",
@@ -2681,7 +2702,72 @@ async function loadAll() {
   }
   renderNettestContext();
   if (statusState.role === "super") {
-    await Promise.all([loadTokens(), loadWebAccessPolicy(), loadServerHealth(), loadClientLatency(), loadNettestReports(), loadGeoipAdmin()]);
+    await Promise.all([loadTokens(), loadWebAccessPolicy(), loadServerHealth(), loadClientLatency(), loadNettestReports(), loadGeoipAdmin(), loadProjectUpdate()]);
+  }
+}
+
+function renderProjectUpdate() {
+  const host = document.querySelector("#projectUpdateStatus");
+  const apply = document.querySelector("#applyProjectUpdate");
+  if (!host || !projectUpdateState) return;
+  const s = projectUpdateState;
+  const running = s.status === "running";
+  const version = s.installed || statusState?.version || "unknown";
+  const target = s.target || "not checked";
+  host.innerHTML = `<div class="flex flex-wrap items-center justify-between gap-2"><span>Installed: <b>${esc(version)}</b> · target: <b>${esc(target)}</b></span><span class="text-xs">${running ? "Update operation is running…" : s.status === "failed" ? "Last update failed — rollback was attempted" : s.available ? "Update available" : s.status === "unavailable" ? "Updater unavailable" : "Up to date"}</span></div>${s.last_output ? `<details class="mt-2 text-xs"><summary>Last updater output</summary><pre class="mt-2 max-h-40 overflow-auto whitespace-pre-wrap">${esc(s.last_output)}</pre></details>` : ""}`;
+  if (apply) apply.disabled = running || !s.available || s.status === "unavailable";
+}
+
+async function loadProjectUpdate() {
+  if (statusState?.role !== "super") return;
+  try {
+    projectUpdateState = await api("/api/project-update");
+  } catch {
+    projectUpdateState = {status: "unavailable", available: false, installed: statusState?.version || "unknown"};
+  }
+  renderProjectUpdate();
+}
+
+async function checkProjectUpdate() {
+  const button = document.querySelector("#checkProjectUpdate");
+  if (button) button.disabled = true;
+  try {
+    await api("/api/project-update/check", {method: "POST", body: "{}"});
+    showToast("Update check started");
+    await pollProjectUpdate();
+  } catch (error) {
+    showToast(error.message || "Failed to start update check", "error");
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+
+async function pollProjectUpdate() {
+  for (let attempt = 0; attempt < 60; attempt += 1) {
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    await loadProjectUpdate();
+    if (projectUpdateState?.status !== "running") return;
+  }
+}
+
+async function applyProjectUpdate() {
+  const ok = await confirmModal(
+    "Update project safely",
+    "The updater downloads a verified release, keeps client keys/configuration, restarts only the web panel when needed, and rolls back automatically if health checks fail. Continue?",
+    "Update",
+    true
+  );
+  if (!ok) return;
+  const button = document.querySelector("#applyProjectUpdate");
+  if (button) button.disabled = true;
+  try {
+    await api("/api/project-update/apply", {method: "POST", body: JSON.stringify({confirm: "UPDATE PROJECT"})});
+    showToast("Safe update started");
+    await pollProjectUpdate();
+    if (projectUpdateState?.status === "ready" && projectUpdateState?.available === false) showToast("Project update completed");
+  } catch (error) {
+    showToast(error.message || "Failed to start project update", "error");
+    renderProjectUpdate();
   }
 }
 

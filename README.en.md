@@ -146,6 +146,13 @@ sudo /root/awg/update-installed.sh --install-timer  # opt-in weekly auto-update
 
 Automatic updates are intentionally not enabled by the installer without an explicit command.
 
+When the web panel is installed, a super administrator can use **Project Updates**:
+**Check updates** starts an isolated check and **Update safely** starts the updater in a separate
+systemd unit outside the panel process. Concurrent runs are locked, an exact confirmation is
+required, the same checksum-verified release bundle as the CLI is used, and the result/log is
+shown in the UI. Restarting the web panel does not stop the updater; a failed health check restores
+the rollback snapshot automatically. Regular bearer tokens cannot see this section.
+
 ### Safe default installation
 
 ```bash
