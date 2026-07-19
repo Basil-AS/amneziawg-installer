@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import errno
 import hashlib
+import gzip
 import hmac
 import ipaddress
 import json
@@ -6219,6 +6220,68 @@ def client_stats_map(force=False):
     return dict(refreshed) if refreshed else dict(STATS_CACHE_VALUE or {})
 
 
+def bot_snapshot_payload(auth):
+    """Return a compact single-request payload for the Telegram control plane.
+
+    The browser client enriches peers with geo-IP and history information;
+    automation only needs current service and peer state.  Keeping this path
+    intentionally cheap avoids request cascades and SSH fallbacks.
+    """
+    peers = parse_peers()
+    if auth.get("role") != "super":
+        allowed = set(auth.get("clients") or [])
+        peers = [peer for peer in peers if peer.get("name") in allowed]
+    stats = client_stats_map()
+    cfg = parse_config()
+    try:
+        service = subprocess.run(
+            ["systemctl", "is-active", "awg-quick@awg0"],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=2,
+            check=False,
+        ).stdout.strip()
+    except (OSError, subprocess.TimeoutExpired):
+        service = "unknown"
+    now = int(time.time())
+    clients = []
+    for peer in peers:
+        name = peer.get("name", "")
+        row = stats.get(name, {})
+        handshake = safe_int(row.get("latestHandshakeAt") or row.get("last_handshake")) or 0
+        clients.append({
+            "name": name,
+            "display_name": peer.get("display_name") or name,
+            "ipv4": peer.get("ipv4", ""),
+            "ipv6": peer.get("ipv6", ""),
+            "status": row.get("status", "offline"),
+            "online": bool(handshake and now - handshake < 180),
+            "latest_handshake": handshake,
+            "endpoint": row.get("endpoint", ""),
+            "rx": safe_int(row.get("rx")) or 0,
+            "tx": safe_int(row.get("tx")) or 0,
+            "p2p_ports": peer.get("p2p_ports", []),
+            "disabled": bool(peer.get("disabled")),
+        })
+    return {
+        "ok": True,
+        "timestamp": now,
+        "version": PROJECT_VERSION,
+        "fork": "fork delta/patchset",
+        "role": "super" if auth.get("role") == "super" else "user",
+        "server_name": cfg.get("AWG_SERVER_NAME", ""),
+        "display_name": cfg.get("AWG_SERVER_NAME", ""),
+        "service": service,
+        "clients": clients,
+        "summary": {
+            "total": len(clients),
+            "online": sum(1 for item in clients if item["online"]),
+            "disabled": sum(1 for item in clients if item["disabled"]),
+        },
+    }
+
+
 class LimitedThreadingHTTPServer(ThreadingHTTPServer):
     daemon_threads = True
     request_queue_size = 128
@@ -6425,9 +6488,18 @@ class Handler(SimpleHTTPRequestHandler):
             self.send_error(404)
             return
         data = path.read_bytes()
+        compressed = False
+        if "gzip" in (self.headers.get("Accept-Encoding") or "").lower() and not ctype.startswith("image/") and len(data) >= 1024:
+            packed = gzip.compress(data, compresslevel=6, mtime=0)
+            if len(packed) < len(data):
+                data = packed
+                compressed = True
         self.send_response(200)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(data)))
+        if compressed:
+            self.send_header("Content-Encoding", "gzip")
+            self.send_header("Vary", "Accept-Encoding")
         self.send_security_headers()
         if not self.finish_response_headers():
             return
@@ -6767,6 +6839,9 @@ class Handler(SimpleHTTPRequestHandler):
                 "short_label": PANEL_SHORT_LABEL,
                 "repository_url": REPOSITORY_URL,
             })
+            return
+        if u.path == "/api/bot/snapshot":
+            self.send_json(bot_snapshot_payload(auth))
             return
         if u.path == "/api/server-info":
             self.send_json(server_info_payload())

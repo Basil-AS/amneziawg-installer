@@ -5,17 +5,22 @@ from __future__ import annotations
 
 import json
 import base64
+import atexit
+import html
 import logging
 import os
 import shlex
 import sqlite3
 import subprocess
+import threading
 import time
 import ssl
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode
+from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 LOG = logging.getLogger("gaullebot")
@@ -79,6 +84,8 @@ class Store:
 
     def touch(self, telegram_id: int, username: str, first_name: str) -> None:
         row = self.get(telegram_id)
+        if row and row["username"] == username and row["first_name"] == first_name:
+            return
         self.bind(telegram_id, username, first_name, row["finland_token"] if row else "", row["germany_token"] if row else "")
 
     def get(self, telegram_id: int) -> sqlite3.Row | None:
@@ -104,6 +111,18 @@ class ServerManager:
             "finland": Server("finland", "Sunny-Finland", os.getenv("FINLAND_SSH_HOST", ""), os.getenv("FINLAND_SSH_PORT", "22"), os.getenv("FINLAND_SSH_USER", "root"), os.getenv("FINLAND_SSH_IDENTITY", "")),
             "germany": Server("germany", "Sunny-German", os.getenv("GERMANY_SSH_HOST", ""), os.getenv("GERMANY_SSH_PORT", "22"), os.getenv("GERMANY_SSH_USER", "root"), os.getenv("GERMANY_SSH_IDENTITY", "")),
         }
+
+    def tunnel_argv(self, key: str, local_port: int) -> list[str] | None:
+        server = self.servers.get(key)
+        if server is None or not server.host or not server.identity:
+            return None
+        return [
+            "ssh", "-N", "-T", "-o", "BatchMode=yes", "-o", "ExitOnForwardFailure=yes",
+            "-o", "ServerAliveInterval=30", "-o", "ServerAliveCountMax=3",
+            "-o", "StrictHostKeyChecking=accept-new", "-i", server.identity,
+            "-L", f"127.0.0.1:{local_port}:127.0.0.1:8443", "-p", server.port,
+            f"{server.user}@{server.host}",
+        ]
 
     def run(self, key: str, action: str, value: str = "") -> str:
         server = self.servers.get(key)
@@ -154,6 +173,8 @@ class PanelManager:
 
     def __init__(self, path: Path) -> None:
         self.panels: dict[str, Panel] = {}
+        self._cache: dict[tuple[str, str, str], tuple[float, dict[str, Any]]] = {}
+        self._cache_lock = threading.Lock()
         if path.is_file():
             try:
                 raw = json.loads(path.read_text(encoding="utf-8"))
@@ -163,11 +184,17 @@ class PanelManager:
             except (OSError, ValueError, KeyError, TypeError) as exc:
                 LOG.warning("panel config ignored: %s", exc)
 
-    def run(self, key: str, action: str, token: str | None = None, value: str = "") -> str | None:
+    def request(self, key: str, action: str, token: str | None = None, value: str = "") -> dict[str, Any] | None:
         panel = self.panels.get(key)
         if panel is None:
             return None
-        endpoints = {"status": ("GET", "/api/status"), "health": ("GET", "/api/server-health"), "clients": ("GET", "/api/clients"), "logs": ("GET", "/api/server/logs"), "restart": ("POST", "/api/server/restart")}
+        cache_key = (key, action, token or panel.token)
+        if action in {"status", "snapshot", "clients"}:
+            with self._cache_lock:
+                cached = self._cache.get(cache_key)
+                if cached and time.monotonic() - cached[0] < 5:
+                    return dict(cached[1])
+        endpoints = {"status": ("GET", "/api/status"), "snapshot": ("GET", "/api/bot/snapshot"), "health": ("GET", "/api/server-health"), "clients": ("GET", "/api/clients"), "logs": ("GET", "/api/server/logs"), "restart": ("POST", "/api/server/restart")}
         body = None
         if action == "add":
             endpoint_info = ("POST", "/api/clients")
@@ -180,7 +207,7 @@ class PanelManager:
         else:
             endpoint_info = endpoints.get(action)
         if endpoint_info is None:
-            return f"{panel.label}: unsupported API action"
+            return {"error": "unsupported API action", "panel": panel.label}
         method, endpoint = endpoint_info
         headers = {"Authorization": f"Bearer {token or panel.token}", "Accept": "application/json"}
         if body is not None:
@@ -190,11 +217,28 @@ class PanelManager:
         try:
             with urlopen(request, timeout=15, context=context) as response:
                 payload = json.loads(response.read())
+        except HTTPError as exc:
+            if exc.code in {401, 403}:
+                LOG.info("panel action requires elevated scope; using SSH fallback panel=%s action=%s", key, action)
+                return None
+            LOG.warning("panel request failed panel=%s action=%s status=%s", key, action, exc.code)
+            return {"error": f"API HTTP {exc.code}", "panel": panel.label}
         except Exception as exc:
-            return f"{panel.label}: API connector error: {type(exc).__name__}"
+            LOG.warning("panel request failed panel=%s action=%s error=%s", key, action, type(exc).__name__)
+            return {"error": f"API connector error: {type(exc).__name__}", "panel": panel.label}
         if not isinstance(payload, dict):
-            return f"{panel.label}: invalid API response"
-        return f"{panel.label}\n{json.dumps(payload, ensure_ascii=False, indent=2)[:3500]}"
+            return {"error": "invalid API response", "panel": panel.label}
+        payload.setdefault("panel", panel.label)
+        if action in {"status", "snapshot", "clients"}:
+            with self._cache_lock:
+                self._cache[cache_key] = (time.monotonic(), dict(payload))
+        return payload
+
+    def run(self, key: str, action: str, token: str | None = None, value: str = "") -> str | None:
+        payload = self.request(key, action, token, value)
+        if payload is None:
+            return None
+        return f"{payload.get('panel', key)}\n{json.dumps(payload, ensure_ascii=False, indent=2)[:3500]}"
 
     def keys(self) -> list[str]:
         return list(self.panels)
@@ -204,6 +248,59 @@ def server_result(panel: PanelManager, ssh: ServerManager, key: str, action: str
     """Prefer the panel API; retain SSH as an explicit compatibility fallback."""
     result = panel.run(key, action, token, value)
     return result if result is not None else ssh.run(key, action, value)
+
+
+def parallel_results(panel: PanelManager, ssh: ServerManager, keys: tuple[str, ...], action: str, tokens: dict[str, str | None] | None = None) -> list[str]:
+    """Query panels concurrently; one slow region must not block the other."""
+    tokens = tokens or {}
+
+    def fetch(key: str) -> str:
+        return server_result(panel, ssh, key, action, tokens.get(key))
+
+    with ThreadPoolExecutor(max_workers=len(keys)) as pool:
+        futures = [pool.submit(fetch, key) for key in keys]
+        return [future.result() for future in futures]
+
+
+class TunnelManager:
+    """Keep panel API forwards alive inside the bot process.
+
+    The central host cannot route the VPN-only panel addresses directly.  A
+    child SSH process is deliberately started by the already confined bot
+    service (rather than a separate systemd unit, which is denied by Fedora's
+    SELinux policy) and is restarted if it exits.
+    """
+
+    def __init__(self, manager: ServerManager, enabled: bool = True) -> None:
+        self.manager = manager
+        self.enabled = enabled
+        self.processes: dict[str, tuple[list[str], int, subprocess.Popen | None]] = {}
+        if enabled:
+            self.processes = {
+                "finland": (manager.tunnel_argv("finland", 18443) or [], 18443, None),
+                "germany": (manager.tunnel_argv("germany", 18444) or [], 18444, None),
+            }
+            self.ensure()
+            atexit.register(self.close)
+
+    def ensure(self) -> None:
+        if not self.enabled:
+            return
+        for key, (argv, port, process) in list(self.processes.items()):
+            if not argv or (process is not None and process.poll() is None):
+                continue
+            try:
+                child = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, text=True)
+                self.processes[key] = (argv, port, child)
+                LOG.info("panel API tunnel started panel=%s local_port=%s", key, port)
+            except OSError as exc:
+                LOG.warning("panel API tunnel failed panel=%s error=%s", key, type(exc).__name__)
+
+    def close(self) -> None:
+        for key, (argv, _port, process) in self.processes.items():
+            if process is not None and process.poll() is None:
+                process.terminate()
+                LOG.info("panel API tunnel stopped panel=%s", key)
 
 
 class Telegram:
@@ -220,15 +317,58 @@ class Telegram:
             raise RuntimeError(f"Telegram {method} failed: {payload}")
         return payload["result"]
 
-    def send(self, chat_id: int, text: str) -> None:
-        self.call("sendMessage", chat_id=chat_id, text=text[:4096])
+    def send(self, chat_id: int, text: str, *, keyboard: list[list[dict[str, str]]] | None = None) -> None:
+        params: dict[str, Any] = {"chat_id": chat_id, "text": text[:4096], "parse_mode": "HTML"}
+        if keyboard:
+            params["reply_markup"] = json.dumps({"inline_keyboard": keyboard}, ensure_ascii=False)
+        try:
+            self.call("sendMessage", **params)
+        except RuntimeError as exc:
+            # Logs and command output can contain arbitrary characters. Fall
+            # back to plain text if Telegram rejects malformed HTML markup.
+            if "parse entities" not in str(exc).lower() and "can't parse" not in str(exc).lower():
+                raise
+            params.pop("parse_mode", None)
+            self.call("sendMessage", **params)
+
+    def answer_callback(self, callback_id: str, text: str = "") -> None:
+        self.call("answerCallbackQuery", callback_query_id=callback_id, text=text[:200])
 
 
 def help_text(admin: bool) -> str:
-    text = "Команды пользователя:\n/me — моя привязка\n/servers — состояние серверов\n/help — помощь"
+    text = "<b>GaulleBot</b>\n/me — моя привязка\n/servers — состояние серверов\n/menu — быстрые действия\n/help — помощь"
     if admin:
-        text += "\n\nАдминистратор:\n/status — оба сервера\n/health — проверки\n/clients — список клиентов\n/logs — последние логи\n/users — привязки\n/bind <tg_id> <fin_token> <ger_token>\n/add <server> <name>\n/remove <server> <name>\n/regenerate <server> <name>\n/restart <finland|germany>"
+        text += "\n\n<b>Администратор</b>:\n/status — быстрый сводный статус\n/health — глубокая проверка\n/clients [server] — клиенты\n/logs [server] — последние логи\n/users — привязки\n/bind &lt;tg_id&gt; &lt;fin_token&gt; &lt;ger_token&gt;\n/add &lt;server&gt; &lt;name&gt;\n/remove &lt;server&gt; &lt;name&gt;\n/regenerate &lt;server&gt; &lt;name&gt;\n/restart &lt;finland|germany&gt;"
     return text
+
+
+def menu_keyboard(admin: bool) -> list[list[dict[str, str]]]:
+    rows = [[{"text": "📊 Серверы", "callback_data": "servers"}], [{"text": "👤 Моя привязка", "callback_data": "me"}]]
+    if admin:
+        rows = [[{"text": "📊 Статус", "callback_data": "status"}, {"text": "🩺 Health", "callback_data": "health"}], [{"text": "👥 Клиенты", "callback_data": "clients"}, {"text": "👤 Пользователи", "callback_data": "users"}]] + rows
+    return rows
+
+
+def compact_snapshot(payload: dict[str, Any]) -> str:
+    if payload.get("error"):
+        return f"<b>{html.escape(str(payload.get('panel', 'panel')))}</b>: {html.escape(str(payload['error']))}"
+    summary = payload.get("summary") or {}
+    service = html.escape(str(payload.get("service", "unknown")))
+    return (f"<b>{html.escape(str(payload.get('display_name') or payload.get('panel', 'server')))}</b> "
+            f"<code>{html.escape(str(payload.get('version', '?')))}</code>\n"
+            f"Сервис: <b>{service}</b> · онлайн: <b>{summary.get('online', 0)}/{summary.get('total', 0)}</b>")
+
+
+def compact_clients(payload: dict[str, Any]) -> str:
+    if payload.get("error"):
+        return compact_snapshot(payload)
+    lines = [f"<b>{html.escape(str(payload.get('display_name') or payload.get('panel', 'server')))}</b>"]
+    for item in payload.get("clients", []):
+        marker = "🟢" if item.get("online") else "⚪"
+        ports = ", ".join(str(port) for port in item.get("p2p_ports") or [])
+        suffix = f" · ports: {html.escape(ports)}" if ports else ""
+        lines.append(f"{marker} <code>{html.escape(str(item.get('name', '')))}</code> · {html.escape(str(item.get('ipv4', '')))}{suffix}")
+    return "\n".join(lines)[:4096]
 
 
 def main() -> None:
@@ -237,41 +377,57 @@ def main() -> None:
     store = Store(settings.db_path)
     telegram = Telegram(settings)
     manager = ServerManager()
+    tunnels = TunnelManager(manager, enabled=os.getenv("PANEL_TUNNELS_ENABLED", "1").lower() not in {"0", "false", "no"})
     panels = PanelManager(settings.panels_path)
     offset = 0
     LOG.info("GaulleBot started")
     while True:
         try:
-            updates = telegram.call("getUpdates", offset=offset, timeout=settings.poll_timeout, allowed_updates=json.dumps(["message"]))
+            tunnels.ensure()
+            updates = telegram.call("getUpdates", offset=offset, timeout=settings.poll_timeout, allowed_updates=json.dumps(["message", "callback_query"]))
             for update in updates:
                 offset = max(offset, int(update["update_id"]) + 1)
-                message = update.get("message") or {}
+                callback = update.get("callback_query") or {}
+                message = update.get("message") or callback.get("message") or {}
                 chat = message.get("chat") or {}
-                sender = message.get("from") or {}
+                sender = (message.get("from") or callback.get("from") or {})
                 chat_id = int(chat.get("id", 0))
                 if chat_id:
                     store.touch(chat_id, str(sender.get("username", "")), str(sender.get("first_name", "")))
-                command = (message.get("text") or "").strip()
+                command = (message.get("text") or callback.get("data") or "").strip()
+                if callback:
+                    telegram.answer_callback(str(callback.get("id", "")))
+                    command = "/" + command
                 if not command.startswith("/"):
                     continue
                 parts = command.split()
                 name = parts[0].split("@", 1)[0].lower()
                 is_admin = chat_id == settings.admin_chat_id
                 try:
+                    def snapshot_text(key: str, token: str | None = None, clients: bool = False) -> str:
+                        payload = panels.request(key, "snapshot", token)
+                        if payload is not None:
+                            return compact_clients(payload) if clients else compact_snapshot(payload)
+                        return server_result(panels, manager, key, "status", token)
+
                     if name in {"/start", "/help"}:
-                        telegram.send(chat_id, help_text(is_admin))
+                        telegram.send(chat_id, help_text(is_admin), keyboard=menu_keyboard(is_admin) if name == "/start" else None)
+                    elif name == "/menu":
+                        telegram.send(chat_id, "Выберите действие:", keyboard=menu_keyboard(is_admin))
                     elif name == "/me":
                         row = store.get(chat_id)
-                        telegram.send(chat_id, "Привязка отсутствует." if row is None else f"Telegram ID: {chat_id}\nFinland: {'есть' if row['finland_token'] else 'нет'}\nGermany: {'есть' if row['germany_token'] else 'нет'}")
+                        telegram.send(chat_id, "Привязка отсутствует." if row is None else f"<b>Ваш профиль</b>\nTelegram ID: <code>{chat_id}</code>\nFinland: {'✅' if row['finland_token'] else '—'}\nGermany: {'✅' if row['germany_token'] else '—'}")
                     elif name == "/servers":
                         row = store.get(chat_id)
                         tokens = {"finland": row["finland_token"] if row else None, "germany": row["germany_token"] if row else None}
-                        telegram.send(chat_id, "\n\n".join(server_result(panels, manager, key, "status", tokens[key]) for key in ("finland", "germany")))
+                        telegram.send(chat_id, "\n\n".join(snapshot_text(key, tokens[key]) for key in ("finland", "germany")))
                     elif not is_admin:
                         telegram.send(chat_id, "Недостаточно прав. Обратитесь к администратору.")
                     elif name in {"/status", "/health"}:
-                        action = "status" if name == "/status" else "health"
-                        telegram.send(chat_id, "\n\n".join(server_result(panels, manager, key, action) for key in ("finland", "germany")))
+                        if name == "/status":
+                            telegram.send(chat_id, "\n\n".join(snapshot_text(key) for key in ("finland", "germany")))
+                        else:
+                            telegram.send(chat_id, "\n\n".join(parallel_results(panels, manager, ("finland", "germany"), "health")))
                     elif name == "/restart" and len(parts) == 2:
                         telegram.send(chat_id, server_result(panels, manager, parts[1].lower(), "restart"))
                     elif name in {"/add", "/remove", "/regenerate"} and len(parts) == 3:
@@ -282,11 +438,13 @@ def main() -> None:
                         telegram.send(chat_id, "Привязка сохранена.")
                     elif name == "/users":
                         rows = store.all()
-                        telegram.send(chat_id, "\n".join(f"{r['telegram_id']} @{r['username'] or '-'} fin={'yes' if r['finland_token'] else 'no'} ger={'yes' if r['germany_token'] else 'no'}" for r in rows) or "Пользователей пока нет.")
+                        telegram.send(chat_id, "\n".join(f"<code>{r['telegram_id']}</code> @{html.escape(r['username'] or '-')} fin={'✅' if r['finland_token'] else '—'} ger={'✅' if r['germany_token'] else '—'}" for r in rows) or "Пользователей пока нет.")
                     elif name == "/clients":
-                        telegram.send(chat_id, "\n\n".join(server_result(panels, manager, key, "clients") for key in ("finland", "germany")))
+                        keys = (parts[1].lower(),) if len(parts) == 2 and parts[1].lower() in {"finland", "germany"} else ("finland", "germany")
+                        telegram.send(chat_id, "\n\n".join(snapshot_text(key, clients=True) for key in keys))
                     elif name == "/logs":
-                        telegram.send(chat_id, "\n\n".join(server_result(panels, manager, key, "logs") for key in ("finland", "germany")))
+                        keys = (parts[1].lower(),) if len(parts) == 2 and parts[1].lower() in {"finland", "germany"} else ("finland", "germany")
+                        telegram.send(chat_id, "\n\n".join(parallel_results(panels, manager, keys, "logs")))
                     else:
                         telegram.send(chat_id, help_text(True))
                 except (ValueError, RuntimeError) as exc:

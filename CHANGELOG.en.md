@@ -12,6 +12,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Improved
+
+- Added compact `/api/bot/snapshot` endpoint for low-latency control-plane reads.
+- Telegram bot now queries panels concurrently, caches snapshots for five seconds, and provides inline actions and compact client views.
+- Web-panel static JS/CSS assets now use gzip negotiation when supported by the client.
+
 ## [5.19.2-bas.3] - 2026-07-17
 
 ### Added
