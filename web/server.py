@@ -4932,6 +4932,13 @@ def authenticate(header):
     if not token:
         return None
     digest = token_hash(token)
+    # Optional dedicated machine/API credential.  It is configured as a
+    # SHA-256 digest in the service environment, never as a plaintext secret
+    # in the repository.  This keeps bot automation on the HTTP API while
+    # preserving the regular super/user token model.
+    bot_hash = os.environ.get("AWG_BOT_API_TOKEN_HASH", "").strip().lower()
+    if TOKEN_HASH_RE.fullmatch(bot_hash) and hmac.compare_digest(digest, bot_hash):
+        return {"role": "super", "hash": digest, "clients": None, "source": "bot-api"}
     data = load_tokens()
     if hmac.compare_digest(digest, data.get("super_token_hash", "")):
         return {"role": "super", "hash": digest, "clients": None}
