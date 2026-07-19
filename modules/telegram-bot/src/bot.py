@@ -392,6 +392,9 @@ class PanelManager:
         elif action == "ndp-restart":
             endpoint_info = ("POST", "/api/ipv6/ndp/restart")
             body = b"{}"
+        elif action in {"ndp-generate", "ndp-enable", "ndp-disable"}:
+            endpoint_info = ("POST", f"/api/ipv6/ndp/{action.removeprefix('ndp-')}")
+            body = b"{}"
         elif action == "geoip-databases-update":
             endpoint_info = ("POST", "/api/geoip/databases/update")
             body = b"{}"
@@ -745,7 +748,7 @@ def maintenance_keyboard() -> list[list[dict[str, str]]]:
     return [
         [{"text": "♻️ DNS Финляндии", "callback_data": "admin:dns-restart:finland"}, {"text": "♻️ DNS Германии", "callback_data": "admin:dns-restart:germany"}],
         [{"text": "🧭 DNS режим FI", "callback_data": "admin:dns-mode:finland"}, {"text": "🧭 DNS режим DE", "callback_data": "admin:dns-mode:germany"}],
-        [{"text": "🌐 NDP Финляндии", "callback_data": "admin:ndp-restart:finland"}, {"text": "🌐 NDP Германии", "callback_data": "admin:ndp-restart:germany"}],
+        [{"text": "🌐 NDP Финляндии", "callback_data": "admin:ndp:finland"}, {"text": "🌐 NDP Германии", "callback_data": "admin:ndp:germany"}],
         [{"text": "🗺 Обновить GeoIP", "callback_data": "admin:geoip-update:all"}, {"text": "🔒 Продлить TLS", "callback_data": "admin:cert-renew:all"}],
         [{"text": "🔎 Проверить GeoIP", "callback_data": "admin:geoip-providers-test:all"}, {"text": "⚙️ Авто-GeoIP", "callback_data": "admin:geoip-auto-update:all"}],
         [{"text": "🛡 Проверить web policy", "callback_data": "admin:policy-test:all"}],
@@ -1021,7 +1024,7 @@ def handle_navigation(telegram: Telegram, store: Store, panels: PanelManager, ch
             return True
         render_navigation(telegram, store, chat_id, "<b>🛠 Обслуживание инфраструктуры</b>\nОперации выполняются только через API панели. Перезагрузка требует отдельного подтверждения.", maintenance_keyboard(), "admin:maintenance", callback_message_id=callback_message_id)
         return True
-    if kind == "admin" and action in {"dns-restart", "dns-mode", "dns-mode-apply", "ndp-restart", "geoip-update", "geoip-refresh", "geoip-providers-test", "geoip-auto-update", "cert-renew", "policy-test", "reboot", "reboot-confirm"}:
+    if kind == "admin" and action in {"dns-restart", "dns-mode", "dns-mode-apply", "ndp", "ndp-apply", "ndp-disable-confirm", "ndp-restart", "geoip-update", "geoip-refresh", "geoip-providers-test", "geoip-auto-update", "cert-renew", "policy-test", "reboot", "reboot-confirm"}:
         if not is_admin:
             render_navigation(telegram, store, chat_id, "Недостаточно прав.", menu_keyboard(False), "home", callback_message_id=callback_message_id)
             return True
@@ -1048,6 +1051,17 @@ def handle_navigation(telegram: Telegram, store: Store, panels: PanelManager, ch
             payload = panels.request(server, "dns-mode", PANEL_TOKEN, extra={"mode": mode}) or {}
             result = format_panel_payload(payload, "dns")
             render_navigation(telegram, store, chat_id, f"<b>✅ DNS режим обновлён</b>\n{result}", maintenance_keyboard(), "admin:dns-mode-done", callback_message_id=callback_message_id)
+            return True
+        if action == "ndp" and server in {"finland", "germany"}:
+            render_navigation(telegram, store, chat_id, f"<b>🌐 NDP · {html.escape(server)}</b>\nВыберите действие:", [[{"text": "🧩 Сгенерировать конфиг", "callback_data": f"admin:ndp-apply:{server}:generate"}, {"text": "✅ Включить", "callback_data": f"admin:ndp-apply:{server}:enable"}], [{"text": "♻️ Перезапустить", "callback_data": f"admin:ndp-apply:{server}:restart"}, {"text": "⛔ Отключить", "callback_data": f"admin:ndp-disable-confirm:{server}"}], [{"text": "Отмена", "callback_data": "admin:maintenance"}]], "admin:ndp", callback_message_id=callback_message_id)
+            return True
+        if action == "ndp-disable-confirm" and server in {"finland", "germany"}:
+            render_navigation(telegram, store, chat_id, f"<b>⛔ Отключить NDP на {html.escape(server)}?</b>\nIPv6-клиенты могут потерять routed/NDP-связность.", [[{"text": "⛔ Подтвердить отключение", "callback_data": f"admin:ndp-apply:{server}:disable"}], [{"text": "Отмена", "callback_data": f"admin:ndp:{server}"}]], "admin:ndp-disable-confirm", callback_message_id=callback_message_id)
+            return True
+        if action == "ndp-apply" and server in {"finland", "germany"} and len(parts) > 3 and parts[3].lower() in {"generate", "enable", "disable", "restart"}:
+            operation = parts[3].lower()
+            payload = panels.request(server, f"ndp-{operation}", PANEL_TOKEN) or {}
+            render_navigation(telegram, store, chat_id, f"<b>✅ NDP: {html.escape(operation)}</b>\n{format_panel_payload(payload, 'readiness')}", maintenance_keyboard(), "admin:ndp-done", callback_message_id=callback_message_id)
             return True
         if action in {"dns-restart", "ndp-restart"} and server in {"finland", "germany"}:
             result = panel_text(panels, server, action, PANEL_TOKEN)
