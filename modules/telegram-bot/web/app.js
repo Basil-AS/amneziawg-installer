@@ -51,6 +51,10 @@
     return `<article class="client-row"><div class="client-main"><span class="presence ${client.online ? 'online' : ''}"></span><div><strong>${esc(name)}</strong><small>${esc(client.ipv4 || 'IP не назначен')} · ${client.online ? 'активен' : 'не в сети'}</small></div></div><div class="client-side">${traffic(client)}<div class="actions"><button data-artifact="qr" data-server="${esc(server)}" data-name="${esc(encoded)}" title="QR">QR</button><button data-artifact="config" data-server="${esc(server)}" data-name="${esc(encoded)}" title="Конфиг">CFG</button><button data-artifact="uri" data-server="${esc(server)}" data-name="${esc(encoded)}" title="VPN URI">URI</button><button data-client-action="access-link" data-server="${esc(server)}" data-name="${esc(client.name || client.id || name)}" title="Одноразовая ссылка">🔗</button><button data-regenerate data-server="${esc(server)}" data-name="${esc(client.name || client.id || name)}" title="Перегенерировать">↻</button><button data-client-action="client-toggle" data-server="${esc(server)}" data-name="${esc(client.name || client.id || name)}" title="VPN">⏻</button><button data-client-action="p2p-toggle" data-server="${esc(server)}" data-name="${esc(client.name || client.id || name)}" title="P2P">P2P</button><button data-client-action="p2p-add" data-server="${esc(server)}" data-name="${esc(client.name || client.id || name)}" title="Порт P2P">🔧</button><button data-client-action="remove" data-server="${esc(server)}" data-name="${esc(client.name || client.id || name)}" title="Удалить">×</button></div></div></article>`;
   }
   function render(data) {
+    if (data.access_pending) {
+      app.innerHTML = `<header class="topbar"><div class="brand"><div class="brand-mark">G</div><div><h1>GaulleBot</h1><span>VPN control center</span></div></div><span class="role">PENDING</span></header><section class="pending-card"><div class="pending-icon">🔐</div><h2>Доступ ещё не выдан</h2><p>Отправьте заявку администратору. После одобрения здесь появятся серверы и устройства.</p><button data-access-request>Запросить доступ</button></section>`;
+      return;
+    }
     const panels = Object.entries(data.panels || {});
     const isAdmin = data.role === 'super';
     app.innerHTML = `<header class="topbar"><div class="brand"><div class="brand-mark">G</div><div><h1>GaulleBot</h1><span>VPN control center</span></div></div><span class="role">${esc(isAdmin ? 'ADMIN' : 'USER')}</span></header>
@@ -103,12 +107,17 @@
     button.disabled = true;
     try { const payload = await api('/api/action', {method:'POST', body:JSON.stringify({server, action})}); const dialog = document.createElement('dialog'); dialog.className = 'result-dialog'; dialog.innerHTML = `<button class="dialog-close">×</button><div>${diagnosticHtml(action,payload)}</div>`; document.body.append(dialog); dialog.showModal(); dialog.querySelector('.dialog-close').onclick = () => { dialog.close(); dialog.remove(); }; if (['restart','update-check','update-apply'].includes(action)) await load(); } catch (error) { toast(error.message); } finally { button.disabled = false; }
   }
+  async function requestAccess(button) {
+    button.disabled = true;
+    try { const result = await api('/api/access-request', {method:'POST', body:'{}'}); toast(result.status === 'approved' ? 'Доступ уже выдан' : (result.created ? 'Заявка отправлена' : 'Заявка уже ожидает решения')); button.textContent = 'Заявка отправлена'; } catch (error) { toast(error.message); } finally { button.disabled = false; }
+  }
   function toast(message) { const node = document.createElement('div'); node.className = 'toast'; node.textContent = message; document.body.append(node); setTimeout(() => node.remove(), 2600); }
   app.addEventListener('click', event => {
     const artifactButton = event.target.closest('[data-artifact]'); if (artifactButton) return artifact(artifactButton);
     const regenerateButton = event.target.closest('[data-regenerate]'); if (regenerateButton) return regenerate(regenerateButton);
     const clientActionButton = event.target.closest('[data-client-action]'); if (clientActionButton) return clientAction(clientActionButton);
     const panelActionButton = event.target.closest('[data-panel-action]'); if (panelActionButton) return panelAction(panelActionButton);
+    const accessButton = event.target.closest('[data-access-request]'); if (accessButton) return requestAccess(accessButton);
     if (event.target.closest('[data-refresh]')) return load();
     if (event.target.closest('[data-retry]')) return load();
   });

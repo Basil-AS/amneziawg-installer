@@ -1318,10 +1318,10 @@ def verify_init_data(raw: str, bot_token: str, max_age: int = 86400) -> dict[str
 class MiniAppServer:
     """Local Mini App/API gateway, normally published through an HTTPS proxy."""
 
-    def __init__(self, bind: str, port: int, token: str, store: Store, panels: PanelManager) -> None:
+    def __init__(self, bind: str, port: int, token: str, store: Store, panels: PanelManager, telegram: Telegram | None = None) -> None:
         root = Path(__file__).resolve().parents[1] / "web"
         self.store, self.panels, self.token = store, panels, token
-        store_ref, panels_ref, token_ref = store, panels, token
+        store_ref, panels_ref, token_ref, telegram_ref = store, panels, token, telegram
 
         class Handler(BaseHTTPRequestHandler):
             def log_message(self, fmt: str, *args: Any) -> None:
@@ -1387,7 +1387,7 @@ class MiniAppServer:
                 try:
                     user = self.user(); row = store_ref.get(int(user["id"])); is_admin = int(user["id"]) == int(os.environ.get("ADMIN_CHAT_ID", "0"))
                     if not is_admin and (not row or not (row["finland_token"] or row["germany_token"])):
-                        self.reply({"error": "access_pending"}, 403)
+                        self.reply({"user": {"id": user["id"], "username": user.get("username", "")}, "role": "pending", "access_pending": True, "panels": {}})
                         return
                     tokens = {"finland": row["finland_token"] if row and not is_admin else None, "germany": row["germany_token"] if row and not is_admin else None}
                     if is_admin:
@@ -1402,6 +1402,31 @@ class MiniAppServer:
                     self.reply({"error": "unauthorized" if isinstance(exc, ValueError) else "backend_unavailable"}, 401 if isinstance(exc, ValueError) else 503)
 
             def do_POST(self) -> None:
+                if self.path == "/api/access-request":
+                    try:
+                        user = self.user()
+                        user_id = int(user["id"])
+                        is_admin = user_id == int(os.environ.get("ADMIN_CHAT_ID", "0"))
+                        if is_admin:
+                            self.reply({"ok": True, "status": "approved"})
+                            return
+                        row = store_ref.get(user_id)
+                        if row and (row["finland_token"] or row["germany_token"]):
+                            self.reply({"ok": True, "status": "approved"})
+                            return
+                        created = store_ref.request_access(user_id)
+                        admin_id = int(os.environ.get("ADMIN_CHAT_ID", "0"))
+                        if created and admin_id and telegram_ref is not None:
+                            try:
+                                telegram_ref.send(admin_id, f"<b>Новая заявка на доступ</b>\nTelegram ID: <code>{user_id}</code>\nПользователь: @{html.escape(str(user.get('username') or 'без username'))}", keyboard=[[{"text": "👤 Открыть заявку", "callback_data": f"admin:request:{user_id}"}]])
+                            except (OSError, RuntimeError, ValueError):
+                                LOG.info("Mini App access request notification failed user=%s", user_id)
+                        self.reply({"ok": True, "status": "pending", "created": created})
+                    except ValueError:
+                        self.reply({"error": "unauthorized"}, 401)
+                    except OSError:
+                        self.reply({"error": "backend_unavailable"}, 503)
+                    return
                 if self.path != "/api/action":
                     self.reply({"error": "not_found"}, 404)
                     return
@@ -1514,7 +1539,7 @@ def main() -> None:
     manager = ServerManager()
     tunnels = TunnelManager(manager, enabled=os.getenv("PANEL_TUNNELS_ENABLED", "1").lower() not in {"0", "false", "no"})
     panels = PanelManager(settings.panels_path)
-    mini_app = MiniAppServer(settings.mini_app_bind, settings.mini_app_port, settings.token, store, panels)
+    mini_app = MiniAppServer(settings.mini_app_bind, settings.mini_app_port, settings.token, store, panels, telegram)
     mini_app.start()
     LOG.info("Mini App/API gateway listening bind=%s port=%s", settings.mini_app_bind, settings.mini_app_port)
     webhook = None

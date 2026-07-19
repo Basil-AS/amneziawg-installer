@@ -98,7 +98,9 @@ Every Mini App action validates signed Telegram `initData`, resolves the
 Telegram ID from SQLite, enforces the admin/user scope, and sends either the
 dedicated super API token or the user's bound panel token. Unbound users get
 `access_pending`; they never receive a panel credential or a privileged
-fallback.
+fallback. The pending screen offers a signed `POST /api/access-request` action;
+SQLite makes it idempotent and rate-limited, and the administrator receives the
+same callback-based review flow as requests made in the bot chat.
 
 The Mini App is a dependency-free Telegram Web App: it presents server cards,
 online counts, per-client traffic, QR preview, config downloads and client
