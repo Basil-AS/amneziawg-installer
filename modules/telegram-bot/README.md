@@ -81,6 +81,12 @@ server, enter the profile name in the prompted reply, and the bot calls
 `POST /api/clients` with the dedicated API credential. No shell command is
 constructed or executed.
 
+The administrator user list also provides confirmed token rotation. The bot
+hashes the currently bound secret locally, calls the panel's
+`POST /api/tokens/<hash>/rotate` API independently for each server, updates
+SQLite only with successful replacements and never renders either old or new
+bearer value.
+
 Users without a binding can press “🔐 Запросить доступ”. The request is
 rate-limited in SQLite and sent to the administrator with a button that opens
 the access decision screen. The administrator can approve it with one button:

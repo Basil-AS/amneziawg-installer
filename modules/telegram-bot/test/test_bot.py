@@ -5,10 +5,11 @@ import hashlib
 import hmac
 import json
 import time
+from unittest.mock import patch
 from urllib.parse import urlencode
 from pathlib import Path
 
-from src.bot import PanelManager, ServerManager, Settings, Store, admin_keyboard, callback_command, compact_snapshot, help_text, maintenance_keyboard, menu_keyboard, reply_keyboard, verify_init_data, client_keyboard, clients_keyboard, format_bytes, format_panel_payload, parallel_payloads, sparkline, usage_bar
+from src.bot import PANEL_TOKEN, PanelManager, ServerManager, Settings, Store, admin_keyboard, callback_command, compact_snapshot, help_text, maintenance_keyboard, menu_keyboard, reply_keyboard, verify_init_data, client_keyboard, clients_keyboard, format_bytes, format_panel_payload, parallel_payloads, sparkline, usage_bar
 
 
 class BotTests(unittest.TestCase):
@@ -96,6 +97,21 @@ class BotTests(unittest.TestCase):
             manager = PanelManager(path)
             self.assertEqual(manager.keys(), ["finland"])
             self.assertNotIn("secret", manager.run("finland", "unsupported") or "")
+
+    def test_rotate_token_uses_hash_path_and_never_logs_secret(self):
+        class Response:
+            def __enter__(self): return self
+            def __exit__(self, *args): return False
+            def read(self): return b'{"token":"new-secret","token_hash":"new-hash"}'
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "panels.json"
+            path.write_text('{"panels":[{"id":"finland","url":"https://vpn.invalid","token":"super-secret"}]}', encoding="utf-8")
+            manager = PanelManager(path)
+            with patch("src.bot.urlopen", return_value=Response()) as opened:
+                result = manager.request("finland", "rotate-token", PANEL_TOKEN, value="a" * 64)
+            self.assertEqual(result["token"], "new-secret")
+            self.assertIn("/api/tokens/" + "a" * 64 + "/rotate", opened.call_args.args[0].full_url)
+            self.assertNotIn("super-secret", str(result))
 
     def test_missing_user_token_never_falls_back_to_panel_super_token(self):
         with tempfile.TemporaryDirectory() as directory:

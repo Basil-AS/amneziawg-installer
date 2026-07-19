@@ -342,6 +342,9 @@ class PanelManager:
         elif action == "create-user-token":
             endpoint_info = ("POST", "/api/tokens")
             body = json.dumps({"name": value, "clients": (extra or {}).get("clients", [])}).encode()
+        elif action == "rotate-token":
+            endpoint_info = ("POST", f"/api/tokens/{quote(value, safe='')}/rotate")
+            body = b"{}"
         elif action == "regenerate":
             endpoint_info = ("POST", f"/api/clients/{quote(value, safe='')}/regenerate")
             body = b"{}"
@@ -791,8 +794,53 @@ def handle_navigation(telegram: Telegram, store: Store, panels: PanelManager, ch
             render_navigation(telegram, store, chat_id, "Недостаточно прав.", menu_keyboard(False), "home", callback_message_id=callback_message_id)
             return True
         rows = store.all()
-        text = "<b>Пользователи</b>\n" + ("\n".join(f"<code>{r['telegram_id']}</code> @{html.escape(r['username'] or '-')} · fin={'✅' if r['finland_token'] else '—'} · ger={'✅' if r['germany_token'] else '—'}" for r in rows) or "Пользователей пока нет.")
-        render_navigation(telegram, store, chat_id, text[:4096], [[{"text": "⬅️ Главное меню", "callback_data": "menu:home"}]], "admin:users", callback_message_id=callback_message_id)
+        lines = [f"<code>{r['telegram_id']}</code> @{html.escape(r['username'] or '-')} · 🇫🇮 {'✅' if r['finland_token'] else '—'} · 🇩🇪 {'✅' if r['germany_token'] else '—'}" for r in rows[:30]]
+        text = "<b>Пользователи</b>\nРотация токена создаёт новый секрет и инвалидирует старый.\n\n" + ("\n".join(lines) or "Пользователей пока нет.")
+        keyboard = []
+        for row in rows[:30]:
+            if row["finland_token"] or row["germany_token"]:
+                keyboard.append([{"text": f"🔄 Ротировать · {row['telegram_id']}", "callback_data": f"admin:rotate:{row['telegram_id']}"}])
+        keyboard.append([{"text": "⬅️ Главное меню", "callback_data": "menu:home"}])
+        render_navigation(telegram, store, chat_id, text[:4096], keyboard, "admin:users", callback_message_id=callback_message_id)
+        return True
+    if kind == "admin" and action in {"rotate", "rotate-confirm"}:
+        if not is_admin or len(parts) < 3:
+            render_navigation(telegram, store, chat_id, "Недостаточно прав.", menu_keyboard(False), "home", callback_message_id=callback_message_id)
+            return True
+        try:
+            target_id = int(parts[2])
+        except (TypeError, ValueError):
+            return True
+        target = store.get(target_id)
+        if target is None or not (target["finland_token"] or target["germany_token"]):
+            render_navigation(telegram, store, chat_id, "У пользователя нет привязанных токенов.", admin_keyboard(), "admin:users", callback_message_id=callback_message_id)
+            return True
+        if action == "rotate":
+            render_navigation(telegram, store, chat_id, f"<b>🔄 Ротация токенов</b>\nПользователь: <code>{target_id}</code>\nСтарые секреты сразу перестанут работать. Продолжить?", [[{"text": "✅ Да, ротировать", "callback_data": f"admin:rotate-confirm:{target_id}"}], [{"text": "Отмена", "callback_data": "admin:users:0"}]], "admin:rotate-confirm", callback_message_id=callback_message_id)
+            return True
+        rotated: dict[str, str] = {}
+        failures: list[str] = []
+        for server, column in (("finland", "finland_token"), ("germany", "germany_token")):
+            old_token = str(target[column] or "")
+            if not old_token:
+                continue
+            digest = hashlib.sha256(old_token.encode("utf-8")).hexdigest()
+            payload = panels.request(server, "rotate-token", PANEL_TOKEN, value=digest) or {}
+            new_token = str(payload.get("token") or "")
+            if new_token:
+                rotated[column] = new_token
+            else:
+                failures.append(server)
+        store.bind(target_id, str(target["username"] or ""), str(target["first_name"] or ""), rotated.get("finland_token", str(target["finland_token"] or "")), rotated.get("germany_token", str(target["germany_token"] or "")))
+        if rotated:
+            try:
+                telegram.send(target_id, "<b>🔐 Доступ обновлён</b>\nТокены доступа были ротированы администратором. Старые ссылки/сессии необходимо обновить.")
+            except (OSError, RuntimeError, ValueError):
+                LOG.info("token rotation notification failed user=%s", target_id)
+        detail = "Ротированы: " + ", ".join(rotated) if rotated else "Ротация не выполнена"
+        if failures:
+            detail += "; ошибка: " + ", ".join(failures)
+        render_navigation(telegram, store, chat_id, f"<b>🔐 Ротация завершена</b>\nПользователь: <code>{target_id}</code>\n{html.escape(detail)}\nСекреты не выводятся.", admin_keyboard(), "admin:rotate-done", callback_message_id=callback_message_id)
         return True
     if kind == "admin" and action == "request":
         if not is_admin or len(parts) < 3:
