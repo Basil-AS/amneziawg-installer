@@ -103,3 +103,6 @@ bearer tokens are never exposed to browser JavaScript.
 For the administrator, each server card additionally exposes API-backed
 health, load history, latency, update check and confirmed restart controls;
 diagnostic results open as parsed cards rather than raw JSON.
+The Mini App device action bar also supports setting a P2P port; it validates
+the numeric range in the browser and sends the value through the signed API
+session to the panel's RBAC endpoint.
