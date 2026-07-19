@@ -208,7 +208,7 @@ class BotTests(unittest.TestCase):
 
     def test_menu_contains_user_controls(self):
         callback_data = {item["callback_data"] for row in menu_keyboard(False) for item in row}
-        self.assertTrue({"user:clients", "user:traffic", "user:favorites", "user:nettest", "user:add", "menu:profile"}.issubset(callback_data))
+        self.assertTrue({"user:clients", "user:traffic", "user:favorites", "user:nettest", "user:help", "user:add", "menu:profile"}.issubset(callback_data))
 
     def test_client_callbacks_fit_telegram_limit(self):
         buttons = client_keyboard("germany", "a" * 48, "0123456789", admin=False)
@@ -303,6 +303,12 @@ class BotTests(unittest.TestCase):
         payload = {"users": [{"hash": "abc", "clients": ["phone", "laptop"]}]}
         self.assertEqual(token_client_scope(payload, "abc"), ["phone", "laptop"])
         self.assertIsNone(token_client_scope(payload, "missing"))
+
+    def test_client_app_guide_is_rendered_as_links_and_cards(self):
+        text = format_panel_payload({"panel": "Finland", "groups": [{"name": "Android", "subtitle": "Выбор", "clients": [{"name": "WG Tunnel", "status": "Recommended", "platforms": "Android", "setupMethod": "QR", "links": [{"label": "Сайт", "url": "https://example.test/app"}]}]}]}, "help-clients")
+        self.assertIn("WG Tunnel", text)
+        self.assertIn("https://example.test/app", text)
+        self.assertNotIn('"groups"', text)
 
     def test_callback_payloads_are_command_safe(self):
         self.assertEqual(callback_command("nav:status"), "/status")
