@@ -815,6 +815,11 @@ def client_keyboard(server: str, name: str, ref: str, *, admin: bool, favorite: 
     return rows
 
 
+def uri_keyboard(uri: str, ref: str) -> list[list[dict[str, Any]]]:
+    """Build a modern copy-first keyboard for a VPN URI artifact."""
+    return [[{"text": "📋 Скопировать URI", "copy_text": {"text": uri}}], [{"text": "⬅️ К устройству", "callback_data": f"client:open:{ref}"}]]
+
+
 def clients_keyboard(rows: list[tuple[str, str, str]], *, page: int = 1, pages: int = 1, source: str = "clients") -> list[list[dict[str, str]]]:
     keyboard: list[list[dict[str, str]]] = []
     for server, name, ref in rows:
@@ -1401,6 +1406,11 @@ def handle_navigation(telegram: Telegram, store: Store, panels: PanelManager, ch
                 try:
                     if kind_name == "qr":
                         telegram.send_photo(chat_id, artifact[2], artifact[0], f"📷 <b>{html.escape(name)}</b> · {server}")
+                    elif kind_name == "uri":
+                        uri = artifact[0].decode("utf-8", "replace").strip()
+                        if not uri:
+                            raise ValueError("empty VPN URI")
+                        telegram.send(chat_id, f"<b>🔗 VPN URI · {html.escape(name)}</b>\n<code>{html.escape(uri)}</code>", keyboard=uri_keyboard(uri, ref))
                     else:
                         telegram.send_document(chat_id, artifact[2], artifact[0], f"📄 <b>{html.escape(name)}</b> · {server}")
                 except (OSError, RuntimeError, ValueError):
