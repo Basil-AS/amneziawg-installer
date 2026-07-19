@@ -355,6 +355,12 @@ class PanelManager:
                 return {"error": "invalid token client scope", "panel": panel.label}
             endpoint_info = ("PUT", f"/api/tokens/{quote(value, safe='')}/clients")
             body = json.dumps({"clients": clients}, ensure_ascii=False).encode()
+        elif action == "rotate-profile":
+            preset = str((extra or {}).get("preset", "default")).lower()
+            if preset not in {"default", "mobile"}:
+                return {"error": "unsupported AWG preset", "panel": panel.label}
+            endpoint_info = ("POST", "/api/server/rotate-profile")
+            body = json.dumps({"confirm": "ROTATE", "preset": preset}).encode()
         elif action == "regenerate":
             endpoint_info = ("POST", f"/api/clients/{quote(value, safe='')}/regenerate")
             body = b"{}"
@@ -761,6 +767,7 @@ def maintenance_keyboard() -> list[list[dict[str, str]]]:
         [{"text": "🔎 Проверить GeoIP", "callback_data": "admin:geoip-providers-test:all"}, {"text": "⚙️ Авто-GeoIP", "callback_data": "admin:geoip-auto-update:all"}],
         [{"text": "🛡 Проверить web policy", "callback_data": "admin:policy-test:all"}],
         [{"text": "⚠️ Перезагрузка сервера", "callback_data": "admin:reboot:all"}],
+        [{"text": "♻️ AWG-профиль FI", "callback_data": "admin:rotate-profile:finland"}, {"text": "♻️ AWG-профиль DE", "callback_data": "admin:rotate-profile:germany"}],
         [{"text": "⬅️ Админка", "callback_data": "menu:admin"}],
     ]
 
@@ -1089,11 +1096,23 @@ def handle_navigation(telegram: Telegram, store: Store, panels: PanelManager, ch
             return True
         render_navigation(telegram, store, chat_id, "<b>🛠 Обслуживание инфраструктуры</b>\nОперации выполняются только через API панели. Перезагрузка требует отдельного подтверждения.", maintenance_keyboard(), "admin:maintenance", callback_message_id=callback_message_id)
         return True
-    if kind == "admin" and action in {"dns-restart", "dns-mode", "dns-mode-apply", "ndp", "ndp-apply", "ndp-disable-confirm", "ndp-restart", "geoip-update", "geoip-refresh", "geoip-providers-test", "geoip-auto-update", "cert-renew", "policy-test", "reboot", "reboot-confirm"}:
+    if kind == "admin" and action in {"dns-restart", "dns-mode", "dns-mode-apply", "ndp", "ndp-apply", "ndp-disable-confirm", "ndp-restart", "geoip-update", "geoip-refresh", "geoip-providers-test", "geoip-auto-update", "cert-renew", "policy-test", "rotate-profile", "rotate-profile-confirm", "rotate-profile-apply", "reboot", "reboot-confirm"}:
         if not is_admin:
             render_navigation(telegram, store, chat_id, "Недостаточно прав.", menu_keyboard(False), "home", callback_message_id=callback_message_id)
             return True
         server = parts[2].lower() if len(parts) > 2 else "all"
+        if action == "rotate-profile" and server in {"finland", "germany"}:
+            render_navigation(telegram, store, chat_id, f"<b>♻️ Ротация AWG-профиля · {html.escape(server)}</b>\nЭто изменит параметры сервера и потребует повторной выдачи клиентских конфигов. Выберите preset:", [[{"text": "🧩 Default", "callback_data": f"admin:rotate-profile-confirm:{server}:default"}, {"text": "📱 Mobile", "callback_data": f"admin:rotate-profile-confirm:{server}:mobile"}], [{"text": "Отмена", "callback_data": "admin:maintenance"}]], "admin:rotate-profile", callback_message_id=callback_message_id)
+            return True
+        if action == "rotate-profile-confirm" and server in {"finland", "germany"} and len(parts) > 3 and parts[3].lower() in {"default", "mobile"}:
+            preset = parts[3].lower()
+            render_navigation(telegram, store, chat_id, f"<b>⚠️ Подтвердите ротацию профиля</b>\nСервер: <code>{html.escape(server)}</code>\nPreset: <code>{preset}</code>\nСтарые конфиги клиентов перестанут соответствовать серверу.", [[{"text": "✅ Ротировать сейчас", "callback_data": f"admin:rotate-profile-apply:{server}:{preset}"}], [{"text": "Отмена", "callback_data": f"admin:rotate-profile:{server}"}]], "admin:rotate-profile-confirm", callback_message_id=callback_message_id)
+            return True
+        if action == "rotate-profile-apply" and server in {"finland", "germany"} and len(parts) > 3 and parts[3].lower() in {"default", "mobile"}:
+            preset = parts[3].lower()
+            result = format_panel_payload(panels.request(server, "rotate-profile", PANEL_TOKEN, extra={"preset": preset}) or {}, "info")
+            render_navigation(telegram, store, chat_id, f"<b>♻️ AWG-профиль ротирован</b>\n{result}\nОбновите клиентские конфиги через «Мои устройства»." , maintenance_keyboard(), "admin:rotate-profile-done", callback_message_id=callback_message_id)
+            return True
         if action == "reboot":
             if server == "all":
                 render_navigation(telegram, store, chat_id, "<b>⚠️ Выберите сервер для перезагрузки</b>", [[{"text": "🇫🇮 Финляндия", "callback_data": "admin:reboot:finland"}, {"text": "🇩🇪 Германия", "callback_data": "admin:reboot:germany"}], [{"text": "Отмена", "callback_data": "admin:maintenance"}]], "admin:reboot", callback_message_id=callback_message_id)
