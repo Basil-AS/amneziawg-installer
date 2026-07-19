@@ -378,6 +378,12 @@ class PanelManager:
         elif action == "dns-restart":
             endpoint_info = ("POST", "/api/dns/restart")
             body = b"{}"
+        elif action == "dns-mode":
+            mode = str((extra or {}).get("mode", "")).lower()
+            if mode not in {"system", "adguard"}:
+                return {"error": "unsupported DNS mode", "panel": panel.label}
+            endpoint_info = ("POST", "/api/dns/mode")
+            body = json.dumps({"mode": mode}).encode()
         elif action == "ndp-restart":
             endpoint_info = ("POST", "/api/ipv6/ndp/restart")
             body = b"{}"
@@ -724,6 +730,7 @@ def admin_keyboard() -> list[list[dict[str, str]]]:
 def maintenance_keyboard() -> list[list[dict[str, str]]]:
     return [
         [{"text": "♻️ DNS Финляндии", "callback_data": "admin:dns-restart:finland"}, {"text": "♻️ DNS Германии", "callback_data": "admin:dns-restart:germany"}],
+        [{"text": "🧭 DNS режим FI", "callback_data": "admin:dns-mode:finland"}, {"text": "🧭 DNS режим DE", "callback_data": "admin:dns-mode:germany"}],
         [{"text": "🌐 NDP Финляндии", "callback_data": "admin:ndp-restart:finland"}, {"text": "🌐 NDP Германии", "callback_data": "admin:ndp-restart:germany"}],
         [{"text": "🗺 Обновить GeoIP", "callback_data": "admin:geoip-update:all"}, {"text": "🔒 Продлить TLS", "callback_data": "admin:cert-renew:all"}],
         [{"text": "🛡 Проверить web policy", "callback_data": "admin:policy-test:all"}],
@@ -971,7 +978,7 @@ def handle_navigation(telegram: Telegram, store: Store, panels: PanelManager, ch
             return True
         render_navigation(telegram, store, chat_id, "<b>🛠 Обслуживание инфраструктуры</b>\nОперации выполняются только через API панели. Перезагрузка требует отдельного подтверждения.", maintenance_keyboard(), "admin:maintenance", callback_message_id=callback_message_id)
         return True
-    if kind == "admin" and action in {"dns-restart", "ndp-restart", "geoip-update", "cert-renew", "policy-test", "reboot", "reboot-confirm"}:
+    if kind == "admin" and action in {"dns-restart", "dns-mode", "dns-mode-apply", "ndp-restart", "geoip-update", "cert-renew", "policy-test", "reboot", "reboot-confirm"}:
         if not is_admin:
             render_navigation(telegram, store, chat_id, "Недостаточно прав.", menu_keyboard(False), "home", callback_message_id=callback_message_id)
             return True
@@ -987,6 +994,17 @@ def handle_navigation(telegram: Telegram, store: Store, panels: PanelManager, ch
         if action == "reboot-confirm" and server in {"finland", "germany"}:
             result = panel_text(panels, server, "server-reboot", PANEL_TOKEN)
             render_navigation(telegram, store, chat_id, f"<b>♻️ Перезагрузка запланирована</b>\n{result}", maintenance_keyboard(), "admin:reboot-done", callback_message_id=callback_message_id)
+            return True
+        if action == "dns-mode":
+            if server not in {"finland", "germany"}:
+                return True
+            render_navigation(telegram, store, chat_id, f"<b>🧭 DNS режим · {html.escape(server)}</b>\nВыберите безопасный режим:", [[{"text": "🛡 AdGuard Home", "callback_data": f"admin:dns-mode-apply:{server}:adguard"}, {"text": "🧩 Системный DNS", "callback_data": f"admin:dns-mode-apply:{server}:system"}], [{"text": "Отмена", "callback_data": "admin:maintenance"}]], "admin:dns-mode", callback_message_id=callback_message_id)
+            return True
+        if action == "dns-mode-apply" and server in {"finland", "germany"} and len(parts) > 3 and parts[3].lower() in {"system", "adguard"}:
+            mode = parts[3].lower()
+            payload = panels.request(server, "dns-mode", PANEL_TOKEN, extra={"mode": mode}) or {}
+            result = format_panel_payload(payload, "dns")
+            render_navigation(telegram, store, chat_id, f"<b>✅ DNS режим обновлён</b>\n{result}", maintenance_keyboard(), "admin:dns-mode-done", callback_message_id=callback_message_id)
             return True
         if action in {"dns-restart", "ndp-restart"} and server in {"finland", "germany"}:
             result = panel_text(panels, server, action, PANEL_TOKEN)
