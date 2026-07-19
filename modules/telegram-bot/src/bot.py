@@ -417,6 +417,7 @@ class Telegram:
         add_field("chat_id", str(chat_id))
         if caption:
             add_field("caption", caption[:1024])
+            add_field("parse_mode", "HTML")
         chunks.extend([f"--{boundary}\r\n".encode(), f'Content-Disposition: form-data; name="{field}"; filename="{filename}"\r\n'.encode(), b"Content-Type: application/octet-stream\r\n\r\n", content, b"\r\n", f"--{boundary}--\r\n".encode()])
         request = Request(f"{self.base}/{method}", data=b"".join(chunks), headers={"Content-Type": f"multipart/form-data; boundary={boundary}"}, method="POST")
         with urlopen(request, timeout=self.poll_timeout + 20) as response:
