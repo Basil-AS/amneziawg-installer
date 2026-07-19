@@ -85,6 +85,10 @@ the bot then creates separate scoped panel tokens through `POST /api/tokens`,
 stores them in SQLite and notifies the user without displaying either secret.
 The request can also be rejected and becomes eligible for a later request.
 
+Users can mark any device as `⭐ Избранное`. Favorites are stored per Telegram
+account in SQLite, survive bot restarts and preserve their navigation context;
+they never alter panel configuration or leak another user's device list.
+
 ## Storage and stack decision
 
 SQLite is the source of truth for bot users, panel-token bindings and

@@ -31,6 +31,18 @@ class BotTests(unittest.TestCase):
             self.assertIsNone(store.resolve_client_ref(43, ref))
             store.close()
 
+    def test_favorites_are_individual_and_toggle_idempotently(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = Store(Path(directory) / "state.sqlite3")
+            store.set_favorite(42, "germany", "phone")
+            store.set_favorite(42, "germany", "phone")
+            self.assertTrue(store.is_favorite(42, "germany", "phone"))
+            self.assertFalse(store.is_favorite(43, "germany", "phone"))
+            self.assertEqual([(row["server"], row["client_name"]) for row in store.favorites(42)], [("germany", "phone")])
+            store.set_favorite(42, "germany", "phone", False)
+            self.assertFalse(store.is_favorite(42, "germany", "phone"))
+            store.close()
+
     def test_access_request_is_rate_limited_until_binding(self):
         with tempfile.TemporaryDirectory() as directory:
             store = Store(Path(directory) / "state.sqlite3")
@@ -143,14 +155,14 @@ class BotTests(unittest.TestCase):
 
     def test_menu_contains_user_controls(self):
         callback_data = {item["callback_data"] for row in menu_keyboard(False) for item in row}
-        self.assertTrue({"user:clients", "user:traffic", "user:add", "menu:profile"}.issubset(callback_data))
+        self.assertTrue({"user:clients", "user:traffic", "user:favorites", "user:add", "menu:profile"}.issubset(callback_data))
 
     def test_client_callbacks_fit_telegram_limit(self):
         buttons = client_keyboard("germany", "a" * 48, "0123456789", admin=False)
         callbacks = [button["callback_data"] for row in buttons for button in row]
         self.assertTrue(all(len(value.encode()) <= 64 for value in callbacks))
         self.assertTrue(all(len(button["callback_data"].encode()) <= 64 for row in clients_keyboard([("germany", "a" * 48, "0123456789")]) for button in row))
-        self.assertTrue({"client:toggle:0123456789:1", "client:p2p-toggle:0123456789:1", "client:ports-toggle:0123456789:1", "client:p2p-port:0123456789:1", "client:access-link:0123456789:1", "client:remove:0123456789:1"}.issubset({button["callback_data"] for row in buttons for button in row}))
+        self.assertTrue({"client:toggle:0123456789:1", "client:p2p-toggle:0123456789:1", "client:ports-toggle:0123456789:1", "client:p2p-port:0123456789:1", "client:access-link:0123456789:1", "client:favorite-add:0123456789:1", "client:remove:0123456789:1"}.issubset({button["callback_data"] for row in buttons for button in row}))
         paged = {button["callback_data"] for row in clients_keyboard([], page=2, pages=3) for button in row}
         self.assertTrue({"user:clients:1", "user:clients:2", "user:clients:3"}.issubset(paged))
 
@@ -203,7 +215,7 @@ class BotTests(unittest.TestCase):
 
     def test_reply_keyboard_is_compact(self):
         keyboard = reply_keyboard()
-        self.assertEqual(sum(len(row) for row in keyboard), 5)
+        self.assertEqual(sum(len(row) for row in keyboard), 6)
         self.assertIn("🏠 Меню", keyboard[0])
 
     def test_callback_payloads_are_command_safe(self):
