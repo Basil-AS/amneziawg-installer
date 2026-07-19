@@ -46,8 +46,8 @@ exceeded even for long client names. Administrative screens also expose
 health, logs, token audit, safe restart confirmation and the panel's verified
 update check/apply API.
 Diagnostics are rendered as Telegram cards (health metrics, services, DNS,
-readiness, audit summaries and redacted token counts); raw panel JSON is not
-sent to users.
+readiness, audit summaries, load history, latency and provider traffic, plus
+redacted token counts); raw panel JSON is not sent to users.
 
 Administrators can create a client from the inline menu: choose the target
 server, enter the profile name in the prompted reply, and the bot calls

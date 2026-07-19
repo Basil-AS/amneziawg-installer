@@ -291,6 +291,9 @@ class PanelManager:
             "resolver": ("GET", "/api/resolver"), "audit": ("GET", "/api/clients/audit"),
             "tokens": ("GET", "/api/tokens"), "clients": ("GET", "/api/clients"),
             "stats": ("GET", "/api/stats"), "traffic": ("GET", "/api/traffic"),
+            "health-history": ("GET", "/api/server-health/history?range=1h"),
+            "latency": ("GET", "/api/clients/latency"),
+            "provider-traffic": ("GET", "/api/provider-traffic"),
             "update": ("GET", "/api/project-update"),
             "logs": ("GET", "/api/server/logs"), "restart": ("POST", "/api/server/restart"),
         }
@@ -546,7 +549,7 @@ class Telegram:
 
     def configure_profile(self, mini_app_url: str = "", admin_chat_id: int = 0) -> None:
         commands = [{"command": command, "description": description} for command, description in (("start", "Открыть главное меню"), ("menu", "Показать меню"), ("servers", "Статус серверов"), ("clients", "Список клиентов"), ("me", "Моя привязка"), ("help", "Помощь"))]
-        admin_commands = commands + [{"command": command, "description": description} for command, description in (("health", "Глубокая проверка"), ("readiness", "Готовность VPN"), ("dns", "Состояние DNS"), ("audit", "Аудит клиентов"), ("restart", "Перезапуск сервиса"))]
+        admin_commands = commands + [{"command": command, "description": description} for command, description in (("health", "Глубокая проверка"), ("readiness", "Готовность VPN"), ("dns", "Состояние DNS"), ("audit", "Аудит клиентов"), ("history", "История нагрузки"), ("latency", "Latency клиентов"), ("provider", "Трафик провайдера"), ("restart", "Перезапуск сервиса"))]
         self.set_commands(commands)
         if admin_chat_id:
             self.set_commands(admin_commands, chat_id=admin_chat_id)
@@ -561,7 +564,7 @@ class Telegram:
 def help_text(admin: bool) -> str:
     text = "<b>GaulleBot</b>\nВыберите действие кнопками — команды нужны только для восстановления.\n\n/me — моя привязка\n/servers — состояние серверов\n/clients — мои устройства\n/menu — главное меню\n/help — помощь"
     if admin:
-        text += "\n\n<b>Администратор</b>:\n/status — быстрый сводный статус\n/health — глубокая проверка\n/info — сведения о сервере\n/readiness — готовность VPN\n/dns — DNS/AdGuard\n/resolver — состояние resolver\n/audit — аудит клиентов\n/tokens — токены панели\n/clients [server] — клиенты\n/logs [server] — последние логи\n/users — привязки\n/bind &lt;tg_id&gt; &lt;fin_token&gt; &lt;ger_token&gt;\n/add &lt;server&gt; &lt;name&gt;\n/remove &lt;server&gt; &lt;name&gt;\n/regenerate &lt;server&gt; &lt;name&gt;\n/restart &lt;finland|germany&gt;"
+        text += "\n\n<b>Администратор</b>:\n/status — быстрый сводный статус\n/health — глубокая проверка\n/info — сведения о сервере\n/readiness — готовность VPN\n/dns — DNS/AdGuard\n/resolver — состояние resolver\n/audit — аудит клиентов\n/tokens — токены панели\n/history — история нагрузки\n/latency — задержка клиентов\n/provider — трафик провайдера\n/clients [server] — клиенты\n/logs [server] — последние логи\n/users — привязки\n/bind &lt;tg_id&gt; &lt;fin_token&gt; &lt;ger_token&gt;\n/add &lt;server&gt; &lt;name&gt;\n/remove &lt;server&gt; &lt;name&gt;\n/regenerate &lt;server&gt; &lt;name&gt;\n/restart &lt;finland|germany&gt;"
     return text
 
 
@@ -580,6 +583,8 @@ def admin_keyboard() -> list[list[dict[str, str]]]:
     return [
         [{"text": "ℹ️ Информация", "callback_data": "server:info:all"}, {"text": "🧪 Аудит", "callback_data": "server:audit:all"}],
         [{"text": "🧭 Resolver", "callback_data": "server:resolver:all"}, {"text": "🔑 Токены", "callback_data": "server:tokens:all"}],
+        [{"text": "📉 Нагрузка", "callback_data": "server:health-history:all"}, {"text": "📶 Latency", "callback_data": "server:latency:all"}],
+        [{"text": "🌐 Provider traffic", "callback_data": "server:provider-traffic:all"}],
         [{"text": "📈 Трафик", "callback_data": "user:traffic"}, {"text": "🔄 Обновления", "callback_data": "admin:update"}],
         [{"text": "➕ Клиент Финляндии", "callback_data": "admin:add:finland"}, {"text": "➕ Клиент Германии", "callback_data": "admin:add:germany"}],
         [{"text": "♻️ Перезапуск Финляндии", "callback_data": "admin:restart:finland"}, {"text": "♻️ Перезапуск Германии", "callback_data": "admin:restart:germany"}],
@@ -838,7 +843,7 @@ def handle_navigation(telegram: Telegram, store: Store, panels: PanelManager, ch
                     f"Последний handshake: <code>{html.escape(str(client.get('latestHandshakeAt', client.get('last_handshake', '—'))))}</code>")
         render_navigation(telegram, store, chat_id, text, client_keyboard(server, name, ref, admin=is_admin), f"client:{action}:{ref}", callback_message_id=callback_message_id)
         return True
-    if kind == "server" and action in {"status", "health", "readiness", "dns", "info", "resolver", "audit", "tokens", "clients", "logs"}:
+    if kind == "server" and action in {"status", "health", "readiness", "dns", "info", "resolver", "audit", "tokens", "clients", "logs", "health-history", "latency", "provider-traffic"}:
         access_row = store.get(principal_id)
         if not is_admin and not access_row or (not is_admin and not (access_row["finland_token"] or access_row["germany_token"])):
             render_navigation(telegram, store, chat_id, "<b>Доступ ещё не выдан</b>\nОбратитесь к администратору для привязки токена.", menu_keyboard(False), "home", callback_message_id=callback_message_id)
@@ -856,7 +861,7 @@ def handle_navigation(telegram: Telegram, store: Store, panels: PanelManager, ch
             output = "\n\n".join(compact_clients(panels.request(key, "snapshot", PANEL_TOKEN if is_admin else tokens[key]) or {"panel": key, "error": "недоступен"}) for key in keys)
         else:
             output = "\n\n".join(panel_text(panels, key, action, PANEL_TOKEN if is_admin else tokens[key]) for key in keys)
-        title = {"status": "Статус", "clients": "Клиенты", "health": "Проверка", "readiness": "Готовность VPN", "dns": "DNS", "info": "Информация", "resolver": "Resolver", "audit": "Аудит", "tokens": "Токены", "logs": "Логи"}[action]
+        title = {"status": "Статус", "clients": "Клиенты", "health": "Проверка", "readiness": "Готовность VPN", "dns": "DNS", "info": "Информация", "resolver": "Resolver", "audit": "Аудит", "tokens": "Токены", "logs": "Логи", "health-history": "История нагрузки", "latency": "Latency клиентов", "provider-traffic": "Provider traffic"}[action]
         render_navigation(telegram, store, chat_id, f"<b>{title}</b>\n{output[:3900]}", navigation_keyboard("result", is_admin), f"server:{action}:{server}", callback_message_id=callback_message_id)
         return True
     return False
@@ -958,6 +963,32 @@ def format_panel_payload(payload: dict[str, Any], action: str) -> str:
     elif action == "logs":
         log_lines = payload.get("lines") or []
         lines.append("<pre>" + html.escape("\n".join(str(line) for line in log_lines[-18:]))[:3000] + "</pre>")
+    elif action == "health-history":
+        summary = payload.get("summary") or {}
+        lines.append(f"Период: <b>{html.escape(str(payload.get('range', '1h')))}</b> · samples: <b>{summary.get('counts', {}).get('samples', 0)}</b>")
+        cpu, memory, disk, load = summary.get("cpu") or {}, summary.get("memory") or {}, summary.get("disk") or {}, summary.get("load") or {}
+        lines.extend([metric_line("CPU average/max", f"{cpu.get('avg', '—')}% / {cpu.get('max', '—')}%"), metric_line("RAM average/max", f"{memory.get('avg_used_percent', '—')}% / {memory.get('max_used_percent', '—')}%"), metric_line("Disk", f"{disk.get('current_used_percent', '—')}%"), metric_line("Load avg/max", f"{load.get('avg1', '—')} / {load.get('max1', '—')}")])
+        lines.append(f"События: ⚠️ {summary.get('counts', {}).get('warn', 0)} · ❌ {summary.get('counts', {}).get('critical', 0)}")
+    elif action == "latency":
+        overview = payload.get("overview") or payload.get("diagnostics") or {}
+        lines.append(f"Активных: <b>{overview.get('active', overview.get('active_peers', 0))}</b> · reachable: <b>{overview.get('reachable', overview.get('reachable_clients', 0))}</b>")
+        lines.append(f"Средний RTT: <b>{overview.get('avg_rtt_ms', '—')} ms</b> · P95: <b>{overview.get('p95_rtt_ms', '—')} ms</b>")
+        clients = payload.get("clients") or {}
+        if clients:
+            lines.append("<b>Проблемные устройства</b>")
+            problematic = [(name, item) for name, item in clients.items() if str(item.get("status", "")).lower() not in {"ok", "active", "healthy", "reachable", ""}]
+            for name, item in problematic[:10]:
+                lines.append(f"⚠️ <code>{html.escape(str(name))}</code> · RTT {html.escape(str(item.get('rtt_ms', '—')))} ms · {html.escape(str(item.get('status', 'unknown')))}")
+            if not problematic:
+                lines.append("✅ Явных проблем не обнаружено")
+    elif action == "provider-traffic":
+        traffic = payload.get("traffic") or {}
+        quota = payload.get("quota") or {}
+        remaining = payload.get("remaining") or {}
+        lines.append(f"Провайдер: <b>{html.escape(str(payload.get('label') or payload.get('provider') or '—'))}</b> · {status_icon(payload.get('status'))}")
+        lines.append(f"Всего: <b>{html.escape(format_bytes(traffic.get('total_bytes')))}</b> · вход: {html.escape(format_bytes(traffic.get('in_bytes')))} · выход: {html.escape(format_bytes(traffic.get('out_bytes')))}")
+        if quota.get("total_bytes") is not None:
+            lines.append(f"Остаток квоты: <b>{html.escape(format_bytes(remaining.get('total_bytes')))}</b> / {html.escape(format_bytes(quota.get('total_bytes')))}")
     else:
         if payload.get("message"):
             lines.append(html.escape(str(payload["message"])))
@@ -1308,8 +1339,8 @@ def main() -> None:
                             telegram.send(chat_id, "\n\n".join(snapshot_text(key) for key in ("finland", "germany")))
                         else:
                             telegram.send(chat_id, "\n\n".join(parallel_results(panels, ("finland", "germany"), "health", {"finland": PANEL_TOKEN, "germany": PANEL_TOKEN})))
-                    elif name in {"/info", "/readiness", "/dns", "/resolver", "/audit", "/tokens"}:
-                        action = name[1:]
+                    elif name in {"/info", "/readiness", "/dns", "/resolver", "/audit", "/tokens", "/history", "/latency", "/provider"}:
+                        action = {"/history": "health-history", "/provider": "provider-traffic"}.get(name, name[1:])
                         raw = "\n\n".join(parallel_results(panels, ("finland", "germany"), action, {"finland": PANEL_TOKEN, "germany": PANEL_TOKEN}))
                         telegram.send(chat_id, raw[:4096])
                     elif name == "/restart" and len(parts) == 2:
