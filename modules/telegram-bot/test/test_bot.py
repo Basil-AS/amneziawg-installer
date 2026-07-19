@@ -123,6 +123,28 @@ class BotTests(unittest.TestCase):
             self.assertIn("/api/tokens/" + "a" * 64 + "/rotate", opened.call_args.args[0].full_url)
             self.assertNotIn("super-secret", str(result))
 
+    def test_update_token_name_uses_hash_path_and_payload(self):
+        class Response:
+            def __enter__(self): return self
+            def __exit__(self, *args): return False
+            def read(self): return b'{"ok":true,"name":"Phone"}'
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "panels.json"
+            path.write_text('{"panels":[{"id":"finland","url":"https://vpn.invalid","token":"super-secret"}]}', encoding="utf-8")
+            manager = PanelManager(path)
+            with patch("src.bot.urlopen", return_value=Response()) as opened:
+                result = manager.request("finland", "update-token-name", PANEL_TOKEN, value="a" * 64, extra={"name": "Phone"})
+            self.assertTrue(result["ok"])
+            request = opened.call_args.args[0]
+            self.assertIn("/api/tokens/" + "a" * 64 + "/name", request.full_url)
+            self.assertEqual(json.loads(request.data), {"name": "Phone"})
+
+    def test_token_name_response_is_a_card(self):
+        rendered = format_panel_payload({"panel": "Sunny-Finland", "ok": True, "name": "Phone"}, "update-token-name")
+        self.assertIn("Имя:", rendered)
+        self.assertIn("Phone", rendered)
+        self.assertNotIn('"name"', rendered)
+
     def test_nettest_ping_is_allowlisted_and_query_scoped(self):
         class Response:
             def __enter__(self): return self

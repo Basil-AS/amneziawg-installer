@@ -359,6 +359,12 @@ class PanelManager:
                 return {"error": "invalid token client scope", "panel": panel.label}
             endpoint_info = ("PUT", f"/api/tokens/{quote(value, safe='')}/clients")
             body = json.dumps({"clients": clients}, ensure_ascii=False).encode()
+        elif action == "update-token-name":
+            name = str((extra or {}).get("name", "")).strip()
+            if not name or len(name) > 64 or any(ord(char) < 32 or ord(char) == 127 for char in name):
+                return {"error": "invalid token name", "panel": panel.label}
+            endpoint_info = ("PUT", f"/api/tokens/{quote(value, safe='')}/name")
+            body = json.dumps({"name": name}, ensure_ascii=False).encode()
         elif action == "rotate-profile":
             preset = str((extra or {}).get("preset", "default")).lower()
             if preset not in {"default", "mobile"}:
@@ -961,9 +967,32 @@ def handle_navigation(telegram: Telegram, store: Store, panels: PanelManager, ch
             controls.append({"text": "🔄 Ротировать токены", "callback_data": f"admin:rotate:{target_id}"})
             controls.append({"text": "🔧 Синхронизировать доступ", "callback_data": f"admin:scope-sync:{target_id}"})
             controls.append({"text": "⛔ Отозвать доступ", "callback_data": f"admin:revoke:{target_id}"})
+            name_controls = []
+            if target["finland_token"]:
+                name_controls.append({"text": "✏️ Имя FI", "callback_data": f"admin:token-name:{target_id}:finland"})
+            if target["germany_token"]:
+                name_controls.append({"text": "✏️ Имя DE", "callback_data": f"admin:token-name:{target_id}:germany"})
+            if name_controls:
+                controls.extend(name_controls)
         keyboard = [controls] if controls else []
         keyboard.append([{"text": "👥 Пользователи", "callback_data": "admin:users:0"}, {"text": "⬅️ Админка", "callback_data": "menu:admin"}])
         render_navigation(telegram, store, chat_id, text, keyboard, "admin:user", callback_message_id=callback_message_id)
+        return True
+    if kind == "admin" and action == "token-name":
+        if not is_admin or len(parts) < 4 or parts[3] not in {"finland", "germany"}:
+            render_navigation(telegram, store, chat_id, "Недостаточно прав или неверная панель.", admin_keyboard(), "admin:users", callback_message_id=callback_message_id)
+            return True
+        try:
+            target_id = int(parts[2])
+        except (TypeError, ValueError):
+            return True
+        target = store.get(target_id)
+        server = parts[3]
+        if target is None or not target[f"{server}_token"]:
+            render_navigation(telegram, store, chat_id, "У пользователя нет токена для этой панели.", admin_keyboard(), "admin:users", callback_message_id=callback_message_id)
+            return True
+        store.set_prompt(principal_id, "token_name", f"{server}|{target_id}")
+        telegram.send(chat_id, f"<b>✏️ Новое имя токена</b>\nПанель: <b>{html.escape(server)}</b>\nПользователь: <code>{target_id}</code>\nВведите отображаемое имя (до 64 символов).", force_reply=True)
         return True
     if kind == "admin" and action in {"scope-sync", "scope-sync-confirm"}:
         if not is_admin or len(parts) < 3:
@@ -1653,6 +1682,9 @@ def format_panel_payload(payload: dict[str, Any], action: str) -> str:
         for item in users[:12]:
             clients = item.get("clients") or []
             lines.append(f"🔐 {html.escape(str(item.get('name') or 'Без имени'))} · клиентов: {len(clients)}")
+    elif action == "update-token-name":
+        lines.append(f"Имя: <b>{html.escape(str(payload.get('name') or '—'))}</b>")
+        lines.append(f"Статус: {status_icon(payload.get('ok', True))} успешно")
     elif action == "logs":
         log_lines = payload.get("lines") or []
         lines.append("<pre>" + html.escape("\n".join(str(line) for line in log_lines[-18:]))[:3000] + "</pre>")
@@ -2204,6 +2236,24 @@ def main() -> None:
                 is_admin = actor_id == settings.admin_chat_id
                 if not callback and not reply_action and actor_id and not command.startswith("/"):
                     prompt = store.prompt(actor_id)
+                    if prompt and prompt["action"] == "token_name":
+                        prompt_parts = str(prompt["server"]).split("|", 1)
+                        prompt_server = prompt_parts[0].lower() if prompt_parts else ""
+                        try:
+                            target_id = int(prompt_parts[1]) if len(prompt_parts) > 1 else 0
+                        except (TypeError, ValueError):
+                            target_id = 0
+                        candidate = command.strip()
+                        target = store.get(target_id) if is_admin and target_id else None
+                        token = str(target[f"{prompt_server}_token"] or "") if target and prompt_server in {"finland", "germany"} else ""
+                        if not is_admin or prompt_server not in {"finland", "germany"} or not token or not candidate or len(candidate) > 64 or any(ord(char) < 32 or ord(char) == 127 for char in candidate):
+                            telegram.send(chat_id, "Имя токена должно быть непустым и содержать не более 64 печатных символов. Повторите ввод.", force_reply=True)
+                            continue
+                        digest = hashlib.sha256(token.encode()).hexdigest()
+                        result = panel_text(panels, prompt_server, "update-token-name", PANEL_TOKEN, value=digest, extra={"name": candidate})
+                        store.clear_prompt(actor_id)
+                        render_navigation(telegram, store, chat_id, f"<b>✅ Имя токена обновлено</b>\n{result}", [[{"text": "👤 К пользователю", "callback_data": f"admin:user:{target_id}"}], [{"text": "⬅️ Админка", "callback_data": "menu:admin"}]], "admin:token-name-done", reply=True)
+                        continue
                     if prompt and prompt["action"] == "add_client":
                         candidate = command.strip()
                         prompt_server = str(prompt["server"]).lower()
