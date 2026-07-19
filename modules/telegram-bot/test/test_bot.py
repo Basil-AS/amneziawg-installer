@@ -40,6 +40,16 @@ class BotTests(unittest.TestCase):
             self.assertEqual(store.get(42)["finland_token"], "fin")
             store.close()
 
+    def test_input_prompt_is_persistent(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = Store(Path(directory) / "state.sqlite3")
+            store.set_prompt(42, "add_client", "germany")
+            prompt = store.prompt(42)
+            self.assertEqual((prompt["action"], prompt["server"]), ("add_client", "germany"))
+            store.clear_prompt(42)
+            self.assertIsNone(store.prompt(42))
+            store.close()
+
     def test_touch_registers_unbound_user_without_tokens(self):
         with tempfile.TemporaryDirectory() as directory:
             store = Store(Path(directory) / "state.sqlite3")

@@ -44,6 +44,11 @@ exceeded even for long client names. Administrative screens also expose
 health, logs, token audit, safe restart confirmation and the panel's verified
 update check/apply API.
 
+Administrators can create a client from the inline menu: choose the target
+server, enter the profile name in the prompted reply, and the bot calls
+`POST /api/clients` with the dedicated API credential. No shell command is
+constructed or executed.
+
 Users without a binding can press “🔐 Запросить доступ”. The request is
 rate-limited in SQLite and sent to the administrator with a button that opens
 the exact `/bind <telegram_id> <finland_token> <germany_token>` instruction;
