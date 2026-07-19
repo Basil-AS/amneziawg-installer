@@ -98,6 +98,16 @@ class BotTests(unittest.TestCase):
             self.assertEqual(manager.keys(), ["finland"])
             self.assertNotIn("secret", manager.run("finland", "unsupported") or "")
 
+    def test_generic_api_fallback_is_rendered_as_card_not_json(self):
+        rendered = format_panel_payload({"panel": "Sunny-Germany", "message": "Обновление завершено", "details": {"service": "active"}}, "restart")
+        self.assertIn("Обновление завершено", rendered)
+        self.assertNotIn('"details"', rendered)
+
+    def test_web_policy_flattens_nested_values(self):
+        rendered = format_panel_payload({"panel": "Sunny-Finland", "mode": "vpn", "allowed_networks": ["10.9.0.0/16", "fd00::/8"]}, "web-policy")
+        self.assertIn("10.9.0.0/16, fd00::/8", rendered)
+        self.assertNotIn('"allowed_networks"', rendered)
+
     def test_rotate_token_uses_hash_path_and_never_logs_secret(self):
         class Response:
             def __enter__(self): return self
