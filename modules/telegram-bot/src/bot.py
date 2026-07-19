@@ -1541,8 +1541,9 @@ class MiniAppServer:
                             content, content_type = result
                             self.send_response(200); self.send_header("Content-Type", content_type); self.send_header("Cache-Control", "no-store"); self.send_header("Content-Length", str(len(content))); self.end_headers(); self.wfile.write(content); return
                         self.reply(result)
-                    except ValueError:
-                        self.reply({"error": "bad_request"}, 400)
+                    except ValueError as exc:
+                        unauthorized = "init data" in str(exc).lower()
+                        self.reply({"error": "unauthorized" if unauthorized else "bad_request"}, 401 if unauthorized else 400)
                     except OSError:
                         self.reply({"error": "backend_unavailable"}, 503)
                     return
@@ -1631,8 +1632,9 @@ class MiniAppServer:
                         if result is None:
                             self.reply({"error": "nettest_unavailable"}, 502); return
                         self.reply(result if isinstance(result, dict) else {"ok": True})
-                    except (ValueError, json.JSONDecodeError):
-                        self.reply({"error": "bad_request"}, 400)
+                    except (ValueError, json.JSONDecodeError) as exc:
+                        unauthorized = "init data" in str(exc).lower()
+                        self.reply({"error": "unauthorized" if unauthorized else "bad_request"}, 401 if unauthorized else 400)
                     except OSError:
                         self.reply({"error": "backend_unavailable"}, 503)
                     return
