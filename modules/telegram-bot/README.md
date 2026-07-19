@@ -137,5 +137,11 @@ session to the panel's RBAC endpoint.
 Each Mini App server card also has a lightweight `🌐 Доступность API` action;
 it uses the same signed session and scoped panel token as the Telegram menu and
 renders a parsed availability card without exposing credentials.
+
+The Mini App also provides `🧪 Тест скорости`: a bounded ping/download/upload
+run against the selected panel, with a progress bar, cancellation, a 4 MiB
+gateway cap and an optional panel-side report. It is rate-limited by the
+panel's `test_id` session controls; bearer tokens and panel URLs never reach
+the browser.
 It also downloads the `vpn://` URI through `/api/artifact`, alongside QR and
 `.conf`; the panel URL and bearer token remain server-side.

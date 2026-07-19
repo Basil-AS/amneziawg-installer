@@ -40,7 +40,7 @@
     return `<section class="panel-card" data-panel="${esc(key)}">
       <div class="panel-head"><div><span class="eyebrow">VPN SERVER</span><h2>${esc(panel.display_name || panel.panel || key)}</h2></div><div class="server-dot ${panel.service === 'active' ? 'active' : ''}"></div></div>
       <div class="metrics"><div><strong>${online}<small>/${total}</small></strong><span>онлайн</span></div><div><strong>${esc(panel.version || '—')}</strong><span>версия</span></div><div><strong>${statusBadge(panel.service || 'unknown')}</strong><span>сервис</span></div></div>
-      <div class="panel-tools"><button data-panel-action="nettest-ping" data-server="${esc(key)}">🌐 Доступность API</button>${isAdmin ? `<button data-panel-action="health" data-server="${esc(key)}">🩺 Проверка</button><button data-panel-action="health-history" data-server="${esc(key)}">📉 Нагрузка</button><button data-panel-action="latency" data-server="${esc(key)}">📶 Latency</button><button data-panel-action="web-policy-test" data-server="${esc(key)}">🛡 Policy</button><button data-panel-action="update-check" data-server="${esc(key)}">🔄 Обновления</button><button data-panel-action="restart" data-server="${esc(key)}">♻️ Перезапуск</button>` : ''}</div>
+      <div class="panel-tools"><button data-panel-action="nettest-ping" data-server="${esc(key)}">🌐 Доступность API</button><button data-panel-action="nettest" data-server="${esc(key)}">🧪 Тест скорости</button>${isAdmin ? `<button data-panel-action="health" data-server="${esc(key)}">🩺 Проверка</button><button data-panel-action="health-history" data-server="${esc(key)}">📉 Нагрузка</button><button data-panel-action="latency" data-server="${esc(key)}">📶 Latency</button><button data-panel-action="web-policy-test" data-server="${esc(key)}">🛡 Policy</button><button data-panel-action="update-check" data-server="${esc(key)}">🔄 Обновления</button><button data-panel-action="restart" data-server="${esc(key)}">♻️ Перезапуск</button>` : ''}</div>
       <div class="section-title"><span>Устройства</span><span class="count">${clients.length}</span></div>
       <div class="clients">${clients.length ? clients.slice(0, 60).map(client => clientRow(key, client, isAdmin)).join('') : '<div class="empty">Нет доступных устройств</div>'}</div>
     </section>`;
@@ -105,9 +105,35 @@
   }
   async function panelAction(button) {
     const action = button.dataset.panelAction, server = button.dataset.server;
+    if (action === 'nettest') return runNettest(button);
     if (action === 'restart' && !confirm(`Перезапустить ${server}? VPN-сессии временно прервутся.`)) return;
     button.disabled = true;
     try { const payload = await api('/api/action', {method:'POST', body:JSON.stringify({server, action})}); const dialog = document.createElement('dialog'); dialog.className = 'result-dialog'; dialog.innerHTML = `<button class="dialog-close">×</button><div>${diagnosticHtml(action,payload)}</div>`; document.body.append(dialog); dialog.showModal(); dialog.querySelector('.dialog-close').onclick = () => { dialog.close(); dialog.remove(); }; if (['restart','update-check','update-apply'].includes(action)) await load(); } catch (error) { toast(error.message); } finally { button.disabled = false; }
+  }
+  async function runNettest(button) {
+    if (window.__gaulleNettest) return;
+    const server = button.dataset.server, testId = `mini-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const controller = new AbortController(); window.__gaulleNettest = {controller, cancelled:false};
+    const dialog = document.createElement('dialog'); dialog.className = 'result-dialog nettest-dialog';
+    dialog.innerHTML = `<button class="dialog-close">×</button><h3>🧪 Тест скорости · ${esc(server)}</h3><p class="test-status">Подготовка…</p><div class="test-meter"><i></i></div><div class="result-grid test-values"><span>Ping <b>—</b></span><span>Download <b>—</b></span><span>Upload <b>—</b></span><span>Статус <b>выполняется</b></span></div><button class="test-cancel">Отменить</button>`;
+    document.body.append(dialog); dialog.showModal();
+    const status = dialog.querySelector('.test-status'), meter = dialog.querySelector('.test-meter i'), values = dialog.querySelectorAll('.test-values b');
+    let cancelled = false;
+    const close = () => { if (dialog.open) dialog.close(); dialog.remove(); };
+    dialog.querySelector('.dialog-close').onclick = () => { cancelled = true; controller.abort(); close(); };
+    dialog.querySelector('.test-cancel').onclick = () => { cancelled = true; controller.abort(); status.textContent = 'Остановка…'; };
+    const stage = (label, percent) => { status.textContent = label; meter.style.width = `${percent}%`; };
+    const request = (path, options = {}) => fetch(path, {headers:initHeaders(), cache:'no-store', signal:controller.signal, ...options});
+    const json = async response => { const data = await response.json(); if (!response.ok) throw new Error(data.error || 'Тест недоступен'); return data; };
+    try {
+      stage('Проверка отклика API…', 12); const pingStart = performance.now(); await json(await request(`/api/nettest?server=${encodeURIComponent(server)}&kind=ping&test_id=${encodeURIComponent(testId)}`)); const pingMs = performance.now() - pingStart; values[0].textContent = `${Math.round(pingMs)} ms`;
+      stage('Загрузка тестового блока…', 35); const downloadStart = performance.now(); const downloadResponse = await request(`/api/nettest?server=${encodeURIComponent(server)}&kind=download&size=1000000&test_id=${encodeURIComponent(testId)}`); if (!downloadResponse.ok) throw new Error('Download недоступен'); const downloadBlob = await downloadResponse.blob(); const downloadMs = Math.max(1, performance.now() - downloadStart); const downloadMbps = downloadBlob.size * 8 / downloadMs / 1000; values[1].textContent = `${downloadMbps.toFixed(1)} Mbps`;
+      stage('Отправка тестового блока…', 68); const uploadBytes = new Uint8Array(512000); const uploadStart = performance.now(); const uploadResponse = await request(`/api/nettest?server=${encodeURIComponent(server)}&kind=upload&test_id=${encodeURIComponent(testId)}`, {method:'POST', body:uploadBytes}); await json(uploadResponse); const uploadMs = Math.max(1, performance.now() - uploadStart); const uploadMbps = uploadBytes.byteLength * 8 / uploadMs / 1000; values[2].textContent = `${uploadMbps.toFixed(1)} Mbps`;
+      stage('Сохранение отчёта…', 88); await json(await request(`/api/nettest?server=${encodeURIComponent(server)}&kind=report&test_id=${encodeURIComponent(testId)}`, {method:'POST', body:JSON.stringify({network_type:'home', duration_seconds:Math.round((performance.now() - pingStart) / 1000), latency:{rtt_ms:pingMs}, download_probe:{mbps:downloadMbps, bytes:downloadBlob.size}, upload_probe:{mbps:uploadMbps, bytes:uploadBytes.byteLength}, user_agent:navigator.userAgent})})); stage('Готово', 100); values[3].textContent = 'готово'; dialog.querySelector('.test-cancel').textContent = 'Закрыть'; dialog.querySelector('.test-cancel').onclick = close; tg?.HapticFeedback?.notificationOccurred?.('success');
+    } catch (error) {
+      if (!cancelled) { status.textContent = error.message; values[3].textContent = 'ошибка'; meter.style.width = '100%'; }
+      if (cancelled) { try { await fetch(`/api/nettest?server=${encodeURIComponent(server)}&kind=cancel&test_id=${encodeURIComponent(testId)}`, {method:'POST', headers:{...initHeaders(), 'Content-Type':'application/json'}, body:'{}'}); } catch (_) {} close(); }
+    } finally { window.__gaulleNettest = null; }
   }
   async function requestAccess(button) {
     button.disabled = true;

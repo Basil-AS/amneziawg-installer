@@ -113,6 +113,20 @@ class BotTests(unittest.TestCase):
             self.assertIn("/api/tokens/" + "a" * 64 + "/rotate", opened.call_args.args[0].full_url)
             self.assertNotIn("super-secret", str(result))
 
+    def test_nettest_ping_is_allowlisted_and_query_scoped(self):
+        class Response:
+            def __enter__(self): return self
+            def __exit__(self, *args): return False
+            def read(self, _limit=-1): return b'{"ok":true,"server_time":"now"}'
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "panels.json"
+            path.write_text('{"panels":[{"id":"finland","url":"https://vpn.invalid","token":"super-secret"}]}', encoding="utf-8")
+            manager = PanelManager(path)
+            with patch("src.bot.urlopen", return_value=Response()) as opened:
+                result = manager.nettest("finland", "ping", PANEL_TOKEN, test_id="mini-123")
+            self.assertTrue(result["ok"])
+            self.assertIn("/api/nettest/ping?test_id=mini-123", opened.call_args.args[0].full_url)
+
     def test_missing_user_token_never_falls_back_to_panel_super_token(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "panels.json"
