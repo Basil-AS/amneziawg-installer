@@ -23,7 +23,7 @@ Admin: `/status`, `/health`, `/info`, `/readiness`, `/dns`, `/resolver`,
 `/audit`, `/tokens`, `/servers`, `/clients [finland|germany]`,
 `/logs [finland|germany]`, `/users`, `/bind <tg_id> <fin_token> <ger_token>`,
 `/add`, `/remove`, `/regenerate`, `/restart <finland|germany>`.
-User: `/me`, `/servers`, `/menu`, `/help`.
+User: `/me`, `/servers`, `/clients`, `/menu`, `/help`.
 
 The bot uses the compact `/api/bot/snapshot` endpoint for status and client
 views. Requests to both panels run concurrently and read-only snapshots are
@@ -35,6 +35,14 @@ text fallback. Configure `var/panels.json` with one bearer token per panel to
 keep every operation on the authenticated panel API. The administrator uses
 the panel token, while a regular user can only use the token explicitly bound
 to that Telegram account.
+
+The button-first interface provides a persistent bottom keyboard, one editable
+navigation message, per-user device cards and inline actions for QR images,
+`.conf` files, `vpn://` URIs and traffic statistics. Device callbacks use
+short SQLite-backed references, so Telegram's 64-byte callback limit is never
+exceeded even for long client names. Administrative screens also expose
+health, logs, token audit, safe restart confirmation and the panel's verified
+update check/apply API.
 
 ## Storage and stack decision
 
