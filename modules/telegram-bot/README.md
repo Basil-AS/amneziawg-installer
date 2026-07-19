@@ -80,8 +80,10 @@ constructed or executed.
 
 Users without a binding can press “🔐 Запросить доступ”. The request is
 rate-limited in SQLite and sent to the administrator with a button that opens
-the exact `/bind <telegram_id> <finland_token> <germany_token>` instruction;
-panel tokens themselves are never sent through the notification.
+the access decision screen. The administrator can approve it with one button:
+the bot then creates separate scoped panel tokens through `POST /api/tokens`,
+stores them in SQLite and notifies the user without displaying either secret.
+The request can also be rejected and becomes eligible for a later request.
 
 ## Storage and stack decision
 

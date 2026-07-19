@@ -163,6 +163,13 @@ class Store:
             self.db.commit()
             return True
 
+    def resolve_access_request(self, telegram_id: int, status: str) -> None:
+        if status not in {"approved", "rejected"}:
+            raise ValueError("invalid access decision")
+        with self.lock:
+            self.db.execute("UPDATE access_requests SET status=? WHERE telegram_id=?", (status, telegram_id))
+            self.db.commit()
+
     def set_prompt(self, telegram_id: int, action: str, server: str) -> None:
         with self.lock:
             self.db.execute("INSERT OR REPLACE INTO input_prompts VALUES (?, ?, ?, ?)", (telegram_id, action, server, int(time.time())))
@@ -307,6 +314,9 @@ class PanelManager:
         if action == "add":
             endpoint_info = ("POST", "/api/clients")
             body = json.dumps({"name": value}).encode()
+        elif action == "create-user-token":
+            endpoint_info = ("POST", "/api/tokens")
+            body = json.dumps({"name": value, "clients": (extra or {}).get("clients", [])}).encode()
         elif action == "regenerate":
             endpoint_info = ("POST", f"/api/clients/{quote(value, safe='')}/regenerate")
             body = b"{}"
@@ -767,9 +777,58 @@ def handle_navigation(telegram: Telegram, store: Store, panels: PanelManager, ch
             return True
         text = (f"<b>🔐 Запрос доступа</b>\nTelegram ID: <code>{requested_id}</code>\n"
                 f"Пользователь: @{html.escape(requested['username'] or 'без username')}\n\n"
-                "Выдайте ему токены панелей командой:\n"
-                f"<code>/bind {requested_id} &lt;finland_token&gt; &lt;germany_token&gt;</code>")
-        render_navigation(telegram, store, chat_id, text, [[{"text": "👥 Пользователи", "callback_data": "admin:users:0"}, {"text": "⬅️ Админка", "callback_data": "menu:admin"}]], "admin:request", callback_message_id=callback_message_id)
+                "Бот может автоматически создать отдельные scoped-токены на обеих панелях и привязать их к пользователю.")
+        render_navigation(telegram, store, chat_id, text, [[{"text": "✅ Выдать доступ", "callback_data": f"admin:approve:{requested_id}"}, {"text": "↩️ Отклонить", "callback_data": f"admin:reject:{requested_id}"}], [{"text": "👥 Пользователи", "callback_data": "admin:users:0"}, {"text": "⬅️ Админка", "callback_data": "menu:admin"}]], "admin:request", callback_message_id=callback_message_id)
+        return True
+    if kind == "admin" and action in {"approve", "reject"}:
+        if not is_admin or len(parts) < 3:
+            render_navigation(telegram, store, chat_id, "Недостаточно прав.", menu_keyboard(False), "home", callback_message_id=callback_message_id)
+            return True
+        try:
+            requested_id = int(parts[2])
+        except (TypeError, ValueError):
+            return True
+        requested = store.get(requested_id)
+        if requested is None:
+            render_navigation(telegram, store, chat_id, "Заявка устарела или пользователь ещё не написал боту.", admin_keyboard(), "admin", callback_message_id=callback_message_id)
+            return True
+        if action == "reject":
+            store.resolve_access_request(requested_id, "rejected")
+            try:
+                telegram.send(requested_id, "<b>🔐 Запрос доступа отклонён</b>\nЕсли это ошибка, отправьте новую заявку позже.")
+            except (OSError, RuntimeError, ValueError):
+                LOG.info("access rejection notification failed user=%s", requested_id)
+            render_navigation(telegram, store, chat_id, f"<b>↩️ Запрос отклонён</b>\nTelegram ID: <code>{requested_id}</code>", admin_keyboard(), "admin:request-rejected", callback_message_id=callback_message_id)
+            return True
+        if requested["finland_token"] or requested["germany_token"]:
+            render_navigation(telegram, store, chat_id, "<b>✅ Доступ уже привязан</b>\nПовторная выдача токенов не выполнена.", admin_keyboard(), "admin:request-approved", callback_message_id=callback_message_id)
+            return True
+        token_name = f"telegram-{requested_id}"
+        created: dict[str, str] = {}
+        failures: list[str] = []
+        def create_token(server: str) -> tuple[str, str]:
+            payload = panels.request(server, "create-user-token", PANEL_TOKEN, value=token_name, extra={"clients": []}) or {}
+            token = str(payload.get("token") or "")
+            return server, token
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            futures = [pool.submit(create_token, server) for server in ("finland", "germany")]
+            for future in futures:
+                server, token = future.result()
+                if token:
+                    created[server] = token
+                else:
+                    failures.append(server)
+        finland_token = created.get("finland", "")
+        germany_token = created.get("germany", "")
+        if created:
+            store.bind(requested_id, str(requested["username"] or ""), str(requested["first_name"] or ""), finland_token, germany_token)
+            store.resolve_access_request(requested_id, "approved")
+            try:
+                telegram.send(requested_id, "<b>✅ Доступ выдан</b>\nДля вас созданы персональные права на доступные панели. Откройте меню → «Мои устройства».", keyboard=menu_keyboard(False), reply_keyboard=reply_keyboard())
+            except (OSError, RuntimeError, ValueError):
+                LOG.info("access approval notification failed user=%s", requested_id)
+        detail = "Обе панели привязаны." if not failures else f"Частичная выдача: готово {', '.join(sorted(created))}; ошибка: {', '.join(failures)}."
+        render_navigation(telegram, store, chat_id, f"<b>✅ Доступ обработан</b>\nTelegram ID: <code>{requested_id}</code>\n{html.escape(detail)}\nСекреты токенов не выводятся.", admin_keyboard(), "admin:request-approved", callback_message_id=callback_message_id)
         return True
     if kind == "admin" and action == "add":
         if not is_admin or len(parts) < 3 or parts[2].lower() not in {"finland", "germany"}:
