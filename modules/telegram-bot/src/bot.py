@@ -853,10 +853,38 @@ def handle_navigation(telegram: Telegram, store: Store, panels: PanelManager, ch
         text = "<b>Пользователи</b>\nРотация токена создаёт новый секрет и инвалидирует старый.\n\n" + ("\n".join(lines) or "Пользователей пока нет.")
         keyboard = []
         for row in rows[:30]:
+            controls = [{"text": f"👤 {row['telegram_id']}", "callback_data": f"admin:user:{row['telegram_id']}"}]
             if row["finland_token"] or row["germany_token"]:
-                keyboard.append([{"text": f"🔄 Ротировать · {row['telegram_id']}", "callback_data": f"admin:rotate:{row['telegram_id']}"}])
+                controls.append({"text": "🔄 Ротировать", "callback_data": f"admin:rotate:{row['telegram_id']}"})
+            keyboard.append(controls)
         keyboard.append([{"text": "⬅️ Главное меню", "callback_data": "menu:home"}])
         render_navigation(telegram, store, chat_id, text[:4096], keyboard, "admin:users", callback_message_id=callback_message_id)
+        return True
+    if kind == "admin" and action == "user":
+        if not is_admin or len(parts) < 3:
+            render_navigation(telegram, store, chat_id, "Недостаточно прав.", menu_keyboard(False), "home", callback_message_id=callback_message_id)
+            return True
+        try:
+            target_id = int(parts[2])
+        except (TypeError, ValueError):
+            return True
+        target = store.get(target_id)
+        if target is None:
+            render_navigation(telegram, store, chat_id, "Пользователь не найден.", admin_keyboard(), "admin:users", callback_message_id=callback_message_id)
+            return True
+        text = (f"<b>👤 Пользователь</b>\nTelegram ID: <code>{target_id}</code>\n"
+                f"Username: @{html.escape(target['username'] or '—')}\n"
+                f"Имя: {html.escape(target['first_name'] or '—')}\n\n"
+                f"🇫🇮 Finland: {'✅ привязан' if target['finland_token'] else '— нет токена'}\n"
+                f"🇩🇪 Germany: {'✅ привязан' if target['germany_token'] else '— нет токена'}\n"
+                f"Создан: <code>{format_timestamp(target['created_at'])}</code>\n"
+                f"Изменён: <code>{format_timestamp(target['updated_at'])}</code>")
+        controls = []
+        if target["finland_token"] or target["germany_token"]:
+            controls.append({"text": "🔄 Ротировать токены", "callback_data": f"admin:rotate:{target_id}"})
+        keyboard = [controls] if controls else []
+        keyboard.append([{"text": "👥 Пользователи", "callback_data": "admin:users:0"}, {"text": "⬅️ Админка", "callback_data": "menu:admin"}])
+        render_navigation(telegram, store, chat_id, text, keyboard, "admin:user", callback_message_id=callback_message_id)
         return True
     if kind == "admin" and action in {"rotate", "rotate-confirm"}:
         if not is_admin or len(parts) < 3:
@@ -1280,6 +1308,13 @@ def format_bytes(value: Any) -> str:
         amount /= 1024
         index += 1
     return f"{amount:.1f} {units[index]}" if index else f"{int(amount)} B"
+
+
+def format_timestamp(value: Any) -> str:
+    try:
+        return time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime(int(value)))
+    except (TypeError, ValueError, OverflowError):
+        return "—"
 
 
 def sparkline(values: Any, width: int = 12) -> str:
