@@ -624,22 +624,32 @@ def navigation_keyboard(action: str, admin: bool) -> list[list[dict[str, str]]]:
 
 
 def client_keyboard(server: str, name: str, ref: str, *, admin: bool, back: str = "user:clients") -> list[list[dict[str, str]]]:
+    page = back.rsplit(":", 1)[-1] if back.startswith("user:clients:") else "1"
+    suffix = f":{page}"
     rows = [
-        [{"text": "📷 QR-код", "callback_data": f"client:artifact:{ref}:qr"}, {"text": "📄 Конфиг", "callback_data": f"client:artifact:{ref}:config"}],
-        [{"text": "🔗 VPN URI", "callback_data": f"client:artifact:{ref}:uri"}, {"text": "📈 Статистика", "callback_data": f"client:stats:{ref}"}],
-        [{"text": "♻️ Перегенерировать конфиг", "callback_data": f"client:regenerate:{ref}"}],
-        [{"text": "🔗 Одноразовая ссылка импорта", "callback_data": f"client:access-link:{ref}"}],
-        [{"text": "⏻ VPN", "callback_data": f"client:toggle:{ref}"}, {"text": "🔌 P2P", "callback_data": f"client:p2p-toggle:{ref}"}, {"text": "🔗 Порты", "callback_data": f"client:ports-toggle:{ref}"}],
-        [{"text": "🗑 Удалить", "callback_data": f"client:remove:{ref}"}],
+        [{"text": "📷 QR-код", "callback_data": f"client:artifact:{ref}:qr{suffix}"}, {"text": "📄 Конфиг", "callback_data": f"client:artifact:{ref}:config{suffix}"}],
+        [{"text": "🔗 VPN URI", "callback_data": f"client:artifact:{ref}:uri{suffix}"}, {"text": "📈 Статистика", "callback_data": f"client:stats:{ref}{suffix}"}],
+        [{"text": "♻️ Перегенерировать конфиг", "callback_data": f"client:regenerate:{ref}{suffix}"}],
+        [{"text": "🔗 Одноразовая ссылка импорта", "callback_data": f"client:access-link:{ref}{suffix}"}],
+        [{"text": "⏻ VPN", "callback_data": f"client:toggle:{ref}{suffix}"}, {"text": "🔌 P2P", "callback_data": f"client:p2p-toggle:{ref}{suffix}"}, {"text": "🔗 Порты", "callback_data": f"client:ports-toggle:{ref}{suffix}"}],
+        [{"text": "🗑 Удалить", "callback_data": f"client:remove:{ref}{suffix}"}],
         [{"text": "⬅️ Назад", "callback_data": back}, {"text": "🏠 Меню", "callback_data": "menu:home"}],
     ]
     return rows
 
 
-def clients_keyboard(rows: list[tuple[str, str, str]]) -> list[list[dict[str, str]]]:
+def clients_keyboard(rows: list[tuple[str, str, str]], *, page: int = 1, pages: int = 1) -> list[list[dict[str, str]]]:
     keyboard: list[list[dict[str, str]]] = []
     for server, name, ref in rows:
-        keyboard.append([{"text": f"{('🇫🇮' if server == 'finland' else '🇩🇪')} {name}", "callback_data": f"client:open:{ref}"}])
+        keyboard.append([{"text": f"{('🇫🇮' if server == 'finland' else '🇩🇪')} {name}", "callback_data": f"client:open:{ref}:{page}"}])
+    if pages > 1:
+        pager: list[dict[str, str]] = []
+        if page > 1:
+            pager.append({"text": "◀️", "callback_data": f"user:clients:{page - 1}"})
+        pager.append({"text": f"{page}/{pages}", "callback_data": f"user:clients:{page}"})
+        if page < pages:
+            pager.append({"text": "▶️", "callback_data": f"user:clients:{page + 1}"})
+        keyboard.append(pager)
     keyboard.extend([[{"text": "📈 Статистика", "callback_data": "user:traffic"}], [{"text": "🏠 Меню", "callback_data": "menu:home"}]])
     return keyboard
 
@@ -811,8 +821,17 @@ def handle_navigation(telegram: Telegram, store: Store, panels: PanelManager, ch
                 name = str(client.get("name") or client.get("config_name") or client.get("id") or "").strip()
                 if name:
                     available.append((key, name, store.client_ref(principal_id, key, name)))
-        text = "<b>👥 Мои устройства</b>\nВыберите устройство для QR, конфига, URI или статистики." if available else "<b>👥 Мои устройства</b>\nПока нет доступных конфигураций."
-        render_navigation(telegram, store, chat_id, text, clients_keyboard(available), "user:clients", callback_message_id=callback_message_id)
+        try:
+            page = max(1, int(parts[2])) if len(parts) > 2 else 1
+        except (TypeError, ValueError):
+            page = 1
+        page_size = 12
+        pages = max(1, (len(available) + page_size - 1) // page_size)
+        page = min(page, pages)
+        start = (page - 1) * page_size
+        visible = available[start:start + page_size]
+        text = (f"<b>👥 Мои устройства</b>\nВыберите устройство для QR, конфига, URI или статистики.\nСтраница <b>{page}/{pages}</b> · всего: <b>{len(available)}</b>" if available else "<b>👥 Мои устройства</b>\nПока нет доступных конфигураций.")
+        render_navigation(telegram, store, chat_id, text, clients_keyboard(visible, page=page, pages=pages), f"user:clients:{page}", callback_message_id=callback_message_id)
         return True
     if kind == "client" and action in {"open", "artifact", "stats", "regenerate", "regenerate-confirm", "access-link", "toggle", "p2p-toggle", "ports-toggle", "remove", "remove-confirm"}:
         if len(parts) < 3:
@@ -823,12 +842,16 @@ def handle_navigation(telegram: Telegram, store: Store, panels: PanelManager, ch
             render_navigation(telegram, store, chat_id, "Ссылка на устройство устарела. Откройте список устройств заново.", menu_keyboard(is_admin), "home", callback_message_id=callback_message_id)
             return True
         server, name = resolved
+        try:
+            source_page = max(1, int(parts[4] if action == "artifact" and len(parts) > 4 else parts[3])) if len(parts) > 3 else 1
+        except (TypeError, ValueError):
+            source_page = 1
         if server not in {"finland", "germany"} or not name or not is_admin and not tokens.get(server):
             render_navigation(telegram, store, chat_id, "Недостаточно прав или неверная конфигурация.", menu_keyboard(is_admin), "home", callback_message_id=callback_message_id)
             return True
         token = PANEL_TOKEN if is_admin else tokens[server]
         if action == "regenerate":
-            render_navigation(telegram, store, chat_id, f"<b>Перегенерировать конфиг {html.escape(name)}?</b>\nСтарый конфиг перестанет работать до повторного скачивания.", [[{"text": "✅ Подтвердить", "callback_data": f"client:regenerate-confirm:{ref}"}], [{"text": "Отмена", "callback_data": f"client:open:{ref}"}]], f"client:regenerate:{ref}", callback_message_id=callback_message_id)
+            render_navigation(telegram, store, chat_id, f"<b>Перегенерировать конфиг {html.escape(name)}?</b>\nСтарый конфиг перестанет работать до повторного скачивания.", [[{"text": "✅ Подтвердить", "callback_data": f"client:regenerate-confirm:{ref}:{source_page}"}], [{"text": "Отмена", "callback_data": f"client:open:{ref}:{source_page}"}]], f"client:regenerate:{ref}", callback_message_id=callback_message_id)
             return True
         if action == "regenerate-confirm":
             result = panel_text(panels, server, "regenerate", token, value=name)
@@ -845,7 +868,7 @@ def handle_navigation(telegram: Telegram, store: Store, panels: PanelManager, ch
             telegram.send(chat_id, f"<b>🔗 Одноразовая ссылка импорта</b>\nУстройство: <code>{html.escape(name)}</code>\nСрок действия: {hours} ч.\nСсылка не сохраняется ботом и станет недействительной после использования.", keyboard=[[{"text": "🔗 Открыть импорт", "url": link}], [{"text": "⬅️ К устройству", "callback_data": f"client:open:{ref}"}]])
             return True
         if action == "remove":
-            render_navigation(telegram, store, chat_id, f"<b>Удалить устройство {html.escape(name)}?</b>\nДействие необратимо для этого профиля.", [[{"text": "✅ Подтвердить удаление", "callback_data": f"client:remove-confirm:{ref}"}], [{"text": "Отмена", "callback_data": f"client:open:{ref}"}]], f"client:remove:{ref}", callback_message_id=callback_message_id)
+            render_navigation(telegram, store, chat_id, f"<b>Удалить устройство {html.escape(name)}?</b>\nДействие необратимо для этого профиля.", [[{"text": "✅ Подтвердить удаление", "callback_data": f"client:remove-confirm:{ref}:{source_page}"}], [{"text": "Отмена", "callback_data": f"client:open:{ref}:{source_page}"}]], f"client:remove:{ref}", callback_message_id=callback_message_id)
             return True
         if action == "remove-confirm":
             result = panel_text(panels, server, "remove", token, value=name)
@@ -884,7 +907,7 @@ def handle_navigation(telegram: Telegram, store: Store, panels: PanelManager, ch
             text = (f"<b>🛡 {html.escape(name)}</b>\n{marker}\nСервер: <code>{html.escape(server)}</code>\n"
                     f"IPv4: <code>{html.escape(str(client.get('ipv4', '—')))}</code>\n"
                     f"Последний handshake: <code>{html.escape(str(client.get('latestHandshakeAt', client.get('last_handshake', '—'))))}</code>")
-        render_navigation(telegram, store, chat_id, text, client_keyboard(server, name, ref, admin=is_admin), f"client:{action}:{ref}", callback_message_id=callback_message_id)
+        render_navigation(telegram, store, chat_id, text, client_keyboard(server, name, ref, admin=is_admin, back=f"user:clients:{source_page}"), f"client:{action}:{ref}", callback_message_id=callback_message_id)
         return True
     if kind == "server" and action in {"status", "health", "readiness", "dns", "info", "resolver", "audit", "tokens", "clients", "logs", "health-history", "latency", "provider-traffic", "geoip-status", "geoip-providers", "geoip-databases", "nettest-reports", "web-policy", "web-cert"}:
         access_row = store.get(principal_id)
