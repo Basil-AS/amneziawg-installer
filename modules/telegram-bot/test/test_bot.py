@@ -8,7 +8,7 @@ import time
 from urllib.parse import urlencode
 from pathlib import Path
 
-from src.bot import PanelManager, ServerManager, Settings, Store, compact_snapshot, help_text, menu_keyboard, reply_keyboard, verify_init_data
+from src.bot import PanelManager, ServerManager, Settings, Store, admin_keyboard, callback_command, compact_snapshot, help_text, menu_keyboard, reply_keyboard, verify_init_data
 
 
 class BotTests(unittest.TestCase):
@@ -63,7 +63,7 @@ class BotTests(unittest.TestCase):
 
     def test_menu_contains_admin_actions(self):
         callback_data = {item["callback_data"] for row in menu_keyboard(True) for item in row}
-        self.assertTrue({"status", "health", "clients", "users"}.issubset(callback_data))
+        self.assertTrue({"nav:status", "nav:health", "nav:clients", "nav:users"}.issubset(callback_data))
 
     def test_tunnel_argv_uses_loopback_forward(self):
         old = {key: os.environ.get(key) for key in ("FINLAND_SSH_HOST", "FINLAND_SSH_IDENTITY")}
@@ -88,6 +88,12 @@ class BotTests(unittest.TestCase):
         keyboard = reply_keyboard()
         self.assertEqual(sum(len(row) for row in keyboard), 4)
         self.assertIn("📊 Статус", keyboard[0])
+
+    def test_callback_payloads_are_command_safe(self):
+        self.assertEqual(callback_command("nav:status"), "/status")
+        self.assertEqual(callback_command("nav:logs finland"), "/logs finland")
+        self.assertEqual(callback_command("clients"), "/clients")
+        self.assertIn("nav:menu", {item["callback_data"] for row in admin_keyboard() for item in row})
 
     def test_mini_app_init_data_signature(self):
         token = "123456:secret"

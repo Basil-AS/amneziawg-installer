@@ -401,10 +401,27 @@ def help_text(admin: bool) -> str:
 
 
 def menu_keyboard(admin: bool) -> list[list[dict[str, str]]]:
-    rows = [[{"text": "📊 Серверы", "callback_data": "servers"}], [{"text": "👤 Моя привязка", "callback_data": "me"}]]
+    rows = [[{"text": "📊 Серверы", "callback_data": "nav:servers"}], [{"text": "👤 Моя привязка", "callback_data": "nav:me"}]]
     if admin:
-        rows = [[{"text": "📊 Статус", "callback_data": "status"}, {"text": "🩺 Health", "callback_data": "health"}], [{"text": "✅ Readiness", "callback_data": "readiness"}, {"text": "🌐 DNS", "callback_data": "dns"}], [{"text": "👥 Клиенты", "callback_data": "clients"}, {"text": "👤 Пользователи", "callback_data": "users"}]] + rows
+        rows = [[{"text": "📊 Статус", "callback_data": "nav:status"}, {"text": "🩺 Проверка", "callback_data": "nav:health"}], [{"text": "✅ Готовность", "callback_data": "nav:readiness"}, {"text": "🌐 DNS", "callback_data": "nav:dns"}], [{"text": "👥 Клиенты", "callback_data": "nav:clients"}, {"text": "👤 Пользователи", "callback_data": "nav:users"}], [{"text": "⚙️ Ещё", "callback_data": "nav:admin"}]] + rows
     return rows
+
+
+def admin_keyboard() -> list[list[dict[str, str]]]:
+    return [
+        [{"text": "ℹ️ Информация", "callback_data": "nav:info"}, {"text": "🧪 Диагностика", "callback_data": "nav:audit"}],
+        [{"text": "🧭 Resolver", "callback_data": "nav:resolver"}, {"text": "🔑 Токены", "callback_data": "nav:tokens"}],
+        [{"text": "📜 Логи Финляндии", "callback_data": "nav:logs finland"}, {"text": "📜 Логи Германии", "callback_data": "nav:logs germany"}],
+        [{"text": "⬅️ Главное меню", "callback_data": "nav:menu"}],
+    ]
+
+
+def callback_command(data: str) -> str:
+    """Translate button payloads to the same internal command namespace."""
+    value = str(data or "").strip()
+    if value.startswith("nav:"):
+        value = value[4:]
+    return f"/{value}" if value and not value.startswith("/") else value
 
 
 def reply_keyboard() -> list[list[str]]:
@@ -652,8 +669,13 @@ def main() -> None:
                 command = (message.get("text") or callback.get("data") or "").strip()
                 command = {"📊 Статус": "/status", "👥 Клиенты": "/clients", "🩺 Проверка": "/health", "👤 Профиль": "/me"}.get(command, command)
                 if callback:
-                    telegram.answer_callback(str(callback.get("id", "")))
-                    command = "/" + command
+                    callback_id = str(callback.get("id", ""))
+                    try:
+                        telegram.answer_callback(callback_id, "Открываю…")
+                    except (OSError, RuntimeError, ValueError) as exc:
+                        LOG.warning("callback acknowledgement failed id=%s error=%s", callback_id[:12], type(exc).__name__)
+                    command = callback_command(command)
+                    LOG.info("callback received chat=%s action=%s", chat_id, command)
                 if not command.startswith("/"):
                     continue
                 parts = command.split()
@@ -669,7 +691,9 @@ def main() -> None:
                     if name in {"/start", "/help"}:
                         telegram.send(chat_id, help_text(is_admin), keyboard=menu_keyboard(is_admin) if name == "/start" else None, reply_keyboard=reply_keyboard() if name == "/start" else None)
                     elif name == "/menu":
-                        telegram.send(chat_id, "Выберите действие:", keyboard=menu_keyboard(is_admin))
+                        telegram.send(chat_id, "<b>Главное меню</b>\nВыберите нужное действие:", keyboard=menu_keyboard(is_admin), reply_keyboard=reply_keyboard())
+                    elif name == "/admin" and is_admin:
+                        telegram.send(chat_id, "<b>Администрирование</b>\nДиагностика и служебные действия:", keyboard=admin_keyboard())
                     elif name == "/me":
                         row = store.get(chat_id)
                         telegram.send(chat_id, "Привязка отсутствует." if row is None else f"<b>Ваш профиль</b>\nTelegram ID: <code>{chat_id}</code>\nFinland: {'✅' if row['finland_token'] else '—'}\nGermany: {'✅' if row['germany_token'] else '—'}")
