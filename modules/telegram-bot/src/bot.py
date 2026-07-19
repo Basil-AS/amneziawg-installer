@@ -222,6 +222,7 @@ class Server:
 
 class ServerManager:
     def __init__(self) -> None:
+        self.known_hosts = os.getenv("SSH_KNOWN_HOSTS", "").strip()
         self.servers = {
             "finland": Server("finland", "Sunny-Finland", os.getenv("FINLAND_SSH_HOST", ""), os.getenv("FINLAND_SSH_PORT", "22"), os.getenv("FINLAND_SSH_USER", "root"), os.getenv("FINLAND_SSH_IDENTITY", ""), os.getenv("FINLAND_WEB_PORT", "8443")),
             "germany": Server("germany", "Sunny-German", os.getenv("GERMANY_SSH_HOST", ""), os.getenv("GERMANY_SSH_PORT", "22"), os.getenv("GERMANY_SSH_USER", "root"), os.getenv("GERMANY_SSH_IDENTITY", ""), os.getenv("GERMANY_WEB_PORT", "443")),
@@ -231,13 +232,19 @@ class ServerManager:
         server = self.servers.get(key)
         if server is None or not server.host or not server.identity:
             return None
-        return [
+        argv = [
             "ssh", "-N", "-T", "-o", "BatchMode=yes", "-o", "ExitOnForwardFailure=yes",
             "-o", "ServerAliveInterval=30", "-o", "ServerAliveCountMax=3",
-            "-o", "StrictHostKeyChecking=accept-new", "-i", server.identity,
+        ]
+        argv.extend(["-o", "StrictHostKeyChecking=yes" if self.known_hosts else "StrictHostKeyChecking=accept-new"])
+        if self.known_hosts:
+            argv.extend(["-o", f"UserKnownHostsFile={self.known_hosts}"])
+        argv.extend([
+            "-i", server.identity,
             "-L", f"127.0.0.1:{local_port}:127.0.0.1:{server.web_port}", "-p", server.port,
             f"{server.user}@{server.host}",
-        ]
+        ])
+        return argv
 
 @dataclass(frozen=True)
 class Panel:
