@@ -40,6 +40,14 @@ class BotTests(unittest.TestCase):
             self.assertEqual(store.get(42)["finland_token"], "fin")
             store.close()
 
+    def test_access_request_can_be_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = Store(Path(directory) / "state.sqlite3")
+            self.assertTrue(store.request_access(42))
+            store.resolve_access_request(42, "rejected")
+            self.assertTrue(store.request_access(42))
+            store.close()
+
     def test_input_prompt_is_persistent(self):
         with tempfile.TemporaryDirectory() as directory:
             store = Store(Path(directory) / "state.sqlite3")
