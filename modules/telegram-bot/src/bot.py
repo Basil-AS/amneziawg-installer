@@ -304,6 +304,9 @@ class PanelManager:
         elif action == "regenerate":
             endpoint_info = ("POST", f"/api/clients/{quote(value, safe='')}/regenerate")
             body = b"{}"
+        elif action == "access-link":
+            endpoint_info = ("POST", f"/api/clients/{quote(value, safe='')}/access-link")
+            body = json.dumps({"ttl": 86400, "one_time": True}).encode()
         elif action == "remove":
             endpoint_info = ("DELETE", f"/api/clients/{quote(value, safe='')}")
         elif action in {"client-toggle", "p2p-toggle", "ports-toggle"}:
@@ -616,6 +619,7 @@ def client_keyboard(server: str, name: str, ref: str, *, admin: bool, back: str 
         [{"text": "📷 QR-код", "callback_data": f"client:artifact:{ref}:qr"}, {"text": "📄 Конфиг", "callback_data": f"client:artifact:{ref}:config"}],
         [{"text": "🔗 VPN URI", "callback_data": f"client:artifact:{ref}:uri"}, {"text": "📈 Статистика", "callback_data": f"client:stats:{ref}"}],
         [{"text": "♻️ Перегенерировать конфиг", "callback_data": f"client:regenerate:{ref}"}],
+        [{"text": "🔗 Одноразовая ссылка импорта", "callback_data": f"client:access-link:{ref}"}],
         [{"text": "⏻ VPN", "callback_data": f"client:toggle:{ref}"}, {"text": "🔌 P2P", "callback_data": f"client:p2p-toggle:{ref}"}, {"text": "🔗 Порты", "callback_data": f"client:ports-toggle:{ref}"}],
         [{"text": "🗑 Удалить", "callback_data": f"client:remove:{ref}"}],
         [{"text": "⬅️ Назад", "callback_data": back}, {"text": "🏠 Меню", "callback_data": "menu:home"}],
@@ -658,7 +662,7 @@ def handle_navigation(telegram: Telegram, store: Store, panels: PanelManager, ch
     """Render button-first VPN screens and edit the current menu in place."""
     parts = [part for part in str(data or "").split(":")]
     principal_id = actor_id or chat_id
-    if len(parts) < 2 or parts[0] not in {"menu", "server", "admin"}:
+    if len(parts) < 2 or parts[0] not in {"menu", "server", "admin", "user", "client"}:
         return False
     kind, action = parts[0], parts[1]
     if kind == "menu":
@@ -781,7 +785,7 @@ def handle_navigation(telegram: Telegram, store: Store, panels: PanelManager, ch
         text = "<b>👥 Мои устройства</b>\nВыберите устройство для QR, конфига, URI или статистики." if available else "<b>👥 Мои устройства</b>\nПока нет доступных конфигураций."
         render_navigation(telegram, store, chat_id, text, clients_keyboard(available), "user:clients", callback_message_id=callback_message_id)
         return True
-    if kind == "client" and action in {"open", "artifact", "stats", "regenerate", "regenerate-confirm", "toggle", "p2p-toggle", "ports-toggle", "remove", "remove-confirm"}:
+    if kind == "client" and action in {"open", "artifact", "stats", "regenerate", "regenerate-confirm", "access-link", "toggle", "p2p-toggle", "ports-toggle", "remove", "remove-confirm"}:
         if len(parts) < 3:
             return True
         ref = parts[2]
@@ -800,6 +804,16 @@ def handle_navigation(telegram: Telegram, store: Store, panels: PanelManager, ch
         if action == "regenerate-confirm":
             result = panel_text(panels, server, "regenerate", token, value=name)
             render_navigation(telegram, store, chat_id, f"<b>♻️ Конфиг обновлён</b>\n{result}", client_keyboard(server, name, ref, admin=is_admin), f"client:regenerate-done:{ref}", callback_message_id=callback_message_id)
+            return True
+        if action == "access-link":
+            payload = panels.request(server, "access-link", token, value=name) or {}
+            link = str(payload.get("url") or "")
+            if not link.startswith(("https://", "http://")):
+                render_navigation(telegram, store, chat_id, "Не удалось создать ссылку импорта. Проверьте API панели и права токена.", client_keyboard(server, name, ref, admin=is_admin), f"client:access-link-error:{ref}", callback_message_id=callback_message_id)
+                return True
+            ttl = int(payload.get("ttl") or 86400)
+            hours = max(1, ttl // 3600)
+            telegram.send(chat_id, f"<b>🔗 Одноразовая ссылка импорта</b>\nУстройство: <code>{html.escape(name)}</code>\nСрок действия: {hours} ч.\nСсылка не сохраняется ботом и станет недействительной после использования.", keyboard=[[{"text": "🔗 Открыть импорт", "url": link}], [{"text": "⬅️ К устройству", "callback_data": f"client:open:{ref}"}]])
             return True
         if action == "remove":
             render_navigation(telegram, store, chat_id, f"<b>Удалить устройство {html.escape(name)}?</b>\nДействие необратимо для этого профиля.", [[{"text": "✅ Подтвердить удаление", "callback_data": f"client:remove-confirm:{ref}"}], [{"text": "Отмена", "callback_data": f"client:open:{ref}"}]], f"client:remove:{ref}", callback_message_id=callback_message_id)
@@ -1147,7 +1161,7 @@ class MiniAppServer:
                     # User-bound tokens are intentionally limited to the two
                     # read-only data views. Diagnostics, logs, token lists and
                     # mutations require the administrator identity below.
-                    read_actions = {"status", "snapshot", "clients", "regenerate", "client-toggle", "p2p-toggle", "ports-toggle", "remove"}
+                    read_actions = {"status", "snapshot", "clients", "regenerate", "access-link", "client-toggle", "p2p-toggle", "ports-toggle", "remove"}
                     admin_actions = read_actions | {"restart", "add", "remove", "regenerate"}
                     admin_id = int(os.environ.get("ADMIN_CHAT_ID", "0"))
                     is_admin = int(user["id"]) == admin_id

@@ -45,6 +45,10 @@ short SQLite-backed references, so Telegram's 64-byte callback limit is never
 exceeded even for long client names. Administrative screens also expose
 health, logs, token audit, safe restart confirmation and the panel's verified
 update check/apply API.
+Each device card can issue a short-lived, one-time import link through the
+panel API (`POST /api/clients/<name>/access-link`). The link is sent as a
+Telegram URL button or opened by the Mini App; the bot does not persist or log
+the secret URL. The panel invalidates it after expiry or first use.
 Diagnostics are rendered as Telegram cards (health metrics, services, DNS,
 readiness, audit summaries, load history, latency and provider traffic, plus
 redacted token counts); raw panel JSON is not sent to users.
