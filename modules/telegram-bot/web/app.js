@@ -33,13 +33,14 @@
     const total = client.traffic_total || client.traffic || {};
     return `<span class="traffic">↓ ${esc(bytes(total.rx || total.download))} · ↑ ${esc(bytes(total.tx || total.upload))}</span>`;
   }
-  function panelCard(key, panel) {
+  function panelCard(key, panel, isAdmin) {
     const clients = Array.isArray(panel.clients) ? panel.clients : [];
     const online = Number(panel.summary?.online || clients.filter(x => x.online).length || 0);
     const total = Number(panel.summary?.total || clients.length || 0);
     return `<section class="panel-card" data-panel="${esc(key)}">
       <div class="panel-head"><div><span class="eyebrow">VPN SERVER</span><h2>${esc(panel.display_name || panel.panel || key)}</h2></div><div class="server-dot ${panel.service === 'active' ? 'active' : ''}"></div></div>
       <div class="metrics"><div><strong>${online}<small>/${total}</small></strong><span>онлайн</span></div><div><strong>${esc(panel.version || '—')}</strong><span>версия</span></div><div><strong>${statusBadge(panel.service || 'unknown')}</strong><span>сервис</span></div></div>
+      ${isAdmin ? `<div class="admin-tools"><button data-panel-action="health" data-server="${esc(key)}">🩺 Проверка</button><button data-panel-action="health-history" data-server="${esc(key)}">📉 Нагрузка</button><button data-panel-action="latency" data-server="${esc(key)}">📶 Latency</button><button data-panel-action="update-check" data-server="${esc(key)}">🔄 Обновления</button><button data-panel-action="restart" data-server="${esc(key)}">♻️ Перезапуск</button></div>` : ''}
       <div class="section-title"><span>Устройства</span><span class="count">${clients.length}</span></div>
       <div class="clients">${clients.length ? clients.slice(0, 60).map(client => clientRow(key, client)).join('') : '<div class="empty">Нет доступных устройств</div>'}</div>
     </section>`;
@@ -51,10 +52,11 @@
   }
   function render(data) {
     const panels = Object.entries(data.panels || {});
-    app.innerHTML = `<header class="topbar"><div class="brand"><div class="brand-mark">G</div><div><h1>GaulleBot</h1><span>VPN control center</span></div></div><span class="role">${esc(data.role === 'super' ? 'ADMIN' : 'USER')}</span></header>
+    const isAdmin = data.role === 'super';
+    app.innerHTML = `<header class="topbar"><div class="brand"><div class="brand-mark">G</div><div><h1>GaulleBot</h1><span>VPN control center</span></div></div><span class="role">${esc(isAdmin ? 'ADMIN' : 'USER')}</span></header>
       <div class="hero"><span class="eyebrow">SECURE SESSION</span><h2>Ваши серверы</h2><p>Управление через защищённый API-поток Telegram.</p></div>
       <div class="summary-strip"><span><b>${panels.length}</b> сервера</span><span><b>${panels.reduce((n, [,p]) => n + (p.clients?.length || 0), 0)}</b> устройства</span><button data-refresh>Обновить</button></div>
-      <div class="panels">${panels.map(([key,panel]) => panelCard(key,panel)).join('') || '<div class="empty">Серверы недоступны</div>'}</div>`;
+      <div class="panels">${panels.map(([key,panel]) => panelCard(key,panel,isAdmin)).join('') || '<div class="empty">Серверы недоступны</div>'}</div>`;
   }
   async function artifact(button) {
     const server = button.dataset.server, name = decodeURIComponent(button.dataset.name), kind = button.dataset.artifact;
@@ -85,11 +87,26 @@
     try { const result = await api('/api/action', {method:'POST', body:JSON.stringify({server, action, name})}); if (action === 'access-link' && result.url) { tg?.openLink?.(result.url); toast('Одноразовая ссылка открыта'); } else { toast(action === 'remove' ? 'Устройство удалено' : 'Настройка обновлена'); await load(); } }
     catch (error) { toast(error.message); } finally { button.disabled = false; }
   }
+  function diagnosticHtml(action, payload) {
+    const panel = esc(payload.panel || payload.display_name || 'Сервер');
+    if (action === 'health') return `<h3>🩺 ${panel}</h3><p class="result-state">${esc(payload.status || 'unknown')}</p><div class="result-grid"><span>CPU <b>${esc(payload.cpu?.usage_percent ?? '—')}%</b></span><span>RAM <b>${esc(payload.memory?.used_percent ?? '—')}%</b></span><span>Диск <b>${esc(payload.disk?.used_percent ?? '—')}%</b></span><span>Load <b>${esc(payload.load?.one ?? '—')}</b></span></div>`;
+    if (action === 'latency') { const overview = payload.overview || payload.diagnostics || {}; return `<h3>📶 ${panel}</h3><p>Активных: <b>${esc(overview.active ?? overview.active_peers ?? '—')}</b> · reachable: <b>${esc(overview.reachable ?? overview.reachable_clients ?? '—')}</b></p><p>Средний RTT: <b>${esc(overview.avg_rtt_ms ?? '—')} ms</b> · P95: <b>${esc(overview.p95_rtt_ms ?? '—')} ms</b></p>`; }
+    if (action === 'health-history') { const summary = payload.summary || {}; return `<h3>📉 ${panel}</h3><p>Период: <b>${esc(payload.range || '1h')}</b> · samples: <b>${esc(summary.counts?.samples ?? 0)}</b></p><p>CPU: <b>${esc(summary.cpu?.avg ?? '—')}%</b> avg / <b>${esc(summary.cpu?.max ?? '—')}%</b> max</p><p>RAM: <b>${esc(summary.memory?.avg_used_percent ?? '—')}%</b> avg / <b>${esc(summary.memory?.max_used_percent ?? '—')}%</b> max</p>`; }
+    if (action === 'update-check' || action === 'update') return `<h3>🔄 ${panel}</h3><p>Текущая версия: <b>${esc(payload.current_version || payload.version || '—')}</b></p><p>Доступная версия: <b>${esc(payload.latest_version || payload.latest || '—')}</b></p>`;
+    return `<h3>${esc(action)} · ${panel}</h3><p>${esc(payload.message || payload.status || (payload.ok ? 'Готово' : 'Ответ получен'))}</p>`;
+  }
+  async function panelAction(button) {
+    const action = button.dataset.panelAction, server = button.dataset.server;
+    if (action === 'restart' && !confirm(`Перезапустить ${server}? VPN-сессии временно прервутся.`)) return;
+    button.disabled = true;
+    try { const payload = await api('/api/action', {method:'POST', body:JSON.stringify({server, action})}); const dialog = document.createElement('dialog'); dialog.className = 'result-dialog'; dialog.innerHTML = `<button class="dialog-close">×</button><div>${diagnosticHtml(action,payload)}</div>`; document.body.append(dialog); dialog.showModal(); dialog.querySelector('.dialog-close').onclick = () => { dialog.close(); dialog.remove(); }; if (['restart','update-check','update-apply'].includes(action)) await load(); } catch (error) { toast(error.message); } finally { button.disabled = false; }
+  }
   function toast(message) { const node = document.createElement('div'); node.className = 'toast'; node.textContent = message; document.body.append(node); setTimeout(() => node.remove(), 2600); }
   app.addEventListener('click', event => {
     const artifactButton = event.target.closest('[data-artifact]'); if (artifactButton) return artifact(artifactButton);
     const regenerateButton = event.target.closest('[data-regenerate]'); if (regenerateButton) return regenerate(regenerateButton);
     const clientActionButton = event.target.closest('[data-client-action]'); if (clientActionButton) return clientAction(clientActionButton);
+    const panelActionButton = event.target.closest('[data-panel-action]'); if (panelActionButton) return panelAction(panelActionButton);
     if (event.target.closest('[data-refresh]')) return load();
     if (event.target.closest('[data-retry]')) return load();
   });

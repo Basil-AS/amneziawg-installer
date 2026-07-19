@@ -92,3 +92,6 @@ online counts, per-client traffic, QR preview, config downloads and client
 state/P2P/port controls. Artifact
 requests go through the bot's signed `/api/artifact` gateway; panel URLs and
 bearer tokens are never exposed to browser JavaScript.
+For the administrator, each server card additionally exposes API-backed
+health, load history, latency, update check and confirmed restart controls;
+diagnostic results open as parsed cards rather than raw JSON.
