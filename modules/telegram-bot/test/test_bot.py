@@ -145,6 +145,12 @@ class BotTests(unittest.TestCase):
         self.assertIn("Phone", rendered)
         self.assertNotIn('"name"', rendered)
 
+    def test_nettest_report_delete_is_confirmed_payload_and_card(self):
+        rendered = format_panel_payload({"panel": "Sunny-Germany", "ok": True, "deleted": 3}, "nettest-reports-delete")
+        self.assertIn("Удалено отчётов", rendered)
+        self.assertIn("3", rendered)
+        self.assertNotIn('"deleted"', rendered)
+
     def test_nettest_ping_is_allowlisted_and_query_scoped(self):
         class Response:
             def __enter__(self): return self

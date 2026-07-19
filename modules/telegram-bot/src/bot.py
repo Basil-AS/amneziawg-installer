@@ -365,6 +365,9 @@ class PanelManager:
                 return {"error": "invalid token name", "panel": panel.label}
             endpoint_info = ("PUT", f"/api/tokens/{quote(value, safe='')}/name")
             body = json.dumps({"name": name}, ensure_ascii=False).encode()
+        elif action == "nettest-reports-delete":
+            endpoint_info = ("DELETE", "/api/nettest/reports")
+            body = json.dumps({"confirm": "DELETE ALL NETTEST REPORTS"}).encode()
         elif action == "rotate-profile":
             preset = str((extra or {}).get("preset", "default")).lower()
             if preset not in {"default", "mobile"}:
@@ -1260,6 +1263,18 @@ def handle_navigation(telegram: Telegram, store: Store, panels: PanelManager, ch
             results = parallel_results(panels, ("finland", "germany"), "web-policy-test", {"finland": PANEL_TOKEN, "germany": PANEL_TOKEN})
             render_navigation(telegram, store, chat_id, "<b>🛡 Проверка web policy</b>\n\n" + "\n\n".join(results), maintenance_keyboard(), "admin:policy-test-done", callback_message_id=callback_message_id)
             return True
+    if kind == "admin" and action in {"nettest-reports-delete", "nettest-reports-delete-confirm"}:
+        if not is_admin:
+            render_navigation(telegram, store, chat_id, "Недостаточно прав.", menu_keyboard(False), "home", callback_message_id=callback_message_id)
+            return True
+        server = parts[2] if len(parts) > 2 and parts[2] in {"finland", "germany", "all"} else "all"
+        if action == "nettest-reports-delete":
+            render_navigation(telegram, store, chat_id, "<b>🗑 Очистить отчёты nettest?</b>\nБудут удалены все сохранённые отчёты выбранной панели. Это действие необратимо.", [[{"text": "⛔ Да, удалить", "callback_data": f"admin:nettest-reports-delete-confirm:{server}"}], [{"text": "Отмена", "callback_data": f"server:nettest-reports:{server}"}]], "admin:nettest-reports-delete", callback_message_id=callback_message_id)
+            return True
+        keys = (server,) if server in {"finland", "germany"} else ("finland", "germany")
+        results = parallel_results(panels, keys, "nettest-reports-delete", {key: PANEL_TOKEN for key in keys})
+        render_navigation(telegram, store, chat_id, "<b>✅ Отчёты nettest очищены</b>\n\n" + "\n\n".join(results), [[{"text": "🧪 Отчёты nettest", "callback_data": f"server:nettest-reports:{server}"}], [{"text": "⬅️ Админка", "callback_data": "menu:admin"}]], "admin:nettest-reports-delete-done", callback_message_id=callback_message_id)
+        return True
     if kind == "admin" and action in {"update", "update-check", "update-apply", "restart", "restart-confirm"}:
         if not is_admin:
             render_navigation(telegram, store, chat_id, "Недостаточно прав.", menu_keyboard(False), "home", callback_message_id=callback_message_id)
@@ -1538,6 +1553,8 @@ def handle_navigation(telegram: Telegram, store: Store, panels: PanelManager, ch
             output = "\n\n".join(parallel_results(panels, keys, action, {key: PANEL_TOKEN if is_admin else tokens[key] for key in keys}))
         title = {"status": "Статус", "clients": "Клиенты", "health": "Проверка", "readiness": "Готовность VPN", "dns": "DNS", "info": "Информация", "resolver": "Resolver", "audit": "Аудит", "tokens": "Токены", "logs": "Логи", "health-history": "История нагрузки", "latency": "Latency клиентов", "provider-traffic": "Provider traffic", "drops-sample": "Потери пакетов", "geoip-status": "GeoIP", "geoip-providers": "GeoIP providers", "geoip-databases": "GeoIP databases", "nettest-reports": "Nettest отчёты", "web-policy": "Web access policy", "web-cert": "TLS-сертификат"}[action]
         result_keyboard = result_navigation_keyboard(action, server, is_admin)
+        if action == "nettest-reports" and is_admin:
+            result_keyboard.insert(-1, [{"text": "🗑 Очистить отчёты", "callback_data": f"admin:nettest-reports-delete:{server}"}])
         render_navigation(telegram, store, chat_id, f"<b>{title}</b>\n{output[:3900]}", result_keyboard, f"server:{action}:{server}", callback_message_id=callback_message_id)
         return True
     return False
@@ -1684,6 +1701,9 @@ def format_panel_payload(payload: dict[str, Any], action: str) -> str:
             lines.append(f"🔐 {html.escape(str(item.get('name') or 'Без имени'))} · клиентов: {len(clients)}")
     elif action == "update-token-name":
         lines.append(f"Имя: <b>{html.escape(str(payload.get('name') or '—'))}</b>")
+        lines.append(f"Статус: {status_icon(payload.get('ok', True))} успешно")
+    elif action == "nettest-reports-delete":
+        lines.append(f"Удалено отчётов: <b>{html.escape(str(payload.get('deleted', 0)))}</b>")
         lines.append(f"Статус: {status_icon(payload.get('ok', True))} успешно")
     elif action == "logs":
         log_lines = payload.get("lines") or []
