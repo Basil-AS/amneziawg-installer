@@ -384,6 +384,9 @@ class PanelManager:
         elif action == "web-cert-renew":
             endpoint_info = ("POST", "/api/web-cert/renew")
             body = b"{}"
+        elif action == "web-policy-test":
+            endpoint_info = ("POST", "/api/web-access-policy/test")
+            body = b"{}"
         else:
             endpoint_info = endpoints.get(action)
         if endpoint_info is None:
@@ -684,6 +687,7 @@ def maintenance_keyboard() -> list[list[dict[str, str]]]:
         [{"text": "♻️ DNS Финляндии", "callback_data": "admin:dns-restart:finland"}, {"text": "♻️ DNS Германии", "callback_data": "admin:dns-restart:germany"}],
         [{"text": "🌐 NDP Финляндии", "callback_data": "admin:ndp-restart:finland"}, {"text": "🌐 NDP Германии", "callback_data": "admin:ndp-restart:germany"}],
         [{"text": "🗺 Обновить GeoIP", "callback_data": "admin:geoip-update:all"}, {"text": "🔒 Продлить TLS", "callback_data": "admin:cert-renew:all"}],
+        [{"text": "🛡 Проверить web policy", "callback_data": "admin:policy-test:all"}],
         [{"text": "⚠️ Перезагрузка сервера", "callback_data": "admin:reboot:all"}],
         [{"text": "⬅️ Админка", "callback_data": "menu:admin"}],
     ]
@@ -923,7 +927,7 @@ def handle_navigation(telegram: Telegram, store: Store, panels: PanelManager, ch
             return True
         render_navigation(telegram, store, chat_id, "<b>🛠 Обслуживание инфраструктуры</b>\nОперации выполняются только через API панели. Перезагрузка требует отдельного подтверждения.", maintenance_keyboard(), "admin:maintenance", callback_message_id=callback_message_id)
         return True
-    if kind == "admin" and action in {"dns-restart", "ndp-restart", "geoip-update", "cert-renew", "reboot", "reboot-confirm"}:
+    if kind == "admin" and action in {"dns-restart", "ndp-restart", "geoip-update", "cert-renew", "policy-test", "reboot", "reboot-confirm"}:
         if not is_admin:
             render_navigation(telegram, store, chat_id, "Недостаточно прав.", menu_keyboard(False), "home", callback_message_id=callback_message_id)
             return True
@@ -948,6 +952,10 @@ def handle_navigation(telegram: Telegram, store: Store, panels: PanelManager, ch
             panel_action = {"geoip-update": "geoip-databases-update", "cert-renew": "web-cert-renew"}[action]
             results = parallel_results(panels, ("finland", "germany"), panel_action, {"finland": PANEL_TOKEN, "germany": PANEL_TOKEN})
             render_navigation(telegram, store, chat_id, f"<b>✅ Операция отправлена</b>\n" + "\n\n".join(results), maintenance_keyboard(), f"admin:{action}-done", callback_message_id=callback_message_id)
+            return True
+        if action == "policy-test":
+            results = parallel_results(panels, ("finland", "germany"), "web-policy-test", {"finland": PANEL_TOKEN, "germany": PANEL_TOKEN})
+            render_navigation(telegram, store, chat_id, "<b>🛡 Проверка web policy</b>\n\n" + "\n\n".join(results), maintenance_keyboard(), "admin:policy-test-done", callback_message_id=callback_message_id)
             return True
     if kind == "admin" and action in {"update", "update-check", "update-apply", "restart", "restart-confirm"}:
         if not is_admin:
@@ -1555,7 +1563,7 @@ class MiniAppServer:
                     # read-only data views. Diagnostics, logs, token lists and
                     # mutations require the administrator identity below.
                     read_actions = {"status", "snapshot", "clients", "regenerate", "access-link", "client-toggle", "p2p-toggle", "ports-toggle", "p2p-add", "remove"}
-                    admin_actions = read_actions | {"path-check", "restart", "add", "remove", "regenerate", "health", "health-history", "latency", "provider-traffic", "geoip-status", "geoip-providers", "geoip-databases", "nettest-reports", "web-policy", "web-cert", "update", "update-check", "update-apply"}
+                    admin_actions = read_actions | {"path-check", "web-policy-test", "restart", "add", "remove", "regenerate", "health", "health-history", "latency", "provider-traffic", "geoip-status", "geoip-providers", "geoip-databases", "nettest-reports", "web-policy", "web-cert", "update", "update-check", "update-apply"}
                     admin_id = int(os.environ.get("ADMIN_CHAT_ID", "0"))
                     is_admin = int(user["id"]) == admin_id
                     if action not in (admin_actions if is_admin else read_actions):
