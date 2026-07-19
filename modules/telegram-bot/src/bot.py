@@ -331,6 +331,7 @@ class PanelManager:
             "geoip-status": ("GET", "/api/geoip/status"),
             "geoip-providers": ("GET", "/api/geoip/providers"),
             "geoip-databases": ("GET", "/api/geoip/databases/status"),
+            "help-clients": ("GET", "/api/help/clients"),
             "nettest-reports": ("GET", "/api/nettest/reports"),
             "nettest-context": ("GET", "/api/nettest/context"),
             "nettest-ping": ("GET", "/api/nettest/ping?n=gaullebot"),
@@ -724,6 +725,7 @@ def menu_keyboard(admin: bool) -> list[list[dict[str, str]]]:
         [{"text": "📡 Серверы", "callback_data": "menu:servers"}, {"text": "👥 Мои устройства", "callback_data": "user:clients"}],
         [{"text": "📈 Статистика", "callback_data": "user:traffic"}, {"text": "🌐 Доступность", "callback_data": "user:nettest"}],
         [{"text": "⭐ Избранное", "callback_data": "user:favorites"}],
+        [{"text": "📚 Клиентские приложения", "callback_data": "user:help"}],
         [{"text": "👤 Профиль", "callback_data": "menu:profile"}],
         [{"text": "➕ Добавить устройство", "callback_data": "user:add"}],
         [{"text": "🔐 Запросить доступ", "callback_data": "user:request"}],
@@ -1196,9 +1198,14 @@ def handle_navigation(telegram: Telegram, store: Store, panels: PanelManager, ch
         store.set_prompt(principal_id, "add_client", server)
         telegram.send(chat_id, f"<b>➕ Новое устройство · {html.escape(server)}</b>\nВведите имя профиля (латиница, цифры, <code>-</code> или <code>_</code>, до 48 символов).", force_reply=True)
         return True
-    if kind == "user" and action in {"clients", "favorites", "traffic", "nettest"}:
+    if kind == "user" and action in {"clients", "favorites", "traffic", "nettest", "help"}:
         if not is_admin and (not row or not (tokens["finland"] or tokens["germany"])):
             render_navigation(telegram, store, chat_id, "<b>Доступ ещё не выдан</b>\nОбратитесь к администратору для привязки токена.", menu_keyboard(False), "home", callback_message_id=callback_message_id)
+            return True
+        if action == "help":
+            payloads = parallel_payloads(panels, ("finland", "germany"), "help-clients", {key: PANEL_TOKEN if is_admin else tokens[key] for key in ("finland", "germany")})
+            output = "\n\n".join(format_panel_payload(payload, "help-clients") for payload in payloads)
+            render_navigation(telegram, store, chat_id, "<b>📚 Клиентские приложения</b>\nВыберите приложение, совместимое с вашим устройством.\n\n" + output, [[{"text": "👥 Мои устройства", "callback_data": "user:clients"}, {"text": "🏠 Меню", "callback_data": "menu:home"}]], "user:help", callback_message_id=callback_message_id)
             return True
         if action == "nettest":
             results = parallel_results(panels, ("finland", "germany"), "nettest-ping", {key: PANEL_TOKEN if is_admin else tokens[key] for key in ("finland", "germany")})
@@ -1570,6 +1577,19 @@ def format_panel_payload(payload: dict[str, Any], action: str) -> str:
             for label, key in (("Макс. download", "max_download_size"), ("Макс. upload", "max_upload_size"), ("VPN URL", "nettest_vpn_url")):
                 if payload.get(key) is not None:
                     lines.append(metric_line(label, payload.get(key)))
+    elif action == "help-clients":
+        groups = payload.get("groups") or []
+        for group in groups[:8]:
+            if not isinstance(group, dict):
+                continue
+            lines.append(f"<b>{html.escape(str(group.get('name') or 'Платформа'))}</b>")
+            if group.get("subtitle"):
+                lines.append(html.escape(str(group["subtitle"])))
+            for client in (group.get("clients") or [])[:4]:
+                if not isinstance(client, dict):
+                    continue
+                links = " · ".join(f"<a href=\"{html.escape(str(link.get('url') or ''), quote=True)}\">{html.escape(str(link.get('label') or 'Ссылка'))}</a>" for link in (client.get("links") or []) if isinstance(link, dict) and str(link.get("url") or "").startswith("https://"))
+                lines.append(f"• <b>{html.escape(str(client.get('name') or 'Клиент'))}</b> · {html.escape(str(client.get('status') or ''))}\n  {html.escape(str(client.get('platforms') or ''))} · импорт: {html.escape(str(client.get('setupMethod') or ''))}" + (f"\n  {links}" if links else ""))
     elif action == "web-policy":
         for label, key in (("Режим", "mode"), ("Публичный listener", "public_listener"), ("Trusted proxy", "trusted_proxy"), ("Разрешённые сети", "allowed_networks")):
             if key in payload:
