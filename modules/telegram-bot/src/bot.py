@@ -750,6 +750,11 @@ def navigation_keyboard(action: str, admin: bool) -> list[list[dict[str, str]]]:
     return [[{"text": "⬅️ Серверы", "callback_data": "menu:servers"}, {"text": "🏠 Меню", "callback_data": "menu:home"}]]
 
 
+def result_navigation_keyboard(action: str, server: str, admin: bool) -> list[list[dict[str, str]]]:
+    """Add an inline refresh action to every rendered server result card."""
+    return [[{"text": "🔄 Обновить", "callback_data": f"server:{action}:{server}"}], *navigation_keyboard("result", admin)]
+
+
 def client_keyboard(server: str, name: str, ref: str, *, admin: bool, favorite: bool = False, back: str = "user:clients") -> list[list[dict[str, str]]]:
     page = back.rsplit(":", 1)[-1] if back.startswith("user:clients:") else "1"
     suffix = f":{page}{':favorites' if back == 'user:favorites' else ''}"
@@ -1226,7 +1231,8 @@ def handle_navigation(telegram: Telegram, store: Store, panels: PanelManager, ch
         else:
             output = "\n\n".join(parallel_results(panels, keys, action, {key: PANEL_TOKEN if is_admin else tokens[key] for key in keys}))
         title = {"status": "Статус", "clients": "Клиенты", "health": "Проверка", "readiness": "Готовность VPN", "dns": "DNS", "info": "Информация", "resolver": "Resolver", "audit": "Аудит", "tokens": "Токены", "logs": "Логи", "health-history": "История нагрузки", "latency": "Latency клиентов", "provider-traffic": "Provider traffic", "geoip-status": "GeoIP", "geoip-providers": "GeoIP providers", "geoip-databases": "GeoIP databases", "nettest-reports": "Nettest отчёты", "web-policy": "Web access policy", "web-cert": "TLS-сертификат"}[action]
-        render_navigation(telegram, store, chat_id, f"<b>{title}</b>\n{output[:3900]}", navigation_keyboard("result", is_admin), f"server:{action}:{server}", callback_message_id=callback_message_id)
+        result_keyboard = result_navigation_keyboard(action, server, is_admin)
+        render_navigation(telegram, store, chat_id, f"<b>{title}</b>\n{output[:3900]}", result_keyboard, f"server:{action}:{server}", callback_message_id=callback_message_id)
         return True
     return False
 
