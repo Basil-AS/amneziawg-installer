@@ -44,6 +44,11 @@ exceeded even for long client names. Administrative screens also expose
 health, logs, token audit, safe restart confirmation and the panel's verified
 update check/apply API.
 
+Users without a binding can press “🔐 Запросить доступ”. The request is
+rate-limited in SQLite and sent to the administrator with a button that opens
+the exact `/bind <telegram_id> <finland_token> <germany_token>` instruction;
+panel tokens themselves are never sent through the notification.
+
 ## Storage and stack decision
 
 SQLite is the source of truth for bot users, panel-token bindings and
