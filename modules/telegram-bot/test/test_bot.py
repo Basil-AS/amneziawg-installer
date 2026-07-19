@@ -130,6 +130,31 @@ class BotTests(unittest.TestCase):
                 else:
                     os.environ[key] = value
 
+    def test_tunnel_argv_pins_known_hosts_when_configured(self):
+        old_hosts = os.environ.get("SSH_KNOWN_HOSTS")
+        old_host = os.environ.get("FINLAND_SSH_HOST")
+        old_identity = os.environ.get("FINLAND_SSH_IDENTITY")
+        os.environ["SSH_KNOWN_HOSTS"] = "/tmp/known_hosts"
+        os.environ["FINLAND_SSH_HOST"] = "vpn.example"
+        os.environ["FINLAND_SSH_IDENTITY"] = "/tmp/key"
+        try:
+            argv = ServerManager().tunnel_argv("finland", 18443)
+            self.assertIn("StrictHostKeyChecking=yes", argv)
+            self.assertIn("UserKnownHostsFile=/tmp/known_hosts", argv)
+        finally:
+            if old_hosts is None:
+                os.environ.pop("SSH_KNOWN_HOSTS", None)
+            else:
+                os.environ["SSH_KNOWN_HOSTS"] = old_hosts
+            if old_host is None:
+                os.environ.pop("FINLAND_SSH_HOST", None)
+            else:
+                os.environ["FINLAND_SSH_HOST"] = old_host
+            if old_identity is None:
+                os.environ.pop("FINLAND_SSH_IDENTITY", None)
+            else:
+                os.environ["FINLAND_SSH_IDENTITY"] = old_identity
+
     def test_ssh_manager_is_transport_only(self):
         self.assertFalse(hasattr(ServerManager, "run"))
 

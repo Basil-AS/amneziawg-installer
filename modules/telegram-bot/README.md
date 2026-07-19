@@ -16,6 +16,8 @@ never executes shell commands on a VPN server and has no SSH fallback.
 Copy `.env.example` to `/etc/gaullebot.env` (mode `0640`, group `gaullebot`);
 the panel connector file is `/etc/gaullebot-panels.json` by default.
 Never commit the real token or SSH keys.
+For production, set `SSH_KNOWN_HOSTS` to the pinned host-key file; this makes
+the tunnel use `StrictHostKeyChecking=yes` instead of accepting a new key.
 
 ## Commands
 
