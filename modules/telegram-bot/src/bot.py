@@ -271,7 +271,7 @@ class PanelManager:
             except (OSError, ValueError, KeyError, TypeError) as exc:
                 LOG.warning("panel config ignored: %s", exc)
 
-    def request(self, key: str, action: str, token: str | object | None = None, value: str = "") -> dict[str, Any] | None:
+    def request(self, key: str, action: str, token: str | object | None = None, value: str = "", extra: dict[str, Any] | None = None) -> dict[str, Any] | None:
         panel = self.panels.get(key)
         if panel is None:
             return None
@@ -319,6 +319,9 @@ class PanelManager:
             suffix = {"client-toggle": "toggle", "p2p-toggle": "p2p/toggle", "ports-toggle": "ports/toggle"}[action]
             endpoint_info = ("POST", f"/api/clients/{quote(value, safe='')}/{suffix}")
             body = b"{}"
+        elif action == "p2p-add":
+            endpoint_info = ("POST", f"/api/clients/{quote(value, safe='')}/p2p")
+            body = json.dumps({"port": (extra or {}).get("port")}).encode()
         elif action == "update-check":
             endpoint_info = ("POST", "/api/project-update/check")
             body = b"{}"
@@ -632,6 +635,7 @@ def client_keyboard(server: str, name: str, ref: str, *, admin: bool, back: str 
         [{"text": "♻️ Перегенерировать конфиг", "callback_data": f"client:regenerate:{ref}{suffix}"}],
         [{"text": "🔗 Одноразовая ссылка импорта", "callback_data": f"client:access-link:{ref}{suffix}"}],
         [{"text": "⏻ VPN", "callback_data": f"client:toggle:{ref}{suffix}"}, {"text": "🔌 P2P", "callback_data": f"client:p2p-toggle:{ref}{suffix}"}, {"text": "🔗 Порты", "callback_data": f"client:ports-toggle:{ref}{suffix}"}],
+        [{"text": "🔧 Настроить порт P2P", "callback_data": f"client:p2p-port:{ref}{suffix}"}],
         [{"text": "🗑 Удалить", "callback_data": f"client:remove:{ref}{suffix}"}],
         [{"text": "⬅️ Назад", "callback_data": back}, {"text": "🏠 Меню", "callback_data": "menu:home"}],
     ]
@@ -833,7 +837,7 @@ def handle_navigation(telegram: Telegram, store: Store, panels: PanelManager, ch
         text = (f"<b>👥 Мои устройства</b>\nВыберите устройство для QR, конфига, URI или статистики.\nСтраница <b>{page}/{pages}</b> · всего: <b>{len(available)}</b>" if available else "<b>👥 Мои устройства</b>\nПока нет доступных конфигураций.")
         render_navigation(telegram, store, chat_id, text, clients_keyboard(visible, page=page, pages=pages), f"user:clients:{page}", callback_message_id=callback_message_id)
         return True
-    if kind == "client" and action in {"open", "artifact", "stats", "regenerate", "regenerate-confirm", "access-link", "toggle", "p2p-toggle", "ports-toggle", "remove", "remove-confirm"}:
+    if kind == "client" and action in {"open", "artifact", "stats", "regenerate", "regenerate-confirm", "access-link", "toggle", "p2p-toggle", "ports-toggle", "p2p-port", "remove", "remove-confirm"}:
         if len(parts) < 3:
             return True
         ref = parts[2]
@@ -852,6 +856,10 @@ def handle_navigation(telegram: Telegram, store: Store, panels: PanelManager, ch
         token = PANEL_TOKEN if is_admin else tokens[server]
         if action == "regenerate":
             render_navigation(telegram, store, chat_id, f"<b>Перегенерировать конфиг {html.escape(name)}?</b>\nСтарый конфиг перестанет работать до повторного скачивания.", [[{"text": "✅ Подтвердить", "callback_data": f"client:regenerate-confirm:{ref}:{source_page}"}], [{"text": "Отмена", "callback_data": f"client:open:{ref}:{source_page}"}]], f"client:regenerate:{ref}", callback_message_id=callback_message_id)
+            return True
+        if action == "p2p-port":
+            store.set_prompt(principal_id, "p2p_port", f"{server}|{name}|{source_page}")
+            telegram.send(chat_id, f"<b>🔧 Порт P2P · {html.escape(name)}</b>\nВведите TCP/UDP-порт от <code>1</code> до <code>65535</code>. Панель сама проверит доступность и применит правило.", force_reply=True)
             return True
         if action == "regenerate-confirm":
             result = panel_text(panels, server, "regenerate", token, value=name)
@@ -1435,6 +1443,24 @@ def main() -> None:
                         store.clear_prompt(actor_id)
                         keyboard = admin_keyboard() if is_admin else menu_keyboard(False)
                         render_navigation(telegram, store, chat_id, f"<b>✅ Клиент создан</b>\n{result}", keyboard, "client:add-done", reply=True)
+                        continue
+                    if prompt and prompt["action"] == "p2p_port":
+                        prompt_parts = str(prompt["server"]).split("|", 2)
+                        prompt_server, prompt_name = (prompt_parts + ["", ""])[:2]
+                        try:
+                            source_page = max(1, int(prompt_parts[2])) if len(prompt_parts) > 2 else 1
+                            port = int(command.strip())
+                        except (TypeError, ValueError):
+                            source_page, port = 1, 0
+                        prompt_row = store.get(actor_id)
+                        prompt_token = PANEL_TOKEN if is_admin else (prompt_row[f"{prompt_server}_token"] if prompt_row and prompt_server in {"finland", "germany"} else "")
+                        if prompt_server not in {"finland", "germany"} or not prompt_name or not prompt_token or not 1 <= port <= 65535:
+                            telegram.send(chat_id, "Порт должен быть целым числом от 1 до 65535. Повторите ввод.", force_reply=True)
+                            continue
+                        result = panel_text(panels, prompt_server, "p2p-add", prompt_token, value=prompt_name, extra={"port": port})
+                        store.clear_prompt(actor_id)
+                        ref = store.client_ref(actor_id, prompt_server, prompt_name)
+                        render_navigation(telegram, store, chat_id, f"<b>✅ Порт P2P обновлён</b>\n{result}", client_keyboard(prompt_server, prompt_name, ref, admin=is_admin, back=f"user:clients:{source_page}"), f"client:p2p-port-done:{ref}", reply=True)
                         continue
                 if not command.startswith("/"):
                     continue

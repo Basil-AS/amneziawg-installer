@@ -52,6 +52,9 @@ The super token is used only for the administrator account.
 Large device lists are paginated at 12 cards per screen; opening a device keeps
 the originating page for Back/Cancel actions and never puts a client name or
 secret into callback data.
+The “Настроить порт P2P” action asks for a numeric port and calls the panel's
+RBAC-protected `POST /api/clients/<name>/p2p`; both bot-side and panel-side
+validation reject values outside `1..65535`.
 Each device card can issue a short-lived, one-time import link through the
 panel API (`POST /api/clients/<name>/access-link`). The link is sent as a
 Telegram URL button or opened by the Mini App; the bot does not persist or log
