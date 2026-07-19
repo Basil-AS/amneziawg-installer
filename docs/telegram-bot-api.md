@@ -7,7 +7,7 @@ host or on another host and can connect to any number of project panels.
 ## Panel connector
 
 Panels are configured in a root-readable, bot-group-readable JSON file named
-by `PANELS_CONFIG` (default `var/panels.json`). Each entry contains `id`,
+by `PANELS_CONFIG` (default `/etc/gaullebot-panels.json`). Each entry contains `id`,
 `name`, `url`, `token`, and optional `verify_tls`. The connector uses the
 existing bearer-authenticated project endpoints; no new public API is needed:
 

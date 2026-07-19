@@ -7,7 +7,8 @@ from user commands. The local Bot API service is not required.
 
 ## Configuration
 
-Copy `.env.example` to `/etc/gaullebot.env` (mode `0640`, group `gaullebot`).
+Copy `.env.example` to `/etc/gaullebot.env` (mode `0640`, group `gaullebot`);
+the panel connector file is `/etc/gaullebot-panels.json` by default.
 Never commit the real token or SSH keys.
 
 ## Commands
