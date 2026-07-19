@@ -69,6 +69,9 @@ cards include relative volume bars so trends are readable directly in Telegram.
 The admin diagnostics menu also reads GeoIP provider/database status, nettest
 reports, web access policy and certificate metadata through their authenticated
 panel APIs; secret tokens and private key material are never rendered.
+The separate “Обслуживание” screen exposes API-only DNS/NDP restarts, GeoIP
+database refresh and TLS renewal; server reboot is hidden behind a server
+choice and explicit confirmation.
 
 Administrators can create a client from the inline menu: choose the target
 server, enter the profile name in the prompted reply, and the bot calls

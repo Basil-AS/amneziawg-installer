@@ -328,6 +328,21 @@ class PanelManager:
         elif action == "update-apply":
             endpoint_info = ("POST", "/api/project-update/apply")
             body = json.dumps({"confirm": "UPDATE PROJECT"}).encode()
+        elif action == "server-reboot":
+            endpoint_info = ("POST", "/api/server/reboot")
+            body = json.dumps({"confirm": "REBOOT"}).encode()
+        elif action == "dns-restart":
+            endpoint_info = ("POST", "/api/dns/restart")
+            body = b"{}"
+        elif action == "ndp-restart":
+            endpoint_info = ("POST", "/api/ipv6/ndp/restart")
+            body = b"{}"
+        elif action == "geoip-databases-update":
+            endpoint_info = ("POST", "/api/geoip/databases/update")
+            body = b"{}"
+        elif action == "web-cert-renew":
+            endpoint_info = ("POST", "/api/web-cert/renew")
+            body = b"{}"
         else:
             endpoint_info = endpoints.get(action)
         if endpoint_info is None:
@@ -614,10 +629,21 @@ def admin_keyboard() -> list[list[dict[str, str]]]:
         [{"text": "🧰 GeoIP", "callback_data": "server:geoip-status:all"}, {"text": "🧪 Nettest", "callback_data": "server:nettest-reports:all"}],
         [{"text": "🛡 Web policy", "callback_data": "server:web-policy:all"}, {"text": "🔒 TLS-сертификат", "callback_data": "server:web-cert:all"}],
         [{"text": "📈 Трафик", "callback_data": "user:traffic"}, {"text": "🔄 Обновления", "callback_data": "admin:update"}],
+        [{"text": "🛠 Обслуживание", "callback_data": "admin:maintenance"}],
         [{"text": "➕ Клиент Финляндии", "callback_data": "admin:add:finland"}, {"text": "➕ Клиент Германии", "callback_data": "admin:add:germany"}],
         [{"text": "♻️ Перезапуск Финляндии", "callback_data": "admin:restart:finland"}, {"text": "♻️ Перезапуск Германии", "callback_data": "admin:restart:germany"}],
         [{"text": "📜 Логи Финляндии", "callback_data": "server:logs:finland"}, {"text": "📜 Логи Германии", "callback_data": "server:logs:germany"}],
         [{"text": "⬅️ Главное меню", "callback_data": "menu:home"}],
+    ]
+
+
+def maintenance_keyboard() -> list[list[dict[str, str]]]:
+    return [
+        [{"text": "♻️ DNS Финляндии", "callback_data": "admin:dns-restart:finland"}, {"text": "♻️ DNS Германии", "callback_data": "admin:dns-restart:germany"}],
+        [{"text": "🌐 NDP Финляндии", "callback_data": "admin:ndp-restart:finland"}, {"text": "🌐 NDP Германии", "callback_data": "admin:ndp-restart:germany"}],
+        [{"text": "🗺 Обновить GeoIP", "callback_data": "admin:geoip-update:all"}, {"text": "🔒 Продлить TLS", "callback_data": "admin:cert-renew:all"}],
+        [{"text": "⚠️ Перезагрузка сервера", "callback_data": "admin:reboot:all"}],
+        [{"text": "⬅️ Админка", "callback_data": "menu:admin"}],
     ]
 
 
@@ -753,6 +779,38 @@ def handle_navigation(telegram: Telegram, store: Store, panels: PanelManager, ch
         store.set_prompt(principal_id, "add_client", server)
         telegram.send(chat_id, f"<b>➕ Новый клиент · {html.escape(server)}</b>\nВведите короткое имя (латиница, цифры, `-` или `_`, до 48 символов).", force_reply=True)
         return True
+    if kind == "admin" and action == "maintenance":
+        if not is_admin:
+            render_navigation(telegram, store, chat_id, "Недостаточно прав.", menu_keyboard(False), "home", callback_message_id=callback_message_id)
+            return True
+        render_navigation(telegram, store, chat_id, "<b>🛠 Обслуживание инфраструктуры</b>\nОперации выполняются только через API панели. Перезагрузка требует отдельного подтверждения.", maintenance_keyboard(), "admin:maintenance", callback_message_id=callback_message_id)
+        return True
+    if kind == "admin" and action in {"dns-restart", "ndp-restart", "geoip-update", "cert-renew", "reboot", "reboot-confirm"}:
+        if not is_admin:
+            render_navigation(telegram, store, chat_id, "Недостаточно прав.", menu_keyboard(False), "home", callback_message_id=callback_message_id)
+            return True
+        server = parts[2].lower() if len(parts) > 2 else "all"
+        if action == "reboot":
+            if server == "all":
+                render_navigation(telegram, store, chat_id, "<b>⚠️ Выберите сервер для перезагрузки</b>", [[{"text": "🇫🇮 Финляндия", "callback_data": "admin:reboot:finland"}, {"text": "🇩🇪 Германия", "callback_data": "admin:reboot:germany"}], [{"text": "Отмена", "callback_data": "admin:maintenance"}]], "admin:reboot", callback_message_id=callback_message_id)
+                return True
+            if server not in {"finland", "germany"}:
+                return True
+            render_navigation(telegram, store, chat_id, f"<b>⚠️ Перезагрузить {html.escape(server)}?</b>\nVPN и панель будут временно недоступны.", [[{"text": "✅ Да, перезагрузить", "callback_data": f"admin:reboot-confirm:{server}"}], [{"text": "Отмена", "callback_data": "admin:maintenance"}]], "admin:reboot-confirm", callback_message_id=callback_message_id)
+            return True
+        if action == "reboot-confirm" and server in {"finland", "germany"}:
+            result = panel_text(panels, server, "server-reboot", PANEL_TOKEN)
+            render_navigation(telegram, store, chat_id, f"<b>♻️ Перезагрузка запланирована</b>\n{result}", maintenance_keyboard(), "admin:reboot-done", callback_message_id=callback_message_id)
+            return True
+        if action in {"dns-restart", "ndp-restart"} and server in {"finland", "germany"}:
+            result = panel_text(panels, server, action, PANEL_TOKEN)
+            render_navigation(telegram, store, chat_id, f"<b>✅ Операция отправлена</b>\n{result}", maintenance_keyboard(), f"admin:{action}-done", callback_message_id=callback_message_id)
+            return True
+        if action in {"geoip-update", "cert-renew"}:
+            panel_action = {"geoip-update": "geoip-databases-update", "cert-renew": "web-cert-renew"}[action]
+            results = parallel_results(panels, ("finland", "germany"), panel_action, {"finland": PANEL_TOKEN, "germany": PANEL_TOKEN})
+            render_navigation(telegram, store, chat_id, f"<b>✅ Операция отправлена</b>\n" + "\n\n".join(results), maintenance_keyboard(), f"admin:{action}-done", callback_message_id=callback_message_id)
+            return True
     if kind == "admin" and action in {"update", "update-check", "update-apply", "restart", "restart-confirm"}:
         if not is_admin:
             render_navigation(telegram, store, chat_id, "Недостаточно прав.", menu_keyboard(False), "home", callback_message_id=callback_message_id)

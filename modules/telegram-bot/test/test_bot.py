@@ -8,7 +8,7 @@ import time
 from urllib.parse import urlencode
 from pathlib import Path
 
-from src.bot import PanelManager, ServerManager, Settings, Store, admin_keyboard, callback_command, compact_snapshot, help_text, menu_keyboard, reply_keyboard, verify_init_data, client_keyboard, clients_keyboard, format_bytes, format_panel_payload, parallel_payloads, sparkline, usage_bar
+from src.bot import PanelManager, ServerManager, Settings, Store, admin_keyboard, callback_command, compact_snapshot, help_text, maintenance_keyboard, menu_keyboard, reply_keyboard, verify_init_data, client_keyboard, clients_keyboard, format_bytes, format_panel_payload, parallel_payloads, sparkline, usage_bar
 
 
 class BotTests(unittest.TestCase):
@@ -130,6 +130,8 @@ class BotTests(unittest.TestCase):
         admin_data = {item["callback_data"] for row in admin_keyboard() for item in row}
         self.assertTrue({"server:status:all", "server:health:all", "server:clients:all", "admin:users:0"}.issubset(callback_data))
         self.assertTrue({"server:geoip-status:all", "server:web-cert:all"}.issubset(admin_data))
+        maintenance_data = {item["callback_data"] for row in maintenance_keyboard() for item in row}
+        self.assertTrue({"admin:dns-restart:finland", "admin:reboot:all", "admin:geoip-update:all"}.issubset(maintenance_data))
 
     def test_menu_contains_user_controls(self):
         callback_data = {item["callback_data"] for row in menu_keyboard(False) for item in row}
