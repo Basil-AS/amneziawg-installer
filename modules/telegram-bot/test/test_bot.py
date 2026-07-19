@@ -9,7 +9,7 @@ from unittest.mock import patch
 from urllib.parse import urlencode
 from pathlib import Path
 
-from src.bot import PANEL_TOKEN, PanelManager, ServerManager, Settings, Store, admin_keyboard, callback_command, compact_snapshot, help_text, maintenance_keyboard, menu_keyboard, navigation_keyboard, panel_client_names, reply_keyboard, result_navigation_keyboard, verify_init_data, client_keyboard, clients_keyboard, format_bytes, format_panel_payload, format_timestamp, parallel_payloads, sparkline, usage_bar
+from src.bot import PANEL_TOKEN, PanelManager, ServerManager, Settings, Store, admin_keyboard, callback_command, compact_snapshot, help_text, maintenance_keyboard, menu_keyboard, navigation_keyboard, panel_client_names, reply_keyboard, result_navigation_keyboard, token_client_scope, verify_init_data, client_keyboard, clients_keyboard, format_bytes, format_panel_payload, format_timestamp, parallel_payloads, sparkline, usage_bar
 
 
 class BotTests(unittest.TestCase):
@@ -298,6 +298,11 @@ class BotTests(unittest.TestCase):
         payload = {"clients": [{"name": "phone"}, {"config_name": "laptop"}, {"name": "phone"}]}
         self.assertEqual(panel_client_names(payload), ["phone", "laptop"])
         self.assertIsNone(panel_client_names({"error": "unavailable"}))
+
+    def test_token_scope_lookup_does_not_expose_unknown_tokens(self):
+        payload = {"users": [{"hash": "abc", "clients": ["phone", "laptop"]}]}
+        self.assertEqual(token_client_scope(payload, "abc"), ["phone", "laptop"])
+        self.assertIsNone(token_client_scope(payload, "missing"))
 
     def test_callback_payloads_are_command_safe(self):
         self.assertEqual(callback_command("nav:status"), "/status")

@@ -897,6 +897,20 @@ def handle_navigation(telegram: Telegram, store: Store, panels: PanelManager, ch
                 f"🇩🇪 Germany: {'✅ привязан' if target['germany_token'] else '— нет токена'}\n"
                 f"Создан: <code>{format_timestamp(target['created_at'])}</code>\n"
                 f"Изменён: <code>{format_timestamp(target['updated_at'])}</code>")
+        scope_lines = []
+        for server, column, label in (("finland", "finland_token", "🇫🇮 Finland"), ("germany", "germany_token", "🇩🇪 Germany")):
+            token = str(target[column] or "")
+            if not token:
+                continue
+            scope = token_client_scope(panels.request(server, "tokens", PANEL_TOKEN) or {}, hashlib.sha256(token.encode()).hexdigest())
+            if scope is None:
+                scope_lines.append(f"{label}: ⚠️ scope не прочитан")
+            else:
+                names = ", ".join(scope[:5])
+                suffix = "…" if len(scope) > 5 else ""
+                scope_lines.append(f"{label}: <b>{len(scope)}</b> клиент(ов)" + (f" · <code>{html.escape(names)}{suffix}</code>" if names else ""))
+        if scope_lines:
+            text += "\n\n<b>Фактические scopes</b>\n" + "\n".join(scope_lines)
         controls = []
         if target["finland_token"] or target["germany_token"]:
             controls.append({"text": "🔄 Ротировать токены", "callback_data": f"admin:rotate:{target_id}"})
@@ -1570,6 +1584,17 @@ def panel_client_names(payload: dict[str, Any]) -> list[str] | None:
         if name and name not in names:
             names.append(name)
     return names
+
+
+def token_client_scope(payload: dict[str, Any], digest: str) -> list[str] | None:
+    """Read a token's client scope without returning token material."""
+    if not isinstance(payload, dict) or payload.get("error"):
+        return None
+    for record in payload.get("users") or []:
+        if isinstance(record, dict) and str(record.get("hash") or "") == digest:
+            clients = record.get("clients")
+            return [str(item) for item in clients if str(item).strip()] if isinstance(clients, list) else []
+    return None
 
 
 def verify_init_data(raw: str, bot_token: str, max_age: int = 86400) -> dict[str, Any]:
