@@ -28,6 +28,8 @@ from urllib.request import Request, urlopen
 
 LOG = logging.getLogger("gaullebot")
 PANEL_TOKEN = object()
+BACKGROUND_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="gaullebot-job")
+atexit.register(BACKGROUND_EXECUTOR.shutdown, wait=False, cancel_futures=True)
 
 
 @dataclass(frozen=True)
@@ -389,6 +391,13 @@ class PanelManager:
         elif action == "update-check":
             endpoint_info = ("POST", "/api/project-update/check")
             body = b"{}"
+        elif action == "drops-sample":
+            try:
+                duration = int((extra or {}).get("duration_seconds", 10))
+            except (TypeError, ValueError):
+                duration = 10
+            endpoint_info = ("POST", "/api/server-health/drops-sample")
+            body = json.dumps({"duration_seconds": max(1, min(60, duration))}).encode()
         elif action == "update-apply":
             endpoint_info = ("POST", "/api/project-update/apply")
             body = json.dumps({"confirm": "UPDATE PROJECT"}).encode()
@@ -749,6 +758,7 @@ def admin_keyboard() -> list[list[dict[str, str]]]:
         [{"text": "ℹ️ Информация", "callback_data": "server:info:all"}, {"text": "🧪 Аудит", "callback_data": "server:audit:all"}],
         [{"text": "🧭 Resolver", "callback_data": "server:resolver:all"}, {"text": "🔑 Токены", "callback_data": "server:tokens:all"}],
         [{"text": "📉 Нагрузка", "callback_data": "server:health-history:all"}, {"text": "📶 Latency", "callback_data": "server:latency:all"}],
+        [{"text": "📡 Потери пакетов", "callback_data": "server:drops-sample:all"}],
         [{"text": "🌐 Provider traffic", "callback_data": "server:provider-traffic:all"}],
         [{"text": "🧰 GeoIP", "callback_data": "server:geoip-status:all"}, {"text": "🧪 Nettest", "callback_data": "server:nettest-reports:all"}],
         [{"text": "🛡 Web policy", "callback_data": "server:web-policy:all"}, {"text": "🔒 TLS-сертификат", "callback_data": "server:web-cert:all"}],
@@ -1463,7 +1473,7 @@ def handle_navigation(telegram: Telegram, store: Store, panels: PanelManager, ch
                     f"Последний handshake: <code>{html.escape(str(client.get('latestHandshakeAt', client.get('last_handshake', '—'))))}</code>")
         render_navigation(telegram, store, chat_id, text, client_keyboard(server, name, ref, admin=is_admin, favorite=store.is_favorite(principal_id, server, name), back=back_screen), f"client:{action}:{ref}", callback_message_id=callback_message_id)
         return True
-    if kind == "server" and action in {"status", "health", "readiness", "dns", "info", "resolver", "audit", "tokens", "clients", "logs", "health-history", "latency", "provider-traffic", "geoip-status", "geoip-providers", "geoip-databases", "nettest-reports", "web-policy", "web-cert"}:
+    if kind == "server" and action in {"status", "health", "readiness", "dns", "info", "resolver", "audit", "tokens", "clients", "logs", "health-history", "latency", "provider-traffic", "drops-sample", "geoip-status", "geoip-providers", "geoip-databases", "nettest-reports", "web-policy", "web-cert"}:
         access_row = store.get(principal_id)
         if not is_admin and not access_row or (not is_admin and not (access_row["finland_token"] or access_row["germany_token"])):
             render_navigation(telegram, store, chat_id, "<b>Доступ ещё не выдан</b>\nОбратитесь к администратору для привязки токена.", menu_keyboard(False), "home", callback_message_id=callback_message_id)
@@ -1475,13 +1485,29 @@ def handle_navigation(telegram: Telegram, store: Store, panels: PanelManager, ch
         keys = (server,) if server in {"finland", "germany"} else ("finland", "germany")
         row = store.get(principal_id)
         tokens = {"finland": row["finland_token"] if row else None, "germany": row["germany_token"] if row else None}
+        if action == "drops-sample":
+            render_navigation(telegram, store, chat_id, "<b>📡 Тест потерь пакетов запущен</b>\nСобираю 10-секундную выборку на сервере. Результат придёт отдельной карточкой, меню не блокируется.", result_navigation_keyboard(action, server, True), f"server:{action}:{server}", callback_message_id=callback_message_id)
+
+            def collect_drop_sample() -> None:
+                try:
+                    def fetch(key: str) -> dict[str, Any]:
+                        return panels.request(key, action, PANEL_TOKEN, extra={"duration_seconds": 10}) or {"panel": key, "error": "API недоступен"}
+                    with ThreadPoolExecutor(max_workers=len(keys)) as pool:
+                        results = [future.result() for future in [pool.submit(fetch, key) for key in keys]]
+                    telegram.send(chat_id, "<b>📡 Результат теста потерь пакетов</b>\n\n" + "\n\n".join(format_panel_payload(payload, action) for payload in results), keyboard=result_navigation_keyboard(action, server, True))
+                except (OSError, RuntimeError, ValueError, TypeError) as exc:
+                    LOG.warning("background drops sample failed chat=%s error=%s", chat_id, type(exc).__name__)
+                    telegram.send(chat_id, "<b>📡 Тест потерь пакетов не завершён</b>\nПанель временно недоступна. Повторите попытку позже.", keyboard=result_navigation_keyboard(action, server, True))
+
+            BACKGROUND_EXECUTOR.submit(collect_drop_sample)
+            return True
         if action == "status":
             output = "\n\n".join(compact_snapshot(payload) for payload in parallel_payloads(panels, keys, "snapshot", {key: PANEL_TOKEN if is_admin else tokens[key] for key in keys}))
         elif action == "clients":
             output = "\n\n".join(compact_clients(payload) for payload in parallel_payloads(panels, keys, "snapshot", {key: PANEL_TOKEN if is_admin else tokens[key] for key in keys}))
         else:
             output = "\n\n".join(parallel_results(panels, keys, action, {key: PANEL_TOKEN if is_admin else tokens[key] for key in keys}))
-        title = {"status": "Статус", "clients": "Клиенты", "health": "Проверка", "readiness": "Готовность VPN", "dns": "DNS", "info": "Информация", "resolver": "Resolver", "audit": "Аудит", "tokens": "Токены", "logs": "Логи", "health-history": "История нагрузки", "latency": "Latency клиентов", "provider-traffic": "Provider traffic", "geoip-status": "GeoIP", "geoip-providers": "GeoIP providers", "geoip-databases": "GeoIP databases", "nettest-reports": "Nettest отчёты", "web-policy": "Web access policy", "web-cert": "TLS-сертификат"}[action]
+        title = {"status": "Статус", "clients": "Клиенты", "health": "Проверка", "readiness": "Готовность VPN", "dns": "DNS", "info": "Информация", "resolver": "Resolver", "audit": "Аудит", "tokens": "Токены", "logs": "Логи", "health-history": "История нагрузки", "latency": "Latency клиентов", "provider-traffic": "Provider traffic", "drops-sample": "Потери пакетов", "geoip-status": "GeoIP", "geoip-providers": "GeoIP providers", "geoip-databases": "GeoIP databases", "nettest-reports": "Nettest отчёты", "web-policy": "Web access policy", "web-cert": "TLS-сертификат"}[action]
         result_keyboard = result_navigation_keyboard(action, server, is_admin)
         render_navigation(telegram, store, chat_id, f"<b>{title}</b>\n{output[:3900]}", result_keyboard, f"server:{action}:{server}", callback_message_id=callback_message_id)
         return True
@@ -1642,6 +1668,18 @@ def format_panel_payload(payload: dict[str, Any], action: str) -> str:
             lines.append(f"RAM   <code>{sparkline([item.get('memory') for item in series])}</code>")
             lines.append(f"Load  <code>{sparkline([item.get('load1') for item in series])}</code>")
         lines.append(f"События: ⚠️ {summary.get('counts', {}).get('warn', 0)} · ❌ {summary.get('counts', {}).get('critical', 0)}")
+    elif action == "drops-sample":
+        lines.append(f"Длительность: <b>{html.escape(str(payload.get('duration_seconds', '—')))} с</b>")
+        for label, key in (("WAN", "wan"), ("VPN", "vpn"), ("Qdisc", "qdisc"), ("TCP", "tcp"), ("IPv6", "ipv6")):
+            section = payload.get(key) or {}
+            if key in {"wan", "vpn"}:
+                lines.append(f"<b>{label}</b>: потери {section.get('drops_delta', 0)} ({section.get('drop_pct', '—')}%), ошибки {section.get('errors_delta', 0)}")
+            elif key == "qdisc":
+                lines.append(f"<b>{label}</b>: drop {section.get('drop_delta', 0)} · sent {section.get('sent_delta', 0)} ({section.get('drop_pct', '—')}%)")
+            elif key == "tcp":
+                lines.append(f"<b>{label}</b>: retrans {section.get('retrans_delta', 0)} · timeout {section.get('timeout_delta', 0)}")
+            else:
+                lines.append(f"<b>{label}</b>: no-route {section.get('no_route_delta', 0)} ({section.get('no_route_pct', '—')}%)")
     elif action == "latency":
         overview = payload.get("overview") or payload.get("diagnostics") or {}
         lines.append(f"Активных: <b>{overview.get('active', overview.get('active_peers', 0))}</b> · reachable: <b>{overview.get('reachable', overview.get('reachable_clients', 0))}</b>")

@@ -218,6 +218,13 @@ class BotTests(unittest.TestCase):
         self.assertIn("Sunny-Finland", rendered)
         self.assertNotIn('"server_time"', rendered)
 
+    def test_packet_loss_sample_is_rendered_as_diagnostic_card(self):
+        rendered = format_panel_payload({"panel": "Sunny-Germany", "duration_seconds": 10, "wan": {"drops_delta": 2, "drop_pct": 0.5, "errors_delta": 1}, "vpn": {"drops_delta": 0, "drop_pct": 0, "errors_delta": 0}, "qdisc": {"drop_delta": 1, "sent_delta": 100, "drop_pct": 0.99}, "tcp": {"retrans_delta": 3, "timeout_delta": 1}, "ipv6": {"no_route_delta": 0, "no_route_pct": 0}}, "drops-sample")
+        self.assertIn("Длительность", rendered)
+        self.assertIn("WAN", rendered)
+        self.assertIn("retrans", rendered)
+        self.assertNotIn('"wan"', rendered)
+
     def test_infrastructure_cards_do_not_dump_nested_json(self):
         rendered = format_panel_payload({"panel": "Sunny-Finland", "providers": {"maxmind": {"status": "ready"}}, "databases": {"city": {"status": "fresh"}}}, "geoip-status")
         self.assertIn("maxmind", rendered)
@@ -227,7 +234,7 @@ class BotTests(unittest.TestCase):
         callback_data = {item["callback_data"] for row in menu_keyboard(True) for item in row}
         admin_data = {item["callback_data"] for row in admin_keyboard() for item in row}
         self.assertTrue({"server:status:all", "server:health:all", "server:clients:all", "admin:users:0"}.issubset(callback_data))
-        self.assertTrue({"server:geoip-status:all", "server:web-cert:all"}.issubset(admin_data))
+        self.assertTrue({"server:geoip-status:all", "server:web-cert:all", "server:drops-sample:all"}.issubset(admin_data))
         maintenance_data = {item["callback_data"] for row in maintenance_keyboard() for item in row}
         self.assertTrue({"admin:dns-restart:finland", "admin:reboot:all", "admin:geoip-update:all"}.issubset(maintenance_data))
 
