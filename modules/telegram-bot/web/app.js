@@ -47,7 +47,7 @@
   function clientRow(server, client) {
     const name = client.display_name || client.name || client.id || 'client';
     const encoded = encodeURIComponent(client.name || client.id || name);
-    return `<article class="client-row"><div class="client-main"><span class="presence ${client.online ? 'online' : ''}"></span><div><strong>${esc(name)}</strong><small>${esc(client.ipv4 || 'IP не назначен')} · ${client.online ? 'активен' : 'не в сети'}</small></div></div><div class="client-side">${traffic(client)}<div class="actions"><button data-artifact="qr" data-server="${esc(server)}" data-name="${esc(encoded)}" title="QR">QR</button><button data-artifact="config" data-server="${esc(server)}" data-name="${esc(encoded)}" title="Конфиг">CFG</button><button data-regenerate data-server="${esc(server)}" data-name="${esc(client.name || client.id || name)}" title="Перегенерировать">↻</button></div></div></article>`;
+    return `<article class="client-row"><div class="client-main"><span class="presence ${client.online ? 'online' : ''}"></span><div><strong>${esc(name)}</strong><small>${esc(client.ipv4 || 'IP не назначен')} · ${client.online ? 'активен' : 'не в сети'}</small></div></div><div class="client-side">${traffic(client)}<div class="actions"><button data-artifact="qr" data-server="${esc(server)}" data-name="${esc(encoded)}" title="QR">QR</button><button data-artifact="config" data-server="${esc(server)}" data-name="${esc(encoded)}" title="Конфиг">CFG</button><button data-regenerate data-server="${esc(server)}" data-name="${esc(client.name || client.id || name)}" title="Перегенерировать">↻</button><button data-client-action="client-toggle" data-server="${esc(server)}" data-name="${esc(client.name || client.id || name)}" title="VPN">⏻</button><button data-client-action="p2p-toggle" data-server="${esc(server)}" data-name="${esc(client.name || client.id || name)}" title="P2P">P2P</button><button data-client-action="remove" data-server="${esc(server)}" data-name="${esc(client.name || client.id || name)}" title="Удалить">×</button></div></div></article>`;
   }
   function render(data) {
     const panels = Object.entries(data.panels || {});
@@ -78,10 +78,18 @@
     try { await api('/api/action', {method:'POST', body:JSON.stringify({server, action:'regenerate', name})}); toast('Конфиг обновлён'); await load(); }
     catch (error) { toast(error.message); } finally { button.disabled = false; }
   }
+  async function clientAction(button) {
+    const action = button.dataset.clientAction, name = button.dataset.name, server = button.dataset.server;
+    if (action === 'remove' && !confirm(`Удалить устройство «${name}»?`)) return;
+    button.disabled = true;
+    try { await api('/api/action', {method:'POST', body:JSON.stringify({server, action, name})}); toast(action === 'remove' ? 'Устройство удалено' : 'Настройка обновлена'); await load(); }
+    catch (error) { toast(error.message); } finally { button.disabled = false; }
+  }
   function toast(message) { const node = document.createElement('div'); node.className = 'toast'; node.textContent = message; document.body.append(node); setTimeout(() => node.remove(), 2600); }
   app.addEventListener('click', event => {
     const artifactButton = event.target.closest('[data-artifact]'); if (artifactButton) return artifact(artifactButton);
     const regenerateButton = event.target.closest('[data-regenerate]'); if (regenerateButton) return regenerate(regenerateButton);
+    const clientActionButton = event.target.closest('[data-client-action]'); if (clientActionButton) return clientAction(clientActionButton);
     if (event.target.closest('[data-refresh]')) return load();
     if (event.target.closest('[data-retry]')) return load();
   });
