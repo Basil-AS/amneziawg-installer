@@ -527,9 +527,10 @@ def render_navigation(telegram: Telegram, store: Store, chat_id: int, text: str,
         store.set_navigation(chat_id, message_id, screen)
 
 
-def handle_navigation(telegram: Telegram, store: Store, panels: PanelManager, manager: ServerManager, chat_id: int, is_admin: bool, data: str, *, callback_message_id: int | None = None) -> bool:
+def handle_navigation(telegram: Telegram, store: Store, panels: PanelManager, manager: ServerManager, chat_id: int, is_admin: bool, data: str, *, actor_id: int | None = None, callback_message_id: int | None = None) -> bool:
     """Render button-first VPN screens and edit the current menu in place."""
     parts = [part for part in str(data or "").split(":")]
+    principal_id = actor_id or chat_id
     if len(parts) < 2 or parts[0] not in {"menu", "server", "admin"}:
         return False
     kind, action = parts[0], parts[1]
@@ -540,7 +541,7 @@ def handle_navigation(telegram: Telegram, store: Store, panels: PanelManager, ma
             return True
         if action in {"servers", "profile", "admin"}:
             if action == "profile":
-                row = store.get(chat_id)
+                row = store.get(principal_id)
                 text = "<b>Ваш профиль</b>\nTelegram ID: <code>%s</code>\nFinland: %s\nGermany: %s" % (chat_id, "✅" if row and row["finland_token"] else "—", "✅" if row and row["germany_token"] else "—")
             elif action == "admin":
                 if not is_admin:
@@ -560,7 +561,7 @@ def handle_navigation(telegram: Telegram, store: Store, panels: PanelManager, ma
         render_navigation(telegram, store, chat_id, text[:4096], [[{"text": "⬅️ Главное меню", "callback_data": "menu:home"}]], "admin:users", callback_message_id=callback_message_id)
         return True
     if kind == "server" and action in {"status", "health", "readiness", "dns", "info", "resolver", "audit", "tokens", "clients", "logs"}:
-        access_row = store.get(chat_id)
+        access_row = store.get(principal_id)
         if not is_admin and not access_row or (not is_admin and not (access_row["finland_token"] or access_row["germany_token"])):
             render_navigation(telegram, store, chat_id, "<b>Доступ ещё не выдан</b>\nОбратитесь к администратору для привязки токена.", menu_keyboard(False), "home", callback_message_id=callback_message_id)
             return True
@@ -569,7 +570,7 @@ def handle_navigation(telegram: Telegram, store: Store, panels: PanelManager, ma
             return True
         server = parts[2] if len(parts) > 2 else "all"
         keys = (server,) if server in {"finland", "germany"} else ("finland", "germany")
-        row = store.get(chat_id)
+        row = store.get(principal_id)
         tokens = {"finland": row["finland_token"] if row else None, "germany": row["germany_token"] if row else None}
         if action == "status":
             output = "\n\n".join(compact_snapshot(panels.request(key, "snapshot", PANEL_TOKEN if is_admin else tokens[key]) or {"panel": key, "error": "недоступен"}) for key in keys)
@@ -827,10 +828,13 @@ def main() -> None:
                 callback = update.get("callback_query") or {}
                 message = update.get("message") or callback.get("message") or {}
                 chat = message.get("chat") or {}
-                sender = (message.get("from") or callback.get("from") or {})
+                # In a callback update, message.from is the bot itself;
+                # authorization must use callback.from (the clicking user).
+                sender = (callback.get("from") if callback else message.get("from")) or {}
                 chat_id = int(chat.get("id", 0))
-                if chat_id:
-                    store.touch(chat_id, str(sender.get("username", "")), str(sender.get("first_name", "")))
+                actor_id = int(sender.get("id", 0) or 0)
+                if actor_id:
+                    store.touch(actor_id, str(sender.get("username", "")), str(sender.get("first_name", "")))
                 command = (message.get("text") or callback.get("data") or "").strip()
                 reply_action = {"🏠 Меню": "menu:home", "📡 Серверы": "menu:servers", "📊 Статус": "server:status:all", "👤 Профиль": "menu:profile", "⚙️ Админка": "menu:admin"}.get(command)
                 command = reply_action or command
@@ -846,10 +850,10 @@ def main() -> None:
                     continue
                 parts = command.split()
                 name = parts[0].split("@", 1)[0].lower()
-                is_admin = chat_id == settings.admin_chat_id
-                if callback and handle_navigation(telegram, store, panels, manager, chat_id, is_admin, str(callback.get("data", "")), callback_message_id=int((callback.get("message") or {}).get("message_id", 0) or 0)):
+                is_admin = actor_id == settings.admin_chat_id
+                if callback and handle_navigation(telegram, store, panels, manager, chat_id, is_admin, str(callback.get("data", "")), actor_id=actor_id, callback_message_id=int((callback.get("message") or {}).get("message_id", 0) or 0)):
                     continue
-                if reply_action and handle_navigation(telegram, store, panels, manager, chat_id, is_admin, reply_action):
+                if reply_action and handle_navigation(telegram, store, panels, manager, chat_id, is_admin, reply_action, actor_id=actor_id):
                     continue
                 try:
                     def snapshot_text(key: str, token: str | None = None, clients: bool = False) -> str:
@@ -869,10 +873,10 @@ def main() -> None:
                     elif name == "/restart" and len(parts) == 1:
                         render_navigation(telegram, store, chat_id, "<b>Главное меню восстановлено</b>", menu_keyboard(is_admin), "home", reply=True)
                     elif name == "/me":
-                        row = store.get(chat_id)
-                        telegram.send(chat_id, "Привязка отсутствует." if row is None else f"<b>Ваш профиль</b>\nTelegram ID: <code>{chat_id}</code>\nFinland: {'✅' if row['finland_token'] else '—'}\nGermany: {'✅' if row['germany_token'] else '—'}")
+                        row = store.get(actor_id)
+                        telegram.send(chat_id, "Привязка отсутствует." if row is None else f"<b>Ваш профиль</b>\nTelegram ID: <code>{actor_id}</code>\nFinland: {'✅' if row['finland_token'] else '—'}\nGermany: {'✅' if row['germany_token'] else '—'}")
                     elif name == "/servers":
-                        row = store.get(chat_id)
+                        row = store.get(actor_id)
                         if not is_admin and not row or (not is_admin and not (row["finland_token"] or row["germany_token"])):
                             render_navigation(telegram, store, chat_id, "<b>Доступ ещё не выдан</b>\nОбратитесь к администратору для привязки токена.", menu_keyboard(False), "home", reply=True)
                             continue
@@ -901,7 +905,7 @@ def main() -> None:
                         rows = store.all()
                         telegram.send(chat_id, "\n".join(f"<code>{r['telegram_id']}</code> @{html.escape(r['username'] or '-')} fin={'✅' if r['finland_token'] else '—'} ger={'✅' if r['germany_token'] else '—'}" for r in rows) or "Пользователей пока нет.")
                     elif name == "/clients":
-                        row = store.get(chat_id)
+                        row = store.get(actor_id)
                         if not is_admin and (not row or not (row["finland_token"] or row["germany_token"])):
                             render_navigation(telegram, store, chat_id, "<b>Доступ ещё не выдан</b>\nОбратитесь к администратору для привязки токена.", menu_keyboard(False), "home", reply=True)
                             continue
