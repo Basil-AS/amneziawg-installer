@@ -113,9 +113,16 @@ class BotTests(unittest.TestCase):
         self.assertIn("CPU", rendered)
         self.assertNotIn('"cpu"', rendered)
 
+    def test_infrastructure_cards_do_not_dump_nested_json(self):
+        rendered = format_panel_payload({"panel": "Sunny-Finland", "providers": {"maxmind": {"status": "ready"}}, "databases": {"city": {"status": "fresh"}}}, "geoip-status")
+        self.assertIn("maxmind", rendered)
+        self.assertNotIn('"providers"', rendered)
+
     def test_menu_contains_admin_actions(self):
         callback_data = {item["callback_data"] for row in menu_keyboard(True) for item in row}
+        admin_data = {item["callback_data"] for row in admin_keyboard() for item in row}
         self.assertTrue({"server:status:all", "server:health:all", "server:clients:all", "admin:users:0"}.issubset(callback_data))
+        self.assertTrue({"server:geoip-status:all", "server:web-cert:all"}.issubset(admin_data))
 
     def test_menu_contains_user_controls(self):
         callback_data = {item["callback_data"] for row in menu_keyboard(False) for item in row}

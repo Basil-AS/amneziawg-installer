@@ -295,6 +295,12 @@ class PanelManager:
             "latency": ("GET", "/api/clients/latency"),
             "provider-traffic": ("GET", "/api/provider-traffic"),
             "update": ("GET", "/api/project-update"),
+            "geoip-status": ("GET", "/api/geoip/status"),
+            "geoip-providers": ("GET", "/api/geoip/providers"),
+            "geoip-databases": ("GET", "/api/geoip/databases/status"),
+            "nettest-reports": ("GET", "/api/nettest/reports"),
+            "web-policy": ("GET", "/api/web-access-policy"),
+            "web-cert": ("GET", "/api/web-cert"),
             "logs": ("GET", "/api/server/logs"), "restart": ("POST", "/api/server/restart"),
         }
         body = None
@@ -589,6 +595,8 @@ def admin_keyboard() -> list[list[dict[str, str]]]:
         [{"text": "🧭 Resolver", "callback_data": "server:resolver:all"}, {"text": "🔑 Токены", "callback_data": "server:tokens:all"}],
         [{"text": "📉 Нагрузка", "callback_data": "server:health-history:all"}, {"text": "📶 Latency", "callback_data": "server:latency:all"}],
         [{"text": "🌐 Provider traffic", "callback_data": "server:provider-traffic:all"}],
+        [{"text": "🧰 GeoIP", "callback_data": "server:geoip-status:all"}, {"text": "🧪 Nettest", "callback_data": "server:nettest-reports:all"}],
+        [{"text": "🛡 Web policy", "callback_data": "server:web-policy:all"}, {"text": "🔒 TLS-сертификат", "callback_data": "server:web-cert:all"}],
         [{"text": "📈 Трафик", "callback_data": "user:traffic"}, {"text": "🔄 Обновления", "callback_data": "admin:update"}],
         [{"text": "➕ Клиент Финляндии", "callback_data": "admin:add:finland"}, {"text": "➕ Клиент Германии", "callback_data": "admin:add:germany"}],
         [{"text": "♻️ Перезапуск Финляндии", "callback_data": "admin:restart:finland"}, {"text": "♻️ Перезапуск Германии", "callback_data": "admin:restart:germany"}],
@@ -878,7 +886,7 @@ def handle_navigation(telegram: Telegram, store: Store, panels: PanelManager, ch
                     f"Последний handshake: <code>{html.escape(str(client.get('latestHandshakeAt', client.get('last_handshake', '—'))))}</code>")
         render_navigation(telegram, store, chat_id, text, client_keyboard(server, name, ref, admin=is_admin), f"client:{action}:{ref}", callback_message_id=callback_message_id)
         return True
-    if kind == "server" and action in {"status", "health", "readiness", "dns", "info", "resolver", "audit", "tokens", "clients", "logs", "health-history", "latency", "provider-traffic"}:
+    if kind == "server" and action in {"status", "health", "readiness", "dns", "info", "resolver", "audit", "tokens", "clients", "logs", "health-history", "latency", "provider-traffic", "geoip-status", "geoip-providers", "geoip-databases", "nettest-reports", "web-policy", "web-cert"}:
         access_row = store.get(principal_id)
         if not is_admin and not access_row or (not is_admin and not (access_row["finland_token"] or access_row["germany_token"])):
             render_navigation(telegram, store, chat_id, "<b>Доступ ещё не выдан</b>\nОбратитесь к администратору для привязки токена.", menu_keyboard(False), "home", callback_message_id=callback_message_id)
@@ -896,7 +904,7 @@ def handle_navigation(telegram: Telegram, store: Store, panels: PanelManager, ch
             output = "\n\n".join(compact_clients(panels.request(key, "snapshot", PANEL_TOKEN if is_admin else tokens[key]) or {"panel": key, "error": "недоступен"}) for key in keys)
         else:
             output = "\n\n".join(panel_text(panels, key, action, PANEL_TOKEN if is_admin else tokens[key]) for key in keys)
-        title = {"status": "Статус", "clients": "Клиенты", "health": "Проверка", "readiness": "Готовность VPN", "dns": "DNS", "info": "Информация", "resolver": "Resolver", "audit": "Аудит", "tokens": "Токены", "logs": "Логи", "health-history": "История нагрузки", "latency": "Latency клиентов", "provider-traffic": "Provider traffic"}[action]
+        title = {"status": "Статус", "clients": "Клиенты", "health": "Проверка", "readiness": "Готовность VPN", "dns": "DNS", "info": "Информация", "resolver": "Resolver", "audit": "Аудит", "tokens": "Токены", "logs": "Логи", "health-history": "История нагрузки", "latency": "Latency клиентов", "provider-traffic": "Provider traffic", "geoip-status": "GeoIP", "geoip-providers": "GeoIP providers", "geoip-databases": "GeoIP databases", "nettest-reports": "Nettest отчёты", "web-policy": "Web access policy", "web-cert": "TLS-сертификат"}[action]
         render_navigation(telegram, store, chat_id, f"<b>{title}</b>\n{output[:3900]}", navigation_keyboard("result", is_admin), f"server:{action}:{server}", callback_message_id=callback_message_id)
         return True
     return False
@@ -1057,6 +1065,42 @@ def format_panel_payload(payload: dict[str, Any], action: str) -> str:
         lines.append(f"Всего: <b>{html.escape(format_bytes(traffic.get('total_bytes')))}</b> · вход: {html.escape(format_bytes(traffic.get('in_bytes')))} · выход: {html.escape(format_bytes(traffic.get('out_bytes')))}")
         if quota.get("total_bytes") is not None:
             lines.append(f"Остаток квоты: <b>{html.escape(format_bytes(remaining.get('total_bytes')))}</b> / {html.escape(format_bytes(quota.get('total_bytes')))}")
+    elif action in {"geoip-status", "geoip-providers", "geoip-databases"}:
+        providers = payload.get("providers") or {}
+        databases = payload.get("databases") or {}
+        lines.append(f"Состояние: {status_icon(payload.get('status') or payload.get('ok'))} <b>{html.escape(str(payload.get('status') or payload.get('message') or 'доступно'))}</b>")
+        if providers:
+            lines.append("<b>Провайдеры</b>")
+            for name, item in list(providers.items())[:12]:
+                item = item if isinstance(item, dict) else {"status": item}
+                lines.append(f"{status_icon(item.get('status') or item.get('ok'))} {html.escape(str(name))}: {html.escape(str(item.get('status') or item.get('type') or 'configured'))}")
+        if databases:
+            lines.append("<b>Базы</b>")
+            for name, item in list(databases.items())[:8]:
+                item = item if isinstance(item, dict) else {"status": item}
+                lines.append(f"{status_icon(item.get('status') or item.get('ok'))} {html.escape(str(name))}: {html.escape(str(item.get('status') or item.get('updated_at') or '—'))}")
+    elif action == "nettest-reports":
+        reports = payload.get("reports") or []
+        lines.append(f"Отчётов: <b>{len(reports)}</b>")
+        for report in reports[-8:]:
+            report = report if isinstance(report, dict) else {"value": report}
+            lines.append(f"🧪 <code>{html.escape(str(report.get('id') or report.get('test_id') or 'report'))}</code> · {html.escape(str(report.get('status') or report.get('created_at') or 'готов'))}")
+    elif action == "web-policy":
+        for label, key in (("Режим", "mode"), ("Публичный listener", "public_listener"), ("Trusted proxy", "trusted_proxy"), ("Разрешённые сети", "allowed_networks")):
+            if key in payload:
+                value = payload.get(key)
+                if isinstance(value, (list, dict)):
+                    value = json.dumps(value, ensure_ascii=False, separators=(", ", ":"))
+                lines.append(metric_line(label, value or "—"))
+    elif action == "web-cert":
+        certificate = payload.get("certificate") or payload
+        if isinstance(certificate, dict):
+            for label, key in (("Статус", "status"), ("Subject", "subject"), ("Issuer", "issuer"), ("Истекает", "expires_at"), ("SAN", "san")):
+                if key in certificate:
+                    value = certificate.get(key)
+                    if isinstance(value, list):
+                        value = ", ".join(str(item) for item in value)
+                    lines.append(metric_line(label, value or "—", certificate.get("status") if key == "status" else None))
     else:
         if payload.get("message"):
             lines.append(html.escape(str(payload["message"])))
