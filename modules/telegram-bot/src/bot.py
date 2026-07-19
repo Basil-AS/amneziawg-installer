@@ -1578,7 +1578,7 @@ class MiniAppServer:
                     # User-bound tokens are intentionally limited to the two
                     # read-only data views. Diagnostics, logs, token lists and
                     # mutations require the administrator identity below.
-                    read_actions = {"status", "snapshot", "clients", "regenerate", "access-link", "client-toggle", "p2p-toggle", "ports-toggle", "p2p-add", "remove"}
+                    read_actions = {"status", "snapshot", "clients", "nettest-ping", "nettest-context", "regenerate", "access-link", "client-toggle", "p2p-toggle", "ports-toggle", "p2p-add", "remove"}
                     admin_actions = read_actions | {"path-check", "web-policy-test", "restart", "add", "remove", "regenerate", "health", "health-history", "latency", "provider-traffic", "geoip-status", "geoip-providers", "geoip-databases", "nettest-reports", "web-policy", "web-cert", "update", "update-check", "update-apply"}
                     admin_id = int(os.environ.get("ADMIN_CHAT_ID", "0"))
                     is_admin = int(user["id"]) == admin_id

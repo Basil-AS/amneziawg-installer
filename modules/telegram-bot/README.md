@@ -134,5 +134,8 @@ diagnostic results open as parsed cards rather than raw JSON.
 The Mini App device action bar also supports setting a P2P port; it validates
 the numeric range in the browser and sends the value through the signed API
 session to the panel's RBAC endpoint.
+Each Mini App server card also has a lightweight `🌐 Доступность API` action;
+it uses the same signed session and scoped panel token as the Telegram menu and
+renders a parsed availability card without exposing credentials.
 It also downloads the `vpn://` URI through `/api/artifact`, alongside QR and
 `.conf`; the panel URL and bearer token remain server-side.
