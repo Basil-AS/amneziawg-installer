@@ -794,7 +794,10 @@ def navigation_keyboard(action: str, admin: bool) -> list[list[dict[str, str]]]:
 
 def result_navigation_keyboard(action: str, server: str, admin: bool) -> list[list[dict[str, str]]]:
     """Add an inline refresh action to every rendered server result card."""
-    return [[{"text": "🔄 Обновить", "callback_data": f"server:{action}:{server}"}], *navigation_keyboard("result", admin)]
+    rows = [[{"text": "🔄 Обновить", "callback_data": f"server:{action}:{server}"}], *navigation_keyboard("result", admin)]
+    if admin:
+        rows.insert(-1, [{"text": "⚙️ Админка", "callback_data": "menu:admin"}])
+    return rows
 
 
 def client_keyboard(server: str, name: str, ref: str, *, admin: bool, favorite: bool = False, back: str = "user:clients") -> list[list[dict[str, str]]]:
@@ -812,6 +815,8 @@ def client_keyboard(server: str, name: str, ref: str, *, admin: bool, favorite: 
         [{"text": "🗑 Удалить", "callback_data": f"client:remove:{ref}{suffix}"}],
         [{"text": "⬅️ Назад", "callback_data": back}, {"text": "🏠 Меню", "callback_data": "menu:home"}],
     ]
+    if admin:
+        rows.insert(-1, [{"text": "⚙️ Админка", "callback_data": "menu:admin"}])
     return rows
 
 
@@ -820,7 +825,7 @@ def uri_keyboard(uri: str, ref: str) -> list[list[dict[str, Any]]]:
     return [[{"text": "📋 Скопировать URI", "copy_text": {"text": uri}}], [{"text": "⬅️ К устройству", "callback_data": f"client:open:{ref}"}]]
 
 
-def clients_keyboard(rows: list[tuple[str, str, str]], *, page: int = 1, pages: int = 1, source: str = "clients") -> list[list[dict[str, str]]]:
+def clients_keyboard(rows: list[tuple[str, str, str]], *, page: int = 1, pages: int = 1, source: str = "clients", admin: bool = False) -> list[list[dict[str, str]]]:
     keyboard: list[list[dict[str, str]]] = []
     for server, name, ref in rows:
         keyboard.append([{"text": f"{('🇫🇮' if server == 'finland' else '🇩🇪')} {name}", "callback_data": f"client:open:{ref}:{page}:{source}"}])
@@ -832,7 +837,10 @@ def clients_keyboard(rows: list[tuple[str, str, str]], *, page: int = 1, pages: 
         if page < pages:
             pager.append({"text": "▶️", "callback_data": f"user:{'favorites' if source == 'favorites' else 'clients'}:{page + 1}"})
         keyboard.append(pager)
-    keyboard.extend([[{"text": "📈 Статистика", "callback_data": "user:traffic"}, {"text": "🌐 Доступность", "callback_data": "user:nettest"}, {"text": "⭐ Избранное", "callback_data": "user:favorites"}], [{"text": "🏠 Меню", "callback_data": "menu:home"}]])
+    keyboard.extend([[{"text": "📈 Статистика", "callback_data": "user:traffic"}, {"text": "🌐 Доступность", "callback_data": "user:nettest"}, {"text": "⭐ Избранное", "callback_data": "user:favorites"}]])
+    if admin:
+        keyboard.append([{"text": "⚙️ Админка", "callback_data": "menu:admin"}])
+    keyboard.append([{"text": "🏠 Меню", "callback_data": "menu:home"}])
     return keyboard
 
 
@@ -853,7 +861,11 @@ def render_navigation(telegram: Telegram, store: Store, chat_id: int, text: str,
             telegram.delete_message(chat_id, previous_id)
         except (OSError, RuntimeError, ValueError):
             pass
-    result = telegram.send(chat_id, text, keyboard=keyboard, reply_keyboard=reply_keyboard() if reply else None)
+    admin_mode = any(
+        str(item.get("callback_data", "")).startswith("admin:") or item.get("callback_data") == "menu:admin"
+        for row in keyboard for item in row
+    )
+    result = telegram.send(chat_id, text, keyboard=keyboard, reply_keyboard=reply_keyboard(admin_mode) if reply else None)
     message_id = int(result.get("message_id", 0)) if isinstance(result, dict) else 0
     if message_id:
         store.set_navigation(chat_id, message_id, screen)
@@ -1124,7 +1136,7 @@ def handle_navigation(telegram: Telegram, store: Store, panels: PanelManager, ch
             store.bind(requested_id, str(requested["username"] or ""), str(requested["first_name"] or ""), finland_token, germany_token)
             store.resolve_access_request(requested_id, "approved")
             try:
-                telegram.send(requested_id, "<b>✅ Доступ выдан</b>\nДля вас созданы персональные права на доступные панели. Откройте меню → «Мои устройства».", keyboard=menu_keyboard(False), reply_keyboard=reply_keyboard())
+                telegram.send(requested_id, "<b>✅ Доступ выдан</b>\nДля вас созданы персональные права на доступные панели. Откройте меню → «Мои устройства».", keyboard=menu_keyboard(False), reply_keyboard=reply_keyboard(False))
             except (OSError, RuntimeError, ValueError):
                 LOG.info("access approval notification failed user=%s", requested_id)
         detail = "Обе панели привязаны." if not failures else f"Частичная выдача: готово {', '.join(sorted(created))}; ошибка: {', '.join(failures)}."
@@ -1330,7 +1342,7 @@ def handle_navigation(telegram: Telegram, store: Store, panels: PanelManager, ch
             start = (page - 1) * page_size
             visible = available[start:start + page_size]
             text = (f"<b>⭐ Избранное</b>\nСтраница <b>{page}/{pages}</b> · всего: <b>{len(available)}</b>" if available else "<b>⭐ Избранное</b>\nДобавляйте устройства кнопкой «В избранное», чтобы быстро находить их здесь.")
-            render_navigation(telegram, store, chat_id, text, clients_keyboard(visible, page=page, pages=pages, source="favorites"), f"user:favorites:{page}", callback_message_id=callback_message_id)
+            render_navigation(telegram, store, chat_id, text, clients_keyboard(visible, page=page, pages=pages, source="favorites", admin=is_admin), f"user:favorites:{page}", callback_message_id=callback_message_id)
             return True
         available: list[tuple[str, str, str]] = []
         for key in ("finland", "germany"):
@@ -1349,7 +1361,7 @@ def handle_navigation(telegram: Telegram, store: Store, panels: PanelManager, ch
         start = (page - 1) * page_size
         visible = available[start:start + page_size]
         text = (f"<b>👥 Мои устройства</b>\nВыберите устройство для QR, конфига, URI или статистики.\nСтраница <b>{page}/{pages}</b> · всего: <b>{len(available)}</b>" if available else "<b>👥 Мои устройства</b>\nПока нет доступных конфигураций.")
-        render_navigation(telegram, store, chat_id, text, clients_keyboard(visible, page=page, pages=pages), f"user:clients:{page}", callback_message_id=callback_message_id)
+        render_navigation(telegram, store, chat_id, text, clients_keyboard(visible, page=page, pages=pages, admin=is_admin), f"user:clients:{page}", callback_message_id=callback_message_id)
         return True
     if kind == "client" and action in {"open", "artifact", "stats", "regenerate", "regenerate-confirm", "access-link", "toggle", "p2p-toggle", "ports-toggle", "p2p-port", "p2p-remove", "path-check", "favorite-add", "favorite-remove", "remove", "remove-confirm"}:
         if len(parts) < 3:
@@ -1480,8 +1492,11 @@ def handle_navigation(telegram: Telegram, store: Store, panels: PanelManager, ch
     return False
 
 
-def reply_keyboard() -> list[list[str]]:
-    return [["🏠 Меню", "📡 Серверы"], ["📊 Статус", "⭐ Избранное"], ["👤 Профиль", "⚙️ Админка"]]
+def reply_keyboard(admin: bool = False) -> list[list[str]]:
+    rows = [["🏠 Меню", "📡 Серверы"], ["📊 Статус", "⭐ Избранное"], ["👤 Профиль"]]
+    if admin:
+        rows[-1].append("⚙️ Админка")
+    return rows
 
 
 def compact_snapshot(payload: dict[str, Any]) -> str:
@@ -2172,7 +2187,7 @@ def main() -> None:
                     if name == "/start":
                         render_navigation(telegram, store, chat_id, "<b>GaulleBot</b>\nУправление VPN-серверами без ручного ввода команд.", menu_keyboard(is_admin), "home")
                     elif name == "/help":
-                        telegram.send(chat_id, help_text(is_admin), keyboard=menu_keyboard(is_admin), reply_keyboard=reply_keyboard())
+                        telegram.send(chat_id, help_text(is_admin), keyboard=menu_keyboard(is_admin), reply_keyboard=reply_keyboard(is_admin))
                     elif name == "/menu":
                         render_navigation(telegram, store, chat_id, "<b>Главное меню</b>\nВыберите нужное действие:", menu_keyboard(is_admin), "home", reply=True)
                     elif name == "/admin" and is_admin:
