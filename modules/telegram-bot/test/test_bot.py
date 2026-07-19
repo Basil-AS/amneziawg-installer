@@ -163,6 +163,7 @@ class BotTests(unittest.TestCase):
         self.assertTrue(all(len(value.encode()) <= 64 for value in callbacks))
         self.assertTrue(all(len(button["callback_data"].encode()) <= 64 for row in clients_keyboard([("germany", "a" * 48, "0123456789")]) for button in row))
         self.assertTrue({"client:toggle:0123456789:1", "client:p2p-toggle:0123456789:1", "client:ports-toggle:0123456789:1", "client:p2p-port:0123456789:1", "client:access-link:0123456789:1", "client:favorite-add:0123456789:1", "client:remove:0123456789:1"}.issubset({button["callback_data"] for row in buttons for button in row}))
+        self.assertIn("client:path-check:0123456789:1", {button["callback_data"] for row in client_keyboard("germany", "client", "0123456789", admin=True) for button in row})
         paged = {button["callback_data"] for row in clients_keyboard([], page=2, pages=3) for button in row}
         self.assertTrue({"user:clients:1", "user:clients:2", "user:clients:3"}.issubset(paged))
 

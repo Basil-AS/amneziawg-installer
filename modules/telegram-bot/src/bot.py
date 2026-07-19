@@ -357,6 +357,9 @@ class PanelManager:
         elif action == "p2p-add":
             endpoint_info = ("POST", f"/api/clients/{quote(value, safe='')}/p2p")
             body = json.dumps({"port": (extra or {}).get("port")}).encode()
+        elif action == "path-check":
+            endpoint_info = ("POST", f"/api/clients/{quote(value, safe='')}/path-check")
+            body = json.dumps({"target": "endpoint"}).encode()
         elif action == "update-check":
             endpoint_info = ("POST", "/api/project-update/check")
             body = b"{}"
@@ -712,6 +715,7 @@ def client_keyboard(server: str, name: str, ref: str, *, admin: bool, favorite: 
         [{"text": "🔗 Одноразовая ссылка импорта", "callback_data": f"client:access-link:{ref}{suffix}"}],
         [{"text": "⏻ VPN", "callback_data": f"client:toggle:{ref}{suffix}"}, {"text": "🔌 P2P", "callback_data": f"client:p2p-toggle:{ref}{suffix}"}, {"text": "🔗 Порты", "callback_data": f"client:ports-toggle:{ref}{suffix}"}],
         [{"text": "🔧 Настроить порт P2P", "callback_data": f"client:p2p-port:{ref}{suffix}"}],
+        *([[{"text": "🧭 Проверить путь", "callback_data": f"client:path-check:{ref}{suffix}"}]] if admin else []),
         [{"text": "🗑 Удалить", "callback_data": f"client:remove:{ref}{suffix}"}],
         [{"text": "⬅️ Назад", "callback_data": back}, {"text": "🏠 Меню", "callback_data": "menu:home"}],
     ]
@@ -1009,7 +1013,7 @@ def handle_navigation(telegram: Telegram, store: Store, panels: PanelManager, ch
         text = (f"<b>👥 Мои устройства</b>\nВыберите устройство для QR, конфига, URI или статистики.\nСтраница <b>{page}/{pages}</b> · всего: <b>{len(available)}</b>" if available else "<b>👥 Мои устройства</b>\nПока нет доступных конфигураций.")
         render_navigation(telegram, store, chat_id, text, clients_keyboard(visible, page=page, pages=pages), f"user:clients:{page}", callback_message_id=callback_message_id)
         return True
-    if kind == "client" and action in {"open", "artifact", "stats", "regenerate", "regenerate-confirm", "access-link", "toggle", "p2p-toggle", "ports-toggle", "p2p-port", "favorite-add", "favorite-remove", "remove", "remove-confirm"}:
+    if kind == "client" and action in {"open", "artifact", "stats", "regenerate", "regenerate-confirm", "access-link", "toggle", "p2p-toggle", "ports-toggle", "p2p-port", "path-check", "favorite-add", "favorite-remove", "remove", "remove-confirm"}:
         if len(parts) < 3:
             return True
         ref = parts[2]
@@ -1028,6 +1032,13 @@ def handle_navigation(telegram: Telegram, store: Store, panels: PanelManager, ch
             render_navigation(telegram, store, chat_id, "Недостаточно прав или неверная конфигурация.", menu_keyboard(is_admin), "home", callback_message_id=callback_message_id)
             return True
         token = PANEL_TOKEN if is_admin else tokens[server]
+        if action == "path-check":
+            if not is_admin:
+                render_navigation(telegram, store, chat_id, "Недостаточно прав для проверки маршрута.", client_keyboard(server, name, ref, admin=False, favorite=store.is_favorite(principal_id, server, name), back=back_screen), f"client:path-check-denied:{ref}", callback_message_id=callback_message_id)
+                return True
+            result = panel_text(panels, server, "path-check", PANEL_TOKEN, value=name)
+            render_navigation(telegram, store, chat_id, f"<b>🧭 Проверка пути · {html.escape(name)}</b>\n{result}", client_keyboard(server, name, ref, admin=True, favorite=store.is_favorite(principal_id, server, name), back=back_screen), f"client:path-check:{ref}", callback_message_id=callback_message_id)
+            return True
         if action in {"favorite-add", "favorite-remove"}:
             enabled = action == "favorite-add"
             store.set_favorite(principal_id, server, name, enabled)
@@ -1496,7 +1507,7 @@ class MiniAppServer:
                     # read-only data views. Diagnostics, logs, token lists and
                     # mutations require the administrator identity below.
                     read_actions = {"status", "snapshot", "clients", "regenerate", "access-link", "client-toggle", "p2p-toggle", "ports-toggle", "p2p-add", "remove"}
-                    admin_actions = read_actions | {"restart", "add", "remove", "regenerate", "health", "health-history", "latency", "provider-traffic", "geoip-status", "geoip-providers", "geoip-databases", "nettest-reports", "web-policy", "web-cert", "update", "update-check", "update-apply"}
+                    admin_actions = read_actions | {"path-check", "restart", "add", "remove", "regenerate", "health", "health-history", "latency", "provider-traffic", "geoip-status", "geoip-providers", "geoip-databases", "nettest-reports", "web-policy", "web-cert", "update", "update-check", "update-apply"}
                     admin_id = int(os.environ.get("ADMIN_CHAT_ID", "0"))
                     is_admin = int(user["id"]) == admin_id
                     if action not in (admin_actions if is_admin else read_actions):

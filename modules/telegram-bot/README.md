@@ -72,6 +72,9 @@ panel APIs; secret tokens and private key material are never rendered.
 The separate “Обслуживание” screen exposes API-only DNS/NDP restarts, GeoIP
 database refresh and TLS renewal; server reboot is hidden behind a server
 choice and explicit confirmation.
+Administrator device cards also expose an API-only path diagnostic. It calls
+the panel's RBAC-protected client path-check endpoint and renders the result as
+a compact status/RTT card; regular users do not receive this privileged action.
 
 Administrators can create a client from the inline menu: choose the target
 server, enter the profile name in the prompted reply, and the bot calls
