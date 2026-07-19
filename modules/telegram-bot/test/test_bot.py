@@ -156,6 +156,12 @@ class BotTests(unittest.TestCase):
         self.assertIn("CPU", rendered)
         self.assertNotIn('"cpu"', rendered)
 
+    def test_nettest_ping_is_rendered_as_availability_card(self):
+        rendered = format_panel_payload({"panel": "Sunny-Finland", "ok": True, "server_time": "2026-07-19T12:00:00Z"}, "nettest-ping")
+        self.assertIn("Доступность API", rendered)
+        self.assertIn("Sunny-Finland", rendered)
+        self.assertNotIn('"server_time"', rendered)
+
     def test_infrastructure_cards_do_not_dump_nested_json(self):
         rendered = format_panel_payload({"panel": "Sunny-Finland", "providers": {"maxmind": {"status": "ready"}}, "databases": {"city": {"status": "fresh"}}}, "geoip-status")
         self.assertIn("maxmind", rendered)
