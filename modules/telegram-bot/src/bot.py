@@ -552,6 +552,7 @@ def client_keyboard(server: str, name: str, ref: str, *, admin: bool, back: str 
     rows = [
         [{"text": "📷 QR-код", "callback_data": f"client:artifact:{ref}:qr"}, {"text": "📄 Конфиг", "callback_data": f"client:artifact:{ref}:config"}],
         [{"text": "🔗 VPN URI", "callback_data": f"client:artifact:{ref}:uri"}, {"text": "📈 Статистика", "callback_data": f"client:stats:{ref}"}],
+        [{"text": "♻️ Перегенерировать конфиг", "callback_data": f"client:regenerate:{ref}"}],
         [{"text": "⬅️ Назад", "callback_data": back}, {"text": "🏠 Меню", "callback_data": "menu:home"}],
     ]
     return rows
@@ -675,7 +676,7 @@ def handle_navigation(telegram: Telegram, store: Store, panels: PanelManager, ch
         text = "<b>👥 Мои устройства</b>\nВыберите устройство для QR, конфига, URI или статистики." if available else "<b>👥 Мои устройства</b>\nПока нет доступных конфигураций."
         render_navigation(telegram, store, chat_id, text, clients_keyboard(available), "user:clients", callback_message_id=callback_message_id)
         return True
-    if kind == "client" and action in {"open", "artifact", "stats"}:
+    if kind == "client" and action in {"open", "artifact", "stats", "regenerate", "regenerate-confirm"}:
         if len(parts) < 3:
             return True
         ref = parts[2]
@@ -688,6 +689,13 @@ def handle_navigation(telegram: Telegram, store: Store, panels: PanelManager, ch
             render_navigation(telegram, store, chat_id, "Недостаточно прав или неверная конфигурация.", menu_keyboard(is_admin), "home", callback_message_id=callback_message_id)
             return True
         token = PANEL_TOKEN if is_admin else tokens[server]
+        if action == "regenerate":
+            render_navigation(telegram, store, chat_id, f"<b>Перегенерировать конфиг {html.escape(name)}?</b>\nСтарый конфиг перестанет работать до повторного скачивания.", [[{"text": "✅ Подтвердить", "callback_data": f"client:regenerate-confirm:{ref}"}], [{"text": "Отмена", "callback_data": f"client:open:{ref}"}]], f"client:regenerate:{ref}", callback_message_id=callback_message_id)
+            return True
+        if action == "regenerate-confirm":
+            result = panels.run(server, "regenerate", token, value=name) or "API недоступен"
+            render_navigation(telegram, store, chat_id, f"<b>♻️ Конфиг обновлён</b>\n{html.escape(result)}", client_keyboard(server, name, ref, admin=is_admin), f"client:regenerate-done:{ref}", callback_message_id=callback_message_id)
+            return True
         if action == "artifact":
             kind_name = parts[3].lower() if len(parts) > 3 else "config"
             artifact = panels.artifact(server, name, kind_name, token)
