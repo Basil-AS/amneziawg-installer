@@ -127,6 +127,23 @@ class BotTests(unittest.TestCase):
             self.assertTrue(result["ok"])
             self.assertIn("/api/nettest/ping?test_id=mini-123", opened.call_args.args[0].full_url)
 
+    def test_nettest_download_is_capped_at_four_megabytes(self):
+        class Headers:
+            def get_content_type(self): return "application/octet-stream"
+        class Response:
+            headers = Headers()
+            def __enter__(self): return self
+            def __exit__(self, *args): return False
+            def read(self, _limit=-1): return b"payload"
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "panels.json"
+            path.write_text('{"panels":[{"id":"finland","url":"https://vpn.invalid","token":"super-secret"}]}', encoding="utf-8")
+            manager = PanelManager(path)
+            with patch("src.bot.urlopen", return_value=Response()) as opened:
+                result = manager.nettest("finland", "download", PANEL_TOKEN, test_id="mini-123", size=99_000_000)
+            self.assertEqual(result[0], b"payload")
+            self.assertIn("size=4000000", opened.call_args.args[0].full_url)
+
     def test_missing_user_token_never_falls_back_to_panel_super_token(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "panels.json"
