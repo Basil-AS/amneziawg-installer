@@ -63,7 +63,7 @@ class BotTests(unittest.TestCase):
 
     def test_menu_contains_admin_actions(self):
         callback_data = {item["callback_data"] for row in menu_keyboard(True) for item in row}
-        self.assertTrue({"nav:status", "nav:health", "nav:clients", "nav:users"}.issubset(callback_data))
+        self.assertTrue({"server:status:all", "server:health:all", "server:clients:all", "admin:users:0"}.issubset(callback_data))
 
     def test_tunnel_argv_uses_loopback_forward(self):
         old = {key: os.environ.get(key) for key in ("FINLAND_SSH_HOST", "FINLAND_SSH_IDENTITY")}
@@ -86,14 +86,14 @@ class BotTests(unittest.TestCase):
 
     def test_reply_keyboard_is_compact(self):
         keyboard = reply_keyboard()
-        self.assertEqual(sum(len(row) for row in keyboard), 4)
-        self.assertIn("📊 Статус", keyboard[0])
+        self.assertEqual(sum(len(row) for row in keyboard), 5)
+        self.assertIn("🏠 Меню", keyboard[0])
 
     def test_callback_payloads_are_command_safe(self):
         self.assertEqual(callback_command("nav:status"), "/status")
         self.assertEqual(callback_command("nav:logs finland"), "/logs finland")
         self.assertEqual(callback_command("clients"), "/clients")
-        self.assertIn("nav:menu", {item["callback_data"] for row in admin_keyboard() for item in row})
+        self.assertIn("menu:home", {item["callback_data"] for row in admin_keyboard() for item in row})
 
     def test_mini_app_init_data_signature(self):
         token = "123456:secret"
