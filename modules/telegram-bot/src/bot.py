@@ -465,10 +465,11 @@ class PanelManager:
         return payload
 
     def run(self, key: str, action: str, token: str | object | None = None, value: str = "") -> str | None:
+        """Return the same safe card renderer used by interactive screens."""
         payload = self.request(key, action, token, value)
         if payload is None:
             return None
-        return f"{payload.get('panel', key)}\n{json.dumps(payload, ensure_ascii=False, indent=2)[:3500]}"
+        return format_panel_payload(payload, action)
 
     def artifact(self, key: str, name: str, kind: str, token: str | object | None = None) -> tuple[bytes, str, str] | None:
         """Download a client artifact through the authenticated panel API."""
@@ -1572,6 +1573,15 @@ def metric_line(label: str, value: Any, state: Any = None) -> str:
     return f"{html.escape(label)}: <b>{html.escape(str(value))}</b>{suffix}"
 
 
+def display_value(value: Any) -> str:
+    """Flatten API values into readable card text without leaking JSON syntax."""
+    if isinstance(value, dict):
+        return ", ".join(f"{key}: {display_value(item)}" for key, item in list(value.items())[:12]) or "—"
+    if isinstance(value, (list, tuple, set)):
+        return ", ".join(display_value(item) for item in list(value)[:20]) or "—"
+    return str(value) if value not in (None, "") else "—"
+
+
 def format_panel_payload(payload: dict[str, Any], action: str) -> str:
     """Render API diagnostics as compact Telegram cards, never raw JSON."""
     panel = html.escape(str(payload.get("panel", "Сервер")))
@@ -1703,9 +1713,7 @@ def format_panel_payload(payload: dict[str, Any], action: str) -> str:
         for label, key in (("Режим", "mode"), ("Публичный listener", "public_listener"), ("Trusted proxy", "trusted_proxy"), ("Разрешённые сети", "allowed_networks")):
             if key in payload:
                 value = payload.get(key)
-                if isinstance(value, (list, dict)):
-                    value = json.dumps(value, ensure_ascii=False, separators=(", ", ":"))
-                lines.append(metric_line(label, value or "—"))
+                lines.append(metric_line(label, display_value(value)))
     elif action == "web-cert":
         certificate = payload.get("certificate") or payload
         if isinstance(certificate, dict):
