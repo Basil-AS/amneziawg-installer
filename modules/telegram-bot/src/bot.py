@@ -1265,7 +1265,7 @@ def handle_navigation(telegram: Telegram, store: Store, panels: PanelManager, ch
         store.set_prompt(principal_id, "add_client", server)
         telegram.send(chat_id, f"<b>➕ Новое устройство · {html.escape(server)}</b>\nВведите имя профиля (латиница, цифры, <code>-</code> или <code>_</code>, до 48 символов).", force_reply=True)
         return True
-    if kind == "user" and action in {"clients", "favorites", "traffic", "nettest", "help"}:
+    if kind == "user" and action in {"clients", "favorites", "traffic", "traffic-clients", "nettest", "help"}:
         if not is_admin and (not row or not (tokens["finland"] or tokens["germany"])):
             render_navigation(telegram, store, chat_id, "<b>Доступ ещё не выдан</b>\nОбратитесь к администратору для привязки токена.", menu_keyboard(False), "home", callback_message_id=callback_message_id)
             return True
@@ -1277,6 +1277,28 @@ def handle_navigation(telegram: Telegram, store: Store, panels: PanelManager, ch
         if action == "nettest":
             results = parallel_results(panels, ("finland", "germany"), "nettest-ping", {key: PANEL_TOKEN if is_admin else tokens[key] for key in ("finland", "germany")})
             render_navigation(telegram, store, chat_id, "<b>🌐 Доступность панелей</b>\nПроверяется лёгкий API-запрос; это не замер RTT вашего устройства.\n\n" + "\n\n".join(results), [[{"text": "📈 Статистика", "callback_data": "user:traffic"}, {"text": "👥 Устройства", "callback_data": "user:clients"}], [{"text": "🏠 Меню", "callback_data": "menu:home"}]], "user:nettest", callback_message_id=callback_message_id)
+            return True
+        if action == "traffic-clients":
+            payloads = parallel_payloads(panels, ("finland", "germany"), "clients", {key: PANEL_TOKEN if is_admin else tokens[key] for key in ("finland", "germany")})
+            blocks = []
+            for payload in payloads:
+                clients = [item for item in payload.get("clients", []) if isinstance(item, dict)]
+                rows = []
+                for item in clients:
+                    total = item.get("traffic_total") or item.get("traffic") or {}
+                    rx = total.get("rx", total.get("download", 0)) if isinstance(total, dict) else 0
+                    tx = total.get("tx", total.get("upload", 0)) if isinstance(total, dict) else 0
+                    try:
+                        amount = float(rx or 0) + float(tx or 0)
+                    except (TypeError, ValueError):
+                        amount = 0.0
+                    rows.append((amount, item, rx, tx))
+                peak = max((row[0] for row in rows), default=0.0)
+                lines = [f"<b>{html.escape(str(payload.get('panel', 'Сервер')))}</b>"]
+                for amount, item, rx, tx in sorted(rows, key=lambda row: row[0], reverse=True)[:12]:
+                    lines.append(f"<code>{html.escape(str(item.get('name') or item.get('config_name') or 'client'))}</code>\n<code>{usage_bar(amount, peak)}</code> ↓ {html.escape(format_bytes(rx))} · ↑ {html.escape(format_bytes(tx))}")
+                blocks.append("\n".join(lines))
+            render_navigation(telegram, store, chat_id, "<b>📱 Трафик по устройствам</b>\nШкала нормирована отдельно для каждого сервера.\n\n" + "\n\n".join(blocks), [[{"text": "📈 По серверам", "callback_data": "user:traffic"}, {"text": "👥 Устройства", "callback_data": "user:clients"}], [{"text": "🏠 Меню", "callback_data": "menu:home"}]], "user:traffic-clients", callback_message_id=callback_message_id)
             return True
         if action == "traffic":
             rows = []
@@ -1293,7 +1315,7 @@ def handle_navigation(telegram: Telegram, store: Store, panels: PanelManager, ch
                     peak_values.append(0.0)
             peak = max(peak_values, default=0)
             blocks = [f"<b>{html.escape(str(payload.get('panel', key)))}</b>\n<code>{usage_bar(float(rx or 0) + float(tx or 0), peak)}</code>\n↓ {html.escape(format_bytes(rx))}  ·  ↑ {html.escape(format_bytes(tx))}" for (payload, rx, tx), key in zip(rows, ("finland", "germany"))]
-            render_navigation(telegram, store, chat_id, "<b>📈 Статистика трафика</b>\nШкала: относительный объём между серверами.\n\n" + "\n\n".join(blocks), [[{"text": "👥 Устройства", "callback_data": "user:clients"}, {"text": "🏠 Меню", "callback_data": "menu:home"}]], "user:traffic", callback_message_id=callback_message_id)
+            render_navigation(telegram, store, chat_id, "<b>📈 Статистика трафика</b>\nШкала: относительный объём между серверами.\n\n" + "\n\n".join(blocks), [[{"text": "📱 По устройствам", "callback_data": "user:traffic-clients"}, {"text": "👥 Устройства", "callback_data": "user:clients"}], [{"text": "🏠 Меню", "callback_data": "menu:home"}]], "user:traffic", callback_message_id=callback_message_id)
             return True
         if action == "favorites":
             favorite_rows = store.favorites(principal_id)
