@@ -291,6 +291,11 @@ class BotTests(unittest.TestCase):
         callbacks = {item["callback_data"] for row in maintenance_keyboard() for item in row}
         self.assertEqual(callbacks.intersection({"admin:ndp:finland", "admin:ndp:germany"}), {"admin:ndp:finland", "admin:ndp:germany"})
 
+    def test_maintenance_exposes_profile_rotation_per_server(self):
+        callbacks = {item["callback_data"] for row in maintenance_keyboard() for item in row}
+        self.assertIn("admin:rotate-profile:finland", callbacks)
+        self.assertIn("admin:rotate-profile:germany", callbacks)
+
     def test_timestamp_card_is_human_readable(self):
         self.assertEqual(format_timestamp(0), "1970-01-01 00:00 UTC")
 
