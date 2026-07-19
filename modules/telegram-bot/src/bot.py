@@ -349,6 +349,8 @@ class PanelManager:
         elif action == "rotate-token":
             endpoint_info = ("POST", f"/api/tokens/{quote(value, safe='')}/rotate")
             body = b"{}"
+        elif action == "delete-token":
+            endpoint_info = ("DELETE", f"/api/tokens/{quote(value, safe='')}")
         elif action == "update-token-clients":
             clients = (extra or {}).get("clients")
             if not isinstance(clients, list):
@@ -930,6 +932,7 @@ def handle_navigation(telegram: Telegram, store: Store, panels: PanelManager, ch
         if target["finland_token"] or target["germany_token"]:
             controls.append({"text": "🔄 Ротировать токены", "callback_data": f"admin:rotate:{target_id}"})
             controls.append({"text": "🔧 Синхронизировать доступ", "callback_data": f"admin:scope-sync:{target_id}"})
+            controls.append({"text": "⛔ Отозвать доступ", "callback_data": f"admin:revoke:{target_id}"})
         keyboard = [controls] if controls else []
         keyboard.append([{"text": "👥 Пользователи", "callback_data": "admin:users:0"}, {"text": "⬅️ Админка", "callback_data": "menu:admin"}])
         render_navigation(telegram, store, chat_id, text, keyboard, "admin:user", callback_message_id=callback_message_id)
@@ -970,6 +973,46 @@ def handle_navigation(telegram: Telegram, store: Store, panels: PanelManager, ch
         if failures:
             detail += f"\nОшибки: {', '.join(failures)}"
         render_navigation(telegram, store, chat_id, f"<b>🔧 Scopes обновлены</b>\nПользователь: <code>{target_id}</code>\n{html.escape(detail)}", admin_keyboard(), "admin:scope-sync-done", callback_message_id=callback_message_id)
+        return True
+    if kind == "admin" and action in {"revoke", "revoke-confirm"}:
+        if not is_admin or len(parts) < 3:
+            render_navigation(telegram, store, chat_id, "Недостаточно прав.", menu_keyboard(False), "home", callback_message_id=callback_message_id)
+            return True
+        try:
+            target_id = int(parts[2])
+        except (TypeError, ValueError):
+            return True
+        target = store.get(target_id)
+        if target is None or not (target["finland_token"] or target["germany_token"]):
+            render_navigation(telegram, store, chat_id, "У пользователя нет активных токенов.", admin_keyboard(), "admin:users", callback_message_id=callback_message_id)
+            return True
+        if action == "revoke":
+            render_navigation(telegram, store, chat_id, f"<b>⛔ Отозвать доступ?</b>\nПользователь: <code>{target_id}</code>\nТокены будут удалены с панелей, а локальная привязка очищена.", [[{"text": "⛔ Подтвердить отзыв", "callback_data": f"admin:revoke-confirm:{target_id}"}], [{"text": "Отмена", "callback_data": f"admin:user:{target_id}"}]], "admin:revoke", callback_message_id=callback_message_id)
+            return True
+        removed: list[str] = []
+        failures: list[str] = []
+        retained = {"finland_token": str(target["finland_token"] or ""), "germany_token": str(target["germany_token"] or "")}
+        for server, column in (("finland", "finland_token"), ("germany", "germany_token")):
+            token = retained[column]
+            if not token:
+                continue
+            digest = hashlib.sha256(token.encode()).hexdigest()
+            result = panels.request(server, "delete-token", PANEL_TOKEN, value=digest) or {}
+            if result.get("error"):
+                failures.append(server)
+            else:
+                removed.append(server)
+                retained[column] = ""
+        store.bind(target_id, str(target["username"] or ""), str(target["first_name"] or ""), retained["finland_token"], retained["germany_token"])
+        if removed:
+            try:
+                telegram.send(target_id, "<b>⛔ Доступ отозван</b>\nАдминистратор удалил ваши токены доступа. Для повторного доступа отправьте новую заявку.")
+            except (OSError, RuntimeError, ValueError):
+                LOG.info("access revoke notification failed user=%s", target_id)
+        detail = f"Удалено: {', '.join(removed) or 'нет'}"
+        if failures:
+            detail += f"\nОшибки: {', '.join(failures)}"
+        render_navigation(telegram, store, chat_id, f"<b>⛔ Отзыв доступа завершён</b>\nПользователь: <code>{target_id}</code>\n{html.escape(detail)}", admin_keyboard(), "admin:revoke-done", callback_message_id=callback_message_id)
         return True
     if kind == "admin" and action in {"rotate", "rotate-confirm"}:
         if not is_admin or len(parts) < 3:
