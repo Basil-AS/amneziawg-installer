@@ -8,7 +8,7 @@ import time
 from urllib.parse import urlencode
 from pathlib import Path
 
-from src.bot import PanelManager, ServerManager, Settings, Store, admin_keyboard, callback_command, compact_snapshot, help_text, menu_keyboard, reply_keyboard, verify_init_data, client_keyboard, clients_keyboard, format_bytes, format_panel_payload, sparkline, usage_bar
+from src.bot import PanelManager, ServerManager, Settings, Store, admin_keyboard, callback_command, compact_snapshot, help_text, menu_keyboard, reply_keyboard, verify_init_data, client_keyboard, clients_keyboard, format_bytes, format_panel_payload, parallel_payloads, sparkline, usage_bar
 
 
 class BotTests(unittest.TestCase):
@@ -106,6 +106,13 @@ class BotTests(unittest.TestCase):
         self.assertEqual(len(sparkline([1, 2, 3, 4], width=12)), 4)
         self.assertEqual(sparkline([5, 5, 5]), "▁▁▁")
         self.assertEqual(usage_bar(50, 100, width=10), "█████░░░░░")
+
+    def test_parallel_payloads_preserve_panel_order(self):
+        class FakePanel:
+            def request(self, key, action, token):
+                return {"panel": key, "action": action}
+        result = parallel_payloads(FakePanel(), ("finland", "germany"), "snapshot", {"finland": "a", "germany": "b"})
+        self.assertEqual([item["panel"] for item in result], ["finland", "germany"])
 
     def test_diagnostics_are_cards_not_raw_json(self):
         rendered = format_panel_payload({"panel": "Sunny-Finland", "status": "ok", "cpu": {"usage_percent": 12.5, "status": "ok"}, "memory": {"used_percent": 33, "status": "ok"}, "disk": {"used_percent": 44, "status": "ok"}, "load": {"one": 0.2, "five": 0.1, "status": "ok"}, "services": {"vpn_interface": {"status": "active"}}, "network": {"drops_delta": 0, "errors_delta": 0}}, "health")
