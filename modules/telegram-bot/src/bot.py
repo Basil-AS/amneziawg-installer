@@ -28,6 +28,8 @@ from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 LOG = logging.getLogger("gaullebot")
+PANEL_TOKEN = object()
+SSH_FALLBACK_ENABLED = os.getenv("GAULLEBOT_SSH_FALLBACK", "0").lower() in {"1", "true", "yes"}
 
 
 @dataclass(frozen=True)
@@ -71,8 +73,12 @@ class Settings:
 class Store:
     def __init__(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
-        self.db = sqlite3.connect(path)
+        self.lock = threading.RLock()
+        self.db = sqlite3.connect(path, check_same_thread=False, timeout=10)
         self.db.row_factory = sqlite3.Row
+        self.db.execute("PRAGMA journal_mode=WAL")
+        self.db.execute("PRAGMA busy_timeout=10000")
+        self.db.execute("PRAGMA foreign_keys=ON")
         self.db.execute(
             """CREATE TABLE IF NOT EXISTS users (
                 telegram_id INTEGER PRIMARY KEY,
@@ -95,18 +101,20 @@ class Store:
         self.db.commit()
 
     def close(self) -> None:
-        self.db.close()
+        with self.lock:
+            self.db.close()
 
     def bind(self, telegram_id: int, username: str, first_name: str, finland: str, germany: str) -> None:
-        now = int(time.time())
-        self.db.execute(
-            """INSERT INTO users VALUES (?, ?, ?, ?, ?, ?, ?)
-               ON CONFLICT(telegram_id) DO UPDATE SET username=excluded.username,
-               first_name=excluded.first_name, finland_token=excluded.finland_token,
-               germany_token=excluded.germany_token, updated_at=excluded.updated_at""",
-            (telegram_id, username, first_name, finland, germany, now, now),
-        )
-        self.db.commit()
+        with self.lock:
+            now = int(time.time())
+            self.db.execute(
+                """INSERT INTO users VALUES (?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(telegram_id) DO UPDATE SET username=excluded.username,
+                   first_name=excluded.first_name, finland_token=excluded.finland_token,
+                   germany_token=excluded.germany_token, updated_at=excluded.updated_at""",
+                (telegram_id, username, first_name, finland, germany, now, now),
+            )
+            self.db.commit()
 
     def touch(self, telegram_id: int, username: str, first_name: str) -> None:
         row = self.get(telegram_id)
@@ -115,26 +123,31 @@ class Store:
         self.bind(telegram_id, username, first_name, row["finland_token"] if row else "", row["germany_token"] if row else "")
 
     def get(self, telegram_id: int) -> sqlite3.Row | None:
-        return self.db.execute("SELECT * FROM users WHERE telegram_id=?", (telegram_id,)).fetchone()
+        with self.lock:
+            return self.db.execute("SELECT * FROM users WHERE telegram_id=?", (telegram_id,)).fetchone()
 
     def all(self) -> list[sqlite3.Row]:
-        return list(self.db.execute("SELECT * FROM users ORDER BY telegram_id"))
+        with self.lock:
+            return list(self.db.execute("SELECT * FROM users ORDER BY telegram_id"))
 
     def navigation(self, telegram_id: int) -> sqlite3.Row | None:
-        return self.db.execute("SELECT * FROM navigation WHERE telegram_id=?", (telegram_id,)).fetchone()
+        with self.lock:
+            return self.db.execute("SELECT * FROM navigation WHERE telegram_id=?", (telegram_id,)).fetchone()
 
     def set_navigation(self, telegram_id: int, message_id: int, screen: str) -> None:
-        self.db.execute(
-            """INSERT INTO navigation VALUES (?, ?, ?, ?)
-               ON CONFLICT(telegram_id) DO UPDATE SET message_id=excluded.message_id,
-               screen=excluded.screen, updated_at=excluded.updated_at""",
-            (telegram_id, message_id, screen, int(time.time())),
-        )
-        self.db.commit()
+        with self.lock:
+            self.db.execute(
+                """INSERT INTO navigation VALUES (?, ?, ?, ?)
+                   ON CONFLICT(telegram_id) DO UPDATE SET message_id=excluded.message_id,
+                   screen=excluded.screen, updated_at=excluded.updated_at""",
+                (telegram_id, message_id, screen, int(time.time())),
+            )
+            self.db.commit()
 
     def clear_navigation(self, telegram_id: int) -> None:
-        self.db.execute("DELETE FROM navigation WHERE telegram_id=?", (telegram_id,))
-        self.db.commit()
+        with self.lock:
+            self.db.execute("DELETE FROM navigation WHERE telegram_id=?", (telegram_id,))
+            self.db.commit()
 
 
 @dataclass(frozen=True)
@@ -233,11 +246,14 @@ class PanelManager:
             except (OSError, ValueError, KeyError, TypeError) as exc:
                 LOG.warning("panel config ignored: %s", exc)
 
-    def request(self, key: str, action: str, token: str | None = None, value: str = "") -> dict[str, Any] | None:
+    def request(self, key: str, action: str, token: str | object | None = None, value: str = "") -> dict[str, Any] | None:
         panel = self.panels.get(key)
         if panel is None:
             return None
-        cache_key = (key, action, token or panel.token)
+        effective_token = panel.token if token is PANEL_TOKEN else str(token or "")
+        if not effective_token:
+            return {"error": "panel token is not assigned", "panel": panel.label}
+        cache_key = (key, action, "<panel>" if token is PANEL_TOKEN else effective_token)
         if action in {"status", "snapshot", "clients"}:
             with self._cache_lock:
                 cached = self._cache.get(cache_key)
@@ -265,7 +281,7 @@ class PanelManager:
         if endpoint_info is None:
             return {"error": "unsupported API action", "panel": panel.label}
         method, endpoint = endpoint_info
-        headers = {"Authorization": f"Bearer {token or panel.token}", "Accept": "application/json"}
+        headers = {"Authorization": f"Bearer {effective_token}", "Accept": "application/json"}
         if body is not None:
             headers["Content-Type"] = "application/json"
         request = Request(panel.base_url + endpoint, headers=headers, data=body, method=method)
@@ -290,7 +306,7 @@ class PanelManager:
                 self._cache[cache_key] = (time.monotonic(), dict(payload))
         return payload
 
-    def run(self, key: str, action: str, token: str | None = None, value: str = "") -> str | None:
+    def run(self, key: str, action: str, token: str | object | None = None, value: str = "") -> str | None:
         payload = self.request(key, action, token, value)
         if payload is None:
             return None
@@ -300,18 +316,22 @@ class PanelManager:
         return list(self.panels)
 
 
-def server_result(panel: PanelManager, ssh: ServerManager, key: str, action: str, token: str | None = None, value: str = "") -> str:
-    """Prefer the panel API; retain SSH as an explicit compatibility fallback."""
+def server_result(panel: PanelManager, ssh: ServerManager, key: str, action: str, token: str | object | None = None, value: str = "") -> str:
+    """Use the authenticated panel API; SSH is opt-in emergency compatibility only."""
     result = panel.run(key, action, token, value)
-    return result if result is not None else ssh.run(key, action, value)
+    if result is not None:
+        return result
+    if SSH_FALLBACK_ENABLED:
+        return ssh.run(key, action, value)
+    return f"{key}: panel API unavailable; SSH fallback is disabled"
 
 
-def parallel_results(panel: PanelManager, ssh: ServerManager, keys: tuple[str, ...], action: str, tokens: dict[str, str | None] | None = None) -> list[str]:
+def parallel_results(panel: PanelManager, ssh: ServerManager, keys: tuple[str, ...], action: str, tokens: dict[str, str | object | None] | None = None) -> list[str]:
     """Query panels concurrently; one slow region must not block the other."""
     tokens = tokens or {}
 
     def fetch(key: str) -> str:
-        return server_result(panel, ssh, key, action, tokens.get(key))
+        return server_result(panel, ssh, key, action, tokens.get(key, PANEL_TOKEN))
 
     with ThreadPoolExecutor(max_workers=len(keys)) as pool:
         futures = [pool.submit(fetch, key) for key in keys]
@@ -540,6 +560,10 @@ def handle_navigation(telegram: Telegram, store: Store, panels: PanelManager, ma
         render_navigation(telegram, store, chat_id, text[:4096], [[{"text": "⬅️ Главное меню", "callback_data": "menu:home"}]], "admin:users", callback_message_id=callback_message_id)
         return True
     if kind == "server" and action in {"status", "health", "readiness", "dns", "info", "resolver", "audit", "tokens", "clients", "logs"}:
+        access_row = store.get(chat_id)
+        if not is_admin and not access_row or (not is_admin and not (access_row["finland_token"] or access_row["germany_token"])):
+            render_navigation(telegram, store, chat_id, "<b>Доступ ещё не выдан</b>\nОбратитесь к администратору для привязки токена.", menu_keyboard(False), "home", callback_message_id=callback_message_id)
+            return True
         if action not in {"status", "clients"} and not is_admin:
             render_navigation(telegram, store, chat_id, "Недостаточно прав.", menu_keyboard(False), "home", callback_message_id=callback_message_id)
             return True
@@ -548,9 +572,9 @@ def handle_navigation(telegram: Telegram, store: Store, panels: PanelManager, ma
         row = store.get(chat_id)
         tokens = {"finland": row["finland_token"] if row else None, "germany": row["germany_token"] if row else None}
         if action == "status":
-            output = "\n\n".join(compact_snapshot(panels.request(key, "snapshot", None if is_admin else tokens[key]) or {"panel": key, "error": "недоступен"}) for key in keys)
+            output = "\n\n".join(compact_snapshot(panels.request(key, "snapshot", PANEL_TOKEN if is_admin else tokens[key]) or {"panel": key, "error": "недоступен"}) for key in keys)
         elif action == "clients":
-            output = "\n\n".join(compact_clients(panels.request(key, "snapshot", None if is_admin else tokens[key]) or {"panel": key, "error": "недоступен"}) for key in keys)
+            output = "\n\n".join(compact_clients(panels.request(key, "snapshot", PANEL_TOKEN if is_admin else tokens[key]) or {"panel": key, "error": "недоступен"}) for key in keys)
         else:
             output = "\n\n".join(html.escape(parallel_results(panels, manager, keys, action)[index]) for index in range(len(keys)))
         title = {"status": "Статус", "clients": "Клиенты", "health": "Проверка", "readiness": "Готовность VPN", "dns": "DNS", "info": "Информация", "resolver": "Resolver", "audit": "Аудит", "tokens": "Токены", "logs": "Логи"}[action]
@@ -649,11 +673,14 @@ class MiniAppServer:
                     self.reply({"error": "not_found"}, 404); return
                 try:
                     user = self.user(); row = store_ref.get(int(user["id"])); is_admin = int(user["id"]) == int(os.environ.get("ADMIN_CHAT_ID", "0"))
+                    if not is_admin and (not row or not (row["finland_token"] or row["germany_token"])):
+                        self.reply({"error": "access_pending"}, 403)
+                        return
                     tokens = {"finland": row["finland_token"] if row and not is_admin else None, "germany": row["germany_token"] if row and not is_admin else None}
                     if is_admin:
                         tokens = {"finland": None, "germany": None}
                     def fetch(key: str) -> dict[str, Any]:
-                        payload = panels_ref.request(key, "snapshot", tokens[key])
+                        payload = panels_ref.request(key, "snapshot", PANEL_TOKEN if is_admin else tokens[key])
                         return payload or {"panel": key, "error": "panel_unavailable"}
                     with ThreadPoolExecutor(max_workers=2) as pool:
                         snapshots = {key: pool.submit(fetch, key) for key in ("finland", "germany")}
@@ -677,7 +704,10 @@ class MiniAppServer:
                     server = str(request.get("server", "")).strip().lower()
                     if server not in {"finland", "germany"}:
                         raise ValueError("invalid server")
-                    read_actions = {"status", "snapshot", "health", "info", "readiness", "dns", "resolver", "audit", "tokens", "clients", "logs"}
+                    # User-bound tokens are intentionally limited to the two
+                    # read-only data views. Diagnostics, logs, token lists and
+                    # mutations require the administrator identity below.
+                    read_actions = {"status", "snapshot", "clients"}
                     admin_actions = read_actions | {"restart", "add", "remove", "regenerate"}
                     admin_id = int(os.environ.get("ADMIN_CHAT_ID", "0"))
                     is_admin = int(user["id"]) == admin_id
@@ -685,7 +715,7 @@ class MiniAppServer:
                         self.reply({"error": "forbidden"}, 403)
                         return
                     row = store_ref.get(int(user["id"]))
-                    token = None if is_admin else (row[f"{server}_token"] if row else "")
+                    token = PANEL_TOKEN if is_admin else (row[f"{server}_token"] if row else "")
                     if not is_admin and not token:
                         self.reply({"error": "panel_not_bound", "server": server}, 403)
                         return
@@ -823,7 +853,7 @@ def main() -> None:
                     continue
                 try:
                     def snapshot_text(key: str, token: str | None = None, clients: bool = False) -> str:
-                        payload = panels.request(key, "snapshot", token)
+                        payload = panels.request(key, "snapshot", PANEL_TOKEN if is_admin and token is None else token)
                         if payload is not None:
                             return compact_clients(payload) if clients else compact_snapshot(payload)
                         return server_result(panels, manager, key, "status", token)
@@ -843,24 +873,27 @@ def main() -> None:
                         telegram.send(chat_id, "Привязка отсутствует." if row is None else f"<b>Ваш профиль</b>\nTelegram ID: <code>{chat_id}</code>\nFinland: {'✅' if row['finland_token'] else '—'}\nGermany: {'✅' if row['germany_token'] else '—'}")
                     elif name == "/servers":
                         row = store.get(chat_id)
+                        if not is_admin and not row or (not is_admin and not (row["finland_token"] or row["germany_token"])):
+                            render_navigation(telegram, store, chat_id, "<b>Доступ ещё не выдан</b>\nОбратитесь к администратору для привязки токена.", menu_keyboard(False), "home", reply=True)
+                            continue
                         tokens = {"finland": row["finland_token"] if row else None, "germany": row["germany_token"] if row else None}
                         telegram.send(chat_id, "\n\n".join(snapshot_text(key, tokens[key]) for key in ("finland", "germany")))
-                    elif not is_admin:
+                    elif not is_admin and name not in {"/clients"}:
                         telegram.send(chat_id, "Недостаточно прав. Обратитесь к администратору.")
                     elif name in {"/status", "/health"}:
                         if name == "/status":
                             telegram.send(chat_id, "\n\n".join(snapshot_text(key) for key in ("finland", "germany")))
                         else:
-                            telegram.send(chat_id, "\n\n".join(parallel_results(panels, manager, ("finland", "germany"), "health")))
+                            telegram.send(chat_id, "\n\n".join(parallel_results(panels, manager, ("finland", "germany"), "health", {"finland": PANEL_TOKEN, "germany": PANEL_TOKEN})))
                     elif name in {"/info", "/readiness", "/dns", "/resolver", "/audit", "/tokens"}:
                         action = name[1:]
-                        raw = "\n\n".join(parallel_results(panels, manager, ("finland", "germany"), action))
+                        raw = "\n\n".join(parallel_results(panels, manager, ("finland", "germany"), action, {"finland": PANEL_TOKEN, "germany": PANEL_TOKEN}))
                         telegram.send(chat_id, html.escape(raw)[:4096])
                     elif name == "/restart" and len(parts) == 2:
-                        telegram.send(chat_id, server_result(panels, manager, parts[1].lower(), "restart"))
+                        telegram.send(chat_id, server_result(panels, manager, parts[1].lower(), "restart", PANEL_TOKEN))
                     elif name in {"/add", "/remove", "/regenerate"} and len(parts) == 3:
                         action = name[1:]
-                        telegram.send(chat_id, server_result(panels, manager, parts[1].lower(), action, value=parts[2]))
+                        telegram.send(chat_id, server_result(panels, manager, parts[1].lower(), action, PANEL_TOKEN, value=parts[2]))
                     elif name == "/bind" and len(parts) == 4:
                         store.bind(int(parts[1]), str(sender.get("username", "")), str(sender.get("first_name", "")), parts[2], parts[3])
                         telegram.send(chat_id, "Привязка сохранена.")
@@ -868,8 +901,13 @@ def main() -> None:
                         rows = store.all()
                         telegram.send(chat_id, "\n".join(f"<code>{r['telegram_id']}</code> @{html.escape(r['username'] or '-')} fin={'✅' if r['finland_token'] else '—'} ger={'✅' if r['germany_token'] else '—'}" for r in rows) or "Пользователей пока нет.")
                     elif name == "/clients":
+                        row = store.get(chat_id)
+                        if not is_admin and (not row or not (row["finland_token"] or row["germany_token"])):
+                            render_navigation(telegram, store, chat_id, "<b>Доступ ещё не выдан</b>\nОбратитесь к администратору для привязки токена.", menu_keyboard(False), "home", reply=True)
+                            continue
                         keys = (parts[1].lower(),) if len(parts) == 2 and parts[1].lower() in {"finland", "germany"} else ("finland", "germany")
-                        telegram.send(chat_id, "\n\n".join(snapshot_text(key, clients=True) for key in keys))
+                        tokens = {"finland": row["finland_token"] if row else None, "germany": row["germany_token"] if row else None}
+                        telegram.send(chat_id, "\n\n".join(snapshot_text(key, tokens[key], clients=True) for key in keys))
                     elif name == "/logs":
                         keys = (parts[1].lower(),) if len(parts) == 2 and parts[1].lower() in {"finland", "germany"} else ("finland", "germany")
                         telegram.send(chat_id, "\n\n".join(parallel_results(panels, manager, keys, "logs")))
