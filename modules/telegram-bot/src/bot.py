@@ -21,7 +21,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qsl, urlencode
+from urllib.parse import parse_qsl, urlencode, quote
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
@@ -95,6 +95,16 @@ class Store:
                 updated_at INTEGER NOT NULL
             )"""
         )
+        self.db.execute(
+            """CREATE TABLE IF NOT EXISTS client_refs (
+                telegram_id INTEGER NOT NULL,
+                ref TEXT NOT NULL,
+                server TEXT NOT NULL,
+                client_name TEXT NOT NULL,
+                updated_at INTEGER NOT NULL,
+                PRIMARY KEY (telegram_id, ref)
+            )"""
+        )
         self.db.commit()
 
     def close(self) -> None:
@@ -145,6 +155,18 @@ class Store:
         with self.lock:
             self.db.execute("DELETE FROM navigation WHERE telegram_id=?", (telegram_id,))
             self.db.commit()
+
+    def client_ref(self, telegram_id: int, server: str, client_name: str) -> str:
+        ref = hashlib.sha256(f"{telegram_id}:{server}:{client_name}".encode()).hexdigest()[:10]
+        with self.lock:
+            self.db.execute("INSERT OR REPLACE INTO client_refs VALUES (?, ?, ?, ?, ?)", (telegram_id, ref, server, client_name, int(time.time())))
+            self.db.commit()
+        return ref
+
+    def resolve_client_ref(self, telegram_id: int, ref: str) -> tuple[str, str] | None:
+        with self.lock:
+            row = self.db.execute("SELECT server, client_name FROM client_refs WHERE telegram_id=? AND ref=?", (telegram_id, ref)).fetchone()
+        return (str(row["server"]), str(row["client_name"])) if row else None
 
 
 @dataclass(frozen=True)
@@ -221,6 +243,8 @@ class PanelManager:
             "readiness": ("GET", "/api/vpn-readiness"), "dns": ("GET", "/api/dns"),
             "resolver": ("GET", "/api/resolver"), "audit": ("GET", "/api/clients/audit"),
             "tokens": ("GET", "/api/tokens"), "clients": ("GET", "/api/clients"),
+            "stats": ("GET", "/api/stats"), "traffic": ("GET", "/api/traffic"),
+            "update": ("GET", "/api/project-update"),
             "logs": ("GET", "/api/server/logs"), "restart": ("POST", "/api/server/restart"),
         }
         body = None
@@ -232,6 +256,12 @@ class PanelManager:
             body = b"{}"
         elif action == "remove":
             endpoint_info = ("DELETE", f"/api/clients/{value}")
+        elif action == "update-check":
+            endpoint_info = ("POST", "/api/project-update/check")
+            body = b"{}"
+        elif action == "update-apply":
+            endpoint_info = ("POST", "/api/project-update/apply")
+            body = json.dumps({"confirm": "UPDATE PROJECT"}).encode()
         else:
             endpoint_info = endpoints.get(action)
         if endpoint_info is None:
@@ -267,6 +297,38 @@ class PanelManager:
         if payload is None:
             return None
         return f"{payload.get('panel', key)}\n{json.dumps(payload, ensure_ascii=False, indent=2)[:3500]}"
+
+    def artifact(self, key: str, name: str, kind: str, token: str | object | None = None) -> tuple[bytes, str, str] | None:
+        """Download a client artifact through the authenticated panel API."""
+        panel = self.panels.get(key)
+        if panel is None:
+            return None
+        effective_token = panel.token if token is PANEL_TOKEN else str(token or "")
+        if not effective_token:
+            return None
+        endpoints = {
+            "config": (f"/api/clients/{quote(name, safe='')}/config/download", "client.conf", "text/plain"),
+            "qr": (f"/api/clients/{quote(name, safe='')}/qr", "client.png", "image/png"),
+            "uri": (f"/api/clients/{quote(name, safe='')}/uri", "client.vpnuri", "text/plain"),
+        }
+        endpoint_info = endpoints.get(kind)
+        if endpoint_info is None:
+            return None
+        endpoint, suffix, fallback_type = endpoint_info
+        request = Request(panel.base_url + endpoint, headers={"Authorization": f"Bearer {effective_token}", "Accept": "*/*"})
+        context = None if panel.verify_tls else ssl._create_unverified_context()
+        try:
+            with urlopen(request, timeout=20, context=context) as response:
+                data = response.read(4_000_000)
+                content_type = response.headers.get_content_type() or fallback_type
+                disposition = response.headers.get("Content-Disposition", "")
+                filename = suffix
+                if "filename=" in disposition:
+                    filename = disposition.split("filename=", 1)[1].strip().strip('"') or suffix
+                return data, content_type, filename
+        except (HTTPError, OSError, ValueError):
+            LOG.warning("panel artifact failed panel=%s kind=%s", key, kind)
+            return None
 
     def keys(self) -> list[str]:
         return list(self.panels)
@@ -347,6 +409,28 @@ class Telegram:
             raise RuntimeError(f"Telegram {method} failed: {payload}")
         return payload["result"]
 
+    def _upload(self, method: str, field: str, filename: str, content: bytes, *, chat_id: int, caption: str = "") -> dict[str, Any]:
+        boundary = f"----GaulleBot{os.urandom(12).hex()}"
+        chunks: list[bytes] = []
+        def add_field(name: str, value: str) -> None:
+            chunks.extend([f"--{boundary}\r\n".encode(), f'Content-Disposition: form-data; name="{name}"\r\n\r\n'.encode(), value.encode(), b"\r\n"])
+        add_field("chat_id", str(chat_id))
+        if caption:
+            add_field("caption", caption[:1024])
+        chunks.extend([f"--{boundary}\r\n".encode(), f'Content-Disposition: form-data; name="{field}"; filename="{filename}"\r\n'.encode(), b"Content-Type: application/octet-stream\r\n\r\n", content, b"\r\n", f"--{boundary}--\r\n".encode()])
+        request = Request(f"{self.base}/{method}", data=b"".join(chunks), headers={"Content-Type": f"multipart/form-data; boundary={boundary}"}, method="POST")
+        with urlopen(request, timeout=self.poll_timeout + 20) as response:
+            payload = json.loads(response.read())
+        if not payload.get("ok"):
+            raise RuntimeError(f"Telegram {method} failed")
+        return payload["result"]
+
+    def send_document(self, chat_id: int, filename: str, content: bytes, caption: str = "") -> dict[str, Any]:
+        return self._upload("sendDocument", "document", filename, content, chat_id=chat_id, caption=caption)
+
+    def send_photo(self, chat_id: int, filename: str, content: bytes, caption: str = "") -> dict[str, Any]:
+        return self._upload("sendPhoto", "photo", filename, content, chat_id=chat_id, caption=caption)
+
     def send(self, chat_id: int, text: str, *, keyboard: list[list[dict[str, str]]] | None = None, reply_keyboard: list[list[str]] | None = None) -> dict[str, Any]:
         params: dict[str, Any] = {"chat_id": chat_id, "text": text[:4096], "parse_mode": "HTML"}
         if keyboard:
@@ -418,14 +502,17 @@ class Telegram:
 
 
 def help_text(admin: bool) -> str:
-    text = "<b>GaulleBot</b>\n/me — моя привязка\n/servers — состояние серверов\n/menu — быстрые действия\n/help — помощь"
+    text = "<b>GaulleBot</b>\nВыберите действие кнопками — команды нужны только для восстановления.\n\n/me — моя привязка\n/servers — состояние серверов\n/clients — мои устройства\n/menu — главное меню\n/help — помощь"
     if admin:
         text += "\n\n<b>Администратор</b>:\n/status — быстрый сводный статус\n/health — глубокая проверка\n/info — сведения о сервере\n/readiness — готовность VPN\n/dns — DNS/AdGuard\n/resolver — состояние resolver\n/audit — аудит клиентов\n/tokens — токены панели\n/clients [server] — клиенты\n/logs [server] — последние логи\n/users — привязки\n/bind &lt;tg_id&gt; &lt;fin_token&gt; &lt;ger_token&gt;\n/add &lt;server&gt; &lt;name&gt;\n/remove &lt;server&gt; &lt;name&gt;\n/regenerate &lt;server&gt; &lt;name&gt;\n/restart &lt;finland|germany&gt;"
     return text
 
 
 def menu_keyboard(admin: bool) -> list[list[dict[str, str]]]:
-    rows = [[{"text": "📡 Серверы", "callback_data": "menu:servers"}], [{"text": "👤 Профиль", "callback_data": "menu:profile"}]]
+    rows = [
+        [{"text": "📡 Серверы", "callback_data": "menu:servers"}, {"text": "👥 Мои устройства", "callback_data": "user:clients"}],
+        [{"text": "📈 Статистика", "callback_data": "user:traffic"}, {"text": "👤 Профиль", "callback_data": "menu:profile"}],
+    ]
     if admin:
         rows = [[{"text": "📊 Статус", "callback_data": "server:status:all"}, {"text": "🩺 Проверка", "callback_data": "server:health:all"}], [{"text": "✅ Готовность", "callback_data": "server:readiness:all"}, {"text": "🌐 DNS", "callback_data": "server:dns:all"}], [{"text": "👥 Клиенты", "callback_data": "server:clients:all"}, {"text": "👤 Пользователи", "callback_data": "admin:users:0"}], [{"text": "⚙️ Ещё", "callback_data": "menu:admin"}]] + rows
     return rows
@@ -435,6 +522,8 @@ def admin_keyboard() -> list[list[dict[str, str]]]:
     return [
         [{"text": "ℹ️ Информация", "callback_data": "server:info:all"}, {"text": "🧪 Аудит", "callback_data": "server:audit:all"}],
         [{"text": "🧭 Resolver", "callback_data": "server:resolver:all"}, {"text": "🔑 Токены", "callback_data": "server:tokens:all"}],
+        [{"text": "📈 Трафик", "callback_data": "user:traffic"}, {"text": "🔄 Обновления", "callback_data": "admin:update"}],
+        [{"text": "♻️ Перезапуск Финляндии", "callback_data": "admin:restart:finland"}, {"text": "♻️ Перезапуск Германии", "callback_data": "admin:restart:germany"}],
         [{"text": "📜 Логи Финляндии", "callback_data": "server:logs:finland"}, {"text": "📜 Логи Германии", "callback_data": "server:logs:germany"}],
         [{"text": "⬅️ Главное меню", "callback_data": "menu:home"}],
     ]
@@ -452,10 +541,27 @@ def navigation_keyboard(action: str, admin: bool) -> list[list[dict[str, str]]]:
     if action == "servers":
         return [[{"text": "🇫🇮 Финляндия", "callback_data": "server:status:finland"}, {"text": "🇩🇪 Германия", "callback_data": "server:status:germany"}], [{"text": "📊 Оба сервера", "callback_data": "server:status:all"}], [{"text": "⬅️ Главное меню", "callback_data": "menu:home"}]]
     if action == "profile":
-        return [[{"text": "📡 Состояние серверов", "callback_data": "server:status:all"}], [{"text": "⬅️ Главное меню", "callback_data": "menu:home"}]]
+        return [[{"text": "📡 Состояние серверов", "callback_data": "server:status:all"}], [{"text": "👥 Мои устройства", "callback_data": "user:clients"}], [{"text": "⬅️ Главное меню", "callback_data": "menu:home"}]]
     if action == "admin":
         return admin_keyboard()
     return [[{"text": "⬅️ Серверы", "callback_data": "menu:servers"}, {"text": "🏠 Меню", "callback_data": "menu:home"}]]
+
+
+def client_keyboard(server: str, name: str, ref: str, *, admin: bool, back: str = "user:clients") -> list[list[dict[str, str]]]:
+    rows = [
+        [{"text": "📷 QR-код", "callback_data": f"client:artifact:{ref}:qr"}, {"text": "📄 Конфиг", "callback_data": f"client:artifact:{ref}:config"}],
+        [{"text": "🔗 VPN URI", "callback_data": f"client:artifact:{ref}:uri"}, {"text": "📈 Статистика", "callback_data": f"client:stats:{ref}"}],
+        [{"text": "⬅️ Назад", "callback_data": back}, {"text": "🏠 Меню", "callback_data": "menu:home"}],
+    ]
+    return rows
+
+
+def clients_keyboard(rows: list[tuple[str, str, str]]) -> list[list[dict[str, str]]]:
+    keyboard: list[list[dict[str, str]]] = []
+    for server, name, ref in rows:
+        keyboard.append([{"text": f"{('🇫🇮' if server == 'finland' else '🇩🇪')} {name}", "callback_data": f"client:open:{ref}"}])
+    keyboard.extend([[{"text": "📈 Статистика", "callback_data": "user:traffic"}], [{"text": "🏠 Меню", "callback_data": "menu:home"}]])
+    return keyboard
 
 
 def render_navigation(telegram: Telegram, store: Store, chat_id: int, text: str, keyboard: list[list[dict[str, str]]], screen: str, *, callback_message_id: int | None = None, reply: bool = True) -> None:
@@ -514,6 +620,104 @@ def handle_navigation(telegram: Telegram, store: Store, panels: PanelManager, ch
         text = "<b>Пользователи</b>\n" + ("\n".join(f"<code>{r['telegram_id']}</code> @{html.escape(r['username'] or '-')} · fin={'✅' if r['finland_token'] else '—'} · ger={'✅' if r['germany_token'] else '—'}" for r in rows) or "Пользователей пока нет.")
         render_navigation(telegram, store, chat_id, text[:4096], [[{"text": "⬅️ Главное меню", "callback_data": "menu:home"}]], "admin:users", callback_message_id=callback_message_id)
         return True
+    if kind == "admin" and action in {"update", "update-check", "update-apply", "restart", "restart-confirm"}:
+        if not is_admin:
+            render_navigation(telegram, store, chat_id, "Недостаточно прав.", menu_keyboard(False), "home", callback_message_id=callback_message_id)
+            return True
+        if action == "update":
+            blocks = []
+            for key in ("finland", "germany"):
+                payload = panels.request(key, "update", PANEL_TOKEN) or {}
+                blocks.append(f"<b>{html.escape(str(payload.get('panel', key)))}</b>\nТекущая: <code>{html.escape(str(payload.get('current_version', payload.get('version', '—'))))}</code>\nДоступна: <code>{html.escape(str(payload.get('latest_version', payload.get('latest', '—'))))}</code>")
+            keyboard = [[{"text": "🔎 Проверить обновления", "callback_data": "admin:update-check"}], [{"text": "⬆️ Применить найденное", "callback_data": "admin:update-apply"}], [{"text": "⬅️ Админка", "callback_data": "menu:admin"}]]
+            render_navigation(telegram, store, chat_id, "<b>🔄 Обновления проекта</b>\n\n" + "\n\n".join(blocks), keyboard, "admin:update", callback_message_id=callback_message_id)
+            return True
+        if action == "update-check":
+            results = [panels.run(key, "update-check", PANEL_TOKEN) or "API недоступен" for key in ("finland", "germany")]
+            render_navigation(telegram, store, chat_id, "<b>🔎 Проверка обновлений запущена</b>\n\n" + "\n\n".join(html.escape(item) for item in results), [[{"text": "🔄 Обновления", "callback_data": "admin:update"}, {"text": "⬅️ Админка", "callback_data": "menu:admin"}]], "admin:update-check", callback_message_id=callback_message_id)
+            return True
+        server = parts[2].lower() if len(parts) > 2 else ""
+        if action == "restart":
+            if server not in {"finland", "germany"}:
+                return True
+            render_navigation(telegram, store, chat_id, f"<b>Перезапустить {html.escape(server)}?</b>\nВсе VPN-клиенты временно потеряют соединение.", [[{"text": "✅ Подтвердить", "callback_data": f"admin:restart-confirm:{server}"}], [{"text": "Отмена", "callback_data": "menu:admin"}]], "admin:restart", callback_message_id=callback_message_id)
+            return True
+        if action == "restart-confirm" and server in {"finland", "germany"}:
+            result = panels.run(server, "restart", PANEL_TOKEN) or "API недоступен"
+            render_navigation(telegram, store, chat_id, f"<b>♻️ Перезапуск отправлен</b>\n{html.escape(result)}", [[{"text": "⬅️ Админка", "callback_data": "menu:admin"}]], "admin:restart-done", callback_message_id=callback_message_id)
+            return True
+        if action == "update-apply":
+            results = [panels.run(key, "update-apply", PANEL_TOKEN) or "API недоступен" for key in ("finland", "germany")]
+            render_navigation(telegram, store, chat_id, "<b>⬆️ Обновление запущено</b>\nОно выполняется безопасным updater-ом панели.\n\n" + "\n\n".join(html.escape(item) for item in results), [[{"text": "🔄 Обновления", "callback_data": "admin:update"}, {"text": "⬅️ Админка", "callback_data": "menu:admin"}]], "admin:update-apply", callback_message_id=callback_message_id)
+            return True
+    row = store.get(principal_id)
+    tokens = {"finland": row["finland_token"] if row else None, "germany": row["germany_token"] if row else None}
+    if kind == "user" and action in {"clients", "traffic"}:
+        if not is_admin and (not row or not (tokens["finland"] or tokens["germany"])):
+            render_navigation(telegram, store, chat_id, "<b>Доступ ещё не выдан</b>\nОбратитесь к администратору для привязки токена.", menu_keyboard(False), "home", callback_message_id=callback_message_id)
+            return True
+        if action == "traffic":
+            blocks = []
+            for key in ("finland", "germany"):
+                payload = panels.request(key, "traffic", PANEL_TOKEN if is_admin else tokens[key]) or {}
+                total = payload.get("total") or payload.get("current") or {}
+                blocks.append(f"<b>{html.escape(str(payload.get('panel', key)))}</b>\n↓ {html.escape(format_bytes(total.get('rx', total.get('download', 0))))}  ·  ↑ {html.escape(format_bytes(total.get('tx', total.get('upload', 0))))}")
+            render_navigation(telegram, store, chat_id, "<b>📈 Статистика трафика</b>\n\n" + "\n\n".join(blocks), [[{"text": "👥 Устройства", "callback_data": "user:clients"}, {"text": "🏠 Меню", "callback_data": "menu:home"}]], "user:traffic", callback_message_id=callback_message_id)
+            return True
+        available: list[tuple[str, str, str]] = []
+        for key in ("finland", "germany"):
+            payload = panels.request(key, "clients", PANEL_TOKEN if is_admin else tokens[key]) or {}
+            for client in payload.get("clients", []):
+                name = str(client.get("name") or client.get("config_name") or client.get("id") or "").strip()
+                if name:
+                    available.append((key, name, store.client_ref(principal_id, key, name)))
+        text = "<b>👥 Мои устройства</b>\nВыберите устройство для QR, конфига, URI или статистики." if available else "<b>👥 Мои устройства</b>\nПока нет доступных конфигураций."
+        render_navigation(telegram, store, chat_id, text, clients_keyboard(available), "user:clients", callback_message_id=callback_message_id)
+        return True
+    if kind == "client" and action in {"open", "artifact", "stats"}:
+        if len(parts) < 3:
+            return True
+        ref = parts[2]
+        resolved = store.resolve_client_ref(principal_id, ref)
+        if not resolved:
+            render_navigation(telegram, store, chat_id, "Ссылка на устройство устарела. Откройте список устройств заново.", menu_keyboard(is_admin), "home", callback_message_id=callback_message_id)
+            return True
+        server, name = resolved
+        if server not in {"finland", "germany"} or not name or not is_admin and not tokens.get(server):
+            render_navigation(telegram, store, chat_id, "Недостаточно прав или неверная конфигурация.", menu_keyboard(is_admin), "home", callback_message_id=callback_message_id)
+            return True
+        token = PANEL_TOKEN if is_admin else tokens[server]
+        if action == "artifact":
+            kind_name = parts[3].lower() if len(parts) > 3 else "config"
+            artifact = panels.artifact(server, name, kind_name, token)
+            if artifact is None:
+                telegram.send(chat_id, "Не удалось получить файл. Проверьте доступность панели и права токена.", keyboard=client_keyboard(server, name, ref, admin=is_admin))
+            else:
+                try:
+                    if kind_name == "qr":
+                        telegram.send_photo(chat_id, artifact[2], artifact[0], f"📷 <b>{html.escape(name)}</b> · {server}")
+                    else:
+                        telegram.send_document(chat_id, artifact[2], artifact[0], f"📄 <b>{html.escape(name)}</b> · {server}")
+                except (OSError, RuntimeError, ValueError):
+                    telegram.send(chat_id, "Файл получен с панели, но Telegram не принял отправку. Повторите попытку.")
+            return True
+        payload = panels.request(server, "clients", token) or {}
+        client = next((item for item in payload.get("clients", []) if str(item.get("name") or item.get("id") or item.get("config_name")) == name), None)
+        if action == "stats":
+            client = client or {}
+            total = client.get("traffic_total") or client.get("traffic") or {}
+            recent = client.get("traffic_30d") or {}
+            text = (f"<b>📈 {html.escape(name)}</b>\nСервер: {html.escape(server)}\n"
+                    f"Всего: ↓ {html.escape(format_bytes(total.get('rx', total.get('download', 0))))} · ↑ {html.escape(format_bytes(total.get('tx', total.get('upload', 0))))}\n"
+                    f"За 30 дней: ↓ {html.escape(format_bytes(recent.get('rx', recent.get('download', 0))))} · ↑ {html.escape(format_bytes(recent.get('tx', recent.get('upload', 0))))}")
+        else:
+            client = client or {}
+            marker = "🟢 онлайн" if client.get("online") else "⚪ не в сети"
+            text = (f"<b>🛡 {html.escape(name)}</b>\n{marker}\nСервер: <code>{html.escape(server)}</code>\n"
+                    f"IPv4: <code>{html.escape(str(client.get('ipv4', '—')))}</code>\n"
+                    f"Последний handshake: <code>{html.escape(str(client.get('latestHandshakeAt', client.get('last_handshake', '—'))))}</code>")
+        render_navigation(telegram, store, chat_id, text, client_keyboard(server, name, ref, admin=is_admin), f"client:{action}:{ref}", callback_message_id=callback_message_id)
+        return True
     if kind == "server" and action in {"status", "health", "readiness", "dns", "info", "resolver", "audit", "tokens", "clients", "logs"}:
         access_row = store.get(principal_id)
         if not is_admin and not access_row or (not is_admin and not (access_row["finland_token"] or access_row["germany_token"])):
@@ -550,6 +754,19 @@ def compact_snapshot(payload: dict[str, Any]) -> str:
     return (f"<b>{html.escape(str(payload.get('display_name') or payload.get('panel', 'server')))}</b> "
             f"<code>{html.escape(str(payload.get('version', '?')))}</code>\n"
             f"Сервис: <b>{service}</b> · онлайн: <b>{summary.get('online', 0)}/{summary.get('total', 0)}</b>")
+
+
+def format_bytes(value: Any) -> str:
+    try:
+        amount = float(value or 0)
+    except (TypeError, ValueError):
+        return "—"
+    units = ("B", "KiB", "MiB", "GiB", "TiB")
+    index = 0
+    while abs(amount) >= 1024 and index < len(units) - 1:
+        amount /= 1024
+        index += 1
+    return f"{amount:.1f} {units[index]}" if index else f"{int(amount)} B"
 
 
 def compact_clients(payload: dict[str, Any]) -> str:
@@ -790,7 +1007,7 @@ def main() -> None:
                 if actor_id:
                     store.touch(actor_id, str(sender.get("username", "")), str(sender.get("first_name", "")))
                 command = (message.get("text") or callback.get("data") or "").strip()
-                reply_action = {"🏠 Меню": "menu:home", "📡 Серверы": "menu:servers", "📊 Статус": "server:status:all", "👤 Профиль": "menu:profile", "⚙️ Админка": "menu:admin"}.get(command)
+                reply_action = {"🏠 Меню": "menu:home", "📡 Серверы": "menu:servers", "📊 Статус": "server:status:all", "👥 Мои устройства": "user:clients", "📈 Статистика": "user:traffic", "👤 Профиль": "menu:profile", "⚙️ Админка": "menu:admin"}.get(command)
                 command = reply_action or command
                 if callback:
                     callback_id = str(callback.get("id", ""))

@@ -8,7 +8,7 @@ import time
 from urllib.parse import urlencode
 from pathlib import Path
 
-from src.bot import PanelManager, ServerManager, Settings, Store, admin_keyboard, callback_command, compact_snapshot, help_text, menu_keyboard, reply_keyboard, verify_init_data
+from src.bot import PanelManager, ServerManager, Settings, Store, admin_keyboard, callback_command, compact_snapshot, help_text, menu_keyboard, reply_keyboard, verify_init_data, client_keyboard, clients_keyboard, format_bytes
 
 
 class BotTests(unittest.TestCase):
@@ -20,6 +20,15 @@ class BotTests(unittest.TestCase):
             row = store.get(151599744)
             self.assertEqual(row["finland_token"], "fin-2")
             self.assertEqual(len(store.all()), 1)
+            store.close()
+
+    def test_client_refs_are_short_and_user_scoped(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = Store(Path(directory) / "state.sqlite3")
+            ref = store.client_ref(42, "finland", "a-name-with-a-long-but-valid-client-profile")
+            self.assertLessEqual(len(ref), 10)
+            self.assertEqual(store.resolve_client_ref(42, ref), ("finland", "a-name-with-a-long-but-valid-client-profile"))
+            self.assertIsNone(store.resolve_client_ref(43, ref))
             store.close()
 
     def test_touch_registers_unbound_user_without_tokens(self):
@@ -70,9 +79,23 @@ class BotTests(unittest.TestCase):
         self.assertIn("2/5", text)
         self.assertLess(len(text), 500)
 
+    def test_format_bytes_is_human_readable(self):
+        self.assertEqual(format_bytes(0), "0 B")
+        self.assertEqual(format_bytes(1024 * 1024), "1.0 MiB")
+
     def test_menu_contains_admin_actions(self):
         callback_data = {item["callback_data"] for row in menu_keyboard(True) for item in row}
         self.assertTrue({"server:status:all", "server:health:all", "server:clients:all", "admin:users:0"}.issubset(callback_data))
+
+    def test_menu_contains_user_controls(self):
+        callback_data = {item["callback_data"] for row in menu_keyboard(False) for item in row}
+        self.assertTrue({"user:clients", "user:traffic", "menu:profile"}.issubset(callback_data))
+
+    def test_client_callbacks_fit_telegram_limit(self):
+        buttons = client_keyboard("germany", "a" * 48, "0123456789", admin=False)
+        callbacks = [button["callback_data"] for row in buttons for button in row]
+        self.assertTrue(all(len(value.encode()) <= 64 for value in callbacks))
+        self.assertTrue(all(len(button["callback_data"].encode()) <= 64 for row in clients_keyboard([("germany", "a" * 48, "0123456789")]) for button in row))
 
     def test_tunnel_argv_uses_loopback_forward(self):
         old = {key: os.environ.get(key) for key in ("FINLAND_SSH_HOST", "FINLAND_SSH_IDENTITY")}
