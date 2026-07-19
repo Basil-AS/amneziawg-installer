@@ -101,6 +101,11 @@ Users can mark any device as `⭐ Избранное`. Favorites are stored per 
 account in SQLite, survive bot restarts and preserve their navigation context;
 they never alter panel configuration or leak another user's device list.
 
+The user menu includes `🌐 Доступность`: it performs a lightweight authenticated
+`/api/nettest/ping` request on both panels and renders availability/server time
+as cards. It deliberately does not claim to measure the user's device RTT and
+does not start a large upload/download test from a Telegram callback.
+
 ## Storage and stack decision
 
 SQLite is the source of truth for bot users, panel-token bindings and
