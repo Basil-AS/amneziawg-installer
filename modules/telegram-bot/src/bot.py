@@ -21,7 +21,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qsl, urlencode, quote
+from urllib.parse import parse_qsl, parse_qs, urlencode, quote, urlparse
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
@@ -1022,6 +1022,39 @@ class MiniAppServer:
                 if self.path in {"/mini-app/style.css", "/style.css"}:
                     data = (root / "style.css").read_bytes()
                     self.send_response(200); self.send_header("Content-Type", "text/css; charset=utf-8"); self.send_header("Content-Length", str(len(data))); self.end_headers(); self.wfile.write(data); return
+                parsed = urlparse(self.path)
+                if parsed.path == "/api/artifact":
+                    try:
+                        user = self.user()
+                        query = parse_qs(parsed.query)
+                        server = str((query.get("server") or [""])[0]).lower()
+                        name = str((query.get("name") or [""])[0]).strip()
+                        kind = str((query.get("kind") or [""])[0]).lower()
+                        if server not in {"finland", "germany"} or not name or kind not in {"config", "qr", "uri"}:
+                            raise ValueError("invalid artifact")
+                        row = store_ref.get(int(user["id"]))
+                        is_admin = int(user["id"]) == int(os.environ.get("ADMIN_CHAT_ID", "0"))
+                        token = PANEL_TOKEN if is_admin else (row[f"{server}_token"] if row else "")
+                        if not token:
+                            self.reply({"error": "panel_not_bound"}, 403)
+                            return
+                        artifact = panels_ref.artifact(server, name, kind, token)
+                        if artifact is None:
+                            self.reply({"error": "artifact_not_found"}, 404)
+                            return
+                        content, content_type, filename = artifact
+                        self.send_response(200)
+                        self.send_header("Content-Type", content_type)
+                        self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+                        self.send_header("Cache-Control", "no-store")
+                        self.send_header("Content-Length", str(len(content)))
+                        self.end_headers()
+                        self.wfile.write(content)
+                    except ValueError:
+                        self.reply({"error": "bad_request"}, 400)
+                    except OSError:
+                        self.reply({"error": "backend_unavailable"}, 503)
+                    return
                 if self.path != "/api/session":
                     self.reply({"error": "not_found"}, 404); return
                 try:
@@ -1060,7 +1093,7 @@ class MiniAppServer:
                     # User-bound tokens are intentionally limited to the two
                     # read-only data views. Diagnostics, logs, token lists and
                     # mutations require the administrator identity below.
-                    read_actions = {"status", "snapshot", "clients"}
+                    read_actions = {"status", "snapshot", "clients", "regenerate"}
                     admin_actions = read_actions | {"restart", "add", "remove", "regenerate"}
                     admin_id = int(os.environ.get("ADMIN_CHAT_ID", "0"))
                     is_admin = int(user["id"]) == admin_id
