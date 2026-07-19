@@ -86,8 +86,8 @@ trap 'rm -f "$env_tmp"' EXIT
     printf 'POLL_TIMEOUT=30\n'
     printf 'PANEL_TUNNELS_ENABLED=1\n'
     printf 'PANELS_CONFIG=%q\n' "$PANELS_CONFIG"
-    printf 'FINLAND_SSH_HOST=194.180.189.244\nFINLAND_SSH_PORT=22\nFINLAND_SSH_USER=root\n'
-    printf 'GERMANY_SSH_HOST=77.90.29.231\nGERMANY_SSH_PORT=22\nGERMANY_SSH_USER=root\n'
+    printf 'FINLAND_SSH_HOST=194.180.189.244\nFINLAND_SSH_PORT=22\nFINLAND_SSH_USER=root\nFINLAND_WEB_PORT=8443\n'
+    printf 'GERMANY_SSH_HOST=77.90.29.231\nGERMANY_SSH_PORT=22\nGERMANY_SSH_USER=root\nGERMANY_WEB_PORT=443\n'
     if [[ -n "$SSH_KEY" ]]; then
         install -o root -g gaullebot -m 0640 "$SSH_KEY" "$BOT_ROOT/var/vpn-admin-ed25519"
         printf 'FINLAND_SSH_IDENTITY=%q\nGERMANY_SSH_IDENTITY=%q\n' "$BOT_ROOT/var/vpn-admin-ed25519" "$BOT_ROOT/var/vpn-admin-ed25519"
