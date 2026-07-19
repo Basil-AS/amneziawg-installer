@@ -348,6 +348,12 @@ class PanelManager:
         elif action == "rotate-token":
             endpoint_info = ("POST", f"/api/tokens/{quote(value, safe='')}/rotate")
             body = b"{}"
+        elif action == "update-token-clients":
+            clients = (extra or {}).get("clients")
+            if not isinstance(clients, list):
+                return {"error": "invalid token client scope", "panel": panel.label}
+            endpoint_info = ("PUT", f"/api/tokens/{quote(value, safe='')}/clients")
+            body = json.dumps({"clients": clients}, ensure_ascii=False).encode()
         elif action == "regenerate":
             endpoint_info = ("POST", f"/api/clients/{quote(value, safe='')}/regenerate")
             body = b"{}"
@@ -914,9 +920,47 @@ def handle_navigation(telegram: Telegram, store: Store, panels: PanelManager, ch
         controls = []
         if target["finland_token"] or target["germany_token"]:
             controls.append({"text": "🔄 Ротировать токены", "callback_data": f"admin:rotate:{target_id}"})
+            controls.append({"text": "🔧 Синхронизировать доступ", "callback_data": f"admin:scope-sync:{target_id}"})
         keyboard = [controls] if controls else []
         keyboard.append([{"text": "👥 Пользователи", "callback_data": "admin:users:0"}, {"text": "⬅️ Админка", "callback_data": "menu:admin"}])
         render_navigation(telegram, store, chat_id, text, keyboard, "admin:user", callback_message_id=callback_message_id)
+        return True
+    if kind == "admin" and action in {"scope-sync", "scope-sync-confirm"}:
+        if not is_admin or len(parts) < 3:
+            render_navigation(telegram, store, chat_id, "Недостаточно прав.", menu_keyboard(False), "home", callback_message_id=callback_message_id)
+            return True
+        try:
+            target_id = int(parts[2])
+        except (TypeError, ValueError):
+            return True
+        target = store.get(target_id)
+        if target is None or not (target["finland_token"] or target["germany_token"]):
+            render_navigation(telegram, store, chat_id, "У пользователя нет привязанных токенов.", admin_keyboard(), "admin:users", callback_message_id=callback_message_id)
+            return True
+        if action == "scope-sync":
+            render_navigation(telegram, store, chat_id, f"<b>🔧 Синхронизировать доступ?</b>\nПользователь: <code>{target_id}</code>\nБудут добавлены все текущие клиенты обеих панелей. Секреты не меняются.", [[{"text": "✅ Подтвердить", "callback_data": f"admin:scope-sync-confirm:{target_id}"}], [{"text": "Отмена", "callback_data": f"admin:user:{target_id}"}]], "admin:scope-sync", callback_message_id=callback_message_id)
+            return True
+        synced: list[str] = []
+        failures: list[str] = []
+        for server, column in (("finland", "finland_token"), ("germany", "germany_token")):
+            token = str(target[column] or "")
+            if not token:
+                continue
+            clients_payload = panels.request(server, "clients", PANEL_TOKEN) or {}
+            client_names = panel_client_names(clients_payload)
+            if client_names is None:
+                failures.append(server)
+                continue
+            digest = hashlib.sha256(token.encode()).hexdigest()
+            result = panels.request(server, "update-token-clients", PANEL_TOKEN, value=digest, extra={"clients": client_names}) or {}
+            if not result.get("error"):
+                synced.append(server)
+            else:
+                failures.append(server)
+        detail = f"Синхронизировано: {', '.join(synced) or 'нет'}"
+        if failures:
+            detail += f"\nОшибки: {', '.join(failures)}"
+        render_navigation(telegram, store, chat_id, f"<b>🔧 Scopes обновлены</b>\nПользователь: <code>{target_id}</code>\n{html.escape(detail)}", admin_keyboard(), "admin:scope-sync-done", callback_message_id=callback_message_id)
         return True
     if kind == "admin" and action in {"rotate", "rotate-confirm"}:
         if not is_admin or len(parts) < 3:
