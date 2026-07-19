@@ -114,7 +114,7 @@ class BotTests(unittest.TestCase):
 
     def test_menu_contains_user_controls(self):
         callback_data = {item["callback_data"] for row in menu_keyboard(False) for item in row}
-        self.assertTrue({"user:clients", "user:traffic", "menu:profile"}.issubset(callback_data))
+        self.assertTrue({"user:clients", "user:traffic", "user:add", "menu:profile"}.issubset(callback_data))
 
     def test_client_callbacks_fit_telegram_limit(self):
         buttons = client_keyboard("germany", "a" * 48, "0123456789", admin=False)

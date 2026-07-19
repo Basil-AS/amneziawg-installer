@@ -45,6 +45,10 @@ short SQLite-backed references, so Telegram's 64-byte callback limit is never
 exceeded even for long client names. Administrative screens also expose
 health, logs, token audit, safe restart confirmation and the panel's verified
 update check/apply API.
+An approved user can also press “➕ Добавить устройство”, choose Finland or
+Germany and enter a profile name. The bot calls `POST /api/clients` with that
+user's bound bearer token; the panel assigns the new client to the same token.
+The super token is used only for the administrator account.
 Each device card can issue a short-lived, one-time import link through the
 panel API (`POST /api/clients/<name>/access-link`). The link is sent as a
 Telegram URL button or opened by the Mini App; the bot does not persist or log

@@ -575,6 +575,7 @@ def menu_keyboard(admin: bool) -> list[list[dict[str, str]]]:
     rows = [
         [{"text": "📡 Серверы", "callback_data": "menu:servers"}, {"text": "👥 Мои устройства", "callback_data": "user:clients"}],
         [{"text": "📈 Статистика", "callback_data": "user:traffic"}, {"text": "👤 Профиль", "callback_data": "menu:profile"}],
+        [{"text": "➕ Добавить устройство", "callback_data": "user:add"}],
         [{"text": "🔐 Запросить доступ", "callback_data": "user:request"}],
     ]
     if admin:
@@ -762,6 +763,17 @@ def handle_navigation(telegram: Telegram, store: Store, panels: PanelManager, ch
             telegram.send(admin_id, f"<b>Новая заявка на доступ</b>\nTelegram ID: <code>{principal_id}</code>\nПользователь: @{html.escape(str(row['username'] if row and row['username'] else 'без username'))}", keyboard=[[{"text": "👤 Открыть заявку", "callback_data": f"admin:request:{principal_id}"}]])
         message = "Заявка отправлена администратору. После привязки токенов здесь появятся устройства." if created else "Заявка уже ожидает обработки. Повторная отправка будет доступна позже."
         render_navigation(telegram, store, chat_id, f"<b>🔐 Доступ</b>\n{message}", [[{"text": "🔄 Проверить снова", "callback_data": "user:clients"}, {"text": "🏠 Меню", "callback_data": "menu:home"}]], "user:request", callback_message_id=callback_message_id)
+        return True
+    if kind == "user" and action == "add":
+        if not is_admin and (not row or not (tokens["finland"] or tokens["germany"])):
+            render_navigation(telegram, store, chat_id, "<b>Доступ ещё не выдан</b>\nСначала получите привязку токена панели.", menu_keyboard(False), "home", callback_message_id=callback_message_id)
+            return True
+        server = parts[2].lower() if len(parts) > 2 else ""
+        if server not in {"finland", "germany"}:
+            render_navigation(telegram, store, chat_id, "<b>➕ Новое устройство</b>\nВыберите сервер для нового профиля:", [[{"text": "🇫🇮 Финляндия", "callback_data": "user:add:finland"}, {"text": "🇩🇪 Германия", "callback_data": "user:add:germany"}], [{"text": "⬅️ Устройства", "callback_data": "user:clients"}]], "user:add", callback_message_id=callback_message_id)
+            return True
+        store.set_prompt(principal_id, "add_client", server)
+        telegram.send(chat_id, f"<b>➕ Новое устройство · {html.escape(server)}</b>\nВведите имя профиля (латиница, цифры, <code>-</code> или <code>_</code>, до 48 символов).", force_reply=True)
         return True
     if kind == "user" and action in {"clients", "traffic"}:
         if not is_admin and (not row or not (tokens["finland"] or tokens["germany"])):
@@ -1299,22 +1311,26 @@ def main() -> None:
                         LOG.warning("callback acknowledgement failed id=%s error=%s", callback_id[:12], type(exc).__name__)
                     command = callback_command(command)
                     LOG.info("callback received chat=%s action=%s", chat_id, command)
+                is_admin = actor_id == settings.admin_chat_id
+                if not callback and not reply_action and actor_id and not command.startswith("/"):
+                    prompt = store.prompt(actor_id)
+                    if prompt and prompt["action"] == "add_client":
+                        candidate = command.strip()
+                        prompt_server = str(prompt["server"]).lower()
+                        prompt_row = store.get(actor_id)
+                        prompt_token = PANEL_TOKEN if is_admin else (prompt_row[f"{prompt_server}_token"] if prompt_row and prompt_server in {"finland", "germany"} else "")
+                        if prompt_server not in {"finland", "germany"} or not prompt_token or not candidate or len(candidate) > 48 or not all(char.isalnum() or char in "_-" for char in candidate):
+                            telegram.send(chat_id, "Имя клиента некорректно. Используйте латиницу, цифры, <code>-</code> или <code>_</code> (до 48 символов). Повторите ввод.", force_reply=True)
+                            continue
+                        result = panel_text(panels, prompt_server, "add", prompt_token, value=candidate)
+                        store.clear_prompt(actor_id)
+                        keyboard = admin_keyboard() if is_admin else menu_keyboard(False)
+                        render_navigation(telegram, store, chat_id, f"<b>✅ Клиент создан</b>\n{result}", keyboard, "client:add-done", reply=True)
+                        continue
                 if not command.startswith("/"):
                     continue
                 parts = command.split()
                 name = parts[0].split("@", 1)[0].lower()
-                is_admin = actor_id == settings.admin_chat_id
-                prompt = store.prompt(actor_id) if actor_id and not callback else None
-                if prompt and not command.startswith("/") and not reply_action:
-                    if prompt["action"] == "add_client":
-                        candidate = command.strip()
-                        if not is_admin or not candidate or len(candidate) > 48 or not all(char.isalnum() or char in "_-" for char in candidate):
-                            telegram.send(chat_id, "Имя клиента некорректно. Используйте латиницу, цифры, `-` или `_` (до 48 символов). Повторите ввод.", force_reply=True)
-                            continue
-                        result = panel_text(panels, prompt["server"], "add", PANEL_TOKEN, value=candidate)
-                        store.clear_prompt(actor_id)
-                        render_navigation(telegram, store, chat_id, f"<b>✅ Клиент создан</b>\n{result}", admin_keyboard(), "admin:add-done", reply=True)
-                        continue
                 if callback and handle_navigation(telegram, store, panels, chat_id, is_admin, str(callback.get("data", "")), actor_id=actor_id, callback_message_id=int((callback.get("message") or {}).get("message_id", 0) or 0)):
                     continue
                 if reply_action and handle_navigation(telegram, store, panels, chat_id, is_admin, reply_action, actor_id=actor_id):
