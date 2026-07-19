@@ -6,20 +6,24 @@ from __future__ import annotations
 import json
 import base64
 import atexit
+import hmac
 import html
 import logging
 import os
+import queue
 import shlex
 import sqlite3
 import subprocess
 import threading
 import time
 import ssl
+import hashlib
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlencode
+from urllib.parse import parse_qsl, urlencode
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
@@ -34,6 +38,13 @@ class Settings:
     db_path: Path
     poll_timeout: int
     panels_path: Path
+    mini_app_url: str
+    webhook_url: str
+    webhook_secret: str
+    webhook_bind: str
+    webhook_port: int
+    mini_app_bind: str
+    mini_app_port: int
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -47,6 +58,13 @@ class Settings:
             db_path=Path(os.environ.get("DB_PATH", "data/gaullebot.sqlite3")),
             poll_timeout=max(1, min(int(os.environ.get("POLL_TIMEOUT", "30")), 50)),
             panels_path=Path(os.environ.get("PANELS_CONFIG", "var/panels.json")),
+            mini_app_url=os.environ.get("MINI_APP_URL", "").strip(),
+            webhook_url=os.environ.get("WEBHOOK_URL", "").strip().rstrip("/"),
+            webhook_secret=os.environ.get("WEBHOOK_SECRET", "").strip(),
+            webhook_bind=os.environ.get("WEBHOOK_BIND", "127.0.0.1"),
+            webhook_port=max(1, min(int(os.environ.get("WEBHOOK_PORT", "8788")), 65535)),
+            mini_app_bind=os.environ.get("MINI_APP_BIND", "127.0.0.1"),
+            mini_app_port=max(1, min(int(os.environ.get("MINI_APP_PORT", "8789")), 65535)),
         )
 
 
@@ -331,10 +349,12 @@ class Telegram:
             raise RuntimeError(f"Telegram {method} failed: {payload}")
         return payload["result"]
 
-    def send(self, chat_id: int, text: str, *, keyboard: list[list[dict[str, str]]] | None = None) -> None:
+    def send(self, chat_id: int, text: str, *, keyboard: list[list[dict[str, str]]] | None = None, reply_keyboard: list[list[str]] | None = None) -> None:
         params: dict[str, Any] = {"chat_id": chat_id, "text": text[:4096], "parse_mode": "HTML"}
         if keyboard:
             params["reply_markup"] = json.dumps({"inline_keyboard": keyboard}, ensure_ascii=False)
+        elif reply_keyboard:
+            params["reply_markup"] = json.dumps({"keyboard": [[{"text": item} for item in row] for row in reply_keyboard], "is_persistent": True, "resize_keyboard": True}, ensure_ascii=False)
         try:
             self.call("sendMessage", **params)
         except RuntimeError as exc:
@@ -344,6 +364,30 @@ class Telegram:
                 raise
             params.pop("parse_mode", None)
             self.call("sendMessage", **params)
+
+    def set_commands(self, commands: list[dict[str, str]], *, chat_id: int | None = None) -> None:
+        scope = {"type": "chat", "chat_id": chat_id} if chat_id is not None else {"type": "default"}
+        self.call("setMyCommands", commands=json.dumps(commands, ensure_ascii=False), scope=json.dumps(scope))
+
+    def set_menu_button(self, mini_app_url: str = "", *, chat_id: int | None = None) -> None:
+        button = {"type": "web_app", "text": "Панель", "web_app": {"url": mini_app_url}} if mini_app_url else {"type": "commands"}
+        params: dict[str, Any] = {"menu_button": json.dumps(button, ensure_ascii=False)}
+        if chat_id is not None:
+            params["chat_id"] = chat_id
+        self.call("setChatMenuButton", **params)
+
+    def set_webhook(self, url: str, secret: str, allowed_updates: list[str]) -> None:
+        self.call("setWebhook", url=url, secret_token=secret, max_connections=40, allowed_updates=json.dumps(allowed_updates))
+
+    def configure_profile(self, mini_app_url: str = "", admin_chat_id: int = 0) -> None:
+        commands = [{"command": command, "description": description} for command, description in (("start", "Открыть главное меню"), ("menu", "Показать меню"), ("servers", "Статус серверов"), ("clients", "Список клиентов"), ("me", "Моя привязка"), ("help", "Помощь"))]
+        admin_commands = commands + [{"command": command, "description": description} for command, description in (("health", "Глубокая проверка"), ("readiness", "Готовность VPN"), ("dns", "Состояние DNS"), ("audit", "Аудит клиентов"), ("restart", "Перезапуск сервиса"))]
+        self.set_commands(commands)
+        if admin_chat_id:
+            self.set_commands(admin_commands, chat_id=admin_chat_id)
+        self.set_menu_button(mini_app_url)
+        if admin_chat_id:
+            self.set_menu_button(mini_app_url, chat_id=admin_chat_id)
 
     def answer_callback(self, callback_id: str, text: str = "") -> None:
         self.call("answerCallbackQuery", callback_query_id=callback_id, text=text[:200])
@@ -361,6 +405,10 @@ def menu_keyboard(admin: bool) -> list[list[dict[str, str]]]:
     if admin:
         rows = [[{"text": "📊 Статус", "callback_data": "status"}, {"text": "🩺 Health", "callback_data": "health"}], [{"text": "✅ Readiness", "callback_data": "readiness"}, {"text": "🌐 DNS", "callback_data": "dns"}], [{"text": "👥 Клиенты", "callback_data": "clients"}, {"text": "👤 Пользователи", "callback_data": "users"}]] + rows
     return rows
+
+
+def reply_keyboard() -> list[list[str]]:
+    return [["📊 Статус", "👥 Клиенты"], ["🩺 Проверка", "👤 Профиль"]]
 
 
 def compact_snapshot(payload: dict[str, Any]) -> str:
@@ -385,20 +433,213 @@ def compact_clients(payload: dict[str, Any]) -> str:
     return "\n".join(lines)[:4096]
 
 
+def verify_init_data(raw: str, bot_token: str, max_age: int = 86400) -> dict[str, Any]:
+    """Validate Telegram Mini App initData and return the trusted user."""
+    pairs = dict(parse_qsl(raw, keep_blank_values=True))
+    received = pairs.pop("hash", "")
+    if not received:
+        raise ValueError("missing init data hash")
+    check = "\n".join(f"{key}={pairs[key]}" for key in sorted(pairs))
+    secret = hmac.new(b"WebAppData", bot_token.encode(), hashlib.sha256).digest()
+    expected = hmac.new(secret, check.encode(), hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(expected, received):
+        raise ValueError("invalid init data signature")
+    try:
+        auth_date = int(pairs.get("auth_date", "0"))
+    except ValueError as exc:
+        raise ValueError("invalid init data timestamp") from exc
+    if auth_date <= 0 or time.time() - auth_date > max_age:
+        raise ValueError("expired init data")
+    try:
+        user = json.loads(pairs.get("user", "{}"))
+    except json.JSONDecodeError as exc:
+        raise ValueError("invalid init data user") from exc
+    if not isinstance(user, dict) or not isinstance(user.get("id"), int):
+        raise ValueError("invalid init data user")
+    return user
+
+
+class MiniAppServer:
+    """Local Mini App/API gateway, normally published through an HTTPS proxy."""
+
+    def __init__(self, bind: str, port: int, token: str, store: Store, panels: PanelManager, manager: ServerManager) -> None:
+        root = Path(__file__).resolve().parents[1] / "web"
+        self.store, self.panels, self.manager, self.token = store, panels, manager, token
+        store_ref, panels_ref, manager_ref, token_ref = store, panels, manager, token
+
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, fmt: str, *args: Any) -> None:
+                return
+
+            def reply(self, payload: dict[str, Any], status: int = 200) -> None:
+                data = json.dumps(payload, ensure_ascii=False).encode()
+                self.send_response(status)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.send_header("Content-Length", str(len(data)))
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                self.wfile.write(data)
+
+            def user(self) -> dict[str, Any]:
+                return verify_init_data(self.headers.get("X-Telegram-Init-Data", ""), token_ref)
+
+            def do_GET(self) -> None:
+                if self.path in {"/", "/mini-app", "/mini-app/"}:
+                    data = (root / "index.html").read_bytes()
+                    self.send_response(200); self.send_header("Content-Type", "text/html; charset=utf-8"); self.send_header("Content-Length", str(len(data))); self.end_headers(); self.wfile.write(data); return
+                if self.path in {"/mini-app/app.js", "/app.js"}:
+                    data = (root / "app.js").read_bytes()
+                    self.send_response(200); self.send_header("Content-Type", "text/javascript; charset=utf-8"); self.send_header("Content-Length", str(len(data))); self.end_headers(); self.wfile.write(data); return
+                if self.path in {"/mini-app/style.css", "/style.css"}:
+                    data = (root / "style.css").read_bytes()
+                    self.send_response(200); self.send_header("Content-Type", "text/css; charset=utf-8"); self.send_header("Content-Length", str(len(data))); self.end_headers(); self.wfile.write(data); return
+                if self.path != "/api/session":
+                    self.reply({"error": "not_found"}, 404); return
+                try:
+                    user = self.user(); row = store_ref.get(int(user["id"])); is_admin = int(user["id"]) == int(os.environ.get("ADMIN_CHAT_ID", "0"))
+                    tokens = {"finland": row["finland_token"] if row and not is_admin else None, "germany": row["germany_token"] if row and not is_admin else None}
+                    if is_admin:
+                        tokens = {"finland": None, "germany": None}
+                    def fetch(key: str) -> dict[str, Any]:
+                        payload = panels_ref.request(key, "snapshot", tokens[key])
+                        return payload or {"panel": key, "error": "panel_unavailable"}
+                    with ThreadPoolExecutor(max_workers=2) as pool:
+                        snapshots = {key: pool.submit(fetch, key) for key in ("finland", "germany")}
+                    self.reply({"user": {"id": user["id"], "username": user.get("username", "")}, "role": "super" if is_admin else "user", "panels": {key: future.result() for key, future in snapshots.items()}})
+                except (ValueError, RuntimeError, OSError) as exc:
+                    self.reply({"error": "unauthorized" if isinstance(exc, ValueError) else "backend_unavailable"}, 401 if isinstance(exc, ValueError) else 503)
+
+            def do_POST(self) -> None:
+                if self.path != "/api/action":
+                    self.reply({"error": "not_found"}, 404)
+                    return
+                try:
+                    user = self.user()
+                    size = int(self.headers.get("Content-Length", "0"))
+                    if size <= 0 or size > 64_000:
+                        raise ValueError("invalid request size")
+                    request = json.loads(self.rfile.read(size))
+                    if not isinstance(request, dict):
+                        raise ValueError("invalid request")
+                    action = str(request.get("action", "")).strip().lower()
+                    server = str(request.get("server", "")).strip().lower()
+                    if server not in {"finland", "germany"}:
+                        raise ValueError("invalid server")
+                    read_actions = {"status", "snapshot", "health", "info", "readiness", "dns", "resolver", "audit", "tokens", "clients", "logs"}
+                    admin_actions = read_actions | {"restart", "add", "remove", "regenerate"}
+                    admin_id = int(os.environ.get("ADMIN_CHAT_ID", "0"))
+                    is_admin = int(user["id"]) == admin_id
+                    if action not in (admin_actions if is_admin else read_actions):
+                        self.reply({"error": "forbidden"}, 403)
+                        return
+                    row = store_ref.get(int(user["id"]))
+                    token = None if is_admin else (row[f"{server}_token"] if row else "")
+                    if not is_admin and not token:
+                        self.reply({"error": "panel_not_bound", "server": server}, 403)
+                        return
+                    value = str(request.get("name", "")).strip()
+                    payload = panels_ref.request(server, action, token or None, value)
+                    if payload is None:
+                        self.reply({"error": "panel_api_unauthorized", "server": server}, 502)
+                        return
+                    self.reply(payload)
+                except (ValueError, json.JSONDecodeError, KeyError, TypeError) as exc:
+                    self.reply({"error": "unauthorized" if isinstance(exc, ValueError) and "init data" in str(exc) else "bad_request"}, 401 if isinstance(exc, ValueError) and "init data" in str(exc) else 400)
+                except OSError:
+                    self.reply({"error": "backend_unavailable"}, 503)
+
+        self.server = ThreadingHTTPServer((bind, port), Handler)
+        self.server.daemon_threads = True
+        self.thread = threading.Thread(target=self.server.serve_forever, name="mini-app-api", daemon=True)
+
+    def start(self) -> None:
+        self.thread.start()
+
+    def close(self) -> None:
+        self.server.shutdown()
+
+
+class WebhookReceiver:
+    """Small stdlib webhook ingress; a reverse proxy provides public TLS."""
+
+    def __init__(self, bind: str, port: int, secret: str) -> None:
+        updates: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=256)
+        self.updates = updates
+        expected = secret
+
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, fmt: str, *args: Any) -> None:
+                return
+
+            def do_POST(self) -> None:
+                if self.path != "/telegram/webhook" or self.headers.get("X-Telegram-Bot-Api-Secret-Token", "") != expected:
+                    self.send_response(404)
+                    self.end_headers()
+                    return
+                try:
+                    size = min(int(self.headers.get("Content-Length", "0")), 1_000_000)
+                    payload = json.loads(self.rfile.read(size))
+                    if not isinstance(payload, dict):
+                        raise ValueError("invalid update")
+                    updates.put_nowait(payload)
+                except (ValueError, queue.Full, json.JSONDecodeError):
+                    self.send_response(400)
+                    self.end_headers()
+                    return
+                self.send_response(200)
+                self.end_headers()
+
+        self.server = ThreadingHTTPServer((bind, port), Handler)
+        self.server.daemon_threads = True
+        self.thread = threading.Thread(target=self.server.serve_forever, name="telegram-webhook", daemon=True)
+
+    def start(self) -> None:
+        self.thread.start()
+
+    def get(self, timeout: float = 25) -> dict[str, Any] | None:
+        try:
+            return self.updates.get(timeout=timeout)
+        except queue.Empty:
+            return None
+
+    def close(self) -> None:
+        self.server.shutdown()
+
+
 def main() -> None:
     logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"), format="%(asctime)s %(levelname)s %(message)s")
     settings = Settings.from_env()
     store = Store(settings.db_path)
     telegram = Telegram(settings)
+    try:
+        telegram.configure_profile(settings.mini_app_url, settings.admin_chat_id)
+    except (OSError, RuntimeError, ValueError) as exc:
+        LOG.warning("Telegram profile configuration failed error=%s", type(exc).__name__)
     manager = ServerManager()
     tunnels = TunnelManager(manager, enabled=os.getenv("PANEL_TUNNELS_ENABLED", "1").lower() not in {"0", "false", "no"})
     panels = PanelManager(settings.panels_path)
+    mini_app = MiniAppServer(settings.mini_app_bind, settings.mini_app_port, settings.token, store, panels, manager)
+    mini_app.start()
+    LOG.info("Mini App/API gateway listening bind=%s port=%s", settings.mini_app_bind, settings.mini_app_port)
+    webhook = None
+    allowed_updates = ["message", "callback_query"]
+    if settings.webhook_url:
+        if not settings.webhook_secret:
+            raise RuntimeError("WEBHOOK_SECRET is required when WEBHOOK_URL is set")
+        webhook = WebhookReceiver(settings.webhook_bind, settings.webhook_port, settings.webhook_secret)
+        webhook.start()
+        telegram.set_webhook(settings.webhook_url + "/telegram/webhook", settings.webhook_secret, allowed_updates)
+        LOG.info("Telegram webhook enabled url=%s", settings.webhook_url)
     offset = 0
     LOG.info("GaulleBot started")
     while True:
         try:
             tunnels.ensure()
-            updates = telegram.call("getUpdates", offset=offset, timeout=settings.poll_timeout, allowed_updates=json.dumps(["message", "callback_query"]))
+            if webhook is not None:
+                update = webhook.get(settings.poll_timeout)
+                updates = [update] if update else []
+            else:
+                updates = telegram.call("getUpdates", offset=offset, timeout=settings.poll_timeout, allowed_updates=json.dumps(allowed_updates))
             for update in updates:
                 offset = max(offset, int(update["update_id"]) + 1)
                 callback = update.get("callback_query") or {}
@@ -409,6 +650,7 @@ def main() -> None:
                 if chat_id:
                     store.touch(chat_id, str(sender.get("username", "")), str(sender.get("first_name", "")))
                 command = (message.get("text") or callback.get("data") or "").strip()
+                command = {"📊 Статус": "/status", "👥 Клиенты": "/clients", "🩺 Проверка": "/health", "👤 Профиль": "/me"}.get(command, command)
                 if callback:
                     telegram.answer_callback(str(callback.get("id", "")))
                     command = "/" + command
@@ -425,7 +667,7 @@ def main() -> None:
                         return server_result(panels, manager, key, "status", token)
 
                     if name in {"/start", "/help"}:
-                        telegram.send(chat_id, help_text(is_admin), keyboard=menu_keyboard(is_admin) if name == "/start" else None)
+                        telegram.send(chat_id, help_text(is_admin), keyboard=menu_keyboard(is_admin) if name == "/start" else None, reply_keyboard=reply_keyboard() if name == "/start" else None)
                     elif name == "/menu":
                         telegram.send(chat_id, "Выберите действие:", keyboard=menu_keyboard(is_admin))
                     elif name == "/me":

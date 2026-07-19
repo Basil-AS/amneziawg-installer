@@ -85,6 +85,11 @@ trap 'rm -f "$env_tmp"' EXIT
     printf 'DB_PATH=%q\n' "$BOT_ROOT/data/gaullebot.sqlite3"
     printf 'POLL_TIMEOUT=30\n'
     printf 'PANEL_TUNNELS_ENABLED=1\n'
+    printf 'MINI_APP_URL=%q\n' "${MINI_APP_URL:-}"
+    printf 'WEBHOOK_URL=%q\n' "${WEBHOOK_URL:-}"
+    printf 'WEBHOOK_SECRET=%q\n' "${WEBHOOK_SECRET:-}"
+    printf 'WEBHOOK_BIND=127.0.0.1\nWEBHOOK_PORT=8788\n'
+    printf 'MINI_APP_BIND=127.0.0.1\nMINI_APP_PORT=8789\n'
     printf 'PANELS_CONFIG=%q\n' "$PANELS_CONFIG"
     printf 'FINLAND_SSH_HOST=194.180.189.244\nFINLAND_SSH_PORT=22\nFINLAND_SSH_USER=root\nFINLAND_WEB_PORT=8443\n'
     printf 'GERMANY_SSH_HOST=77.90.29.231\nGERMANY_SSH_PORT=22\nGERMANY_SSH_USER=root\nGERMANY_WEB_PORT=443\n'

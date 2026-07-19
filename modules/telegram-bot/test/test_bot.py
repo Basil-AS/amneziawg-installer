@@ -1,9 +1,14 @@
 import os
 import tempfile
 import unittest
+import hashlib
+import hmac
+import json
+import time
+from urllib.parse import urlencode
 from pathlib import Path
 
-from src.bot import PanelManager, ServerManager, Settings, Store, compact_snapshot, help_text, menu_keyboard
+from src.bot import PanelManager, ServerManager, Settings, Store, compact_snapshot, help_text, menu_keyboard, reply_keyboard, verify_init_data
 
 
 class BotTests(unittest.TestCase):
@@ -78,6 +83,23 @@ class BotTests(unittest.TestCase):
         text = help_text(True)
         for command in ("/info", "/readiness", "/dns", "/resolver", "/audit", "/tokens"):
             self.assertIn(command, text)
+
+    def test_reply_keyboard_is_compact(self):
+        keyboard = reply_keyboard()
+        self.assertEqual(sum(len(row) for row in keyboard), 4)
+        self.assertIn("📊 Статус", keyboard[0])
+
+    def test_mini_app_init_data_signature(self):
+        token = "123456:secret"
+        pairs = {"auth_date": str(int(time.time())), "user": json.dumps({"id": 151599744, "username": "basil"}, separators=(",", ":"))}
+        check = "\n".join(f"{key}={pairs[key]}" for key in sorted(pairs))
+        secret = hmac.new(b"WebAppData", token.encode(), hashlib.sha256).digest()
+        pairs["hash"] = hmac.new(secret, check.encode(), hashlib.sha256).hexdigest()
+        user = verify_init_data(urlencode(pairs), token)
+        self.assertEqual(user["id"], 151599744)
+        pairs["hash"] = "0" * 64
+        with self.assertRaises(ValueError):
+            verify_init_data(urlencode(pairs), token)
 
 
 if __name__ == "__main__":
