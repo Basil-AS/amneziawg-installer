@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from src.bot import PanelManager, ServerManager, Settings, Store, compact_snapshot, menu_keyboard
+from src.bot import PanelManager, ServerManager, Settings, Store, compact_snapshot, help_text, menu_keyboard
 
 
 class BotTests(unittest.TestCase):
@@ -73,6 +73,11 @@ class BotTests(unittest.TestCase):
                     os.environ.pop(key, None)
                 else:
                     os.environ[key] = value
+
+    def test_admin_help_lists_panel_diagnostics(self):
+        text = help_text(True)
+        for command in ("/info", "/readiness", "/dns", "/resolver", "/audit", "/tokens"):
+            self.assertIn(command, text)
 
 
 if __name__ == "__main__":

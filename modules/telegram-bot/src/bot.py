@@ -195,7 +195,14 @@ class PanelManager:
                 cached = self._cache.get(cache_key)
                 if cached and time.monotonic() - cached[0] < 5:
                     return dict(cached[1])
-        endpoints = {"status": ("GET", "/api/status"), "snapshot": ("GET", "/api/bot/snapshot"), "health": ("GET", "/api/server-health"), "clients": ("GET", "/api/clients"), "logs": ("GET", "/api/server/logs"), "restart": ("POST", "/api/server/restart")}
+        endpoints = {
+            "status": ("GET", "/api/status"), "snapshot": ("GET", "/api/bot/snapshot"),
+            "health": ("GET", "/api/server-health"), "info": ("GET", "/api/server-info"),
+            "readiness": ("GET", "/api/vpn-readiness"), "dns": ("GET", "/api/dns"),
+            "resolver": ("GET", "/api/resolver"), "audit": ("GET", "/api/clients/audit"),
+            "tokens": ("GET", "/api/tokens"), "clients": ("GET", "/api/clients"),
+            "logs": ("GET", "/api/server/logs"), "restart": ("POST", "/api/server/restart"),
+        }
         body = None
         if action == "add":
             endpoint_info = ("POST", "/api/clients")
@@ -339,14 +346,14 @@ class Telegram:
 def help_text(admin: bool) -> str:
     text = "<b>GaulleBot</b>\n/me — моя привязка\n/servers — состояние серверов\n/menu — быстрые действия\n/help — помощь"
     if admin:
-        text += "\n\n<b>Администратор</b>:\n/status — быстрый сводный статус\n/health — глубокая проверка\n/clients [server] — клиенты\n/logs [server] — последние логи\n/users — привязки\n/bind &lt;tg_id&gt; &lt;fin_token&gt; &lt;ger_token&gt;\n/add &lt;server&gt; &lt;name&gt;\n/remove &lt;server&gt; &lt;name&gt;\n/regenerate &lt;server&gt; &lt;name&gt;\n/restart &lt;finland|germany&gt;"
+        text += "\n\n<b>Администратор</b>:\n/status — быстрый сводный статус\n/health — глубокая проверка\n/info — сведения о сервере\n/readiness — готовность VPN\n/dns — DNS/AdGuard\n/resolver — состояние resolver\n/audit — аудит клиентов\n/tokens — токены панели\n/clients [server] — клиенты\n/logs [server] — последние логи\n/users — привязки\n/bind &lt;tg_id&gt; &lt;fin_token&gt; &lt;ger_token&gt;\n/add &lt;server&gt; &lt;name&gt;\n/remove &lt;server&gt; &lt;name&gt;\n/regenerate &lt;server&gt; &lt;name&gt;\n/restart &lt;finland|germany&gt;"
     return text
 
 
 def menu_keyboard(admin: bool) -> list[list[dict[str, str]]]:
     rows = [[{"text": "📊 Серверы", "callback_data": "servers"}], [{"text": "👤 Моя привязка", "callback_data": "me"}]]
     if admin:
-        rows = [[{"text": "📊 Статус", "callback_data": "status"}, {"text": "🩺 Health", "callback_data": "health"}], [{"text": "👥 Клиенты", "callback_data": "clients"}, {"text": "👤 Пользователи", "callback_data": "users"}]] + rows
+        rows = [[{"text": "📊 Статус", "callback_data": "status"}, {"text": "🩺 Health", "callback_data": "health"}], [{"text": "✅ Readiness", "callback_data": "readiness"}, {"text": "🌐 DNS", "callback_data": "dns"}], [{"text": "👥 Клиенты", "callback_data": "clients"}, {"text": "👤 Пользователи", "callback_data": "users"}]] + rows
     return rows
 
 
@@ -429,6 +436,10 @@ def main() -> None:
                             telegram.send(chat_id, "\n\n".join(snapshot_text(key) for key in ("finland", "germany")))
                         else:
                             telegram.send(chat_id, "\n\n".join(parallel_results(panels, manager, ("finland", "germany"), "health")))
+                    elif name in {"/info", "/readiness", "/dns", "/resolver", "/audit", "/tokens"}:
+                        action = name[1:]
+                        raw = "\n\n".join(parallel_results(panels, manager, ("finland", "germany"), action))
+                        telegram.send(chat_id, html.escape(raw)[:4096])
                     elif name == "/restart" and len(parts) == 2:
                         telegram.send(chat_id, server_result(panels, manager, parts[1].lower(), "restart"))
                     elif name in {"/add", "/remove", "/regenerate"} and len(parts) == 3:
