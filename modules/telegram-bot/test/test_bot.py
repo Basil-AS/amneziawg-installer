@@ -9,7 +9,7 @@ from unittest.mock import patch
 from urllib.parse import urlencode
 from pathlib import Path
 
-from src.bot import PANEL_TOKEN, PanelManager, ServerManager, Settings, Store, admin_keyboard, callback_command, compact_snapshot, help_text, maintenance_keyboard, menu_keyboard, navigation_keyboard, reply_keyboard, result_navigation_keyboard, verify_init_data, client_keyboard, clients_keyboard, format_bytes, format_panel_payload, format_timestamp, parallel_payloads, sparkline, usage_bar
+from src.bot import PANEL_TOKEN, PanelManager, ServerManager, Settings, Store, admin_keyboard, callback_command, compact_snapshot, help_text, maintenance_keyboard, menu_keyboard, navigation_keyboard, panel_client_names, reply_keyboard, result_navigation_keyboard, verify_init_data, client_keyboard, clients_keyboard, format_bytes, format_panel_payload, format_timestamp, parallel_payloads, sparkline, usage_bar
 
 
 class BotTests(unittest.TestCase):
@@ -293,6 +293,11 @@ class BotTests(unittest.TestCase):
 
     def test_timestamp_card_is_human_readable(self):
         self.assertEqual(format_timestamp(0), "1970-01-01 00:00 UTC")
+
+    def test_scoped_token_client_names_are_validated(self):
+        payload = {"clients": [{"name": "phone"}, {"config_name": "laptop"}, {"name": "phone"}]}
+        self.assertEqual(panel_client_names(payload), ["phone", "laptop"])
+        self.assertIsNone(panel_client_names({"error": "unavailable"}))
 
     def test_callback_payloads_are_command_safe(self):
         self.assertEqual(callback_command("nav:status"), "/status")

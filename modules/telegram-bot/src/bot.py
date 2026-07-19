@@ -987,7 +987,12 @@ def handle_navigation(telegram: Telegram, store: Store, panels: PanelManager, ch
         created: dict[str, str] = {}
         failures: list[str] = []
         def create_token(server: str) -> tuple[str, str]:
-            payload = panels.request(server, "create-user-token", PANEL_TOKEN, value=token_name, extra={"clients": []}) or {}
+            clients_payload = panels.request(server, "clients", PANEL_TOKEN) or {}
+            client_names = panel_client_names(clients_payload)
+            if client_names is None:
+                LOG.warning("cannot provision scoped token: client list unavailable panel=%s user=%s", server, requested_id)
+                return server, ""
+            payload = panels.request(server, "create-user-token", PANEL_TOKEN, value=token_name, extra={"clients": client_names}) or {}
             token = str(payload.get("token") or "")
             return server, token
         with ThreadPoolExecutor(max_workers=2) as pool:
@@ -1548,6 +1553,23 @@ def compact_clients(payload: dict[str, Any]) -> str:
         suffix = f" · ports: {html.escape(ports)}" if ports else ""
         lines.append(f"{marker} <code>{html.escape(str(item.get('name', '')))}</code> · {html.escape(str(item.get('ipv4', '')))}{suffix}")
     return "\n".join(lines)[:4096]
+
+
+def panel_client_names(payload: dict[str, Any]) -> list[str] | None:
+    """Return validated client names or None when the panel list failed."""
+    if not isinstance(payload, dict) or payload.get("error"):
+        return None
+    clients = payload.get("clients")
+    if not isinstance(clients, list):
+        return None
+    names: list[str] = []
+    for item in clients:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or item.get("config_name") or item.get("id") or "").strip()
+        if name and name not in names:
+            names.append(name)
+    return names
 
 
 def verify_init_data(raw: str, bot_token: str, max_age: int = 86400) -> dict[str, Any]:
