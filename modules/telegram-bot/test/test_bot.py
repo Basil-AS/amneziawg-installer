@@ -49,6 +49,15 @@ class BotTests(unittest.TestCase):
             self.assertEqual(manager.keys(), ["finland"])
             self.assertNotIn("secret", manager.run("finland", "unsupported") or "")
 
+    def test_missing_user_token_never_falls_back_to_panel_super_token(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "panels.json"
+            path.write_text('{"panels":[{"id":"finland","url":"https://vpn.invalid","token":"super-secret"}]}', encoding="utf-8")
+            manager = PanelManager(path)
+            result = manager.request("finland", "snapshot", None)
+            self.assertEqual(result["error"], "panel token is not assigned")
+            self.assertNotIn("super-secret", str(result))
+
     def test_compact_snapshot_is_small_and_human_readable(self):
         text = compact_snapshot({
             "panel": "Sunny-Finland",
