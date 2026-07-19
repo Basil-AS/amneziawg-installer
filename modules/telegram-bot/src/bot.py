@@ -120,6 +120,15 @@ class Store:
                 updated_at INTEGER NOT NULL
             )"""
         )
+        self.db.execute(
+            """CREATE TABLE IF NOT EXISTS favorites (
+                telegram_id INTEGER NOT NULL,
+                server TEXT NOT NULL,
+                client_name TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                PRIMARY KEY (telegram_id, server, client_name)
+            )"""
+        )
         self.db.commit()
 
     def close(self) -> None:
@@ -214,6 +223,22 @@ class Store:
         with self.lock:
             row = self.db.execute("SELECT server, client_name FROM client_refs WHERE telegram_id=? AND ref=?", (telegram_id, ref)).fetchone()
         return (str(row["server"]), str(row["client_name"])) if row else None
+
+    def set_favorite(self, telegram_id: int, server: str, client_name: str, enabled: bool = True) -> None:
+        with self.lock:
+            if enabled:
+                self.db.execute("INSERT OR IGNORE INTO favorites VALUES (?, ?, ?, ?)", (telegram_id, server, client_name, int(time.time())))
+            else:
+                self.db.execute("DELETE FROM favorites WHERE telegram_id=? AND server=? AND client_name=?", (telegram_id, server, client_name))
+            self.db.commit()
+
+    def is_favorite(self, telegram_id: int, server: str, client_name: str) -> bool:
+        with self.lock:
+            return self.db.execute("SELECT 1 FROM favorites WHERE telegram_id=? AND server=? AND client_name=?", (telegram_id, server, client_name)).fetchone() is not None
+
+    def favorites(self, telegram_id: int) -> list[sqlite3.Row]:
+        with self.lock:
+            return list(self.db.execute("SELECT server, client_name FROM favorites WHERE telegram_id=? ORDER BY created_at DESC", (telegram_id,)))
 
 
 @dataclass(frozen=True)
@@ -621,7 +646,8 @@ def help_text(admin: bool) -> str:
 def menu_keyboard(admin: bool) -> list[list[dict[str, str]]]:
     rows = [
         [{"text": "📡 Серверы", "callback_data": "menu:servers"}, {"text": "👥 Мои устройства", "callback_data": "user:clients"}],
-        [{"text": "📈 Статистика", "callback_data": "user:traffic"}, {"text": "👤 Профиль", "callback_data": "menu:profile"}],
+        [{"text": "📈 Статистика", "callback_data": "user:traffic"}, {"text": "⭐ Избранное", "callback_data": "user:favorites"}],
+        [{"text": "👤 Профиль", "callback_data": "menu:profile"}],
         [{"text": "➕ Добавить устройство", "callback_data": "user:add"}],
         [{"text": "🔐 Запросить доступ", "callback_data": "user:request"}],
     ]
@@ -669,18 +695,19 @@ def navigation_keyboard(action: str, admin: bool) -> list[list[dict[str, str]]]:
     if action == "servers":
         return [[{"text": "🇫🇮 Финляндия", "callback_data": "server:status:finland"}, {"text": "🇩🇪 Германия", "callback_data": "server:status:germany"}], [{"text": "📊 Оба сервера", "callback_data": "server:status:all"}], [{"text": "⬅️ Главное меню", "callback_data": "menu:home"}]]
     if action == "profile":
-        return [[{"text": "📡 Состояние серверов", "callback_data": "server:status:all"}], [{"text": "👥 Мои устройства", "callback_data": "user:clients"}], [{"text": "⬅️ Главное меню", "callback_data": "menu:home"}]]
+        return [[{"text": "📡 Состояние серверов", "callback_data": "server:status:all"}], [{"text": "👥 Мои устройства", "callback_data": "user:clients"}, {"text": "⭐ Избранное", "callback_data": "user:favorites"}], [{"text": "⬅️ Главное меню", "callback_data": "menu:home"}]]
     if action == "admin":
         return admin_keyboard()
     return [[{"text": "⬅️ Серверы", "callback_data": "menu:servers"}, {"text": "🏠 Меню", "callback_data": "menu:home"}]]
 
 
-def client_keyboard(server: str, name: str, ref: str, *, admin: bool, back: str = "user:clients") -> list[list[dict[str, str]]]:
+def client_keyboard(server: str, name: str, ref: str, *, admin: bool, favorite: bool = False, back: str = "user:clients") -> list[list[dict[str, str]]]:
     page = back.rsplit(":", 1)[-1] if back.startswith("user:clients:") else "1"
-    suffix = f":{page}"
+    suffix = f":{page}{':favorites' if back == 'user:favorites' else ''}"
     rows = [
         [{"text": "📷 QR-код", "callback_data": f"client:artifact:{ref}:qr{suffix}"}, {"text": "📄 Конфиг", "callback_data": f"client:artifact:{ref}:config{suffix}"}],
         [{"text": "🔗 VPN URI", "callback_data": f"client:artifact:{ref}:uri{suffix}"}, {"text": "📈 Статистика", "callback_data": f"client:stats:{ref}{suffix}"}],
+        [{"text": "💔 Убрать из избранного" if favorite else "⭐ В избранное", "callback_data": f"client:favorite-{'remove' if favorite else 'add'}:{ref}{suffix}"}],
         [{"text": "♻️ Перегенерировать конфиг", "callback_data": f"client:regenerate:{ref}{suffix}"}],
         [{"text": "🔗 Одноразовая ссылка импорта", "callback_data": f"client:access-link:{ref}{suffix}"}],
         [{"text": "⏻ VPN", "callback_data": f"client:toggle:{ref}{suffix}"}, {"text": "🔌 P2P", "callback_data": f"client:p2p-toggle:{ref}{suffix}"}, {"text": "🔗 Порты", "callback_data": f"client:ports-toggle:{ref}{suffix}"}],
@@ -691,19 +718,19 @@ def client_keyboard(server: str, name: str, ref: str, *, admin: bool, back: str 
     return rows
 
 
-def clients_keyboard(rows: list[tuple[str, str, str]], *, page: int = 1, pages: int = 1) -> list[list[dict[str, str]]]:
+def clients_keyboard(rows: list[tuple[str, str, str]], *, page: int = 1, pages: int = 1, source: str = "clients") -> list[list[dict[str, str]]]:
     keyboard: list[list[dict[str, str]]] = []
     for server, name, ref in rows:
-        keyboard.append([{"text": f"{('🇫🇮' if server == 'finland' else '🇩🇪')} {name}", "callback_data": f"client:open:{ref}:{page}"}])
+        keyboard.append([{"text": f"{('🇫🇮' if server == 'finland' else '🇩🇪')} {name}", "callback_data": f"client:open:{ref}:{page}:{source}"}])
     if pages > 1:
         pager: list[dict[str, str]] = []
         if page > 1:
-            pager.append({"text": "◀️", "callback_data": f"user:clients:{page - 1}"})
-        pager.append({"text": f"{page}/{pages}", "callback_data": f"user:clients:{page}"})
+            pager.append({"text": "◀️", "callback_data": f"user:{'favorites' if source == 'favorites' else 'clients'}:{page - 1}"})
+        pager.append({"text": f"{page}/{pages}", "callback_data": f"user:{'favorites' if source == 'favorites' else 'clients'}:{page}"})
         if page < pages:
-            pager.append({"text": "▶️", "callback_data": f"user:clients:{page + 1}"})
+            pager.append({"text": "▶️", "callback_data": f"user:{'favorites' if source == 'favorites' else 'clients'}:{page + 1}"})
         keyboard.append(pager)
-    keyboard.extend([[{"text": "📈 Статистика", "callback_data": "user:traffic"}], [{"text": "🏠 Меню", "callback_data": "menu:home"}]])
+    keyboard.extend([[{"text": "📈 Статистика", "callback_data": "user:traffic"}, {"text": "⭐ Избранное", "callback_data": "user:favorites"}], [{"text": "🏠 Меню", "callback_data": "menu:home"}]])
     return keyboard
 
 
@@ -927,7 +954,7 @@ def handle_navigation(telegram: Telegram, store: Store, panels: PanelManager, ch
         store.set_prompt(principal_id, "add_client", server)
         telegram.send(chat_id, f"<b>➕ Новое устройство · {html.escape(server)}</b>\nВведите имя профиля (латиница, цифры, <code>-</code> или <code>_</code>, до 48 символов).", force_reply=True)
         return True
-    if kind == "user" and action in {"clients", "traffic"}:
+    if kind == "user" and action in {"clients", "favorites", "traffic"}:
         if not is_admin and (not row or not (tokens["finland"] or tokens["germany"])):
             render_navigation(telegram, store, chat_id, "<b>Доступ ещё не выдан</b>\nОбратитесь к администратору для привязки токена.", menu_keyboard(False), "home", callback_message_id=callback_message_id)
             return True
@@ -948,6 +975,21 @@ def handle_navigation(telegram: Telegram, store: Store, panels: PanelManager, ch
             blocks = [f"<b>{html.escape(str(payload.get('panel', key)))}</b>\n<code>{usage_bar(float(rx or 0) + float(tx or 0), peak)}</code>\n↓ {html.escape(format_bytes(rx))}  ·  ↑ {html.escape(format_bytes(tx))}" for (payload, rx, tx), key in zip(rows, ("finland", "germany"))]
             render_navigation(telegram, store, chat_id, "<b>📈 Статистика трафика</b>\nШкала: относительный объём между серверами.\n\n" + "\n\n".join(blocks), [[{"text": "👥 Устройства", "callback_data": "user:clients"}, {"text": "🏠 Меню", "callback_data": "menu:home"}]], "user:traffic", callback_message_id=callback_message_id)
             return True
+        if action == "favorites":
+            favorite_rows = store.favorites(principal_id)
+            available = [(str(item["server"]), str(item["client_name"]), store.client_ref(principal_id, str(item["server"]), str(item["client_name"]))) for item in favorite_rows if str(item["server"]) in {"finland", "germany"} and str(item["client_name"]).strip()]
+            try:
+                page = max(1, int(parts[2])) if len(parts) > 2 else 1
+            except (TypeError, ValueError):
+                page = 1
+            page_size = 12
+            pages = max(1, (len(available) + page_size - 1) // page_size)
+            page = min(page, pages)
+            start = (page - 1) * page_size
+            visible = available[start:start + page_size]
+            text = (f"<b>⭐ Избранное</b>\nСтраница <b>{page}/{pages}</b> · всего: <b>{len(available)}</b>" if available else "<b>⭐ Избранное</b>\nДобавляйте устройства кнопкой «В избранное», чтобы быстро находить их здесь.")
+            render_navigation(telegram, store, chat_id, text, clients_keyboard(visible, page=page, pages=pages, source="favorites"), f"user:favorites:{page}", callback_message_id=callback_message_id)
+            return True
         available: list[tuple[str, str, str]] = []
         for key in ("finland", "germany"):
             payload = panels.request(key, "clients", PANEL_TOKEN if is_admin else tokens[key]) or {}
@@ -967,7 +1009,7 @@ def handle_navigation(telegram: Telegram, store: Store, panels: PanelManager, ch
         text = (f"<b>👥 Мои устройства</b>\nВыберите устройство для QR, конфига, URI или статистики.\nСтраница <b>{page}/{pages}</b> · всего: <b>{len(available)}</b>" if available else "<b>👥 Мои устройства</b>\nПока нет доступных конфигураций.")
         render_navigation(telegram, store, chat_id, text, clients_keyboard(visible, page=page, pages=pages), f"user:clients:{page}", callback_message_id=callback_message_id)
         return True
-    if kind == "client" and action in {"open", "artifact", "stats", "regenerate", "regenerate-confirm", "access-link", "toggle", "p2p-toggle", "ports-toggle", "p2p-port", "remove", "remove-confirm"}:
+    if kind == "client" and action in {"open", "artifact", "stats", "regenerate", "regenerate-confirm", "access-link", "toggle", "p2p-toggle", "ports-toggle", "p2p-port", "favorite-add", "favorite-remove", "remove", "remove-confirm"}:
         if len(parts) < 3:
             return True
         ref = parts[2]
@@ -980,10 +1022,18 @@ def handle_navigation(telegram: Telegram, store: Store, panels: PanelManager, ch
             source_page = max(1, int(parts[4] if action == "artifact" and len(parts) > 4 else parts[3])) if len(parts) > 3 else 1
         except (TypeError, ValueError):
             source_page = 1
+        source = parts[4] if action not in {"artifact"} and len(parts) > 4 else (parts[5] if action == "artifact" and len(parts) > 5 else "clients")
+        back_screen = "user:favorites" if source == "favorites" else f"user:clients:{source_page}"
         if server not in {"finland", "germany"} or not name or not is_admin and not tokens.get(server):
             render_navigation(telegram, store, chat_id, "Недостаточно прав или неверная конфигурация.", menu_keyboard(is_admin), "home", callback_message_id=callback_message_id)
             return True
         token = PANEL_TOKEN if is_admin else tokens[server]
+        if action in {"favorite-add", "favorite-remove"}:
+            enabled = action == "favorite-add"
+            store.set_favorite(principal_id, server, name, enabled)
+            label = "добавлено в избранное" if enabled else "удалено из избранного"
+            render_navigation(telegram, store, chat_id, f"<b>⭐ Избранное</b>\nУстройство <code>{html.escape(name)}</code> {label}.", client_keyboard(server, name, ref, admin=is_admin, favorite=enabled, back=back_screen), f"client:{action}:{ref}", callback_message_id=callback_message_id)
+            return True
         if action == "regenerate":
             render_navigation(telegram, store, chat_id, f"<b>Перегенерировать конфиг {html.escape(name)}?</b>\nСтарый конфиг перестанет работать до повторного скачивания.", [[{"text": "✅ Подтвердить", "callback_data": f"client:regenerate-confirm:{ref}:{source_page}"}], [{"text": "Отмена", "callback_data": f"client:open:{ref}:{source_page}"}]], f"client:regenerate:{ref}", callback_message_id=callback_message_id)
             return True
@@ -1020,7 +1070,7 @@ def handle_navigation(telegram: Telegram, store: Store, panels: PanelManager, ch
             kind_name = parts[3].lower() if len(parts) > 3 else "config"
             artifact = panels.artifact(server, name, kind_name, token)
             if artifact is None:
-                telegram.send(chat_id, "Не удалось получить файл. Проверьте доступность панели и права токена.", keyboard=client_keyboard(server, name, ref, admin=is_admin))
+                telegram.send(chat_id, "Не удалось получить файл. Проверьте доступность панели и права токена.", keyboard=client_keyboard(server, name, ref, admin=is_admin, favorite=store.is_favorite(principal_id, server, name), back=back_screen))
             else:
                 try:
                     if kind_name == "qr":
@@ -1045,7 +1095,7 @@ def handle_navigation(telegram: Telegram, store: Store, panels: PanelManager, ch
             text = (f"<b>🛡 {html.escape(name)}</b>\n{marker}\nСервер: <code>{html.escape(server)}</code>\n"
                     f"IPv4: <code>{html.escape(str(client.get('ipv4', '—')))}</code>\n"
                     f"Последний handshake: <code>{html.escape(str(client.get('latestHandshakeAt', client.get('last_handshake', '—'))))}</code>")
-        render_navigation(telegram, store, chat_id, text, client_keyboard(server, name, ref, admin=is_admin, back=f"user:clients:{source_page}"), f"client:{action}:{ref}", callback_message_id=callback_message_id)
+        render_navigation(telegram, store, chat_id, text, client_keyboard(server, name, ref, admin=is_admin, favorite=store.is_favorite(principal_id, server, name), back=back_screen), f"client:{action}:{ref}", callback_message_id=callback_message_id)
         return True
     if kind == "server" and action in {"status", "health", "readiness", "dns", "info", "resolver", "audit", "tokens", "clients", "logs", "health-history", "latency", "provider-traffic", "geoip-status", "geoip-providers", "geoip-databases", "nettest-reports", "web-policy", "web-cert"}:
         access_row = store.get(principal_id)
@@ -1072,7 +1122,7 @@ def handle_navigation(telegram: Telegram, store: Store, panels: PanelManager, ch
 
 
 def reply_keyboard() -> list[list[str]]:
-    return [["🏠 Меню", "📡 Серверы"], ["📊 Статус", "👤 Профиль"], ["⚙️ Админка"]]
+    return [["🏠 Меню", "📡 Серверы"], ["📊 Статус", "⭐ Избранное"], ["👤 Профиль", "⚙️ Админка"]]
 
 
 def compact_snapshot(payload: dict[str, Any]) -> str:
@@ -1574,7 +1624,7 @@ def main() -> None:
                 if actor_id:
                     store.touch(actor_id, str(sender.get("username", "")), str(sender.get("first_name", "")))
                 command = (message.get("text") or callback.get("data") or "").strip()
-                reply_action = {"🏠 Меню": "menu:home", "📡 Серверы": "menu:servers", "📊 Статус": "server:status:all", "👥 Мои устройства": "user:clients", "📈 Статистика": "user:traffic", "👤 Профиль": "menu:profile", "⚙️ Админка": "menu:admin"}.get(command)
+                reply_action = {"🏠 Меню": "menu:home", "📡 Серверы": "menu:servers", "📊 Статус": "server:status:all", "👥 Мои устройства": "user:clients", "📈 Статистика": "user:traffic", "⭐ Избранное": "user:favorites", "👤 Профиль": "menu:profile", "⚙️ Админка": "menu:admin"}.get(command)
                 command = reply_action or command
                 if callback:
                     callback_id = str(callback.get("id", ""))
