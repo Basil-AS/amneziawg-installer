@@ -62,6 +62,88 @@ def load_project_version():
 
 
 PROJECT_VERSION = load_project_version()
+
+
+def project_update_status():
+    """Return a non-secret, UI-safe status for the isolated updater unit."""
+    installed = load_project_version()
+    status = "unavailable"
+    active = "inactive"
+    result = "success"
+    if PROJECT_UPDATE_SCRIPT.is_file() and os.access(PROJECT_UPDATE_SCRIPT, os.X_OK):
+        try:
+            probe = subprocess.run(
+                ["systemctl", "is-active", PROJECT_UPDATE_UNIT],
+                text=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                timeout=3, check=False,
+            )
+            active = probe.stdout.strip() or "inactive"
+            status = "running" if active in {"active", "activating"} else ("failed" if active == "failed" else "ready")
+            details = subprocess.run(
+                ["systemctl", "show", PROJECT_UPDATE_UNIT, "--property=Result", "--value"],
+                text=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                timeout=3, check=False,
+            ).stdout.strip()
+            result = details or "success"
+        except (OSError, subprocess.TimeoutExpired):
+            status = "unavailable"
+    target = ""
+    output = ""
+    try:
+        journal = subprocess.run(
+            ["journalctl", "-u", PROJECT_UPDATE_UNIT, "-n", "80", "--no-pager", "-o", "cat"],
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            timeout=5, check=False,
+        ).stdout
+        output = journal[-6000:]
+        match = re.findall(r"Installed:\s*([^;\n]+);\s*target:\s*([^\n]+)", journal)
+        if match:
+            installed, target = match[-1][0].strip(), match[-1][1].strip()
+    except (OSError, subprocess.TimeoutExpired):
+        output = ""
+    available = bool(target and installed != target)
+    return {
+        "ok": status != "unavailable",
+        "status": status,
+        "active_state": active,
+        "result": result,
+        "installed": installed,
+        "target": target,
+        "available": available,
+        "unit": PROJECT_UPDATE_UNIT,
+        "last_output": output,
+    }
+
+
+def start_project_update(mode):
+    """Start check/update outside awg-web.service so a panel restart cannot kill it."""
+    global PROJECT_UPDATE_LAST_START
+    if mode not in {"check", "apply"}:
+        raise ValueError("invalid update mode")
+    if not PROJECT_UPDATE_SCRIPT.is_file() or not os.access(PROJECT_UPDATE_SCRIPT, os.X_OK):
+        raise RuntimeError("update script is not installed")
+    with PROJECT_UPDATE_LOCK:
+        now = time.time()
+        if now - PROJECT_UPDATE_LAST_START < 5:
+            raise RuntimeError("update request throttled")
+        probe = subprocess.run(
+            ["systemctl", "is-active", "--quiet", PROJECT_UPDATE_UNIT],
+            timeout=3, check=False,
+        )
+        if probe.returncode == 0:
+            raise RuntimeError("another update operation is already running")
+        args = ["systemd-run", "--quiet", "--collect", f"--unit={PROJECT_UPDATE_UNIT}",
+                "--property=Type=oneshot", "--property=TimeoutStartSec=1800",
+                str(PROJECT_UPDATE_SCRIPT)]
+        if mode == "check":
+            args.append("--check")
+        result = subprocess.run(args, text=True, stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE, timeout=15, check=False)
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout).strip()[-500:]
+            raise RuntimeError(f"cannot start update operation{(': ' + detail) if detail else ''}")
+        PROJECT_UPDATE_LAST_START = now
+    return {"ok": True, "started": True, "mode": mode, "unit": PROJECT_UPDATE_UNIT}
 STATIC_FILES = {
     "/": ("index.html", "text/html; charset=utf-8"),
     "/index.html": ("index.html", "text/html; charset=utf-8"),
@@ -95,6 +177,10 @@ STATS_CACHE_INFLIGHT = False
 STATS_CACHE_TTL = 3.0
 STATS_CACHE_WAIT_TIMEOUT = 2.0
 SERVER_PROCESS_STARTED_AT = time.time()
+PROJECT_UPDATE_UNIT = "awg-project-update-manual.service"
+PROJECT_UPDATE_SCRIPT = AWG_DIR / "update-installed.sh"
+PROJECT_UPDATE_LOCK = threading.Lock()
+PROJECT_UPDATE_LAST_START = 0.0
 SERVER_HEALTH_CACHE_TTL = 5.0
 SERVER_HEALTH_LOCK = threading.Lock()
 SERVER_HEALTH_CACHE = None
@@ -6847,6 +6933,11 @@ class Handler(SimpleHTTPRequestHandler):
                 "repository_url": REPOSITORY_URL,
             })
             return
+        if u.path == "/api/project-update":
+            if not self.require_super(auth):
+                return
+            self.send_json(project_update_status())
+            return
         if u.path == "/api/bot/snapshot":
             self.send_json(bot_snapshot_payload(auth))
             return
@@ -7127,6 +7218,26 @@ class Handler(SimpleHTTPRequestHandler):
         if auth is None:
             return
         try:
+            if u.path == "/api/project-update/check":
+                if not self.require_super(auth):
+                    return
+                try:
+                    self.send_json(start_project_update("check"), HTTPStatus.ACCEPTED)
+                except RuntimeError as exc:
+                    self.send_json({"error": str(exc)}, HTTPStatus.CONFLICT)
+                return
+            if u.path == "/api/project-update/apply":
+                if not self.require_super(auth):
+                    return
+                body = json_body_from_handler(self, 1024)
+                if body.get("confirm") != "UPDATE PROJECT":
+                    self.send_json({"error": "confirmation required"}, HTTPStatus.BAD_REQUEST)
+                    return
+                try:
+                    self.send_json(start_project_update("apply"), HTTPStatus.ACCEPTED)
+                except RuntimeError as exc:
+                    self.send_json({"error": str(exc)}, HTTPStatus.CONFLICT)
+                return
             if u.path == "/api/clients/path-check":
                 if not self.require_super(auth):
                     return

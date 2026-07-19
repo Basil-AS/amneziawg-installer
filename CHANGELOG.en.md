@@ -14,6 +14,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Improved
 
+- Added a super-admin Project Updates panel with an isolated systemd updater unit, concurrent-run locking, SHA-256 release verification, rollback snapshots, and post-update health checks.
 - Added compact `/api/bot/snapshot` endpoint for low-latency control-plane reads.
 - Telegram bot now queries panels concurrently, caches snapshots for five seconds, and provides inline actions and compact client views.
 - Web-panel static JS/CSS assets now use gzip negotiation when supported by the client.
