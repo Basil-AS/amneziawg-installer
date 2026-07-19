@@ -84,6 +84,14 @@ class Store:
                 updated_at INTEGER NOT NULL
             )"""
         )
+        self.db.execute(
+            """CREATE TABLE IF NOT EXISTS navigation (
+                telegram_id INTEGER PRIMARY KEY,
+                message_id INTEGER NOT NULL,
+                screen TEXT NOT NULL,
+                updated_at INTEGER NOT NULL
+            )"""
+        )
         self.db.commit()
 
     def close(self) -> None:
@@ -111,6 +119,22 @@ class Store:
 
     def all(self) -> list[sqlite3.Row]:
         return list(self.db.execute("SELECT * FROM users ORDER BY telegram_id"))
+
+    def navigation(self, telegram_id: int) -> sqlite3.Row | None:
+        return self.db.execute("SELECT * FROM navigation WHERE telegram_id=?", (telegram_id,)).fetchone()
+
+    def set_navigation(self, telegram_id: int, message_id: int, screen: str) -> None:
+        self.db.execute(
+            """INSERT INTO navigation VALUES (?, ?, ?, ?)
+               ON CONFLICT(telegram_id) DO UPDATE SET message_id=excluded.message_id,
+               screen=excluded.screen, updated_at=excluded.updated_at""",
+            (telegram_id, message_id, screen, int(time.time())),
+        )
+        self.db.commit()
+
+    def clear_navigation(self, telegram_id: int) -> None:
+        self.db.execute("DELETE FROM navigation WHERE telegram_id=?", (telegram_id,))
+        self.db.commit()
 
 
 @dataclass(frozen=True)
@@ -349,21 +373,47 @@ class Telegram:
             raise RuntimeError(f"Telegram {method} failed: {payload}")
         return payload["result"]
 
-    def send(self, chat_id: int, text: str, *, keyboard: list[list[dict[str, str]]] | None = None, reply_keyboard: list[list[str]] | None = None) -> None:
+    def send(self, chat_id: int, text: str, *, keyboard: list[list[dict[str, str]]] | None = None, reply_keyboard: list[list[str]] | None = None) -> dict[str, Any]:
         params: dict[str, Any] = {"chat_id": chat_id, "text": text[:4096], "parse_mode": "HTML"}
         if keyboard:
             params["reply_markup"] = json.dumps({"inline_keyboard": keyboard}, ensure_ascii=False)
         elif reply_keyboard:
             params["reply_markup"] = json.dumps({"keyboard": [[{"text": item} for item in row] for row in reply_keyboard], "is_persistent": True, "resize_keyboard": True}, ensure_ascii=False)
         try:
-            self.call("sendMessage", **params)
+            return self.call("sendMessage", **params)
         except RuntimeError as exc:
             # Logs and command output can contain arbitrary characters. Fall
             # back to plain text if Telegram rejects malformed HTML markup.
             if "parse entities" not in str(exc).lower() and "can't parse" not in str(exc).lower():
                 raise
             params.pop("parse_mode", None)
-            self.call("sendMessage", **params)
+            return self.call("sendMessage", **params)
+
+    def edit_message(self, chat_id: int, message_id: int, text: str, *, keyboard: list[list[dict[str, str]]] | None = None) -> dict[str, Any]:
+        params: dict[str, Any] = {
+            "chat_id": chat_id,
+            "message_id": message_id,
+            "text": text[:4096],
+            "parse_mode": "HTML",
+            "reply_markup": json.dumps({"inline_keyboard": keyboard or []}, ensure_ascii=False),
+        }
+        try:
+            return self.call("editMessageText", **params)
+        except RuntimeError as exc:
+            message = str(exc).lower()
+            if "message is not modified" in message:
+                return {"message_id": message_id}
+            if "parse entities" not in message and "can't parse" not in message:
+                raise
+            params.pop("parse_mode", None)
+            return self.call("editMessageText", **params)
+
+    def delete_message(self, chat_id: int, message_id: int) -> None:
+        try:
+            self.call("deleteMessage", chat_id=chat_id, message_id=message_id)
+        except RuntimeError as exc:
+            if "message to delete not found" not in str(exc).lower():
+                raise
 
     def set_commands(self, commands: list[dict[str, str]], *, chat_id: int | None = None) -> None:
         scope = {"type": "chat", "chat_id": chat_id} if chat_id is not None else {"type": "default"}
@@ -401,18 +451,18 @@ def help_text(admin: bool) -> str:
 
 
 def menu_keyboard(admin: bool) -> list[list[dict[str, str]]]:
-    rows = [[{"text": "📊 Серверы", "callback_data": "nav:servers"}], [{"text": "👤 Моя привязка", "callback_data": "nav:me"}]]
+    rows = [[{"text": "📡 Серверы", "callback_data": "menu:servers"}], [{"text": "👤 Профиль", "callback_data": "menu:profile"}]]
     if admin:
-        rows = [[{"text": "📊 Статус", "callback_data": "nav:status"}, {"text": "🩺 Проверка", "callback_data": "nav:health"}], [{"text": "✅ Готовность", "callback_data": "nav:readiness"}, {"text": "🌐 DNS", "callback_data": "nav:dns"}], [{"text": "👥 Клиенты", "callback_data": "nav:clients"}, {"text": "👤 Пользователи", "callback_data": "nav:users"}], [{"text": "⚙️ Ещё", "callback_data": "nav:admin"}]] + rows
+        rows = [[{"text": "📊 Статус", "callback_data": "server:status:all"}, {"text": "🩺 Проверка", "callback_data": "server:health:all"}], [{"text": "✅ Готовность", "callback_data": "server:readiness:all"}, {"text": "🌐 DNS", "callback_data": "server:dns:all"}], [{"text": "👥 Клиенты", "callback_data": "server:clients:all"}, {"text": "👤 Пользователи", "callback_data": "admin:users:0"}], [{"text": "⚙️ Ещё", "callback_data": "menu:admin"}]] + rows
     return rows
 
 
 def admin_keyboard() -> list[list[dict[str, str]]]:
     return [
-        [{"text": "ℹ️ Информация", "callback_data": "nav:info"}, {"text": "🧪 Диагностика", "callback_data": "nav:audit"}],
-        [{"text": "🧭 Resolver", "callback_data": "nav:resolver"}, {"text": "🔑 Токены", "callback_data": "nav:tokens"}],
-        [{"text": "📜 Логи Финляндии", "callback_data": "nav:logs finland"}, {"text": "📜 Логи Германии", "callback_data": "nav:logs germany"}],
-        [{"text": "⬅️ Главное меню", "callback_data": "nav:menu"}],
+        [{"text": "ℹ️ Информация", "callback_data": "server:info:all"}, {"text": "🧪 Аудит", "callback_data": "server:audit:all"}],
+        [{"text": "🧭 Resolver", "callback_data": "server:resolver:all"}, {"text": "🔑 Токены", "callback_data": "server:tokens:all"}],
+        [{"text": "📜 Логи Финляндии", "callback_data": "server:logs:finland"}, {"text": "📜 Логи Германии", "callback_data": "server:logs:germany"}],
+        [{"text": "⬅️ Главное меню", "callback_data": "menu:home"}],
     ]
 
 
@@ -424,8 +474,93 @@ def callback_command(data: str) -> str:
     return f"/{value}" if value and not value.startswith("/") else value
 
 
+def navigation_keyboard(action: str, admin: bool) -> list[list[dict[str, str]]]:
+    if action == "servers":
+        return [[{"text": "🇫🇮 Финляндия", "callback_data": "server:status:finland"}, {"text": "🇩🇪 Германия", "callback_data": "server:status:germany"}], [{"text": "📊 Оба сервера", "callback_data": "server:status:all"}], [{"text": "⬅️ Главное меню", "callback_data": "menu:home"}]]
+    if action == "profile":
+        return [[{"text": "📡 Состояние серверов", "callback_data": "server:status:all"}], [{"text": "⬅️ Главное меню", "callback_data": "menu:home"}]]
+    if action == "admin":
+        return admin_keyboard()
+    return [[{"text": "⬅️ Серверы", "callback_data": "menu:servers"}, {"text": "🏠 Меню", "callback_data": "menu:home"}]]
+
+
+def render_navigation(telegram: Telegram, store: Store, chat_id: int, text: str, keyboard: list[list[dict[str, str]]], screen: str, *, callback_message_id: int | None = None, reply: bool = True) -> None:
+    """Keep one editable navigation message per chat; never touch media messages."""
+    previous = store.navigation(chat_id)
+    previous_id = int(previous["message_id"]) if previous else None
+    target_id = callback_message_id if callback_message_id and callback_message_id == previous_id else None
+    if target_id:
+        try:
+            telegram.edit_message(chat_id, target_id, text, keyboard=keyboard)
+            store.set_navigation(chat_id, target_id, screen)
+            return
+        except (OSError, RuntimeError, ValueError) as exc:
+            LOG.info("navigation edit failed chat=%s screen=%s error=%s", chat_id, screen, type(exc).__name__)
+    if previous_id and previous_id != callback_message_id:
+        try:
+            telegram.delete_message(chat_id, previous_id)
+        except (OSError, RuntimeError, ValueError):
+            pass
+    result = telegram.send(chat_id, text, keyboard=keyboard, reply_keyboard=reply_keyboard() if reply else None)
+    message_id = int(result.get("message_id", 0)) if isinstance(result, dict) else 0
+    if message_id:
+        store.set_navigation(chat_id, message_id, screen)
+
+
+def handle_navigation(telegram: Telegram, store: Store, panels: PanelManager, manager: ServerManager, chat_id: int, is_admin: bool, data: str, *, callback_message_id: int | None = None) -> bool:
+    """Render button-first VPN screens and edit the current menu in place."""
+    parts = [part for part in str(data or "").split(":")]
+    if len(parts) < 2 or parts[0] not in {"menu", "server", "admin"}:
+        return False
+    kind, action = parts[0], parts[1]
+    if kind == "menu":
+        if action == "home":
+            text = "<b>GaulleBot</b>\nУправление VPN-серверами без ручного ввода команд."
+            render_navigation(telegram, store, chat_id, text, menu_keyboard(is_admin), "home", callback_message_id=callback_message_id)
+            return True
+        if action in {"servers", "profile", "admin"}:
+            if action == "profile":
+                row = store.get(chat_id)
+                text = "<b>Ваш профиль</b>\nTelegram ID: <code>%s</code>\nFinland: %s\nGermany: %s" % (chat_id, "✅" if row and row["finland_token"] else "—", "✅" if row and row["germany_token"] else "—")
+            elif action == "admin":
+                if not is_admin:
+                    render_navigation(telegram, store, chat_id, "Недостаточно прав.", menu_keyboard(False), "home", callback_message_id=callback_message_id)
+                    return True
+                text = "<b>Администрирование</b>\nДиагностика и служебные действия:"
+            else:
+                text = "<b>Серверы</b>\nВыберите сервер или сводный статус."
+            render_navigation(telegram, store, chat_id, text, navigation_keyboard(action, is_admin), action, callback_message_id=callback_message_id)
+            return True
+    if kind == "admin" and action == "users":
+        if not is_admin:
+            render_navigation(telegram, store, chat_id, "Недостаточно прав.", menu_keyboard(False), "home", callback_message_id=callback_message_id)
+            return True
+        rows = store.all()
+        text = "<b>Пользователи</b>\n" + ("\n".join(f"<code>{r['telegram_id']}</code> @{html.escape(r['username'] or '-')} · fin={'✅' if r['finland_token'] else '—'} · ger={'✅' if r['germany_token'] else '—'}" for r in rows) or "Пользователей пока нет.")
+        render_navigation(telegram, store, chat_id, text[:4096], [[{"text": "⬅️ Главное меню", "callback_data": "menu:home"}]], "admin:users", callback_message_id=callback_message_id)
+        return True
+    if kind == "server" and action in {"status", "health", "readiness", "dns", "info", "resolver", "audit", "tokens", "clients", "logs"}:
+        if action not in {"status", "clients"} and not is_admin:
+            render_navigation(telegram, store, chat_id, "Недостаточно прав.", menu_keyboard(False), "home", callback_message_id=callback_message_id)
+            return True
+        server = parts[2] if len(parts) > 2 else "all"
+        keys = (server,) if server in {"finland", "germany"} else ("finland", "germany")
+        row = store.get(chat_id)
+        tokens = {"finland": row["finland_token"] if row else None, "germany": row["germany_token"] if row else None}
+        if action == "status":
+            output = "\n\n".join(compact_snapshot(panels.request(key, "snapshot", None if is_admin else tokens[key]) or {"panel": key, "error": "недоступен"}) for key in keys)
+        elif action == "clients":
+            output = "\n\n".join(compact_clients(panels.request(key, "snapshot", None if is_admin else tokens[key]) or {"panel": key, "error": "недоступен"}) for key in keys)
+        else:
+            output = "\n\n".join(html.escape(parallel_results(panels, manager, keys, action)[index]) for index in range(len(keys)))
+        title = {"status": "Статус", "clients": "Клиенты", "health": "Проверка", "readiness": "Готовность VPN", "dns": "DNS", "info": "Информация", "resolver": "Resolver", "audit": "Аудит", "tokens": "Токены", "logs": "Логи"}[action]
+        render_navigation(telegram, store, chat_id, f"<b>{title}</b>\n{output[:3900]}", navigation_keyboard("result", is_admin), f"server:{action}:{server}", callback_message_id=callback_message_id)
+        return True
+    return False
+
+
 def reply_keyboard() -> list[list[str]]:
-    return [["📊 Статус", "👥 Клиенты"], ["🩺 Проверка", "👤 Профиль"]]
+    return [["🏠 Меню", "📡 Серверы"], ["📊 Статус", "👤 Профиль"], ["⚙️ Админка"]]
 
 
 def compact_snapshot(payload: dict[str, Any]) -> str:
@@ -667,7 +802,8 @@ def main() -> None:
                 if chat_id:
                     store.touch(chat_id, str(sender.get("username", "")), str(sender.get("first_name", "")))
                 command = (message.get("text") or callback.get("data") or "").strip()
-                command = {"📊 Статус": "/status", "👥 Клиенты": "/clients", "🩺 Проверка": "/health", "👤 Профиль": "/me"}.get(command, command)
+                reply_action = {"🏠 Меню": "menu:home", "📡 Серверы": "menu:servers", "📊 Статус": "server:status:all", "👤 Профиль": "menu:profile", "⚙️ Админка": "menu:admin"}.get(command)
+                command = reply_action or command
                 if callback:
                     callback_id = str(callback.get("id", ""))
                     try:
@@ -681,6 +817,10 @@ def main() -> None:
                 parts = command.split()
                 name = parts[0].split("@", 1)[0].lower()
                 is_admin = chat_id == settings.admin_chat_id
+                if callback and handle_navigation(telegram, store, panels, manager, chat_id, is_admin, str(callback.get("data", "")), callback_message_id=int((callback.get("message") or {}).get("message_id", 0) or 0)):
+                    continue
+                if reply_action and handle_navigation(telegram, store, panels, manager, chat_id, is_admin, reply_action):
+                    continue
                 try:
                     def snapshot_text(key: str, token: str | None = None, clients: bool = False) -> str:
                         payload = panels.request(key, "snapshot", token)
@@ -688,12 +828,16 @@ def main() -> None:
                             return compact_clients(payload) if clients else compact_snapshot(payload)
                         return server_result(panels, manager, key, "status", token)
 
-                    if name in {"/start", "/help"}:
-                        telegram.send(chat_id, help_text(is_admin), keyboard=menu_keyboard(is_admin) if name == "/start" else None, reply_keyboard=reply_keyboard() if name == "/start" else None)
+                    if name == "/start":
+                        render_navigation(telegram, store, chat_id, "<b>GaulleBot</b>\nУправление VPN-серверами без ручного ввода команд.", menu_keyboard(is_admin), "home")
+                    elif name == "/help":
+                        telegram.send(chat_id, help_text(is_admin), keyboard=menu_keyboard(is_admin), reply_keyboard=reply_keyboard())
                     elif name == "/menu":
-                        telegram.send(chat_id, "<b>Главное меню</b>\nВыберите нужное действие:", keyboard=menu_keyboard(is_admin), reply_keyboard=reply_keyboard())
+                        render_navigation(telegram, store, chat_id, "<b>Главное меню</b>\nВыберите нужное действие:", menu_keyboard(is_admin), "home", reply=True)
                     elif name == "/admin" and is_admin:
-                        telegram.send(chat_id, "<b>Администрирование</b>\nДиагностика и служебные действия:", keyboard=admin_keyboard())
+                        render_navigation(telegram, store, chat_id, "<b>Администрирование</b>\nДиагностика и служебные действия:", admin_keyboard(), "admin", reply=True)
+                    elif name == "/restart" and len(parts) == 1:
+                        render_navigation(telegram, store, chat_id, "<b>Главное меню восстановлено</b>", menu_keyboard(is_admin), "home", reply=True)
                     elif name == "/me":
                         row = store.get(chat_id)
                         telegram.send(chat_id, "Привязка отсутствует." if row is None else f"<b>Ваш профиль</b>\nTelegram ID: <code>{chat_id}</code>\nFinland: {'✅' if row['finland_token'] else '—'}\nGermany: {'✅' if row['germany_token'] else '—'}")
