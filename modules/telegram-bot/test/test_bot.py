@@ -8,7 +8,7 @@ import time
 from urllib.parse import urlencode
 from pathlib import Path
 
-from src.bot import PanelManager, ServerManager, Settings, Store, admin_keyboard, callback_command, compact_snapshot, help_text, menu_keyboard, reply_keyboard, verify_init_data, client_keyboard, clients_keyboard, format_bytes
+from src.bot import PanelManager, ServerManager, Settings, Store, admin_keyboard, callback_command, compact_snapshot, help_text, menu_keyboard, reply_keyboard, verify_init_data, client_keyboard, clients_keyboard, format_bytes, format_panel_payload
 
 
 class BotTests(unittest.TestCase):
@@ -101,6 +101,12 @@ class BotTests(unittest.TestCase):
     def test_format_bytes_is_human_readable(self):
         self.assertEqual(format_bytes(0), "0 B")
         self.assertEqual(format_bytes(1024 * 1024), "1.0 MiB")
+
+    def test_diagnostics_are_cards_not_raw_json(self):
+        rendered = format_panel_payload({"panel": "Sunny-Finland", "status": "ok", "cpu": {"usage_percent": 12.5, "status": "ok"}, "memory": {"used_percent": 33, "status": "ok"}, "disk": {"used_percent": 44, "status": "ok"}, "load": {"one": 0.2, "five": 0.1, "status": "ok"}, "services": {"vpn_interface": {"status": "active"}}, "network": {"drops_delta": 0, "errors_delta": 0}}, "health")
+        self.assertIn("Sunny-Finland", rendered)
+        self.assertIn("CPU", rendered)
+        self.assertNotIn('"cpu"', rendered)
 
     def test_menu_contains_admin_actions(self):
         callback_data = {item["callback_data"] for row in menu_keyboard(True) for item in row}
