@@ -277,6 +277,11 @@ class BotTests(unittest.TestCase):
         self.assertEqual(keyboard[0][0]["callback_data"], "server:health:all")
         self.assertIn("menu:home", {item["callback_data"] for row in keyboard for item in row})
 
+    def test_maintenance_exposes_scoped_dns_mode_controls(self):
+        callbacks = {item["callback_data"] for row in maintenance_keyboard() for item in row}
+        self.assertIn("admin:dns-mode:finland", callbacks)
+        self.assertIn("admin:dns-mode:germany", callbacks)
+
     def test_callback_payloads_are_command_safe(self):
         self.assertEqual(callback_command("nav:status"), "/status")
         self.assertEqual(callback_command("nav:logs finland"), "/logs finland")
