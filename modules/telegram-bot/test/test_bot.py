@@ -167,7 +167,7 @@ class BotTests(unittest.TestCase):
 
     def test_admin_help_lists_panel_diagnostics(self):
         text = help_text(True)
-        for command in ("/info", "/readiness", "/dns", "/resolver", "/audit", "/tokens"):
+        for command in ("/info", "/readiness", "/dns", "/resolver", "/audit", "/tokens", "/history", "/latency", "/provider"):
             self.assertIn(command, text)
 
     def test_reply_keyboard_is_compact(self):
