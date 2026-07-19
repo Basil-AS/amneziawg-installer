@@ -13,7 +13,8 @@ Never commit the real token or SSH keys.
 
 ## Commands
 
-Admin: `/status`, `/health`, `/servers`, `/clients [finland|germany]`,
+Admin: `/status`, `/health`, `/info`, `/readiness`, `/dns`, `/resolver`,
+`/audit`, `/tokens`, `/servers`, `/clients [finland|germany]`,
 `/logs [finland|germany]`, `/users`, `/bind <tg_id> <fin_token> <ger_token>`,
 `/add`, `/remove`, `/regenerate`, `/restart <finland|germany>`.
 User: `/me`, `/servers`, `/menu`, `/help`.
