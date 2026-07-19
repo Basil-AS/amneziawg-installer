@@ -134,6 +134,12 @@ class ServerManager:
         commands = {
             "status": "version=$(cat /root/awg/VERSION); printf 'VERSION=%s\\n' \"$version\"; ip -brief addr show awg0; systemctl is-active awg-quick@awg0 awg-web AdGuardHome",
             "health": "/root/awg/update-installed.sh --check",
+            "info": "version=$(cat /root/awg/VERSION); printf 'VERSION=%s\\n' \"$version\"; ip -brief addr show awg0; uname -srmo",
+            "readiness": "/root/awg/update-installed.sh --check; systemctl is-active awg-quick@awg0 awg-web AdGuardHome",
+            "dns": "systemctl is-active AdGuardHome; resolvectl status 2>/dev/null | head -n 24",
+            "resolver": "systemctl is-active AdGuardHome; ss -lunp | grep -E ':(53|5353)\\b' || true",
+            "audit": "printf 'CONFIGS='; find /root/awg -maxdepth 1 -type f -name '*.conf' ! -name awg0.conf | wc -l; systemctl is-active awg-quick@awg0 awg-web AdGuardHome",
+            "tokens": "printf 'PANEL_TOKEN_STORE='; stat -c '%a %s bytes' /root/awg/web/tokens.json 2>/dev/null || true; grep -c '^[[:space:]]*\"[0-9a-f]\\{64\\}\"' /root/awg/web/tokens.json 2>/dev/null || true",
             "restart": "systemctl restart awg-quick@awg0 awg-web AdGuardHome",
             "clients": "for f in /root/awg/*.conf; do n=$(basename \"$f\" .conf); [ \"$n\" = awg0 ] && continue; a=$(awk -F'= *' '/^Address/{print $2; exit}' \"$f\"); printf '%s|%s\\n' \"$n\" \"$a\"; done",
             "logs": "tail -n 100 /root/awg/manage_amneziawg.log /root/awg/install_amneziawg.log 2>/dev/null",
