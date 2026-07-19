@@ -331,6 +331,8 @@ class PanelManager:
             "geoip-providers": ("GET", "/api/geoip/providers"),
             "geoip-databases": ("GET", "/api/geoip/databases/status"),
             "nettest-reports": ("GET", "/api/nettest/reports"),
+            "nettest-context": ("GET", "/api/nettest/context"),
+            "nettest-ping": ("GET", "/api/nettest/ping?n=gaullebot"),
             "web-policy": ("GET", "/api/web-access-policy"),
             "web-cert": ("GET", "/api/web-cert"),
             "logs": ("GET", "/api/server/logs"), "restart": ("POST", "/api/server/restart"),
@@ -655,7 +657,8 @@ def help_text(admin: bool) -> str:
 def menu_keyboard(admin: bool) -> list[list[dict[str, str]]]:
     rows = [
         [{"text": "📡 Серверы", "callback_data": "menu:servers"}, {"text": "👥 Мои устройства", "callback_data": "user:clients"}],
-        [{"text": "📈 Статистика", "callback_data": "user:traffic"}, {"text": "⭐ Избранное", "callback_data": "user:favorites"}],
+        [{"text": "📈 Статистика", "callback_data": "user:traffic"}, {"text": "🌐 Доступность", "callback_data": "user:nettest"}],
+        [{"text": "⭐ Избранное", "callback_data": "user:favorites"}],
         [{"text": "👤 Профиль", "callback_data": "menu:profile"}],
         [{"text": "➕ Добавить устройство", "callback_data": "user:add"}],
         [{"text": "🔐 Запросить доступ", "callback_data": "user:request"}],
@@ -673,7 +676,7 @@ def admin_keyboard() -> list[list[dict[str, str]]]:
         [{"text": "🌐 Provider traffic", "callback_data": "server:provider-traffic:all"}],
         [{"text": "🧰 GeoIP", "callback_data": "server:geoip-status:all"}, {"text": "🧪 Nettest", "callback_data": "server:nettest-reports:all"}],
         [{"text": "🛡 Web policy", "callback_data": "server:web-policy:all"}, {"text": "🔒 TLS-сертификат", "callback_data": "server:web-cert:all"}],
-        [{"text": "📈 Трафик", "callback_data": "user:traffic"}, {"text": "🔄 Обновления", "callback_data": "admin:update"}],
+        [{"text": "📈 Трафик", "callback_data": "user:traffic"}, {"text": "🌐 Доступность", "callback_data": "user:nettest"}, {"text": "🔄 Обновления", "callback_data": "admin:update"}],
         [{"text": "🛠 Обслуживание", "callback_data": "admin:maintenance"}],
         [{"text": "➕ Клиент Финляндии", "callback_data": "admin:add:finland"}, {"text": "➕ Клиент Германии", "callback_data": "admin:add:germany"}],
         [{"text": "♻️ Перезапуск Финляндии", "callback_data": "admin:restart:finland"}, {"text": "♻️ Перезапуск Германии", "callback_data": "admin:restart:germany"}],
@@ -741,7 +744,7 @@ def clients_keyboard(rows: list[tuple[str, str, str]], *, page: int = 1, pages: 
         if page < pages:
             pager.append({"text": "▶️", "callback_data": f"user:{'favorites' if source == 'favorites' else 'clients'}:{page + 1}"})
         keyboard.append(pager)
-    keyboard.extend([[{"text": "📈 Статистика", "callback_data": "user:traffic"}, {"text": "⭐ Избранное", "callback_data": "user:favorites"}], [{"text": "🏠 Меню", "callback_data": "menu:home"}]])
+    keyboard.extend([[{"text": "📈 Статистика", "callback_data": "user:traffic"}, {"text": "🌐 Доступность", "callback_data": "user:nettest"}, {"text": "⭐ Избранное", "callback_data": "user:favorites"}], [{"text": "🏠 Меню", "callback_data": "menu:home"}]])
     return keyboard
 
 
@@ -1014,9 +1017,13 @@ def handle_navigation(telegram: Telegram, store: Store, panels: PanelManager, ch
         store.set_prompt(principal_id, "add_client", server)
         telegram.send(chat_id, f"<b>➕ Новое устройство · {html.escape(server)}</b>\nВведите имя профиля (латиница, цифры, <code>-</code> или <code>_</code>, до 48 символов).", force_reply=True)
         return True
-    if kind == "user" and action in {"clients", "favorites", "traffic"}:
+    if kind == "user" and action in {"clients", "favorites", "traffic", "nettest"}:
         if not is_admin and (not row or not (tokens["finland"] or tokens["germany"])):
             render_navigation(telegram, store, chat_id, "<b>Доступ ещё не выдан</b>\nОбратитесь к администратору для привязки токена.", menu_keyboard(False), "home", callback_message_id=callback_message_id)
+            return True
+        if action == "nettest":
+            results = parallel_results(panels, ("finland", "germany"), "nettest-ping", {key: PANEL_TOKEN if is_admin else tokens[key] for key in ("finland", "germany")})
+            render_navigation(telegram, store, chat_id, "<b>🌐 Доступность панелей</b>\nПроверяется лёгкий API-запрос; это не замер RTT вашего устройства.\n\n" + "\n\n".join(results), [[{"text": "📈 Статистика", "callback_data": "user:traffic"}, {"text": "👥 Устройства", "callback_data": "user:clients"}], [{"text": "🏠 Меню", "callback_data": "menu:home"}]], "user:nettest", callback_message_id=callback_message_id)
             return True
         if action == "traffic":
             rows = []
@@ -1357,12 +1364,21 @@ def format_panel_payload(payload: dict[str, Any], action: str) -> str:
             for name, item in list(databases.items())[:8]:
                 item = item if isinstance(item, dict) else {"status": item}
                 lines.append(f"{status_icon(item.get('status') or item.get('ok'))} {html.escape(str(name))}: {html.escape(str(item.get('status') or item.get('updated_at') or '—'))}")
-    elif action == "nettest-reports":
+    elif action in {"nettest-reports", "nettest-context", "nettest-ping"}:
         reports = payload.get("reports") or []
-        lines.append(f"Отчётов: <b>{len(reports)}</b>")
-        for report in reports[-8:]:
-            report = report if isinstance(report, dict) else {"value": report}
-            lines.append(f"🧪 <code>{html.escape(str(report.get('id') or report.get('test_id') or 'report'))}</code> · {html.escape(str(report.get('status') or report.get('created_at') or 'готов'))}")
+        if action == "nettest-reports":
+            lines.append(f"Отчётов: <b>{len(reports)}</b>")
+            for report in reports[-8:]:
+                report = report if isinstance(report, dict) else {"value": report}
+                lines.append(f"🧪 <code>{html.escape(str(report.get('id') or report.get('test_id') or 'report'))}</code> · {html.escape(str(report.get('status') or report.get('created_at') or 'готов'))}")
+        elif action == "nettest-ping":
+            lines.append(f"Доступность API: {status_icon(payload.get('ok'))} <b>{'доступно' if payload.get('ok') else 'ошибка'}</b>")
+            lines.append(metric_line("Время сервера", payload.get("server_time") or "—"))
+        else:
+            lines.append(f"Nettest: {status_icon(payload.get('ok', True))} <b>{html.escape(str(payload.get('nettest_url') or payload.get('nettest_vpn_url') or 'доступен'))}</b>")
+            for label, key in (("Макс. download", "max_download_size"), ("Макс. upload", "max_upload_size"), ("VPN URL", "nettest_vpn_url")):
+                if payload.get(key) is not None:
+                    lines.append(metric_line(label, payload.get(key)))
     elif action == "web-policy":
         for label, key in (("Режим", "mode"), ("Публичный listener", "public_listener"), ("Trusted proxy", "trusted_proxy"), ("Разрешённые сети", "allowed_networks")):
             if key in payload:
