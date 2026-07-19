@@ -9,7 +9,7 @@ from unittest.mock import patch
 from urllib.parse import urlencode
 from pathlib import Path
 
-from src.bot import PANEL_TOKEN, PanelManager, ServerManager, Settings, Store, admin_keyboard, callback_command, compact_snapshot, help_text, maintenance_keyboard, menu_keyboard, reply_keyboard, verify_init_data, client_keyboard, clients_keyboard, format_bytes, format_panel_payload, parallel_payloads, sparkline, usage_bar
+from src.bot import PANEL_TOKEN, PanelManager, ServerManager, Settings, Store, admin_keyboard, callback_command, compact_snapshot, help_text, maintenance_keyboard, menu_keyboard, navigation_keyboard, reply_keyboard, result_navigation_keyboard, verify_init_data, client_keyboard, clients_keyboard, format_bytes, format_panel_payload, parallel_payloads, sparkline, usage_bar
 
 
 class BotTests(unittest.TestCase):
@@ -271,6 +271,11 @@ class BotTests(unittest.TestCase):
         keyboard = reply_keyboard()
         self.assertEqual(sum(len(row) for row in keyboard), 6)
         self.assertIn("🏠 Меню", keyboard[0])
+
+    def test_result_navigation_has_refresh_action(self):
+        keyboard = result_navigation_keyboard("health", "all", False)
+        self.assertEqual(keyboard[0][0]["callback_data"], "server:health:all")
+        self.assertIn("menu:home", {item["callback_data"] for row in keyboard for item in row})
 
     def test_callback_payloads_are_command_safe(self):
         self.assertEqual(callback_command("nav:status"), "/status")
