@@ -483,6 +483,12 @@ class BotTests(unittest.TestCase):
         self.assertTrue(all(len(value.encode()) <= 64 for value in callbacks))
         self.assertIn("не настроен", provisioning_text(151599744, None))
 
+    def test_adguard_admin_controls_are_present(self):
+        callbacks = {button["callback_data"] for row in maintenance_keyboard() for button in row}
+        self.assertIn("admin:adguard-filter-refresh:finland", callbacks)
+        self.assertIn("admin:adguard-filter-add:germany", callbacks)
+        self.assertIn("admin:adguard-filter-remove:finland", callbacks)
+
     def test_token_selection_uses_unambiguous_hash_prefix_and_no_secret(self):
         records = panel_token_records({"users": [{"hash": "a" * 64, "name": "Telegram user", "clients": ["phone"]}, {"hash": "b" * 64, "name": "Other", "clients": []}]})
         self.assertEqual(token_record_by_prefix(records, "a" * 12)["name"], "Telegram user")
