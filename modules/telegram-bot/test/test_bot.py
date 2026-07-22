@@ -49,6 +49,32 @@ class BotTests(unittest.TestCase):
             self.assertEqual(telegram.sent, [])
             store.close()
 
+    def test_background_result_can_edit_current_menu_without_callback(self):
+        class FakeTelegram:
+            def __init__(self):
+                self.edits = []
+                self.sent = []
+
+            def edit_message(self, chat_id, message_id, text, *, keyboard=None):
+                self.edits.append(message_id)
+                return {"message_id": message_id}
+
+            def delete_message(self, *args):
+                raise AssertionError("current menu must not be deleted")
+
+            def send(self, *args, **kwargs):
+                self.sent.append(args)
+                return {"message_id": 99}
+
+        with tempfile.TemporaryDirectory() as directory:
+            store = Store(Path(directory) / "state.sqlite3")
+            store.set_navigation(42, 17, "server:drops-sample:all")
+            telegram = FakeTelegram()
+            render_navigation(telegram, store, 42, "result", [], "server:drops-sample:all", edit_current=True)
+            self.assertEqual(telegram.edits, [17])
+            self.assertEqual(telegram.sent, [])
+            store.close()
+
     def test_navigation_edit_failure_removes_old_menu_before_replacement(self):
         class FakeTelegram:
             def __init__(self):
