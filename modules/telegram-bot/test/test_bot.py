@@ -9,7 +9,7 @@ from unittest.mock import patch
 from urllib.parse import urlencode
 from pathlib import Path
 
-from src.bot import PANEL_TOKEN, PanelManager, ServerManager, Settings, Store, admin_keyboard, callback_command, client_stats_card, compact_snapshot, help_text, maintenance_keyboard, menu_keyboard, navigation_keyboard, panel_client_names, reply_keyboard, result_navigation_keyboard, token_client_scope, uri_keyboard, verify_init_data, client_keyboard, clients_keyboard, format_bytes, format_panel_payload, format_timestamp, parallel_payloads, sparkline, usage_bar
+from src.bot import PANEL_TOKEN, PanelManager, ServerManager, Settings, Store, admin_keyboard, callback_command, client_stats_card, compact_snapshot, help_text, maintenance_keyboard, menu_keyboard, navigation_keyboard, panel_client_names, panel_token_records, provisioning_keyboard, provisioning_text, reply_keyboard, result_navigation_keyboard, token_client_scope, token_record_by_prefix, uri_keyboard, valid_bearer_candidate, verify_init_data, client_keyboard, clients_keyboard, format_bytes, format_panel_payload, format_timestamp, parallel_payloads, sparkline, usage_bar
 
 
 class BotTests(unittest.TestCase):
@@ -53,6 +53,16 @@ class BotTests(unittest.TestCase):
             self.assertEqual(store.get(42)["finland_token"], "fin")
             store.close()
 
+    def test_partial_provisioning_does_not_approve_until_finish(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = Store(Path(directory) / "state.sqlite3")
+            self.assertTrue(store.request_access(42))
+            store.bind(42, "user", "Name", "fin", "", resolve_request=False)
+            self.assertEqual(store.access_request_status(42), "pending")
+            store.resolve_access_request(42, "approved")
+            self.assertEqual(store.access_request_status(42), "approved")
+            store.close()
+
     def test_access_request_can_be_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
             store = Store(Path(directory) / "state.sqlite3")
@@ -74,11 +84,13 @@ class BotTests(unittest.TestCase):
     def test_touch_registers_unbound_user_without_tokens(self):
         with tempfile.TemporaryDirectory() as directory:
             store = Store(Path(directory) / "state.sqlite3")
+            store.request_access(42)
             store.touch(42, "user", "Name")
             row = store.get(42)
             self.assertEqual(row["username"], "user")
             self.assertEqual(row["finland_token"], "")
             self.assertEqual(row["germany_token"], "")
+            self.assertEqual(store.access_request_status(42), "pending")
             store.close()
 
     def test_settings_rejects_missing_token(self):
@@ -374,6 +386,23 @@ class BotTests(unittest.TestCase):
         payload = {"users": [{"hash": "abc", "clients": ["phone", "laptop"]}]}
         self.assertEqual(token_client_scope(payload, "abc"), ["phone", "laptop"])
         self.assertIsNone(token_client_scope(payload, "missing"))
+
+    def test_provisioning_choices_are_per_server_and_callback_safe(self):
+        keyboard = provisioning_keyboard(151599744, None)
+        callbacks = {button["callback_data"] for row in keyboard for button in row}
+        self.assertIn("admin:provision-create:151599744:finland", callbacks)
+        self.assertIn("admin:provision-input:151599744:germany", callbacks)
+        self.assertTrue(all(len(value.encode()) <= 64 for value in callbacks))
+        self.assertIn("не настроен", provisioning_text(151599744, None))
+
+    def test_token_selection_uses_unambiguous_hash_prefix_and_no_secret(self):
+        records = panel_token_records({"users": [{"hash": "a" * 64, "name": "Telegram user", "clients": ["phone"]}, {"hash": "b" * 64, "name": "Other", "clients": []}]})
+        self.assertEqual(token_record_by_prefix(records, "a" * 12)["name"], "Telegram user")
+        self.assertIsNone(token_record_by_prefix(records, ""))
+        self.assertTrue(valid_bearer_candidate("x" * 32))
+        self.assertFalse(valid_bearer_candidate("short"))
+        self.assertFalse(valid_bearer_candidate("x" * 10 + " " + "x" * 10))
+        self.assertNotIn("bearer-токен", provisioning_text(151599744, None).lower())
 
     def test_client_app_guide_is_rendered_as_links_and_cards(self):
         text = format_panel_payload({"panel": "Finland", "groups": [{"name": "Android", "subtitle": "Выбор", "clients": [{"name": "WG Tunnel", "status": "Recommended", "platforms": "Android", "setupMethod": "QR", "links": [{"label": "Сайт", "url": "https://example.test/app"}]}]}]}, "help-clients")

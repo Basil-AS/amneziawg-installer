@@ -84,7 +84,20 @@ CONF
     export ALLOWED_IPS="203.0.113.0/24, 10.9.9.1/32"
     run render_client_config "customdns" "10.9.9.11" "CLIENT_PRIV" "SERVER_PUB" "vpn.example.com" "39743"
     [ "$status" -eq 0 ]
+    grep -q '^AllowedIPs = .*10\.9\.9\.0/24' "$AWG_DIR/customdns.conf"
     [ "$(grep -o '10\.9\.9\.1/32' "$AWG_DIR/customdns.conf" | wc -l)" -eq 1 ]
+}
+
+@test "custom AllowedIPs always keeps the configured VPN subnet reachable" {
+    run bash -c 'source "$1"; ensure_dns_allowedips_routes "1.0.0.0/8, 172.32.0.0/11" "" "10.9.9.1/24" ""' _ "$BATS_TEST_DIRNAME/../awg_common.sh"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"10.9.9.0/24"* ]]
+}
+
+@test "full-tunnel AllowedIPs does not duplicate the VPN subnet" {
+    run bash -c 'source "$1"; ensure_dns_allowedips_routes "0.0.0.0/0" "" "10.9.9.1/24" ""' _ "$BATS_TEST_DIRNAME/../awg_common.sh"
+    [ "$status" -eq 0 ]
+    [ "$output" = "0.0.0.0/0" ]
 }
 
 @test "IPv6 tunnel-local DNS route is added when needed" {
