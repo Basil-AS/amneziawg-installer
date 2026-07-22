@@ -5302,11 +5302,12 @@ def adguard_api(path, method="GET", body=None):
     """Call the loopback-only AdGuard Home control API with Basic auth."""
     cfg = parse_config()
     port = int(cfg.get("AWG_ADGUARD_PORT") or 3000)
+    vpn_gateway, _ = configured_vpn_ipv4()
     username, password = adguard_credentials()
     if not username or not password:
         return {"error": "AdGuard credentials are not configured"}, HTTPStatus.SERVICE_UNAVAILABLE
     payload = None if body is None else json.dumps(body, ensure_ascii=False).encode()
-    request = Request(f"http://127.0.0.1:{port}/control/{path.lstrip('/')}", method=method, data=payload)
+    request = Request(f"http://{vpn_gateway}:{port}/control/{path.lstrip('/')}", method=method, data=payload)
     request.add_header("Accept", "application/json")
     request.add_header("Authorization", "Basic " + b64encode(f"{username}:{password}".encode()).decode())
     if payload is not None:

@@ -78,7 +78,8 @@ a compact status/RTT card; regular users do not receive this privileged action.
 The maintenance screen also tests the active web access policy on each panel
 without writing configuration or restarting the service; results show whether
 the current authenticated request would remain allowed after a policy change.
-AdGuard Home is exposed through the panel's super-admin-only loopback proxy:
+AdGuard Home is exposed through the panel's super-admin-only internal proxy
+(the VPN gateway address; AdGuard itself is not exposed on the public WAN):
 `GET /api/adguard/status`, `/stats`, `/filters`, `/querylog` and the protected
 filter mutations `/filters/add`, `/filters/remove`, `/filters/refresh`. The
 panel reads the local installer summary (or `AWG_ADGUARD_API_USER` and
