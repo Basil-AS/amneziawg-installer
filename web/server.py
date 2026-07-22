@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import errno
+from base64 import b64encode
 import hashlib
 import gzip
 import hmac
@@ -21,7 +22,7 @@ from http import HTTPStatus
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, quote, unquote, urlencode, urlparse
-from urllib.error import URLError
+from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 AWG_DIR = Path(os.environ.get("AWG_DIR", "/root/awg"))
@@ -5279,6 +5280,65 @@ def resolver_status():
     }
 
 
+ADGUARD_SUMMARY_FILE = Path(os.environ.get("AWG_INSTALL_SUMMARY", str(AWG_DIR / "INSTALL_SUMMARY.txt")))
+
+
+def adguard_credentials():
+    """Read AdGuard credentials locally; never return them in an API payload."""
+    username = os.environ.get("AWG_ADGUARD_API_USER", "").strip()
+    password = os.environ.get("AWG_ADGUARD_API_PASSWORD", "")
+    if username and password:
+        return username, password
+    try:
+        text = ADGUARD_SUMMARY_FILE.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return "", ""
+    user_match = re.search(r"(?im)^\s*(?:Admin\s+)?Login\s*:\s*(\S+)\s*$", text)
+    pass_match = re.search(r"(?im)^\s*(?:Admin\s+)?Password\s*:\s*(.*?)\s*$", text)
+    return (user_match.group(1).strip() if user_match else "", pass_match.group(1).strip() if pass_match else "")
+
+
+def adguard_api(path, method="GET", body=None):
+    """Call the loopback-only AdGuard Home control API with Basic auth."""
+    cfg = parse_config()
+    port = int(cfg.get("AWG_ADGUARD_PORT") or 3000)
+    username, password = adguard_credentials()
+    if not username or not password:
+        return {"error": "AdGuard credentials are not configured"}, HTTPStatus.SERVICE_UNAVAILABLE
+    payload = None if body is None else json.dumps(body, ensure_ascii=False).encode()
+    request = Request(f"http://127.0.0.1:{port}/control/{path.lstrip('/')}", method=method, data=payload)
+    request.add_header("Accept", "application/json")
+    request.add_header("Authorization", "Basic " + b64encode(f"{username}:{password}".encode()).decode())
+    if payload is not None:
+        request.add_header("Content-Type", "application/json")
+    try:
+        with urlopen(request, timeout=8) as response:
+            data = response.read(2_000_000)
+            return (json.loads(data) if data else {"ok": True}), response.status
+    except HTTPError as exc:
+        return {"error": f"AdGuard API HTTP {exc.code}"}, HTTPStatus.BAD_GATEWAY
+    except (OSError, ValueError, TimeoutError):
+        return {"error": "AdGuard API unavailable"}, HTTPStatus.BAD_GATEWAY
+
+
+def adguard_stats_payload():
+    payload, status = adguard_api("stats")
+    if status >= 400:
+        return payload, status
+    total = int(payload.get("num_dns_queries") or 0)
+    blocked = int(payload.get("num_blocked_filtering") or 0)
+    return {"ok": True, "total_queries": total, "blocked_queries": blocked, "blocked_percent": round(blocked * 100 / total, 2) if total else 0, "interval": payload.get("interval", 0), "top_queried": payload.get("top_queried_domains", {}), "top_blocked": payload.get("top_blocked_domains", {})}, status
+
+
+def adguard_filters_payload():
+    payload, status = adguard_api("filtering/status")
+    if status >= 400:
+        return payload, status
+    filters = payload.get("filters") or []
+    whitelist = payload.get("whitelist_filters") or []
+    return {"ok": True, "enabled": bool(payload.get("enabled", payload.get("filtering_enabled", False))), "filters": filters, "whitelist": whitelist}, status
+
+
 def safe_name(name):
     if not NAME_RE.fullmatch(name or ""):
         raise ValueError("invalid client name")
@@ -7081,6 +7141,35 @@ class Handler(SimpleHTTPRequestHandler):
         if u.path == "/api/dns":
             self.send_json(dns_status())
             return
+        if u.path == "/api/adguard/status":
+            if not self.require_super(auth):
+                return
+            payload, status = adguard_api("status")
+            self.send_json(payload, status)
+            return
+        if u.path == "/api/adguard/stats":
+            if not self.require_super(auth):
+                return
+            payload, status = adguard_stats_payload()
+            self.send_json(payload, status)
+            return
+        if u.path == "/api/adguard/filters":
+            if not self.require_super(auth):
+                return
+            payload, status = adguard_filters_payload()
+            self.send_json(payload, status)
+            return
+        if u.path == "/api/adguard/querylog":
+            if not self.require_super(auth):
+                return
+            query = parse_qs(u.query)
+            try:
+                limit = max(1, min(int((query.get("limit") or ["20"])[0]), 100))
+            except (TypeError, ValueError):
+                limit = 20
+            payload, status = adguard_api(f"querylog?limit={limit}")
+            self.send_json(payload, status)
+            return
         if u.path == "/api/clients/audit":
             if not self.require_super(auth):
                 return
@@ -7535,6 +7624,33 @@ class Handler(SimpleHTTPRequestHandler):
                 if custom:
                     args.append(require_dns_list(custom))
                 p = run_manage(*args, timeout=120)
+            elif u.path == "/api/adguard/filters/add":
+                if not self.require_super(auth):
+                    return
+                url = str(body.get("url") or "").strip()
+                name = str(body.get("name") or "").strip()
+                if not (url.startswith(("https://", "http://")) and len(url) <= 2048 and name and len(name) <= 128):
+                    self.send_json({"error": "filter URL and name are required"}, HTTPStatus.BAD_REQUEST)
+                    return
+                payload, status = adguard_api("filtering/add_url", "POST", {"url": url, "name": name, "whitelist": bool(body.get("whitelist", False))})
+                self.send_json(payload, status)
+                return
+            elif u.path == "/api/adguard/filters/remove":
+                if not self.require_super(auth):
+                    return
+                url = str(body.get("url") or "").strip()
+                if not (url.startswith(("https://", "http://")) and len(url) <= 2048):
+                    self.send_json({"error": "filter URL is required"}, HTTPStatus.BAD_REQUEST)
+                    return
+                payload, status = adguard_api("filtering/remove_url", "POST", {"url": url, "whitelist": bool(body.get("whitelist", False))})
+                self.send_json(payload, status)
+                return
+            elif u.path == "/api/adguard/filters/refresh":
+                if not self.require_super(auth):
+                    return
+                payload, status = adguard_api("filtering/refresh", "POST", {"whitelist": bool(body.get("whitelist", False))})
+                self.send_json(payload, status)
+                return
             elif re.match(r"^/api/clients/[^/]+/regenerate$", u.path):
                 name = safe_name(re.match(r"^/api/clients/([^/]+)/regenerate$", u.path).group(1))
                 if not self.require_client_access(auth, name):

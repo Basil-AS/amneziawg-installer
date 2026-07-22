@@ -361,6 +361,8 @@ class PanelManager:
             "nettest-ping": ("GET", "/api/nettest/ping?n=gaullebot"),
             "web-policy": ("GET", "/api/web-access-policy"),
             "web-cert": ("GET", "/api/web-cert"),
+            "adguard-status": ("GET", "/api/adguard/status"), "adguard-stats": ("GET", "/api/adguard/stats"),
+            "adguard-filters": ("GET", "/api/adguard/filters"), "adguard-querylog": ("GET", "/api/adguard/querylog?limit=20"),
             "logs": ("GET", "/api/server/logs"), "restart": ("POST", "/api/server/restart"),
         }
         body = None
@@ -464,6 +466,15 @@ class PanelManager:
             body = b"{}"
         elif action == "web-cert-renew":
             endpoint_info = ("POST", "/api/web-cert/renew")
+        elif action == "adguard-filter-add":
+            endpoint_info = ("POST", "/api/adguard/filters/add")
+            body = json.dumps(extra or {}).encode()
+        elif action == "adguard-filter-remove":
+            endpoint_info = ("POST", "/api/adguard/filters/remove")
+            body = json.dumps(extra or {}).encode()
+        elif action == "adguard-filter-refresh":
+            endpoint_info = ("POST", "/api/adguard/filters/refresh")
+            body = json.dumps(extra or {}).encode()
             body = b"{}"
         elif action == "web-policy-test":
             endpoint_info = ("POST", "/api/web-access-policy/test")
@@ -795,6 +806,8 @@ def admin_keyboard() -> list[list[dict[str, str]]]:
         [{"text": "📉 Нагрузка", "callback_data": "server:health-history:all"}, {"text": "📶 Latency", "callback_data": "server:latency:all"}],
         [{"text": "📡 Потери пакетов", "callback_data": "server:drops-sample:all"}],
         [{"text": "🌐 Provider traffic", "callback_data": "server:provider-traffic:all"}],
+        [{"text": "🛡 AdGuard статистика FI", "callback_data": "server:adguard-stats:finland"}, {"text": "🛡 AdGuard статистика DE", "callback_data": "server:adguard-stats:germany"}],
+        [{"text": "📋 Фильтры FI", "callback_data": "server:adguard-filters:finland"}, {"text": "📋 Фильтры DE", "callback_data": "server:adguard-filters:germany"}],
         [{"text": "🧰 GeoIP", "callback_data": "server:geoip-status:all"}, {"text": "🧪 Nettest", "callback_data": "server:nettest-reports:all"}],
         [{"text": "🛡 Web policy", "callback_data": "server:web-policy:all"}, {"text": "🔒 TLS-сертификат", "callback_data": "server:web-cert:all"}],
         [{"text": "📈 Трафик", "callback_data": "user:traffic"}, {"text": "🌐 Доступность", "callback_data": "user:nettest"}, {"text": "🔄 Обновления", "callback_data": "admin:update"}],
@@ -810,6 +823,9 @@ def maintenance_keyboard() -> list[list[dict[str, str]]]:
     return [
         [{"text": "♻️ DNS Финляндии", "callback_data": "admin:dns-restart:finland"}, {"text": "♻️ DNS Германии", "callback_data": "admin:dns-restart:germany"}],
         [{"text": "🧭 DNS режим FI", "callback_data": "admin:dns-mode:finland"}, {"text": "🧭 DNS режим DE", "callback_data": "admin:dns-mode:germany"}],
+        [{"text": "🔄 Обновить фильтры FI", "callback_data": "admin:adguard-filter-refresh:finland"}, {"text": "🔄 Обновить фильтры DE", "callback_data": "admin:adguard-filter-refresh:germany"}],
+        [{"text": "➕ Добавить фильтр FI", "callback_data": "admin:adguard-filter-add:finland"}, {"text": "➕ Добавить фильтр DE", "callback_data": "admin:adguard-filter-add:germany"}],
+        [{"text": "🗑 Удалить фильтр FI", "callback_data": "admin:adguard-filter-remove:finland"}, {"text": "🗑 Удалить фильтр DE", "callback_data": "admin:adguard-filter-remove:germany"}],
         [{"text": "🌐 NDP Финляндии", "callback_data": "admin:ndp:finland"}, {"text": "🌐 NDP Германии", "callback_data": "admin:ndp:germany"}],
         [{"text": "🗺 Обновить GeoIP", "callback_data": "admin:geoip-update:all"}, {"text": "🔒 Продлить TLS", "callback_data": "admin:cert-renew:all"}],
         [{"text": "🔎 Проверить GeoIP", "callback_data": "admin:geoip-providers-test:all"}, {"text": "⚙️ Авто-GeoIP", "callback_data": "admin:geoip-auto-update:all"}],
@@ -1349,11 +1365,20 @@ def handle_navigation(telegram: Telegram, store: Store, panels: PanelManager, ch
             return True
         render_navigation(telegram, store, chat_id, "<b>🛠 Обслуживание инфраструктуры</b>\nОперации выполняются только через API панели. Перезагрузка требует отдельного подтверждения.", maintenance_keyboard(), "admin:maintenance", callback_message_id=callback_message_id)
         return True
-    if kind == "admin" and action in {"dns-restart", "dns-mode", "dns-mode-apply", "ndp", "ndp-apply", "ndp-disable-confirm", "ndp-restart", "geoip-update", "geoip-refresh", "geoip-providers-test", "geoip-auto-update", "cert-renew", "policy-test", "rotate-profile", "rotate-profile-confirm", "rotate-profile-apply", "reboot", "reboot-confirm"}:
+    if kind == "admin" and action in {"dns-restart", "dns-mode", "dns-mode-apply", "ndp", "ndp-apply", "ndp-disable-confirm", "ndp-restart", "geoip-update", "geoip-refresh", "geoip-providers-test", "geoip-auto-update", "cert-renew", "policy-test", "rotate-profile", "rotate-profile-confirm", "rotate-profile-apply", "reboot", "reboot-confirm", "adguard-filter-refresh", "adguard-filter-add", "adguard-filter-remove"}:
         if not is_admin:
             render_navigation(telegram, store, chat_id, "Недостаточно прав.", menu_keyboard(False), "home", callback_message_id=callback_message_id)
             return True
         server = parts[2].lower() if len(parts) > 2 else "all"
+        if action in {"adguard-filter-add", "adguard-filter-remove"} and server in {"finland", "germany"}:
+            store.set_prompt(principal_id, action, server)
+            prompt = "название | https://адрес-списка" if action == "adguard-filter-add" else "https://адрес-списка"
+            telegram.send(chat_id, f"<b>🛡 AdGuard · {html.escape(server)}</b>\nВведите {prompt}. Секреты и локальные пути не принимаются.", force_reply=True)
+            return True
+        if action == "adguard-filter-refresh" and server in {"finland", "germany"}:
+            payload = panels.request(server, "adguard-filter-refresh", PANEL_TOKEN, extra={"whitelist": False}) or {}
+            render_navigation(telegram, store, chat_id, f"<b>🔄 AdGuard фильтры обновлены · {html.escape(server)}</b>\n{format_panel_payload(payload, 'adguard-filters')}", maintenance_keyboard(), "admin:adguard-filter-refresh", callback_message_id=callback_message_id)
+            return True
         if action == "rotate-profile" and server in {"finland", "germany"}:
             render_navigation(telegram, store, chat_id, f"<b>♻️ Ротация AWG-профиля · {html.escape(server)}</b>\nЭто изменит параметры сервера и потребует повторной выдачи клиентских конфигов. Выберите preset:", [[{"text": "🧩 Default", "callback_data": f"admin:rotate-profile-confirm:{server}:default"}, {"text": "📱 Mobile", "callback_data": f"admin:rotate-profile-confirm:{server}:mobile"}], [{"text": "Отмена", "callback_data": "admin:maintenance"}]], "admin:rotate-profile", callback_message_id=callback_message_id)
             return True
@@ -1667,7 +1692,7 @@ def handle_navigation(telegram: Telegram, store: Store, panels: PanelManager, ch
                     f"Последний handshake: <code>{html.escape(str(client.get('latestHandshakeAt', client.get('last_handshake', '—'))))}</code>")
         render_navigation(telegram, store, chat_id, text, client_keyboard(server, name, ref, admin=is_admin, favorite=store.is_favorite(principal_id, server, name), back=back_screen), f"client:{action}:{ref}", callback_message_id=callback_message_id)
         return True
-    if kind == "server" and action in {"status", "health", "readiness", "dns", "info", "resolver", "audit", "tokens", "clients", "logs", "health-history", "latency", "provider-traffic", "drops-sample", "geoip-status", "geoip-providers", "geoip-databases", "nettest-reports", "web-policy", "web-cert"}:
+    if kind == "server" and action in {"status", "health", "readiness", "dns", "info", "resolver", "audit", "tokens", "clients", "logs", "health-history", "latency", "provider-traffic", "drops-sample", "geoip-status", "geoip-providers", "geoip-databases", "nettest-reports", "web-policy", "web-cert", "adguard-status", "adguard-stats", "adguard-filters", "adguard-querylog"}:
         access_row = store.get(principal_id)
         if not is_admin and not access_row or (not is_admin and not (access_row["finland_token"] or access_row["germany_token"])):
             render_navigation(telegram, store, chat_id, "<b>Доступ ещё не выдан</b>\nОбратитесь к администратору для привязки токена.", menu_keyboard(False), "home", callback_message_id=callback_message_id)
@@ -1701,7 +1726,7 @@ def handle_navigation(telegram: Telegram, store: Store, panels: PanelManager, ch
             output = "\n\n".join(compact_clients(payload) for payload in parallel_payloads(panels, keys, "snapshot", {key: PANEL_TOKEN if is_admin else tokens[key] for key in keys}))
         else:
             output = "\n\n".join(parallel_results(panels, keys, action, {key: PANEL_TOKEN if is_admin else tokens[key] for key in keys}))
-        title = {"status": "Статус", "clients": "Клиенты", "health": "Проверка", "readiness": "Готовность VPN", "dns": "DNS", "info": "Информация", "resolver": "Resolver", "audit": "Аудит", "tokens": "Токены", "logs": "Логи", "health-history": "История нагрузки", "latency": "Latency клиентов", "provider-traffic": "Provider traffic", "drops-sample": "Потери пакетов", "geoip-status": "GeoIP", "geoip-providers": "GeoIP providers", "geoip-databases": "GeoIP databases", "nettest-reports": "Nettest отчёты", "web-policy": "Web access policy", "web-cert": "TLS-сертификат"}[action]
+        title = {"status": "Статус", "clients": "Клиенты", "health": "Проверка", "readiness": "Готовность VPN", "dns": "DNS", "info": "Информация", "resolver": "Resolver", "audit": "Аудит", "tokens": "Токены", "logs": "Логи", "health-history": "История нагрузки", "latency": "Latency клиентов", "provider-traffic": "Provider traffic", "drops-sample": "Потери пакетов", "geoip-status": "GeoIP", "geoip-providers": "GeoIP providers", "geoip-databases": "GeoIP databases", "nettest-reports": "Nettest отчёты", "web-policy": "Web access policy", "web-cert": "TLS-сертификат", "adguard-status": "AdGuard статус", "adguard-stats": "AdGuard статистика", "adguard-filters": "AdGuard фильтры", "adguard-querylog": "AdGuard query log"}[action]
         result_keyboard = result_navigation_keyboard(action, server, is_admin)
         if action == "nettest-reports" and is_admin:
             result_keyboard.insert(-1, [{"text": "🗑 Очистить отчёты", "callback_data": f"admin:nettest-reports-delete:{server}"}])
@@ -1863,6 +1888,27 @@ def format_panel_payload(payload: dict[str, Any], action: str) -> str:
         for label, key in (("Mode", "mode"), ("Client DNS", "client_dns"), ("Service", "adguard_service" if action == "dns" else "managed_service"), ("Port", "adguard_port" if action == "dns" else "managed_port"), ("URL", "managed_url")):
             if key in payload:
                 lines.append(metric_line(label, payload.get(key) or "—"))
+    elif action == "adguard-stats":
+        lines.append(f"Запросов: <b>{html.escape(str(payload.get('total_queries', 0)))}</b> · заблокировано: <b>{html.escape(str(payload.get('blocked_queries', 0)))}</b>")
+        lines.append(f"Интервал статистики: <code>{html.escape(str(payload.get('interval') or '—'))}</code>")
+        top_blocked = payload.get("top_blocked") or {}
+        if isinstance(top_blocked, dict) and top_blocked:
+            lines.append("<b>Чаще всего заблокировано</b>")
+            lines.extend(f"• <code>{html.escape(str(name))}</code> · {html.escape(str(count))}" for name, count in list(top_blocked.items())[:8])
+    elif action == "adguard-filters":
+        filters = payload.get("filters") or []
+        lines.append(f"Фильтрация: {'✅ включена' if payload.get('enabled') else '⛔ выключена'} · списков: <b>{len(filters)}</b>")
+        for item in filters[:12]:
+            if isinstance(item, dict):
+                lines.append(f"• <b>{html.escape(str(item.get('name') or 'Без имени'))}</b> · {'✅' if item.get('enabled', True) else '⛔'}")
+    elif action == "adguard-status":
+        lines.append(f"Состояние: {status_icon(payload.get('running'))} <b>{html.escape(str(payload.get('version') or payload.get('status') or 'доступен'))}</b>")
+    elif action == "adguard-querylog":
+        entries = payload.get("data") or payload.get("querylog") or []
+        lines.append(f"Записей: <b>{len(entries) if isinstance(entries, list) else '—'}</b>")
+        for item in entries[:8] if isinstance(entries, list) else []:
+            if isinstance(item, dict):
+                lines.append(f"• <code>{html.escape(str(item.get('question', {}).get('name') or item.get('domain') or '—'))}</code>")
     elif action == "audit":
         summary = payload.get("summary") or {}
         lines.append("<b>Сводка аудита</b>")
@@ -2574,6 +2620,27 @@ def main() -> None:
                         ref = store.client_ref(actor_id, prompt_server, prompt_name)
                         title = "Порт P2P добавлен" if panel_action == "p2p-add" else "Порт P2P удалён"
                         render_navigation(telegram, store, chat_id, f"<b>✅ {title}</b>\n{result}", client_keyboard(prompt_server, prompt_name, ref, admin=is_admin, back=f"user:clients:{source_page}"), f"client:p2p-port-done:{ref}", reply=True)
+                        continue
+                    if prompt and prompt["action"] in {"adguard-filter-add", "adguard-filter-remove"}:
+                        prompt_server = str(prompt["server"]).lower()
+                        candidate = command.strip()
+                        if prompt["action"] == "adguard-filter-add":
+                            filter_name, separator, filter_url = candidate.partition("|")
+                            filter_name, filter_url = filter_name.strip(), filter_url.strip()
+                            valid = bool(separator and filter_name and filter_url.startswith(("https://", "http://")) and len(filter_name) <= 128 and len(filter_url) <= 2048)
+                            panel_action = "adguard-filter-add"
+                            extra = {"name": filter_name, "url": filter_url, "whitelist": False}
+                        else:
+                            filter_url = candidate
+                            valid = bool(filter_url.startswith(("https://", "http://")) and len(filter_url) <= 2048)
+                            panel_action = "adguard-filter-remove"
+                            extra = {"url": filter_url, "whitelist": False}
+                        if not is_admin or prompt_server not in {"finland", "germany"} or not valid:
+                            telegram.send(chat_id, "Неверный формат. Нужен HTTPS/HTTP URL списка; для добавления: название | URL. Повторите ввод.", force_reply=True)
+                            continue
+                        result = panel_text(panels, prompt_server, panel_action, PANEL_TOKEN, extra=extra)
+                        store.clear_prompt(actor_id)
+                        render_navigation(telegram, store, chat_id, f"<b>🛡 AdGuard операция завершена</b>\n{result}", maintenance_keyboard(), "admin:adguard-filter-done", reply=True)
                         continue
                 if not command.startswith("/"):
                     continue
