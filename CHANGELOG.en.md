@@ -14,6 +14,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Improved
 
+- Telegram bot: Refresh edits the current screen; stale text menus are removed while configuration files and media are preserved.
+- The bot administrator now uses a full super-token for server operations while retaining separate scoped user tokens for bound configurations.
 - Telegram bot: fixed inline callback routing, added safe `nav:` action dispatch and a dedicated administrator submenu so primary actions no longer require manual slash commands.
 - Added a super-admin Project Updates panel with an isolated systemd updater unit, concurrent-run locking, SHA-256 release verification, rollback snapshots, and post-update health checks.
 - Added compact `/api/bot/snapshot` endpoint for low-latency control-plane reads.

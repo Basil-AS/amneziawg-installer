@@ -9,10 +9,72 @@ from unittest.mock import patch
 from urllib.parse import urlencode
 from pathlib import Path
 
-from src.bot import PANEL_TOKEN, PanelManager, ServerManager, Settings, Store, admin_keyboard, callback_command, client_stats_card, compact_snapshot, help_text, maintenance_keyboard, menu_keyboard, navigation_keyboard, panel_client_names, panel_token_records, provisioning_keyboard, provisioning_text, reply_keyboard, result_navigation_keyboard, token_client_scope, token_record_by_prefix, uri_keyboard, valid_bearer_candidate, verify_init_data, client_keyboard, clients_keyboard, format_bytes, format_panel_payload, format_timestamp, parallel_payloads, sparkline, usage_bar
+from src.bot import PANEL_TOKEN, PanelManager, ServerManager, Settings, Store, admin_keyboard, callback_command, callback_message_is_media, client_stats_card, compact_snapshot, help_text, maintenance_keyboard, menu_keyboard, navigation_keyboard, panel_client_names, panel_token_records, provisioning_keyboard, provisioning_text, reply_keyboard, render_navigation, result_navigation_keyboard, token_client_scope, token_record_by_prefix, uri_keyboard, valid_bearer_candidate, verify_init_data, client_keyboard, clients_keyboard, format_bytes, format_panel_payload, format_timestamp, parallel_payloads, sparkline, usage_bar
 
 
 class BotTests(unittest.TestCase):
+    def test_stale_navigation_cleanup_never_classifies_media_as_menu(self):
+        self.assertFalse(callback_message_is_media({"text": "Меню", "reply_markup": {}}))
+        self.assertTrue(callback_message_is_media({"document": {"file_id": "opaque"}}))
+        self.assertTrue(callback_message_is_media({"photo": [{"file_id": "opaque"}]}))
+
+    def test_admin_help_does_not_advertise_insecure_bind_command(self):
+        self.assertNotIn("/bind", help_text(True))
+
+    def test_navigation_refresh_edits_current_menu_without_sending(self):
+        class FakeTelegram:
+            def __init__(self):
+                self.edits = []
+                self.deleted = []
+                self.sent = []
+
+            def edit_message(self, chat_id, message_id, text, *, keyboard=None):
+                self.edits.append((chat_id, message_id, text, keyboard))
+                return {"message_id": message_id}
+
+            def delete_message(self, chat_id, message_id):
+                self.deleted.append((chat_id, message_id))
+
+            def send(self, chat_id, text, *, keyboard=None, reply_keyboard=None, force_reply=False):
+                self.sent.append((chat_id, text, keyboard))
+                return {"message_id": 99}
+
+        with tempfile.TemporaryDirectory() as directory:
+            store = Store(Path(directory) / "state.sqlite3")
+            store.set_navigation(42, 17, "server:status:all")
+            telegram = FakeTelegram()
+            render_navigation(telegram, store, 42, "fresh", [[{"text": "🔄", "callback_data": "server:status:all"}]], "server:status:all", callback_message_id=17)
+            self.assertEqual([item[1] for item in telegram.edits], [17])
+            self.assertEqual(telegram.deleted, [])
+            self.assertEqual(telegram.sent, [])
+            store.close()
+
+    def test_navigation_edit_failure_removes_old_menu_before_replacement(self):
+        class FakeTelegram:
+            def __init__(self):
+                self.deleted = []
+                self.sent = []
+
+            def edit_message(self, *args, **kwargs):
+                raise RuntimeError("message can't be edited")
+
+            def delete_message(self, chat_id, message_id):
+                self.deleted.append((chat_id, message_id))
+
+            def send(self, chat_id, text, *, keyboard=None, reply_keyboard=None, force_reply=False):
+                self.sent.append((chat_id, text))
+                return {"message_id": 18}
+
+        with tempfile.TemporaryDirectory() as directory:
+            store = Store(Path(directory) / "state.sqlite3")
+            store.set_navigation(42, 17, "server:status:all")
+            telegram = FakeTelegram()
+            render_navigation(telegram, store, 42, "replacement", [], "server:status:all", callback_message_id=17)
+            self.assertEqual(telegram.deleted, [(42, 17)])
+            self.assertEqual(len(telegram.sent), 1)
+            self.assertEqual(store.navigation(42)["message_id"], 18)
+            store.close()
+
     def test_store_bind_and_update(self):
         with tempfile.TemporaryDirectory() as directory:
             store = Store(Path(directory) / "state.sqlite3")
