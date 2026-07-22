@@ -919,13 +919,23 @@ import sys
 allowed, dns_servers, tunnel_subnet, ipv6_subnet = sys.argv[1:5]
 routes = [item.strip() for item in allowed.split(",") if item.strip()]
 seen = set(routes)
+initial_routes = tuple(routes)
 
 def has_covering_route(ip):
-    for route in routes:
+    for route in initial_routes:
         try:
             if ip in ipaddress.ip_network(route, strict=False):
                 return True
-        except ValueError:
+        except (TypeError, ValueError):
+            continue
+    return False
+
+def has_covering_network(network):
+    for route in routes:
+        try:
+            if network.subnet_of(ipaddress.ip_network(route, strict=False)):
+                return True
+        except (TypeError, ValueError):
             continue
     return False
 
@@ -956,6 +966,17 @@ for token in re.split(r"[,;\s]+", dns_servers):
         if route not in seen:
             routes.append(route)
             seen.add(route)
+
+# The tunnel network is a control-plane dependency, not an optional route.
+# Add it after DNS host routes so existing split-DNS behavior is preserved.
+# A full-tunnel route already covers it and is not duplicated.
+for network in networks:
+    if has_covering_network(network):
+        continue
+    route = str(network)
+    if route not in seen:
+        routes.append(route)
+        seen.add(route)
 
 print(", ".join(routes))
 PY

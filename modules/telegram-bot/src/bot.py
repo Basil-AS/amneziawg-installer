@@ -138,7 +138,16 @@ class Store:
         with self.lock:
             self.db.close()
 
-    def bind(self, telegram_id: int, username: str, first_name: str, finland: str, germany: str) -> None:
+    def bind(
+        self,
+        telegram_id: int,
+        username: str,
+        first_name: str,
+        finland: str,
+        germany: str,
+        *,
+        resolve_request: bool = True,
+    ) -> None:
         with self.lock:
             now = int(time.time())
             self.db.execute(
@@ -148,14 +157,22 @@ class Store:
                    germany_token=excluded.germany_token, updated_at=excluded.updated_at""",
                 (telegram_id, username, first_name, finland, germany, now, now),
             )
-            self.db.execute("UPDATE access_requests SET status='approved' WHERE telegram_id=?", (telegram_id,))
+            if resolve_request:
+                self.db.execute("UPDATE access_requests SET status='approved' WHERE telegram_id=?", (telegram_id,))
             self.db.commit()
 
     def touch(self, telegram_id: int, username: str, first_name: str) -> None:
         row = self.get(telegram_id)
         if row and row["username"] == username and row["first_name"] == first_name:
             return
-        self.bind(telegram_id, username, first_name, row["finland_token"] if row else "", row["germany_token"] if row else "")
+        self.bind(
+            telegram_id,
+            username,
+            first_name,
+            row["finland_token"] if row else "",
+            row["germany_token"] if row else "",
+            resolve_request=False,
+        )
 
     def get(self, telegram_id: int) -> sqlite3.Row | None:
         with self.lock:
@@ -181,6 +198,11 @@ class Store:
         with self.lock:
             self.db.execute("UPDATE access_requests SET status=? WHERE telegram_id=?", (status, telegram_id))
             self.db.commit()
+
+    def access_request_status(self, telegram_id: int) -> str | None:
+        with self.lock:
+            row = self.db.execute("SELECT status FROM access_requests WHERE telegram_id=?", (telegram_id,)).fetchone()
+            return str(row["status"]) if row else None
 
     def set_prompt(self, telegram_id: int, action: str, server: str) -> None:
         with self.lock:
@@ -1125,10 +1147,7 @@ def handle_navigation(telegram: Telegram, store: Store, panels: PanelManager, ch
         if requested is None:
             render_navigation(telegram, store, chat_id, "Заявка устарела или пользователь ещё не написал боту.", admin_keyboard(), "admin", callback_message_id=callback_message_id)
             return True
-        text = (f"<b>🔐 Запрос доступа</b>\nTelegram ID: <code>{requested_id}</code>\n"
-                f"Пользователь: @{html.escape(requested['username'] or 'без username')}\n\n"
-                "Бот может автоматически создать отдельные scoped-токены на обеих панелях и привязать их к пользователю.")
-        render_navigation(telegram, store, chat_id, text, [[{"text": "✅ Выдать доступ", "callback_data": f"admin:approve:{requested_id}"}, {"text": "↩️ Отклонить", "callback_data": f"admin:reject:{requested_id}"}], [{"text": "👥 Пользователи", "callback_data": "admin:users:0"}, {"text": "⬅️ Админка", "callback_data": "menu:admin"}]], "admin:request", callback_message_id=callback_message_id)
+        render_navigation(telegram, store, chat_id, provisioning_text(requested_id, requested), provisioning_keyboard(requested_id, requested), "admin:request", callback_message_id=callback_message_id)
         return True
     if kind == "admin" and action in {"approve", "reject"}:
         if not is_admin or len(parts) < 3:
@@ -1143,6 +1162,17 @@ def handle_navigation(telegram: Telegram, store: Store, panels: PanelManager, ch
             render_navigation(telegram, store, chat_id, "Заявка устарела или пользователь ещё не написал боту.", admin_keyboard(), "admin", callback_message_id=callback_message_id)
             return True
         if action == "reject":
+            if requested["finland_token"] or requested["germany_token"]:
+                render_navigation(
+                    telegram,
+                    store,
+                    chat_id,
+                    "<b>⚠️ Заявка уже содержит привязанные токены.</b> Используйте мастер настройки, чтобы удалить их с панелей перед отклонением.",
+                    [[{"text": "🛠 Открыть настройку", "callback_data": f"admin:request:{requested_id}"}]],
+                    "admin:request",
+                    callback_message_id=callback_message_id,
+                )
+                return True
             store.resolve_access_request(requested_id, "rejected")
             try:
                 telegram.send(requested_id, "<b>🔐 Запрос доступа отклонён</b>\nЕсли это ошибка, отправьте новую заявку позже.")
@@ -1150,41 +1180,131 @@ def handle_navigation(telegram: Telegram, store: Store, panels: PanelManager, ch
                 LOG.info("access rejection notification failed user=%s", requested_id)
             render_navigation(telegram, store, chat_id, f"<b>↩️ Запрос отклонён</b>\nTelegram ID: <code>{requested_id}</code>", admin_keyboard(), "admin:request-rejected", callback_message_id=callback_message_id)
             return True
-        if requested["finland_token"] or requested["germany_token"]:
-            render_navigation(telegram, store, chat_id, "<b>✅ Доступ уже привязан</b>\nПовторная выдача токенов не выполнена.", admin_keyboard(), "admin:request-approved", callback_message_id=callback_message_id)
+        render_navigation(telegram, store, chat_id, provisioning_text(requested_id, requested), provisioning_keyboard(requested_id, requested), "admin:request", callback_message_id=callback_message_id)
+        return True
+    if kind == "admin" and action in {"provision-create", "provision-input", "provision-list", "provision-select", "provision-rotate", "provision-rotate-confirm", "provision-skip", "provision-finish", "provision-reject", "provision-reject-confirm"}:
+        if not is_admin or len(parts) < 3:
+            render_navigation(telegram, store, chat_id, "Недостаточно прав.", menu_keyboard(False), "home", callback_message_id=callback_message_id)
             return True
-        token_name = f"telegram-{requested_id}"
-        created: dict[str, str] = {}
-        failures: list[str] = []
-        def create_token(server: str) -> tuple[str, str]:
+        try:
+            requested_id = int(parts[2])
+        except (TypeError, ValueError):
+            return True
+        requested = store.get(requested_id)
+        if requested is None:
+            render_navigation(telegram, store, chat_id, "Пользователь не найден.", admin_keyboard(), "admin:users", callback_message_id=callback_message_id)
+            return True
+        server = parts[3].lower() if len(parts) > 3 else ""
+        if action in {"provision-create", "provision-input", "provision-list", "provision-select", "provision-rotate", "provision-rotate-confirm", "provision-skip"} and server not in {"finland", "germany"}:
+            return True
+        if action == "provision-create":
+            if requested[f"{server}_token"]:
+                render_navigation(telegram, store, chat_id, "Для этого сервера токен уже привязан. Используйте существующий токен или сначала отзовите доступ.", provisioning_keyboard(requested_id, requested), "admin:request", callback_message_id=callback_message_id)
+                return True
             clients_payload = panels.request(server, "clients", PANEL_TOKEN) or {}
             client_names = panel_client_names(clients_payload)
             if client_names is None:
-                LOG.warning("cannot provision scoped token: client list unavailable panel=%s user=%s", server, requested_id)
-                return server, ""
+                render_navigation(telegram, store, chat_id, f"<b>❌ {html.escape(server)}</b>\nНе удалось получить список клиентов для безопасного scope токена. Токен не создан.", provisioning_keyboard(requested_id, requested), "admin:request", callback_message_id=callback_message_id)
+                return True
+            token_name = f"telegram-{requested_id}-{server}"
             payload = panels.request(server, "create-user-token", PANEL_TOKEN, value=token_name, extra={"clients": client_names}) or {}
             token = str(payload.get("token") or "")
-            return server, token
-        with ThreadPoolExecutor(max_workers=2) as pool:
-            futures = [pool.submit(create_token, server) for server in ("finland", "germany")]
-            for future in futures:
-                server, token = future.result()
-                if token:
-                    created[server] = token
-                else:
-                    failures.append(server)
-        finland_token = created.get("finland", "")
-        germany_token = created.get("germany", "")
-        if created:
-            store.bind(requested_id, str(requested["username"] or ""), str(requested["first_name"] or ""), finland_token, germany_token)
+            if not token:
+                render_navigation(telegram, store, chat_id, f"<b>❌ Токен {html.escape(server)} не создан</b>\n{format_panel_payload(payload, 'tokens')}", provisioning_keyboard(requested_id, requested), "admin:request", callback_message_id=callback_message_id)
+                return True
+            values = {"finland": str(requested["finland_token"] or ""), "germany": str(requested["germany_token"] or "")}
+            values[server] = token
+            store.bind(requested_id, str(requested["username"] or ""), str(requested["first_name"] or ""), values["finland"], values["germany"], resolve_request=False)
+            requested = store.get(requested_id)
+            render_navigation(telegram, store, chat_id, f"<b>✅ Токен {html.escape(server)} создан</b>\nИмя: <code>{html.escape(token_name)}</code>\nScope: <b>{len(client_names)}</b> текущих клиентов.\n\n{provisioning_text(requested_id, requested)}", provisioning_keyboard(requested_id, requested), "admin:request", callback_message_id=callback_message_id)
+            return True
+        if action == "provision-input":
+            if requested[f"{server}_token"]:
+                render_navigation(telegram, store, chat_id, "Для этого сервера токен уже привязан. Не перезаписываю его автоматически.", provisioning_keyboard(requested_id, requested), "admin:request", callback_message_id=callback_message_id)
+                return True
+            store.set_prompt(principal_id, "provision-token", f"{server}|{requested_id}")
+            telegram.send(chat_id, f"<b>🔑 Токен {html.escape(server)}</b>\nВставьте bearer-токен панели одним сообщением. Он не будет показан обратно и не попадёт в логи.", force_reply=True)
+            return True
+        if action == "provision-list":
+            records = panel_token_records(panels.request(server, "tokens", PANEL_TOKEN) or {})
+            if not records:
+                render_navigation(telegram, store, chat_id, f"<b>📋 Токены · {html.escape(server)}</b>\nСписок токенов недоступен или пуст.", [[{"text": "🔑 Вставить секрет", "callback_data": f"admin:provision-input:{requested_id}:{server}"}], [{"text": "⬅️ Назад", "callback_data": f"admin:request:{requested_id}"}]], "admin:provision-list", callback_message_id=callback_message_id)
+                return True
+            keyboard = []
+            for record in records[:20]:
+                prefix = str(record["hash"])[:12]
+                keyboard.append([{"text": f"🔐 {str(record['name'])[:28]} · {len(record['clients'])} кл.", "callback_data": f"admin:provision-select:{requested_id}:{server}:{prefix}"}])
+            keyboard.append([{"text": "🔑 Вставить известный секрет", "callback_data": f"admin:provision-input:{requested_id}:{server}"}])
+            keyboard.append([{"text": "⬅️ Назад", "callback_data": f"admin:request:{requested_id}"}])
+            render_navigation(telegram, store, chat_id, f"<b>📋 Токены · {html.escape(server)}</b>\nВыберите по имени. Сам секрет не отображается; после выбора доступна только безопасная ротация или ручной ввод известного секрета.", keyboard, "admin:provision-list", callback_message_id=callback_message_id)
+            return True
+        if action == "provision-select":
+            if len(parts) < 5:
+                return True
+            records = panel_token_records(panels.request(server, "tokens", PANEL_TOKEN) or {})
+            record = token_record_by_prefix(records, parts[4])
+            if record is None:
+                render_navigation(telegram, store, chat_id, "Токен не найден или prefix неоднозначен. Обновите список.", [[{"text": "📋 Обновить список", "callback_data": f"admin:provision-list:{requested_id}:{server}"}]], "admin:provision-list", callback_message_id=callback_message_id)
+                return True
+            render_navigation(telegram, store, chat_id, f"<b>🔐 Выбран токен</b>\nПанель: <code>{html.escape(server)}</code>\nИмя: <b>{html.escape(str(record['name']))}</b>\nScope: <b>{len(record['clients'])}</b> клиентов\n\nПанель хранит только hash. Для привязки без известного секрета потребуется ротация, старый секрет перестанет работать.", [[{"text": "♻️ Ротировать и привязать", "callback_data": f"admin:provision-rotate:{requested_id}:{server}:{parts[4]}"}], [{"text": "🔑 Ввести известный секрет", "callback_data": f"admin:provision-input:{requested_id}:{server}"}], [{"text": "⬅️ К списку", "callback_data": f"admin:provision-list:{requested_id}:{server}"}]], "admin:provision-select", callback_message_id=callback_message_id)
+            return True
+        if action == "provision-rotate":
+            if len(parts) < 5:
+                return True
+            render_navigation(telegram, store, chat_id, f"<b>⚠️ Ротировать токен {html.escape(server)}?</b>\nСтарый bearer-секрет перестанет работать у всех его текущих пользователей.", [[{"text": "⛔ Подтвердить ротацию", "callback_data": f"admin:provision-rotate-confirm:{requested_id}:{server}:{parts[4]}"}], [{"text": "Отмена", "callback_data": f"admin:provision-list:{requested_id}:{server}"}]], "admin:provision-rotate", callback_message_id=callback_message_id)
+            return True
+        if action == "provision-rotate-confirm":
+            if len(parts) < 5:
+                return True
+            record = token_record_by_prefix(panel_token_records(panels.request(server, "tokens", PANEL_TOKEN) or {}), parts[4])
+            if record is None:
+                render_navigation(telegram, store, chat_id, "Токен не найден. Ротация отменена.", provisioning_keyboard(requested_id, requested), "admin:request", callback_message_id=callback_message_id)
+                return True
+            payload = panels.request(server, "rotate-token", PANEL_TOKEN, value=record["hash"]) or {}
+            token = str(payload.get("token") or "")
+            if not token:
+                render_navigation(telegram, store, chat_id, f"<b>❌ Ротация не выполнена</b>\n{format_panel_payload(payload, 'tokens')}", provisioning_keyboard(requested_id, requested), "admin:request", callback_message_id=callback_message_id)
+                return True
+            values = {"finland": str(requested["finland_token"] or ""), "germany": str(requested["germany_token"] or "")}
+            values[server] = token
+            store.bind(requested_id, str(requested["username"] or ""), str(requested["first_name"] or ""), values["finland"], values["germany"], resolve_request=False)
+            requested = store.get(requested_id)
+            render_navigation(telegram, store, chat_id, f"<b>✅ Токен {html.escape(server)} ротирован и привязан</b>\nИмя: <b>{html.escape(str(record['name']))}</b>\nСтарый секрет больше не работает.\n\n{provisioning_text(requested_id, requested)}", provisioning_keyboard(requested_id, requested), "admin:request", callback_message_id=callback_message_id)
+            return True
+        if action == "provision-skip":
+            render_navigation(telegram, store, chat_id, provisioning_text(requested_id, requested), provisioning_keyboard(requested_id, requested), "admin:request", callback_message_id=callback_message_id)
+            return True
+        if action == "provision-finish":
+            if not (requested["finland_token"] or requested["germany_token"]):
+                render_navigation(telegram, store, chat_id, "Нельзя завершить настройку без токена хотя бы на одном сервере.", provisioning_keyboard(requested_id, requested), "admin:request", callback_message_id=callback_message_id)
+                return True
             store.resolve_access_request(requested_id, "approved")
             try:
-                telegram.send(requested_id, "<b>✅ Доступ выдан</b>\nДля вас созданы персональные права на доступные панели. Откройте меню → «Мои устройства».", keyboard=menu_keyboard(False), reply_keyboard=reply_keyboard(False))
+                telegram.send(requested_id, "<b>✅ Доступ выдан</b>\nАдминистратор привязал разрешённые панели. Откройте «Мои устройства».", keyboard=menu_keyboard(False), reply_keyboard=reply_keyboard(False))
             except (OSError, RuntimeError, ValueError):
                 LOG.info("access approval notification failed user=%s", requested_id)
-        detail = "Обе панели привязаны." if not failures else f"Частичная выдача: готово {', '.join(sorted(created))}; ошибка: {', '.join(failures)}."
-        render_navigation(telegram, store, chat_id, f"<b>✅ Доступ обработан</b>\nTelegram ID: <code>{requested_id}</code>\n{html.escape(detail)}\nСекреты токенов не выводятся.", admin_keyboard(), "admin:request-approved", callback_message_id=callback_message_id)
-        return True
+            render_navigation(telegram, store, chat_id, f"<b>✅ Настройка доступа завершена</b>\n{provisioning_text(requested_id, requested)}", admin_keyboard(), "admin:request-approved", callback_message_id=callback_message_id)
+            return True
+        if action == "provision-reject":
+            if requested["finland_token"] or requested["germany_token"]:
+                render_navigation(telegram, store, chat_id, "<b>⚠️ Отозвать созданные привязки и отклонить заявку?</b>\nТокены будут удалены с панелей.", [[{"text": "⛔ Подтвердить отзыв", "callback_data": f"admin:provision-reject-confirm:{requested_id}"}], [{"text": "Отмена", "callback_data": f"admin:request:{requested_id}"}]], "admin:provision-reject", callback_message_id=callback_message_id)
+                return True
+            store.resolve_access_request(requested_id, "rejected")
+            render_navigation(telegram, store, chat_id, f"<b>↩️ Заявка отклонена</b>\nTelegram ID: <code>{requested_id}</code>", admin_keyboard(), "admin:request-rejected", callback_message_id=callback_message_id)
+            return True
+        if action == "provision-reject-confirm":
+            removed: list[str] = []
+            for server, column in (("finland", "finland_token"), ("germany", "germany_token")):
+                token = str(requested[column] or "")
+                if not token:
+                    continue
+                result = panels.request(server, "delete-token", PANEL_TOKEN, value=hashlib.sha256(token.encode()).hexdigest()) or {}
+                if not result.get("error"):
+                    removed.append(server)
+            store.bind(requested_id, str(requested["username"] or ""), str(requested["first_name"] or ""), "", "", resolve_request=False)
+            store.resolve_access_request(requested_id, "rejected")
+            render_navigation(telegram, store, chat_id, f"<b>↩️ Заявка отклонена</b>\nУдалено токенов: {', '.join(removed) or 'нет'}", admin_keyboard(), "admin:request-rejected", callback_message_id=callback_message_id)
+            return True
     if kind == "admin" and action == "add":
         if not is_admin or len(parts) < 3 or parts[2].lower() not in {"finland", "germany"}:
             render_navigation(telegram, store, chat_id, "Недостаточно прав.", menu_keyboard(False), "home", callback_message_id=callback_message_id)
@@ -1624,6 +1744,35 @@ def usage_bar(value: Any, maximum: Any, width: int = 10) -> str:
     return "█" * filled + "░" * (width - filled)
 
 
+def provisioning_keyboard(target_id: int, row: sqlite3.Row | None) -> list[list[dict[str, str]]]:
+    """Build explicit per-panel access choices for the administrator."""
+    keyboard: list[list[dict[str, str]]] = []
+    for server, short in (("finland", "FI"), ("germany", "DE")):
+        bound = bool(row and row[f"{server}_token"])
+        if bound:
+            keyboard.append([{"text": f"✅ {short} уже привязан", "callback_data": f"admin:user:{target_id}"}])
+        else:
+            keyboard.append([
+                {"text": f"➕ Создать {short}", "callback_data": f"admin:provision-create:{target_id}:{server}"},
+                {"text": f"🔑 Вставить {short}", "callback_data": f"admin:provision-input:{target_id}:{server}"},
+                {"text": f"📋 Выбрать {short}", "callback_data": f"admin:provision-list:{target_id}:{server}"},
+                {"text": f"⏭ Без {short}", "callback_data": f"admin:provision-skip:{target_id}:{server}"},
+            ])
+    keyboard.append([{"text": "✅ Завершить настройку", "callback_data": f"admin:provision-finish:{target_id}"}])
+    keyboard.append([{"text": "↩️ Отклонить заявку", "callback_data": f"admin:provision-reject:{target_id}"}, {"text": "👥 Пользователи", "callback_data": "admin:users:0"}])
+    return keyboard
+
+
+def provisioning_text(target_id: int, row: sqlite3.Row | None) -> str:
+    """Explain per-panel choices without displaying bearer material."""
+    username = html.escape(str(row["username"] or "без username")) if row else "без username"
+    lines = [f"<b>🔐 Настройка доступа · {target_id}</b>", f"Пользователь: @{username}", "Выберите действие отдельно для каждого сервера.", "Существующие секреты панель не раскрывает: выбор по имени предложит безопасную ротацию, либо вставьте известный секрет вручную.", ""]
+    for server, label in (("finland", "🇫🇮 Финляндия"), ("germany", "🇩🇪 Германия")):
+        lines.append(f"{label}: {'✅ токен привязан' if row and row[f'{server}_token'] else '⏳ не настроен'}")
+    lines.append("\nПосле выдачи хотя бы одного токена нажмите «Завершить настройку».")
+    return "\n".join(lines)
+
+
 def status_icon(value: Any) -> str:
     normalized = str(value or "unknown").lower()
     if normalized in {"ok", "active", "healthy", "ready", "up", "enabled", "running", "pass"}:
@@ -1888,6 +2037,35 @@ def token_client_scope(payload: dict[str, Any], digest: str) -> list[str] | None
             clients = record.get("clients")
             return [str(item) for item in clients if str(item).strip()] if isinstance(clients, list) else []
     return None
+
+
+def panel_token_records(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return non-secret token metadata suitable for admin selection cards."""
+    if not isinstance(payload, dict) or payload.get("error"):
+        return []
+    records: list[dict[str, Any]] = []
+    for item in payload.get("users") or []:
+        if not isinstance(item, dict):
+            continue
+        digest = str(item.get("hash") or item.get("token_hash") or "").lower()
+        if not re.fullmatch(r"[0-9a-f]{64}", digest):
+            continue
+        clients = item.get("clients") if isinstance(item.get("clients"), list) else []
+        records.append({"hash": digest, "name": str(item.get("name") or "Без имени"), "clients": [str(name) for name in clients]})
+    return records
+
+
+def token_record_by_prefix(records: list[dict[str, Any]], prefix: str) -> dict[str, Any] | None:
+    """Resolve a short callback-safe hash prefix only when it is unambiguous."""
+    prefix = str(prefix or "").lower()
+    matches = [record for record in records if str(record.get("hash", "")).startswith(prefix)]
+    return matches[0] if len(matches) == 1 else None
+
+
+def valid_bearer_candidate(value: str) -> bool:
+    """Validate an operator-supplied bearer token without logging or echoing it."""
+    value = str(value or "").strip()
+    return 16 <= len(value) <= 512 and not any(char.isspace() or ord(char) < 32 or ord(char) == 127 for char in value)
 
 
 def verify_init_data(raw: str, bot_token: str, max_age: int = 86400) -> dict[str, Any]:
@@ -2256,6 +2434,35 @@ def main() -> None:
                 is_admin = actor_id == settings.admin_chat_id
                 if not callback and not reply_action and actor_id and not command.startswith("/"):
                     prompt = store.prompt(actor_id)
+                    if prompt and prompt["action"] == "provision-token":
+                        prompt_parts = str(prompt["server"]).split("|", 1)
+                        prompt_server = prompt_parts[0].lower() if prompt_parts else ""
+                        try:
+                            target_id = int(prompt_parts[1]) if len(prompt_parts) > 1 else 0
+                        except (TypeError, ValueError):
+                            target_id = 0
+                        candidate = command.strip()
+                        try:
+                            secret_message_id = int(message.get("message_id", 0) or 0)
+                            if secret_message_id:
+                                telegram.delete_message(chat_id, secret_message_id)
+                        except (OSError, RuntimeError, ValueError):
+                            LOG.info("provision token message cleanup failed chat=%s", chat_id)
+                        target = store.get(target_id) if is_admin and target_id else None
+                        if not is_admin or prompt_server not in {"finland", "germany"} or target is None or target[f"{prompt_server}_token"] or not valid_bearer_candidate(candidate):
+                            telegram.send(chat_id, "Токен отклонён: проверьте, что это полный bearer-токен без пробелов и что сервер ещё не привязан. Повторите ввод.", force_reply=True)
+                            continue
+                        verified = panels.request(prompt_server, "clients", candidate)
+                        if not isinstance(verified, dict) or verified.get("error"):
+                            telegram.send(chat_id, "Панель не приняла этот токен или API недоступен. Секрет не сохранён. Повторите ввод.", force_reply=True)
+                            continue
+                        values = {"finland": str(target["finland_token"] or ""), "germany": str(target["germany_token"] or "")}
+                        values[prompt_server] = candidate
+                        store.bind(target_id, str(target["username"] or ""), str(target["first_name"] or ""), values["finland"], values["germany"], resolve_request=False)
+                        store.clear_prompt(actor_id)
+                        target = store.get(target_id)
+                        render_navigation(telegram, store, chat_id, f"<b>✅ Токен {html.escape(prompt_server)} проверен и привязан</b>\nСекрет не выводится.\n\n{provisioning_text(target_id, target)}", provisioning_keyboard(target_id, target), "admin:request", reply=True)
+                        continue
                     if prompt and prompt["action"] == "token_name":
                         prompt_parts = str(prompt["server"]).split("|", 1)
                         prompt_server = prompt_parts[0].lower() if prompt_parts else ""
