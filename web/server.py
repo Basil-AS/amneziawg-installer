@@ -383,9 +383,9 @@ HELP_CLIENT_GROUPS = [
         ],
     },
     {
-        "name": "macOS / Linux Desktop",
-        "icon": "linux",
-        "subtitle": "GUI clients for desktop systems; proxy clients remain alternatives.",
+        "name": "macOS",
+        "icon": "apple",
+        "subtitle": "GUI clients for macOS; import the generated profile or QR code.",
         "clients": [
             {
                 "name": "AmneziaVPN",
@@ -394,7 +394,7 @@ HELP_CLIENT_GROUPS = [
                 "description": "Full desktop client.",
                 "support": ["supported", "supported", "supported"],
                 "links": [{"label": "Official", "url": "https://amnezia.org/downloads"}, {"label": "GitHub", "url": "https://github.com/amnezia-vpn/amnezia-client/releases"}],
-                "platforms": "macOS, Linux Desktop",
+                "platforms": "macOS",
                 "setupMethod": "vpn:// URI, QR, app flow",
                 "bestFor": "Full GUI onboarding and desktop use.",
                 "limitation": "Heavier than lightweight AWG-only clients.",
@@ -410,6 +410,25 @@ HELP_CLIENT_GROUPS = [
                 "setupMethod": ".conf, QR",
                 "bestFor": "Lightweight AWG-only setup.",
                 "limitation": "Split tunneling is mostly route-based.",
+            },
+        ],
+    },
+    {
+        "name": "Linux Desktop",
+        "icon": "linux",
+        "subtitle": "Official desktop client for Linux; use the app flow for the simplest setup.",
+        "clients": [
+            {
+                "name": "AmneziaVPN",
+                "status": "Recommended / Full client",
+                "trafficSplit": "Routes / app features",
+                "description": "Official Linux desktop client with a guided import flow.",
+                "support": ["supported", "supported", "supported"],
+                "links": [{"label": "Official", "url": "https://amnezia.org/downloads"}, {"label": "GitHub", "url": "https://github.com/amnezia-vpn/amnezia-client/releases"}],
+                "platforms": "Linux x64",
+                "setupMethod": "vpn:// URI, QR, app flow",
+                "bestFor": "Linux desktop users who want a maintained GUI.",
+                "limitation": "The app is heavier than a command-line tunnel and may require desktop dependencies.",
             },
         ],
     },
