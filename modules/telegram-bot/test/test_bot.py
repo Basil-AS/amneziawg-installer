@@ -9,7 +9,7 @@ from unittest.mock import patch
 from urllib.parse import urlencode
 from pathlib import Path
 
-from src.bot import PANEL_TOKEN, PanelManager, ServerManager, Settings, Store, admin_keyboard, callback_command, callback_message_is_media, client_stats_card, compact_snapshot, help_text, maintenance_keyboard, menu_keyboard, navigation_keyboard, panel_client_names, panel_token_records, provisioning_keyboard, provisioning_text, reply_keyboard, render_navigation, result_navigation_keyboard, token_client_scope, token_record_by_prefix, uri_keyboard, valid_bearer_candidate, verify_init_data, client_keyboard, clients_keyboard, format_bytes, format_panel_payload, format_timestamp, parallel_payloads, sparkline, usage_bar
+from src.bot import PANEL_TOKEN, PanelManager, ServerManager, Settings, Store, admin_keyboard, callback_command, callback_message_is_media, client_stats_card, compact_snapshot, help_text, maintenance_keyboard, menu_keyboard, navigation_keyboard, panel_client_names, panel_token_records, provisioning_keyboard, provisioning_text, reply_keyboard, render_navigation, result_navigation_keyboard, token_client_scope, token_record_by_prefix, uri_keyboard, valid_bearer_candidate, verify_init_data, client_keyboard, clients_keyboard, format_bytes, format_panel_payload, format_timestamp, merge_client_help_payloads, parallel_payloads, sparkline, usage_bar
 
 
 class BotTests(unittest.TestCase):
@@ -495,8 +495,15 @@ class BotTests(unittest.TestCase):
     def test_client_app_guide_is_rendered_as_links_and_cards(self):
         text = format_panel_payload({"panel": "Finland", "groups": [{"name": "Android", "subtitle": "Выбор", "clients": [{"name": "WG Tunnel", "status": "Recommended", "platforms": "Android", "setupMethod": "QR", "links": [{"label": "Сайт", "url": "https://example.test/app"}]}]}]}, "help-clients")
         self.assertIn("WG Tunnel", text)
-        self.assertIn("https://example.test/app", text)
+        self.assertIn("Сайт", text)
+        self.assertIn('href="https://example.test/app"', text)
         self.assertNotIn('"groups"', text)
+
+    def test_client_app_catalog_merges_duplicate_panel_groups(self):
+        payload = {"groups": [{"name": "Linux Desktop", "clients": [{"name": "AmneziaVPN", "platforms": "Linux x64", "links": [{"label": "Official", "url": "https://amnezia.org/downloads"}]}]}]}
+        merged = merge_client_help_payloads([payload, payload])
+        self.assertEqual(len(merged["groups"]), 1)
+        self.assertEqual(len(merged["groups"][0]["clients"]), 1)
 
     def test_uri_keyboard_uses_copy_text_button(self):
         keyboard = uri_keyboard("vpn://example", "ref123")

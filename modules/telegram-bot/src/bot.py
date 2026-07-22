@@ -690,8 +690,10 @@ class Telegram:
     def send_photo(self, chat_id: int, filename: str, content: bytes, caption: str = "") -> dict[str, Any]:
         return self._upload("sendPhoto", "photo", filename, content, chat_id=chat_id, caption=caption)
 
-    def send(self, chat_id: int, text: str, *, keyboard: list[list[dict[str, str]]] | None = None, reply_keyboard: list[list[str]] | None = None, force_reply: bool = False) -> dict[str, Any]:
+    def send(self, chat_id: int, text: str, *, keyboard: list[list[dict[str, str]]] | None = None, reply_keyboard: list[list[str]] | None = None, force_reply: bool = False, disable_web_page_preview: bool = False) -> dict[str, Any]:
         params: dict[str, Any] = {"chat_id": chat_id, "text": text[:4096], "parse_mode": "HTML"}
+        if disable_web_page_preview:
+            params["link_preview_options"] = json.dumps({"is_disabled": True})
         if keyboard:
             params["reply_markup"] = json.dumps({"inline_keyboard": keyboard}, ensure_ascii=False)
         elif reply_keyboard:
@@ -708,7 +710,7 @@ class Telegram:
             params.pop("parse_mode", None)
             return self.call("sendMessage", **params)
 
-    def edit_message(self, chat_id: int, message_id: int, text: str, *, keyboard: list[list[dict[str, str]]] | None = None) -> dict[str, Any]:
+    def edit_message(self, chat_id: int, message_id: int, text: str, *, keyboard: list[list[dict[str, str]]] | None = None, disable_web_page_preview: bool = False) -> dict[str, Any]:
         params: dict[str, Any] = {
             "chat_id": chat_id,
             "message_id": message_id,
@@ -716,6 +718,8 @@ class Telegram:
             "parse_mode": "HTML",
             "reply_markup": json.dumps({"inline_keyboard": keyboard or []}, ensure_ascii=False),
         }
+        if disable_web_page_preview:
+            params["link_preview_options"] = json.dumps({"is_disabled": True})
         try:
             return self.call("editMessageText", **params)
         except RuntimeError as exc:
@@ -892,14 +896,17 @@ def clients_keyboard(rows: list[tuple[str, str, str]], *, page: int = 1, pages: 
     return keyboard
 
 
-def render_navigation(telegram: Telegram, store: Store, chat_id: int, text: str, keyboard: list[list[dict[str, str]]], screen: str, *, callback_message_id: int | None = None, edit_current: bool = False, reply: bool = True) -> None:
+def render_navigation(telegram: Telegram, store: Store, chat_id: int, text: str, keyboard: list[list[dict[str, str]]], screen: str, *, callback_message_id: int | None = None, edit_current: bool = False, reply: bool = True, disable_web_page_preview: bool = False) -> None:
     """Keep one editable navigation message per chat; never touch media messages."""
     previous = store.navigation(chat_id)
     previous_id = int(previous["message_id"]) if previous else None
     target_id = callback_message_id if callback_message_id and callback_message_id == previous_id else (previous_id if edit_current else None)
     if target_id:
         try:
-            telegram.edit_message(chat_id, target_id, text, keyboard=keyboard)
+            edit_kwargs = {"keyboard": keyboard}
+            if disable_web_page_preview:
+                edit_kwargs["disable_web_page_preview"] = True
+            telegram.edit_message(chat_id, target_id, text, **edit_kwargs)
             store.set_navigation(chat_id, target_id, screen)
             return
         except (OSError, RuntimeError, ValueError) as exc:
@@ -917,7 +924,10 @@ def render_navigation(telegram: Telegram, store: Store, chat_id: int, text: str,
         str(item.get("callback_data", "")).startswith("admin:") or item.get("callback_data") == "menu:admin"
         for row in keyboard for item in row
     )
-    result = telegram.send(chat_id, text, keyboard=keyboard, reply_keyboard=reply_keyboard(admin_mode) if reply else None)
+    send_kwargs = {"keyboard": keyboard, "reply_keyboard": reply_keyboard(admin_mode) if reply else None}
+    if disable_web_page_preview:
+        send_kwargs["disable_web_page_preview"] = True
+    result = telegram.send(chat_id, text, **send_kwargs)
     message_id = int(result.get("message_id", 0)) if isinstance(result, dict) else 0
     if message_id:
         store.set_navigation(chat_id, message_id, screen)
@@ -1478,8 +1488,8 @@ def handle_navigation(telegram: Telegram, store: Store, panels: PanelManager, ch
             return True
         if action == "help":
             payloads = parallel_payloads(panels, ("finland", "germany"), "help-clients", {key: PANEL_TOKEN if is_admin else tokens[key] for key in ("finland", "germany")})
-            output = "\n\n".join(format_panel_payload(payload, "help-clients") for payload in payloads)
-            render_navigation(telegram, store, chat_id, "<b>📚 Клиентские приложения</b>\nВыберите приложение, совместимое с вашим устройством.\n\n" + output, [[{"text": "👥 Мои устройства", "callback_data": "user:clients"}, {"text": "🏠 Меню", "callback_data": "menu:home"}]], "user:help", callback_message_id=callback_message_id)
+            output = format_panel_payload(merge_client_help_payloads(payloads), "help-clients")
+            render_navigation(telegram, store, chat_id, "<b>📚 Клиентские приложения</b>\nОдин каталог для всех подключённых серверов. Ссылки открываются кнопками ниже — превью отключено.\n\n" + output, [[{"text": "👥 Мои устройства", "callback_data": "user:clients"}, {"text": "🏠 Меню", "callback_data": "menu:home"}]], "user:help", callback_message_id=callback_message_id, disable_web_page_preview=True)
             return True
         if action == "nettest":
             results = parallel_results(panels, ("finland", "germany"), "nettest-ping", {key: PANEL_TOKEN if is_admin else tokens[key] for key in ("finland", "germany")})
@@ -1823,7 +1833,7 @@ def format_panel_payload(payload: dict[str, Any], action: str) -> str:
     panel = html.escape(str(payload.get("panel", "Сервер")))
     if payload.get("error"):
         return f"<b>{panel}</b>\n❌ {html.escape(str(payload['error']))}"
-    lines: list[str] = [f"<b>{panel}</b>"]
+    lines: list[str] = [] if action == "help-clients" else [f"<b>{panel}</b>"]
     if action in {"status", "snapshot"}:
         return compact_snapshot(payload)
     if action == "health":
@@ -1955,14 +1965,16 @@ def format_panel_payload(payload: dict[str, Any], action: str) -> str:
         for group in groups[:8]:
             if not isinstance(group, dict):
                 continue
-            lines.append(f"<b>{html.escape(str(group.get('name') or 'Платформа'))}</b>")
+            group_name = str(group.get("name") or "Платформа")
+            icon = {"Windows": "🪟", "Android": "🤖", "iOS / iPadOS": "🍎", "macOS": "🍏", "Linux Desktop": "🐧"}.get(group_name, "💻")
+            lines.append(f"<b>{icon} {html.escape(group_name)}</b>")
             if group.get("subtitle"):
                 lines.append(html.escape(str(group["subtitle"])))
             for client in (group.get("clients") or [])[:4]:
                 if not isinstance(client, dict):
                     continue
                 links = " · ".join(f"<a href=\"{html.escape(str(link.get('url') or ''), quote=True)}\">{html.escape(str(link.get('label') or 'Ссылка'))}</a>" for link in (client.get("links") or []) if isinstance(link, dict) and str(link.get("url") or "").startswith("https://"))
-                lines.append(f"• <b>{html.escape(str(client.get('name') or 'Клиент'))}</b> · {html.escape(str(client.get('status') or ''))}\n  {html.escape(str(client.get('platforms') or ''))} · импорт: {html.escape(str(client.get('setupMethod') or ''))}" + (f"\n  {links}" if links else ""))
+                lines.append(f"• <b>{html.escape(str(client.get('name') or 'Клиент'))}</b> · {html.escape(str(client.get('status') or ''))}\n  <i>{html.escape(str(client.get('platforms') or ''))}</i> · импорт: <code>{html.escape(str(client.get('setupMethod') or '—'))}</code>" + (f"\n  🔗 {links}" if links else ""))
     elif action == "web-policy":
         for label, key in (("Режим", "mode"), ("Публичный listener", "public_listener"), ("Trusted proxy", "trusted_proxy"), ("Разрешённые сети", "allowed_networks")):
             if key in payload:
@@ -1983,6 +1995,35 @@ def format_panel_payload(payload: dict[str, Any], action: str) -> str:
         elif payload.get("ok") is not None:
             lines.append(f"Результат: {status_icon(payload.get('ok'))} {html.escape(str(payload.get('ok')))}")
     return "\n".join(lines)[:4096]
+
+
+def merge_client_help_payloads(payloads: list[dict[str, Any]]) -> dict[str, Any]:
+    """Combine identical panel catalogues into one stable client guide."""
+    groups: dict[str, dict[str, Any]] = {}
+    for payload in payloads:
+        if not isinstance(payload, dict):
+            continue
+        for raw_group in payload.get("groups") or []:
+            if not isinstance(raw_group, dict):
+                continue
+            name = str(raw_group.get("name") or "Платформа")
+            group = groups.setdefault(name, {"name": name, "subtitle": raw_group.get("subtitle") or "", "clients": []})
+            by_key = {(str(item.get("name") or ""), str(item.get("platforms") or "")): item for item in group["clients"] if isinstance(item, dict)}
+            for raw_client in raw_group.get("clients") or []:
+                if not isinstance(raw_client, dict):
+                    continue
+                key = (str(raw_client.get("name") or ""), str(raw_client.get("platforms") or ""))
+                if key not in by_key:
+                    by_key[key] = dict(raw_client)
+                    by_key[key]["links"] = list(raw_client.get("links") or [])
+                    group["clients"].append(by_key[key])
+                    continue
+                existing = by_key[key]
+                links = {(str(link.get("label") or ""), str(link.get("url") or "")) for link in existing.get("links") or [] if isinstance(link, dict)}
+                for link in raw_client.get("links") or []:
+                    if isinstance(link, dict) and (str(link.get("label") or ""), str(link.get("url") or "")) not in links:
+                        existing.setdefault("links", []).append(link)
+    return {"panel": "Клиентские приложения", "groups": list(groups.values())}
 
 
 def panel_text(panel: PanelManager, key: str, action: str, token: str | object | None = None, value: str = "") -> str:
