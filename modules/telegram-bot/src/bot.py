@@ -765,7 +765,7 @@ class Telegram:
 def help_text(admin: bool) -> str:
     text = "<b>GaulleBot</b>\nВыберите действие кнопками — команды нужны только для восстановления.\n\n/me — моя привязка\n/servers — состояние серверов\n/clients — мои устройства\n/menu — главное меню\n/help — помощь"
     if admin:
-        text += "\n\n<b>Администратор</b>:\n/status — быстрый сводный статус\n/health — глубокая проверка\n/info — сведения о сервере\n/readiness — готовность VPN\n/dns — DNS/AdGuard\n/resolver — состояние resolver\n/audit — аудит клиентов\n/tokens — токены панели\n/history — история нагрузки\n/latency — задержка клиентов\n/provider — трафик провайдера\n/clients [server] — клиенты\n/logs [server] — последние логи\n/users — привязки\n/bind &lt;tg_id&gt; &lt;fin_token&gt; &lt;ger_token&gt;\n/add &lt;server&gt; &lt;name&gt;\n/remove &lt;server&gt; &lt;name&gt;\n/regenerate &lt;server&gt; &lt;name&gt;\n/restart &lt;finland|germany&gt;"
+        text += "\n\n<b>Администратор</b>:\n/status — быстрый сводный статус\n/health — глубокая проверка\n/info — сведения о сервере\n/readiness — готовность VPN\n/dns — DNS/AdGuard\n/resolver — состояние resolver\n/audit — аудит клиентов\n/tokens — токены панели\n/history — история нагрузки\n/latency — задержка клиентов\n/provider — трафик провайдера\n/clients [server] — клиенты\n/logs [server] — последние логи\n/users — список привязок\n/add &lt;server&gt; &lt;name&gt;\n/remove &lt;server&gt; &lt;name&gt;\n/regenerate &lt;server&gt; &lt;name&gt;\n/restart &lt;finland|germany&gt;\n\nТокены пользователей выдаются только через мастер «Пользователи»; не вставляйте bearer-секреты в slash-команды."
     return text
 
 
@@ -822,6 +822,12 @@ def callback_command(data: str) -> str:
     if value.startswith("nav:"):
         value = value[4:]
     return f"/{value}" if value and not value.startswith("/") else value
+
+
+def callback_message_is_media(message: dict[str, Any] | None) -> bool:
+    """Return whether a callback belongs to media that must never be deleted."""
+    payload = message or {}
+    return any(payload.get(field) for field in ("photo", "video", "document", "audio", "voice", "animation", "sticker"))
 
 
 def navigation_keyboard(action: str, admin: bool) -> list[list[dict[str, str]]]:
@@ -898,7 +904,11 @@ def render_navigation(telegram: Telegram, store: Store, chat_id: int, text: str,
             return
         except (OSError, RuntimeError, ValueError) as exc:
             LOG.info("navigation edit failed chat=%s screen=%s error=%s", chat_id, screen, type(exc).__name__)
-    if previous_id and previous_id != callback_message_id:
+    # If editing the current menu failed (for example after a Telegram-side
+    # expiry), remove that exact old menu before creating its replacement.
+    # The previous implementation skipped deletion when the callback came
+    # from the same message, which was the source of duplicate refresh cards.
+    if previous_id:
         try:
             telegram.delete_message(chat_id, previous_id)
         except (OSError, RuntimeError, ValueError):
@@ -913,13 +923,23 @@ def render_navigation(telegram: Telegram, store: Store, chat_id: int, text: str,
         store.set_navigation(chat_id, message_id, screen)
 
 
-def handle_navigation(telegram: Telegram, store: Store, panels: PanelManager, chat_id: int, is_admin: bool, data: str, *, actor_id: int | None = None, callback_message_id: int | None = None) -> bool:
+def handle_navigation(telegram: Telegram, store: Store, panels: PanelManager, chat_id: int, is_admin: bool, data: str, *, actor_id: int | None = None, callback_message_id: int | None = None, callback_message_is_media: bool = False) -> bool:
     """Render button-first VPN screens and edit the current menu in place."""
     parts = [part for part in str(data or "").split(":")]
     principal_id = actor_id or chat_id
     if len(parts) < 2 or parts[0] not in {"menu", "server", "admin", "user", "client"}:
         return False
     kind, action = parts[0], parts[1]
+    current_navigation = store.navigation(chat_id)
+    current_message_id = int(current_navigation["message_id"]) if current_navigation else None
+    # A callback from an older text menu is safe to remove: it is navigation
+    # clutter, never a configuration/media artifact. Media messages are
+    # explicitly preserved even if they carry a future inline button.
+    if callback_message_id and not callback_message_is_media and callback_message_id != current_message_id:
+        try:
+            telegram.delete_message(chat_id, callback_message_id)
+        except (OSError, RuntimeError, ValueError):
+            LOG.info("stale navigation cleanup failed chat=%s message=%s", chat_id, callback_message_id)
     if kind == "menu":
         if action == "home":
             text = "<b>GaulleBot</b>\nУправление VPN-серверами без ручного ввода команд."
@@ -2518,7 +2538,9 @@ def main() -> None:
                     continue
                 parts = command.split()
                 name = parts[0].split("@", 1)[0].lower()
-                if callback and handle_navigation(telegram, store, panels, chat_id, is_admin, str(callback.get("data", "")), actor_id=actor_id, callback_message_id=int((callback.get("message") or {}).get("message_id", 0) or 0)):
+                callback_message = (callback.get("message") or {}) if callback else {}
+                callback_is_media = callback_message_is_media(callback_message)
+                if callback and handle_navigation(telegram, store, panels, chat_id, is_admin, str(callback.get("data", "")), actor_id=actor_id, callback_message_id=int(callback_message.get("message_id", 0) or 0), callback_message_is_media=callback_is_media):
                     continue
                 if reply_action and handle_navigation(telegram, store, panels, chat_id, is_admin, reply_action, actor_id=actor_id):
                     continue
@@ -2566,8 +2588,7 @@ def main() -> None:
                         action = name[1:]
                         telegram.send(chat_id, server_result(panels, parts[1].lower(), action, PANEL_TOKEN, value=parts[2]))
                     elif name == "/bind" and len(parts) == 4:
-                        store.bind(int(parts[1]), str(sender.get("username", "")), str(sender.get("first_name", "")), parts[2], parts[3])
-                        telegram.send(chat_id, "Привязка сохранена.")
+                        telegram.send(chat_id, "Для безопасности ручная привязка через /bind отключена. Откройте ⚙️ Админка → 👤 Пользователи и используйте мастер настройки по каждому серверу.")
                     elif name == "/users":
                         rows = store.all()
                         telegram.send(chat_id, "\n".join(f"<code>{r['telegram_id']}</code> @{html.escape(r['username'] or '-')} fin={'✅' if r['finland_token'] else '—'} ger={'✅' if r['germany_token'] else '—'}" for r in rows) or "Пользователей пока нет.")
