@@ -892,11 +892,11 @@ def clients_keyboard(rows: list[tuple[str, str, str]], *, page: int = 1, pages: 
     return keyboard
 
 
-def render_navigation(telegram: Telegram, store: Store, chat_id: int, text: str, keyboard: list[list[dict[str, str]]], screen: str, *, callback_message_id: int | None = None, reply: bool = True) -> None:
+def render_navigation(telegram: Telegram, store: Store, chat_id: int, text: str, keyboard: list[list[dict[str, str]]], screen: str, *, callback_message_id: int | None = None, edit_current: bool = False, reply: bool = True) -> None:
     """Keep one editable navigation message per chat; never touch media messages."""
     previous = store.navigation(chat_id)
     previous_id = int(previous["message_id"]) if previous else None
-    target_id = callback_message_id if callback_message_id and callback_message_id == previous_id else None
+    target_id = callback_message_id if callback_message_id and callback_message_id == previous_id else (previous_id if edit_current else None)
     if target_id:
         try:
             telegram.edit_message(chat_id, target_id, text, keyboard=keyboard)
@@ -1678,10 +1678,10 @@ def handle_navigation(telegram: Telegram, store: Store, panels: PanelManager, ch
                         return panels.request(key, action, PANEL_TOKEN, extra={"duration_seconds": 10}) or {"panel": key, "error": "API недоступен"}
                     with ThreadPoolExecutor(max_workers=len(keys)) as pool:
                         results = [future.result() for future in [pool.submit(fetch, key) for key in keys]]
-                    telegram.send(chat_id, "<b>📡 Результат теста потерь пакетов</b>\n\n" + "\n\n".join(format_panel_payload(payload, action) for payload in results), keyboard=result_navigation_keyboard(action, server, True))
+                    render_navigation(telegram, store, chat_id, "<b>📡 Результат теста потерь пакетов</b>\n\n" + "\n\n".join(format_panel_payload(payload, action) for payload in results), result_navigation_keyboard(action, server, True), f"server:{action}:{server}", edit_current=True)
                 except (OSError, RuntimeError, ValueError, TypeError) as exc:
                     LOG.warning("background drops sample failed chat=%s error=%s", chat_id, type(exc).__name__)
-                    telegram.send(chat_id, "<b>📡 Тест потерь пакетов не завершён</b>\nПанель временно недоступна. Повторите попытку позже.", keyboard=result_navigation_keyboard(action, server, True))
+                    render_navigation(telegram, store, chat_id, "<b>📡 Тест потерь пакетов не завершён</b>\nПанель временно недоступна. Повторите попытку позже.", result_navigation_keyboard(action, server, True), f"server:{action}:{server}", edit_current=True)
 
             BACKGROUND_EXECUTOR.submit(collect_drop_sample)
             return True
@@ -2554,7 +2554,7 @@ def main() -> None:
                     if name == "/start":
                         render_navigation(telegram, store, chat_id, "<b>GaulleBot</b>\nУправление VPN-серверами без ручного ввода команд.", menu_keyboard(is_admin), "home")
                     elif name == "/help":
-                        telegram.send(chat_id, help_text(is_admin), keyboard=menu_keyboard(is_admin), reply_keyboard=reply_keyboard(is_admin))
+                        render_navigation(telegram, store, chat_id, help_text(is_admin), menu_keyboard(is_admin), "help", reply=True)
                     elif name == "/menu":
                         render_navigation(telegram, store, chat_id, "<b>Главное меню</b>\nВыберите нужное действие:", menu_keyboard(is_admin), "home", reply=True)
                     elif name == "/admin" and is_admin:
