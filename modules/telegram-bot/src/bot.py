@@ -1813,17 +1813,27 @@ def monitor_panels(telegram: Telegram, panels: PanelManager, admin_chat_id: int,
         for key, panel in panels.panels.items():
             payload = panels.request(key, "snapshot", PANEL_TOKEN)
             state, _icon = snapshot_health(payload or {"error": "panel unavailable", "panel": panel.label})
-            if state != "ok":
+            # A partially idle fleet is normal: only page the administrator
+            # when the service is down or every enabled client lost handshake.
+            # The card still renders a warning for partial connectivity.
+            summary = (payload or {}).get("summary") or {}
+            try:
+                enabled = max(0, int(summary.get("total", 0)) - int(summary.get("disabled", 0)))
+                online = max(0, int(summary.get("online", 0)))
+            except (TypeError, ValueError):
+                enabled = online = 0
+            critical_state = state if state == "down" or (state == "degraded" and enabled and online == 0) else "ok"
+            if critical_state != "ok":
                 failures[key] = failures.get(key, 0) + 1
                 if failures[key] < 2 and previous.get(key, "ok") == "ok":
                     continue
             else:
                 failures[key] = 0
-            if previous.get(key, "ok") == state:
+            if previous.get(key, "ok") == critical_state:
                 continue
-            previous[key] = state
+            previous[key] = critical_state
             try:
-                telegram.send(admin_chat_id, monitor_message(panel.label, payload or {"error": "panel unavailable"}, state), disable_web_page_preview=True)
+                telegram.send(admin_chat_id, monitor_message(panel.label, payload or {"error": "panel unavailable"}, critical_state), disable_web_page_preview=True)
             except (OSError, RuntimeError, ValueError) as exc:
                 LOG.warning("outage notification failed panel=%s error=%s", key, type(exc).__name__)
 
