@@ -21,6 +21,28 @@ assert server.pct(5, 0) is None
 assert server.pct(5, None) is None
 assert server.pct(None, 1000) is None
 assert server.pct(50, 200) == 25.0
+assert server.pct(123, 1000, 4) == 12.3
+PY
+}
+
+@test "web panel: health history counts incident starts, not every warning sample" {
+    command -v python3 &>/dev/null || skip "python3 not available"
+    REPO_ROOT="$BATS_TEST_DIRNAME/.." python3 - <<'PY'
+import importlib.util
+import os
+from pathlib import Path
+spec = importlib.util.spec_from_file_location("server", Path(os.environ["REPO_ROOT"]) / "web" / "server.py")
+server = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(server)
+rows = [{"status": status, "cpu_usage_percent": 10, "memory_used_percent": 20, "load1": 0.1,
+         "memory_available_bytes": 1, "disk_used_percent": 20, "disk_free_bytes": 1,
+         "conntrack_used_percent": 1, "conntrack_count": 1,
+         "wan_rx_dropped": 0, "wan_tx_dropped": 0, "vpn_rx_dropped": 0, "vpn_tx_dropped": 0,
+         "wan_rx_errors": 0, "wan_tx_errors": 0, "vpn_rx_errors": 0, "vpn_tx_errors": 0,
+         "python_rss_bytes": 1, "python_fd_count": 1, "python_threads": 1}
+        for status in ["ok", "warn", "warn", "warn", "ok", "warn", "critical", "critical", "ok"]]
+out = server.summarize_health_history(rows)
+assert out["counts"] == {"samples": 9, "warn": 2, "critical": 1, "warn_samples": 4, "critical_samples": 2}
 PY
 }
 
