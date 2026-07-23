@@ -5373,7 +5373,7 @@ def adguard_stats_payload():
         return payload, status
     total = int(payload.get("num_dns_queries") or 0)
     blocked = int(payload.get("num_blocked_filtering") or 0)
-    return {"ok": True, "total_queries": total, "blocked_queries": blocked, "blocked_percent": round(blocked * 100 / total, 2) if total else 0, "interval": payload.get("interval", 0), "top_queried": payload.get("top_queried_domains", {}), "top_blocked": payload.get("top_blocked_domains", {})}, status
+    return {"ok": True, "total_queries": total, "blocked_queries": blocked, "blocked_percent": round(blocked * 100 / total, 1) if total else 0.0, "interval": payload.get("interval", 0), "top_queried": payload.get("top_queried_domains", {}), "top_blocked": payload.get("top_blocked_domains", {})}, status
 
 
 def adguard_filters_payload():

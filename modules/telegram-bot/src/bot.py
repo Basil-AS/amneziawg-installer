@@ -2038,13 +2038,13 @@ def format_panel_payload(payload: dict[str, Any], action: str) -> str:
         for label, key in (("WAN", "wan"), ("VPN", "vpn"), ("Qdisc", "qdisc"), ("TCP", "tcp"), ("IPv6", "ipv6")):
             section = payload.get(key) or {}
             if key in {"wan", "vpn"}:
-                lines.append(f"<b>{label}</b>: потери {section.get('drops_delta', 0)} ({section.get('drop_pct', '—')}%), ошибки {section.get('errors_delta', 0)}")
+                lines.append(f"<b>{label}</b>: потери {section.get('drops_delta', 0)} ({format_metric_number(section.get('drop_pct'))}%), ошибки {section.get('errors_delta', 0)}")
             elif key == "qdisc":
-                lines.append(f"<b>{label}</b>: drop {section.get('drop_delta', 0)} · sent {section.get('sent_delta', 0)} ({section.get('drop_pct', '—')}%)")
+                lines.append(f"<b>{label}</b>: drop {section.get('drop_delta', 0)} · sent {section.get('sent_delta', 0)} ({format_metric_number(section.get('drop_pct'))}%)")
             elif key == "tcp":
                 lines.append(f"<b>{label}</b>: retrans {section.get('retrans_delta', 0)} · timeout {section.get('timeout_delta', 0)}")
             else:
-                lines.append(f"<b>{label}</b>: no-route {section.get('no_route_delta', 0)} ({section.get('no_route_pct', '—')}%)")
+                lines.append(f"<b>{label}</b>: no-route {section.get('no_route_delta', 0)} ({format_metric_number(section.get('no_route_pct'))}%)")
     elif action == "latency":
         overview = payload.get("overview") or payload.get("diagnostics") or {}
         lines.append(f"Активных: <b>{overview.get('active', overview.get('active_peers', 0))}</b> · reachable: <b>{overview.get('reachable', overview.get('reachable_clients', 0))}</b>")
