@@ -1497,13 +1497,19 @@ def handle_navigation(telegram: Telegram, store: Store, panels: PanelManager, ch
         render_navigation(telegram, store, chat_id, f"<b>🔐 Доступ</b>\n{message}", [[{"text": "🔄 Проверить снова", "callback_data": "user:clients"}, {"text": "🏠 Меню", "callback_data": "menu:home"}]], "user:request", callback_message_id=callback_message_id)
         return True
     if kind == "user" and action == "add":
-        if not is_admin and (not row or not (tokens["finland"] or tokens["germany"])):
-            render_navigation(telegram, store, chat_id, "<b>Доступ ещё не выдан</b>\nСначала получите привязку токена панели.", menu_keyboard(False), "home", callback_message_id=callback_message_id)
+        if not is_admin and (not row or (not (tokens["finland"] or tokens["germany"]) and store.access_request_status(principal_id) != "approved")):
+            render_navigation(telegram, store, chat_id, "<b>Доступ ещё не выдан</b>\nСначала получите одобрение администратора.", menu_keyboard(False), "home", callback_message_id=callback_message_id)
             return True
         server = parts[2].lower() if len(parts) > 2 else ""
         if server not in {"finland", "germany"}:
             render_navigation(telegram, store, chat_id, "<b>➕ Новое устройство</b>\nВыберите сервер для нового профиля:", [[{"text": "🇫🇮 Финляндия", "callback_data": "user:add:finland"}, {"text": "🇩🇪 Германия", "callback_data": "user:add:germany"}], [{"text": "⬅️ Устройства", "callback_data": "user:clients"}]], "user:add", callback_message_id=callback_message_id)
             return True
+        if not is_admin and not tokens.get(server):
+            _, error = ensure_user_panel_token(store, panels, principal_id, server)
+            if error:
+                LOG.warning("automatic panel token provisioning failed user=%s server=%s reason=%s", principal_id, server, error)
+                render_navigation(telegram, store, chat_id, "<b>⚠️ Не удалось подготовить доступ</b>\nАдминистратор получит уведомление и сможет привязать токен вручную.", menu_keyboard(False), "user:add-error", callback_message_id=callback_message_id)
+                return True
         store.set_prompt(principal_id, "add_client", server)
         telegram.send(chat_id, f"<b>➕ Новое устройство · {html.escape(server)}</b>\nВведите имя профиля (латиница, цифры, <code>-</code> или <code>_</code>, до 48 символов).", force_reply=True)
         return True
@@ -2133,6 +2139,47 @@ def panel_client_names(payload: dict[str, Any]) -> list[str] | None:
         if name and name not in names:
             names.append(name)
     return names
+
+
+def ensure_user_panel_token(store: Store, panels: PanelManager, telegram_id: int, server: str) -> tuple[str | None, str | None]:
+    """Create a least-privilege panel token for an approved user on demand.
+
+    The bot service credential is used only inside this function; the resulting
+    bearer secret is stored in the local SQLite binding and is never rendered
+    into Telegram callbacks, logs, or user-facing text.
+    """
+    server = str(server).lower()
+    if server not in {"finland", "germany"}:
+        return None, "invalid server"
+    row = store.get(telegram_id)
+    if row is None or store.access_request_status(telegram_id) != "approved":
+        return None, "access is not approved"
+    existing = str(row[f"{server}_token"] or "")
+    if existing:
+        return existing, None
+    clients_payload = panels.request(server, "clients", PANEL_TOKEN) or {}
+    client_names = panel_client_names(clients_payload)
+    if client_names is None:
+        return None, "panel client scope is unavailable"
+    token_name = f"telegram-{telegram_id}-{server}"
+    payload = panels.request(server, "create-user-token", PANEL_TOKEN, value=token_name, extra={"clients": client_names}) or {}
+    token = str(payload.get("token") or "")
+    if not token:
+        return None, "panel token creation failed"
+    values = {
+        "finland": str(row["finland_token"] or ""),
+        "germany": str(row["germany_token"] or ""),
+    }
+    values[server] = token
+    store.bind(
+        telegram_id,
+        str(row["username"] or ""),
+        str(row["first_name"] or ""),
+        values["finland"],
+        values["germany"],
+        resolve_request=False,
+    )
+    return token, None
 
 
 def token_client_scope(payload: dict[str, Any], digest: str) -> list[str] | None:

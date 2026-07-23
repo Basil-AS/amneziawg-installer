@@ -46,9 +46,13 @@ exceeded even for long client names. Administrative screens also expose
 health, logs, token audit, safe restart confirmation and the panel's verified
 update check/apply API.
 An approved user can also press “➕ Добавить устройство”, choose Finland or
-Germany and enter a profile name. The bot calls `POST /api/clients` with that
-user's bound bearer token; the panel assigns the new client to the same token.
-The super token is used only for the administrator account.
+Germany and enter a profile name. If that server has no binding yet, the bot
+first creates a deterministic `telegram-<telegram_id>-<server>` token with the
+current client scope through the service credential, stores it only in SQLite,
+and then calls `POST /api/clients` with the new user's bearer token. The panel
+assigns the new client to that same token. Approval is still required; a
+pending or rejected user can never trigger token creation. The super token is
+used only inside the bot service and for administrator operations.
 Large device lists are paginated at 12 cards per screen; opening a device keeps
 the originating page for Back/Cancel actions and never puts a client name or
 secret into callback data.
@@ -98,8 +102,9 @@ bearer value.
 
 Users without a binding can press “🔐 Запросить доступ”. The request is
 rate-limited in SQLite and sent to the administrator with a button that opens
-the access decision screen. The administrator can approve it with one button:
-the bot then creates separate scoped panel tokens through `POST /api/tokens`,
+the access decision screen. The administrator can approve it with one button;
+the bot then creates separate scoped panel tokens through `POST /api/tokens`
+when a server is first selected (or during the explicit provisioning flow),
 stores them in SQLite and notifies the user without displaying either secret.
 The request can also be rejected and becomes eligible for a later request.
 
