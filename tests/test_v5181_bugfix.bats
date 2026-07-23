@@ -60,7 +60,7 @@ stub_nic() {
     grep -qxF "DNS = 1.1.1.1, 1.0.0.1" "$AWG_DIR/c1.conf"
 }
 
-# --- r11y: full-tunnel ::/0 for iOS; split-tunnel untouched ---
+# --- r11y: IPv6 handling for full and split tunnel profiles ---
 
 @test "v5.18.1 r11y: full-tunnel client gets 0.0.0.0/0, ::/0" {
     create_init_config
@@ -69,12 +69,27 @@ stub_nic() {
     grep -qxF "AllowedIPs = 0.0.0.0/0, ::/0" "$AWG_DIR/c2.conf"
 }
 
-@test "v5.18.1 r11y: split-tunnel (custom list) does NOT get ::/0" {
+@test "v5.18.1 r11y: split-tunnel stays IPv4-only by default" {
     create_init_config
     sed -i "s|^export ALLOWED_IPS=.*|export ALLOWED_IPS='1.0.0.0/8, 2.0.0.0/7'|" "$CONFIG_FILE"
     render_client_config "c3" "10.9.9.4" "CLIENTPRIV" "SERVERPUB" "1.2.3.4" "443"
     grep -qxF "AllowedIPs = 1.0.0.0/8, 2.0.0.0/7" "$AWG_DIR/c3.conf"
     run grep -qF "::/0" "$AWG_DIR/c3.conf"
+    [ "$status" -ne 0 ]
+}
+
+@test "IPv6 leak-block adds ::/0 to split-tunnel without assigning IPv6" {
+    create_init_config
+    sed -i "s|^export ALLOWED_IPS=.*|export ALLOWED_IPS='1.0.0.0/8, 2.0.0.0/7'|" "$CONFIG_FILE"
+    cat >> "$CONFIG_FILE" <<'CONF'
+export AWG_IPV6_ENABLED=0
+export AWG_IPV6_MODE='block'
+export AWG_IPV6_LEAK_PROTECTION='block'
+CONF
+    render_client_config "c4" "10.9.9.5" "CLIENTPRIV" "SERVERPUB" "1.2.3.4" "443"
+    grep -qxF "Address = 10.9.9.5/32" "$AWG_DIR/c4.conf"
+    grep -qxF "AllowedIPs = 1.0.0.0/8, 2.0.0.0/7, ::/0" "$AWG_DIR/c4.conf"
+    run grep -q '^Address = .*:' "$AWG_DIR/c4.conf"
     [ "$status" -ne 0 ]
 }
 

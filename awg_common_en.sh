@@ -2505,7 +2505,10 @@ render_client_config() {
                 allowed_ips="${allowed_ips}, ::/0"
             fi
         fi
-    elif awg_ipv6_leak_block_enabled && [[ "${ALLOWED_IPS_MODE:-}" == "1" ]]; then
+    elif awg_ipv6_leak_block_enabled; then
+        # Leak-block is independent of IPv4 routing mode.  Split-tunnel
+        # profiles still need an IPv6 sink route, otherwise native IPv6 (and
+        # WebRTC ICE traffic) can bypass the VPN even when IPv4 is intentional.
         if [[ "$allowed_ips" != *"::/0"* ]]; then
             allowed_ips="${allowed_ips}, ::/0"
         fi
