@@ -1850,6 +1850,19 @@ def metric_line(label: str, value: Any, state: Any = None) -> str:
     return f"{html.escape(label)}: <b>{html.escape(str(value))}</b>{suffix}"
 
 
+def format_metric_number(value: Any, decimals: int = 1) -> str:
+    """Render telemetry numbers compactly without changing their meaning."""
+    if value in (None, ""):
+        return "—"
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+    if not number == number or number in {float("inf"), float("-inf")}:
+        return "—"
+    return f"{number:.{max(0, decimals)}f}"
+
+
 def display_value(value: Any) -> str:
     """Flatten API values into readable card text without leaking JSON syntax."""
     if isinstance(value, dict):
@@ -1871,7 +1884,7 @@ def format_panel_payload(payload: dict[str, Any], action: str) -> str:
         lines.append(f"Общий статус: {status_icon(payload.get('status'))} <b>{html.escape(str(payload.get('status', 'unknown')))}</b>")
         cpu, memory, disk = payload.get("cpu") or {}, payload.get("memory") or {}, payload.get("disk") or {}
         load = payload.get("load") or {}
-        lines.extend([metric_line("CPU", f"{cpu.get('usage_percent', '—')}%", cpu.get("status")), metric_line("RAM", f"{memory.get('used_percent', '—')}%", memory.get("status")), metric_line("Диск", f"{disk.get('used_percent', '—')}%", disk.get("status")), metric_line("Load", f"{load.get('one', '—')} / {load.get('five', '—')}", load.get("status"))])
+        lines.extend([metric_line("CPU", f"{format_metric_number(cpu.get('usage_percent'))}%", cpu.get("status")), metric_line("RAM", f"{format_metric_number(memory.get('used_percent'))}%", memory.get("status")), metric_line("Диск", f"{format_metric_number(disk.get('used_percent'))}%", disk.get("status")), metric_line("Load", f"{format_metric_number(load.get('one'))} / {format_metric_number(load.get('five'))}", load.get("status"))])
         services = payload.get("services") or {}
         if services:
             lines.append("<b>Сервисы</b>")

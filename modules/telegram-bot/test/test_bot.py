@@ -9,10 +9,28 @@ from unittest.mock import patch
 from urllib.parse import urlencode
 from pathlib import Path
 
-from src.bot import PANEL_TOKEN, PanelManager, ServerManager, Settings, Store, admin_keyboard, callback_command, callback_message_is_media, client_stats_card, compact_snapshot, ensure_user_panel_token, help_text, maintenance_keyboard, menu_keyboard, navigation_keyboard, panel_client_names, panel_token_records, provisioning_keyboard, provisioning_text, reply_keyboard, render_navigation, result_navigation_keyboard, token_client_scope, token_record_by_prefix, uri_keyboard, valid_bearer_candidate, verify_init_data, client_keyboard, clients_keyboard, format_bytes, format_panel_payload, format_timestamp, merge_client_help_payloads, parallel_payloads, sparkline, usage_bar
+from src.bot import PANEL_TOKEN, PanelManager, ServerManager, Settings, Store, admin_keyboard, callback_command, callback_message_is_media, client_stats_card, compact_snapshot, ensure_user_panel_token, format_metric_number, format_panel_payload, help_text, maintenance_keyboard, menu_keyboard, navigation_keyboard, panel_client_names, panel_token_records, provisioning_keyboard, provisioning_text, reply_keyboard, render_navigation, result_navigation_keyboard, token_client_scope, token_record_by_prefix, uri_keyboard, valid_bearer_candidate, verify_init_data, client_keyboard, clients_keyboard, format_bytes, format_timestamp, merge_client_help_payloads, parallel_payloads, sparkline, usage_bar
 
 
 class BotTests(unittest.TestCase):
+    def test_health_metrics_use_one_decimal_place(self):
+        payload = {
+            "panel": "Sunny-Finland",
+            "status": "ok",
+            "cpu": {"usage_percent": 8.616187989556135, "status": "ok"},
+            "memory": {"used_percent": 31.444932335820965, "status": "ok"},
+            "disk": {"used_percent": 32.28923028306412, "status": "ok"},
+            "load": {"one": 0.27, "five": 0.36, "status": "ok"},
+            "services": {"web_edge": {"status": "unknown"}},
+            "network": {"drops_delta": 0, "errors_delta": 0},
+        }
+        rendered = format_panel_payload(payload, "health")
+        self.assertIn("8.6%", rendered)
+        self.assertIn("31.4%", rendered)
+        self.assertIn("32.3%", rendered)
+        self.assertIn("0.3 / 0.4", rendered)
+        self.assertNotIn("8.616187989556135", rendered)
+
     def test_stale_navigation_cleanup_never_classifies_media_as_menu(self):
         self.assertFalse(callback_message_is_media({"text": "Меню", "reply_markup": {}}))
         self.assertTrue(callback_message_is_media({"document": {"file_id": "opaque"}}))
