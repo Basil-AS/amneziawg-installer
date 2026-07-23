@@ -395,10 +395,10 @@ class BotTests(unittest.TestCase):
         self.assertEqual(snapshot_health(payload), ("down", "🔴"))
         self.assertTrue(compact_snapshot(payload).startswith("🔴"))
 
-    def test_snapshot_marks_zero_recent_handshakes_as_degraded(self):
+    def test_snapshot_does_not_treat_idle_clients_as_failure(self):
         payload = {"panel": "Sunny-Finland", "service": "active", "summary": {"online": 0, "total": 63, "disabled": 0}}
-        self.assertEqual(snapshot_health(payload), ("degraded", "⚠️"))
-        self.assertIn("⚠️", compact_snapshot(payload))
+        self.assertEqual(snapshot_health(payload), ("ok", "🟢"))
+        self.assertIn("🟢", compact_snapshot(payload))
 
     def test_format_bytes_is_human_readable(self):
         self.assertEqual(format_bytes(0), "0 B")

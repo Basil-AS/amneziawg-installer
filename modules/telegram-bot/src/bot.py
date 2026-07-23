@@ -1778,27 +1778,15 @@ def compact_snapshot(payload: dict[str, Any]) -> str:
 def snapshot_health(payload: dict[str, Any]) -> tuple[str, str]:
     """Classify a panel snapshot from service state and recent handshakes.
 
-    HTTP/API success alone is not proof that the VPN is usable.  A running
-    panel with zero recent handshakes is degraded; this is surfaced to both
-    the status card and the background admin monitor.
+    Client presence is not a health signal: phones and laptops are commonly
+    offline.  Only an API error or an inactive VPN service is an incident.
+    The online/total counter remains informational on the card.
     """
     if payload.get("error"):
         return "down", "🔴"
     service = str(payload.get("service", "unknown")).lower()
-    summary = payload.get("summary") or {}
-    try:
-        total = max(0, int(summary.get("total", 0)))
-        online = max(0, int(summary.get("online", 0)))
-        disabled = max(0, int(summary.get("disabled", 0)))
-    except (TypeError, ValueError):
-        total = online = disabled = 0
-    enabled = max(0, total - disabled)
     if service not in {"active", "running", "ok", "healthy"}:
         return "down", "🔴"
-    if enabled and online == 0:
-        return "degraded", "⚠️"
-    if enabled and online < enabled:
-        return "degraded", "⚠️"
     return "ok", "🟢"
 
 
@@ -1824,27 +1812,17 @@ def monitor_panels(telegram: Telegram, panels: PanelManager, admin_chat_id: int,
         for key, panel in panels.panels.items():
             payload = panels.request(key, "snapshot", PANEL_TOKEN)
             state, _icon = snapshot_health(payload or {"error": "panel unavailable", "panel": panel.label})
-            # A partially idle fleet is normal: only page the administrator
-            # when the service is down or every enabled client lost handshake.
-            # The card still renders a warning for partial connectivity.
-            summary = (payload or {}).get("summary") or {}
-            try:
-                enabled = max(0, int(summary.get("total", 0)) - int(summary.get("disabled", 0)))
-                online = max(0, int(summary.get("online", 0)))
-            except (TypeError, ValueError):
-                enabled = online = 0
-            critical_state = state if state == "down" or (state == "degraded" and enabled and online == 0) else "ok"
-            if critical_state != "ok":
+            if state != "ok":
                 failures[key] = failures.get(key, 0) + 1
                 if failures[key] < 2 and previous.get(key, "ok") == "ok":
                     continue
             else:
                 failures[key] = 0
-            if previous.get(key, "ok") == critical_state:
+            if previous.get(key, "ok") == state:
                 continue
-            previous[key] = critical_state
+            previous[key] = state
             try:
-                telegram.send(admin_chat_id, monitor_message(panel.label, payload or {"error": "panel unavailable"}, critical_state), disable_web_page_preview=True)
+                telegram.send(admin_chat_id, monitor_message(panel.label, payload or {"error": "panel unavailable"}, state), disable_web_page_preview=True)
             except (OSError, RuntimeError, ValueError) as exc:
                 LOG.warning("outage notification failed panel=%s error=%s", key, type(exc).__name__)
 

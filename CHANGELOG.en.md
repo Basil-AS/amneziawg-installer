@@ -25,6 +25,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - IPv6 leak-block now also applies to split-tunnel profiles: `::/0` blocks IPv6/WebRTC bypass without assigning a client IPv6 address.
 - Telegram bot now evaluates `awg-quick` and recent handshakes: it renders `degraded/down` instead of a false “ok” and notifies the administrator on outage and recovery.
 - The Refresh button now treats Telegram’s `message is not modified` response as a successful in-place update, avoiding delete-and-duplicate navigation cards.
+- Panel status no longer turns orange because phones/laptops are offline: online counts remain informational, while alerts are limited to API errors or an inactive VPN service.
 
 ## [5.19.2-bas.3] - 2026-07-17
 
