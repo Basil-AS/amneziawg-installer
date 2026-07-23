@@ -9,7 +9,7 @@ from unittest.mock import patch
 from urllib.parse import urlencode
 from pathlib import Path
 
-from src.bot import PANEL_TOKEN, PanelManager, ServerManager, Settings, Store, admin_keyboard, callback_command, callback_message_is_media, client_stats_card, compact_snapshot, ensure_user_panel_token, format_metric_number, format_panel_payload, help_text, maintenance_keyboard, menu_keyboard, navigation_keyboard, panel_client_names, panel_token_records, provisioning_keyboard, provisioning_text, reply_keyboard, render_navigation, result_navigation_keyboard, token_client_scope, token_record_by_prefix, uri_keyboard, valid_bearer_candidate, verify_init_data, client_keyboard, clients_keyboard, format_bytes, format_timestamp, merge_client_help_payloads, parallel_payloads, sparkline, usage_bar
+from src.bot import PANEL_TOKEN, PanelManager, ServerManager, Settings, Store, admin_keyboard, callback_command, callback_message_is_media, client_stats_card, compact_snapshot, created_client_name, ensure_user_panel_token, format_metric_number, format_panel_payload, help_text, maintenance_keyboard, menu_keyboard, navigation_keyboard, panel_client_names, panel_token_records, provisioning_keyboard, provisioning_text, reply_keyboard, render_navigation, result_navigation_keyboard, send_client_bundle, token_client_scope, token_record_by_prefix, uri_keyboard, valid_bearer_candidate, verify_init_data, client_keyboard, clients_keyboard, format_bytes, format_timestamp, merge_client_help_payloads, parallel_payloads, sparkline, usage_bar
 
 
 class BotTests(unittest.TestCase):
@@ -30,6 +30,26 @@ class BotTests(unittest.TestCase):
         self.assertIn("32.3%", rendered)
         self.assertIn("0.3 / 0.4", rendered)
         self.assertNotIn("8.616187989556135", rendered)
+
+    def test_new_client_bundle_sends_qr_and_config(self):
+        class FakePanels:
+            def artifact(self, server, name, kind, token):
+                return (b"qr" if kind == "qr" else b"conf", "image/png" if kind == "qr" else "text/plain", f"{name}.{kind}")
+
+        class FakeTelegram:
+            def __init__(self):
+                self.sent = []
+
+            def send_photo(self, chat_id, filename, content, caption=""):
+                self.sent.append(("photo", filename, content, caption))
+
+            def send_document(self, chat_id, filename, content, caption=""):
+                self.sent.append(("document", filename, content, caption))
+
+        telegram = FakeTelegram()
+        self.assertEqual(send_client_bundle(telegram, FakePanels(), 42, "finland", "phone", "scoped"), (True, True))
+        self.assertEqual([item[0] for item in telegram.sent], ["photo", "document"])
+        self.assertEqual(created_client_name({"id": "phone-2"}, "phone"), "phone-2")
 
     def test_stale_navigation_cleanup_never_classifies_media_as_menu(self):
         self.assertFalse(callback_message_is_media({"text": "Меню", "reply_markup": {}}))
@@ -432,7 +452,9 @@ class BotTests(unittest.TestCase):
         callbacks = [button["callback_data"] for row in buttons for button in row]
         self.assertTrue(all(len(value.encode()) <= 64 for value in callbacks))
         self.assertTrue(all(len(button["callback_data"].encode()) <= 64 for row in clients_keyboard([("germany", "a" * 48, "0123456789")]) for button in row))
-        self.assertTrue({"client:toggle:0123456789:1", "client:p2p-toggle:0123456789:1", "client:ports-toggle:0123456789:1", "client:p2p-port:0123456789:1", "client:p2p-remove:0123456789:1", "client:access-link:0123456789:1", "client:favorite-add:0123456789:1", "client:remove:0123456789:1"}.issubset({button["callback_data"] for row in buttons for button in row}))
+        self.assertTrue({"client:artifact:0123456789:qr:1", "client:artifact:0123456789:config:1", "client:stats:0123456789:1", "client:favorite-add:0123456789:1"}.issubset({button["callback_data"] for row in buttons for button in row}))
+        self.assertNotIn("client:remove:0123456789:1", {button["callback_data"] for row in buttons for button in row})
+        self.assertTrue({"client:toggle:0123456789:1", "client:p2p-toggle:0123456789:1", "client:remove:0123456789:1"}.issubset({button["callback_data"] for row in client_keyboard("germany", "client", "0123456789", admin=True) for button in row}))
         self.assertIn("client:path-check:0123456789:1", {button["callback_data"] for row in client_keyboard("germany", "client", "0123456789", admin=True) for button in row})
         paged = {button["callback_data"] for row in clients_keyboard([], page=2, pages=3) for button in row}
         self.assertTrue({"user:clients:1", "user:clients:2", "user:clients:3"}.issubset(paged))

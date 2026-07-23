@@ -875,16 +875,18 @@ def client_keyboard(server: str, name: str, ref: str, *, admin: bool, favorite: 
         [{"text": "📷 QR-код", "callback_data": f"client:artifact:{ref}:qr{suffix}"}, {"text": "📄 Конфиг", "callback_data": f"client:artifact:{ref}:config{suffix}"}],
         [{"text": "🔗 VPN URI", "callback_data": f"client:artifact:{ref}:uri{suffix}"}, {"text": "📈 Статистика", "callback_data": f"client:stats:{ref}{suffix}"}],
         [{"text": "💔 Убрать из избранного" if favorite else "⭐ В избранное", "callback_data": f"client:favorite-{'remove' if favorite else 'add'}:{ref}{suffix}"}],
-        [{"text": "♻️ Перегенерировать конфиг", "callback_data": f"client:regenerate:{ref}{suffix}"}],
-        [{"text": "🔗 Одноразовая ссылка импорта", "callback_data": f"client:access-link:{ref}{suffix}"}],
-        [{"text": "⏻ VPN", "callback_data": f"client:toggle:{ref}{suffix}"}, {"text": "🔌 P2P", "callback_data": f"client:p2p-toggle:{ref}{suffix}"}, {"text": "🔗 Порты", "callback_data": f"client:ports-toggle:{ref}{suffix}"}],
-        [{"text": "🔧 Добавить P2P порт", "callback_data": f"client:p2p-port:{ref}{suffix}"}, {"text": "🗑 Удалить P2P", "callback_data": f"client:p2p-remove:{ref}{suffix}"}],
-        *([[{"text": "🧭 Проверить путь", "callback_data": f"client:path-check:{ref}{suffix}"}]] if admin else []),
-        [{"text": "🗑 Удалить", "callback_data": f"client:remove:{ref}{suffix}"}],
         [{"text": "⬅️ Назад", "callback_data": back}, {"text": "🏠 Меню", "callback_data": "menu:home"}],
     ]
     if admin:
-        rows.insert(-1, [{"text": "⚙️ Админка", "callback_data": "menu:admin"}])
+        rows[3:3] = [
+            [{"text": "♻️ Перегенерировать конфиг", "callback_data": f"client:regenerate:{ref}{suffix}"}],
+            [{"text": "🔗 Одноразовая ссылка импорта", "callback_data": f"client:access-link:{ref}{suffix}"}],
+            [{"text": "⏻ VPN", "callback_data": f"client:toggle:{ref}{suffix}"}, {"text": "🔌 P2P", "callback_data": f"client:p2p-toggle:{ref}{suffix}"}, {"text": "🔗 Порты", "callback_data": f"client:ports-toggle:{ref}{suffix}"}],
+            [{"text": "🔧 Добавить P2P порт", "callback_data": f"client:p2p-port:{ref}{suffix}"}, {"text": "🗑 Удалить P2P", "callback_data": f"client:p2p-remove:{ref}{suffix}"}],
+            [{"text": "🧭 Проверить путь", "callback_data": f"client:path-check:{ref}{suffix}"}],
+            [{"text": "🗑 Удалить", "callback_data": f"client:remove:{ref}{suffix}"}],
+            [{"text": "⚙️ Админка", "callback_data": "menu:admin"}],
+        ]
     return rows
 
 
@@ -1618,6 +1620,9 @@ def handle_navigation(telegram: Telegram, store: Store, panels: PanelManager, ch
             render_navigation(telegram, store, chat_id, "Недостаточно прав или неверная конфигурация.", menu_keyboard(is_admin), "home", callback_message_id=callback_message_id)
             return True
         token = PANEL_TOKEN if is_admin else tokens[server]
+        if not is_admin and action in {"regenerate", "regenerate-confirm", "access-link", "toggle", "p2p-toggle", "ports-toggle", "p2p-port", "p2p-remove", "remove", "remove-confirm"}:
+            render_navigation(telegram, store, chat_id, "Эта операция доступна в веб-панели администратора.", client_keyboard(server, name, ref, admin=False, favorite=store.is_favorite(principal_id, server, name), back=back_screen), f"client:{action}-denied:{ref}", callback_message_id=callback_message_id)
+            return True
         if action == "path-check":
             if not is_admin:
                 render_navigation(telegram, store, chat_id, "Недостаточно прав для проверки маршрута.", client_keyboard(server, name, ref, admin=False, favorite=store.is_favorite(principal_id, server, name), back=back_screen), f"client:path-check-denied:{ref}", callback_message_id=callback_message_id)
@@ -2096,6 +2101,29 @@ def panel_text(panel: PanelManager, key: str, action: str, token: str | object |
     if payload is None:
         return f"{html.escape(key)}: API недоступен или токен не имеет права"
     return format_panel_payload(payload, action)
+
+
+def created_client_name(payload: dict[str, Any], fallback: str) -> str:
+    """Extract the server-assigned profile name without exposing panel JSON."""
+    for key in ("id", "name", "config_name", "client_name"):
+        value = str(payload.get(key) or "").strip()
+        if value:
+            return value
+    return fallback
+
+
+def send_client_bundle(telegram: Telegram, panels: PanelManager, chat_id: int, server: str, name: str, token: str | object) -> tuple[bool, bool]:
+    """Immediately deliver QR and .conf; return (qr_sent, config_sent)."""
+    qr_sent = config_sent = False
+    qr = panels.artifact(server, name, "qr", token)
+    if qr is not None:
+        telegram.send_photo(chat_id, qr[2] or f"{name}.png", qr[0], f"📷 <b>{html.escape(name)}</b> · QR-код")
+        qr_sent = True
+    config = panels.artifact(server, name, "config", token)
+    if config is not None:
+        telegram.send_document(chat_id, config[2] or f"{name}.conf", config[0], f"📄 <b>{html.escape(name)}</b> · конфигурация")
+        config_sent = True
+    return qr_sent, config_sent
 
 
 def compact_clients(payload: dict[str, Any]) -> str:
@@ -2656,10 +2684,28 @@ def main() -> None:
                         if prompt_server not in {"finland", "germany"} or not prompt_token or not candidate or len(candidate) > 48 or not all(char.isalnum() or char in "_-" for char in candidate):
                             telegram.send(chat_id, "Имя клиента некорректно. Используйте латиницу, цифры, <code>-</code> или <code>_</code> (до 48 символов). Повторите ввод.", force_reply=True)
                             continue
-                        result = panel_text(panels, prompt_server, "add", prompt_token, value=candidate)
+                        payload = panels.request(prompt_server, "add", prompt_token, value=candidate) or {}
                         store.clear_prompt(actor_id)
+                        if payload.get("error") or payload.get("ok") is False:
+                            keyboard = admin_keyboard() if is_admin else menu_keyboard(False)
+                            render_navigation(telegram, store, chat_id, f"<b>❌ Не удалось создать профиль</b>\n{format_panel_payload(payload, 'add')}", keyboard, "client:add-error", reply=True)
+                            continue
+                        created_name = created_client_name(payload, candidate)
+                        old_navigation = store.navigation(chat_id)
+                        if old_navigation:
+                            try:
+                                telegram.delete_message(chat_id, int(old_navigation["message_id"]))
+                            except (OSError, RuntimeError, ValueError):
+                                LOG.info("old navigation cleanup failed after client creation chat=%s", chat_id)
+                            store.clear_navigation(chat_id)
+                        try:
+                            qr_sent, config_sent = send_client_bundle(telegram, panels, chat_id, prompt_server, created_name, prompt_token)
+                        except (OSError, RuntimeError, ValueError):
+                            qr_sent = config_sent = False
+                            LOG.warning("new client artifact delivery failed server=%s client=%s", prompt_server, created_name)
+                        delivered = "QR-код и файл .conf отправлены." if qr_sent and config_sent else "Профиль создан, но часть файлов не отправилась — откройте его из списка устройств."
                         keyboard = admin_keyboard() if is_admin else menu_keyboard(False)
-                        render_navigation(telegram, store, chat_id, f"<b>✅ Клиент создан</b>\n{result}", keyboard, "client:add-done", reply=True)
+                        render_navigation(telegram, store, chat_id, f"<b>✅ Профиль создан</b>\nИмя: <code>{html.escape(created_name)}</code>\n{delivered}", keyboard, "client:add-done", reply=True)
                         continue
                     if prompt and prompt["action"] in {"p2p_port", "p2p_remove"}:
                         prompt_parts = str(prompt["server"]).split("|", 2)
