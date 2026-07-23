@@ -817,7 +817,6 @@ def admin_keyboard() -> list[list[dict[str, str]]]:
         [{"text": "🛡 AdGuard статистика FI", "callback_data": "server:adguard-stats:finland"}, {"text": "🛡 AdGuard статистика DE", "callback_data": "server:adguard-stats:germany"}],
         [{"text": "📋 Фильтры FI", "callback_data": "server:adguard-filters:finland"}, {"text": "📋 Фильтры DE", "callback_data": "server:adguard-filters:germany"}],
         [{"text": "🧪 Nettest", "callback_data": "server:nettest-reports:all"}, {"text": "🔄 Обновления", "callback_data": "admin:update"}],
-        [{"text": "📈 Мой трафик", "callback_data": "user:traffic"}, {"text": "🌐 Доступность", "callback_data": "user:nettest"}],
         [{"text": "🛠 Обслуживание", "callback_data": "admin:maintenance"}],
         [{"text": "➕ Клиент Финляндии", "callback_data": "admin:add:finland"}, {"text": "➕ Клиент Германии", "callback_data": "admin:add:germany"}],
         [{"text": "♻️ Перезапуск Финляндии", "callback_data": "admin:restart:finland"}, {"text": "♻️ Перезапуск Германии", "callback_data": "admin:restart:germany"}],
@@ -886,10 +885,10 @@ def client_keyboard(server: str, name: str, ref: str, *, admin: bool, favorite: 
         [{"text": "⏻ VPN", "callback_data": f"client:toggle:{ref}{suffix}"}, {"text": "🔌 P2P", "callback_data": f"client:p2p-toggle:{ref}{suffix}"}, {"text": "🔗 Порты", "callback_data": f"client:ports-toggle:{ref}{suffix}"}],
         [{"text": "🔧 Добавить P2P порт", "callback_data": f"client:p2p-port:{ref}{suffix}"}, {"text": "🗑 Удалить P2P", "callback_data": f"client:p2p-remove:{ref}{suffix}"}],
         [{"text": "🗑 Удалить конфиг", "callback_data": f"client:remove:{ref}{suffix}"}],
-        [{"text": "⬅️ Назад", "callback_data": back}, {"text": "🏠 Меню", "callback_data": "menu:home"}],
     ]
     if admin:
-        rows[3:3] = [[{"text": "⚙️ Админка", "callback_data": "menu:admin"}]]
+        rows.append([{"text": "⚙️ Админка", "callback_data": "menu:admin"}])
+    rows.append([{"text": "⬅️ Назад", "callback_data": back}, {"text": "🏠 Меню", "callback_data": "menu:home"}])
     return rows
 
 
@@ -910,7 +909,10 @@ def clients_keyboard(rows: list[tuple[str, str, str]], *, page: int = 1, pages: 
         if page < pages:
             pager.append({"text": "▶️", "callback_data": f"user:{'favorites' if source == 'favorites' else 'clients'}:{page + 1}"})
         keyboard.append(pager)
-    keyboard.extend([[{"text": "📈 Статистика", "callback_data": "user:traffic"}, {"text": "🌐 Доступность", "callback_data": "user:nettest"}, {"text": "⭐ Избранное", "callback_data": "user:favorites"}]])
+    if source == "favorites":
+        keyboard.append([{"text": "👥 Мои устройства", "callback_data": "user:clients"}, {"text": "➕ Добавить", "callback_data": "user:add"}])
+    else:
+        keyboard.append([{"text": "⭐ Избранное", "callback_data": "user:favorites"}, {"text": "➕ Добавить", "callback_data": "user:add"}])
     if admin:
         keyboard.append([{"text": "⚙️ Админка", "callback_data": "menu:admin"}])
     keyboard.append([{"text": "🏠 Меню", "callback_data": "menu:home"}])

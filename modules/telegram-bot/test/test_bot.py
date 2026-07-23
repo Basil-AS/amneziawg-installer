@@ -477,6 +477,8 @@ class BotTests(unittest.TestCase):
         self.assertTrue({"server:drops-sample:all", "server:health-history:all", "admin:update"}.issubset(admin_data))
         self.assertNotIn("server:info:all", admin_data)
         self.assertNotIn("server:resolver:all", admin_data)
+        self.assertNotIn("user:nettest", admin_data)
+        self.assertNotIn("user:traffic", admin_data)
         maintenance_data = {item["callback_data"] for row in maintenance_keyboard() for item in row}
         self.assertTrue({"admin:dns-restart:finland", "admin:reboot:all", "admin:geoip-update:all"}.issubset(maintenance_data))
 
@@ -493,6 +495,12 @@ class BotTests(unittest.TestCase):
         self.assertTrue({"client:regenerate:0123456789:1", "client:access-link:0123456789:1", "client:remove:0123456789:1", "client:p2p-port:0123456789:1"}.issubset({button["callback_data"] for row in buttons for button in row}))
         self.assertTrue({"client:toggle:0123456789:1", "client:p2p-toggle:0123456789:1", "client:remove:0123456789:1"}.issubset({button["callback_data"] for row in client_keyboard("germany", "client", "0123456789", admin=True) for button in row}))
         self.assertNotIn("client:path-check:0123456789:1", {button["callback_data"] for row in client_keyboard("germany", "client", "0123456789", admin=True) for button in row})
+        device_list = {button["callback_data"] for row in clients_keyboard([], source="clients") for button in row}
+        self.assertNotIn("user:nettest", device_list)
+        self.assertNotIn("user:traffic", device_list)
+        self.assertTrue({"user:favorites", "user:add", "menu:home"}.issubset(device_list))
+        favorites_list = {button["callback_data"] for row in clients_keyboard([], source="favorites") for button in row}
+        self.assertIn("user:clients", favorites_list)
         paged = {button["callback_data"] for row in clients_keyboard([], page=2, pages=3) for button in row}
         self.assertTrue({"user:clients:1", "user:clients:2", "user:clients:3"}.issubset(paged))
 

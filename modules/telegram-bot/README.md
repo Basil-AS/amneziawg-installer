@@ -43,7 +43,9 @@ each device covered by their scoped panel token: regenerate or delete its
 config, toggle VPN/P2P/port forwarding, add or remove a P2P port, create a
 one-time import link, and download fresh QR/`.conf`/URI artifacts. The API
 scope is checked by the panel on every operation; the bot never substitutes
-the administrator token for a missing user token. Device callbacks use
+the administrator token for a missing user token. The device list contains
+only device navigation, favorites and creation; panel availability is a global
+menu action and is intentionally not repeated there. Device callbacks use
 short SQLite-backed references, so Telegram's 64-byte callback limit is never
 exceeded even for long client names. Administrative screens also expose
 health, logs, user/token binding review, safe restart confirmation and the
