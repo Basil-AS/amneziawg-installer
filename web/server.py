@@ -4957,7 +4957,7 @@ def clean_user_record(value, strict=False):
             if strict:
                 raise
             clients = []
-        return {"name": "", "clients": clients, "role": "user"}
+        return {"name": "", "clients": clients}
     if isinstance(value, dict):
         try:
             clients = clean_client_list(value.get("clients", []))
@@ -4965,17 +4965,17 @@ def clean_user_record(value, strict=False):
             if strict:
                 raise
             clients = []
-        role = value.get("role", "user")
-        if role not in {"user", "system"}:
-            role = "user"
-        return {
+        result = {
             "name": clean_token_name(value.get("name", "")),
             "clients": clients,
-            "role": role,
         }
+        role = value.get("role")
+        if role in {"user", "system"}:
+            result["role"] = role
+        return result
     if strict:
         raise ValueError("invalid user token record")
-    return {"name": "", "clients": [], "role": "user"}
+    return {"name": "", "clients": []}
 
 
 def load_tokens():
