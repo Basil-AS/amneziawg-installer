@@ -80,6 +80,9 @@ cards include relative volume bars so trends are readable directly in Telegram.
 The admin diagnostics menu also reads GeoIP provider/database status, nettest
 reports, web access policy and certificate metadata through their authenticated
 panel APIs; secret tokens and private key material are never rendered.
+The administrator's «Клиенты» screen is intentionally a summary card with
+online/total counts; IP addresses and P2P-port inventories belong in the
+individual device screen and are not dumped into a phone-sized message.
 The separate “Обслуживание” screen exposes API-only DNS/NDP restarts, GeoIP
 database refresh and TLS renewal; server reboot is hidden behind a server
 choice and explicit confirmation.

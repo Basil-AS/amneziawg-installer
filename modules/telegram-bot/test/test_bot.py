@@ -9,7 +9,7 @@ from unittest.mock import patch
 from urllib.parse import urlencode
 from pathlib import Path
 
-from src.bot import PANEL_TOKEN, PanelManager, ServerManager, Settings, Store, Telegram, admin_keyboard, callback_command, callback_message_is_media, client_stats_card, compact_snapshot, created_client_name, ensure_user_panel_token, format_metric_number, format_panel_payload, help_text, maintenance_keyboard, menu_keyboard, navigation_keyboard, panel_client_names, panel_token_records, provisioning_keyboard, provisioning_text, reply_keyboard, render_navigation, result_navigation_keyboard, send_client_bundle, snapshot_health, token_client_scope, token_record_by_prefix, uri_keyboard, valid_bearer_candidate, verify_init_data, client_keyboard, clients_keyboard, format_bytes, format_timestamp, merge_client_help_payloads, parallel_payloads, sparkline, usage_bar
+from src.bot import PANEL_TOKEN, PanelManager, ServerManager, Settings, Store, Telegram, admin_keyboard, callback_command, callback_message_is_media, client_stats_card, compact_clients, compact_snapshot, created_client_name, ensure_user_panel_token, format_metric_number, format_panel_payload, help_text, maintenance_keyboard, menu_keyboard, navigation_keyboard, panel_client_names, panel_token_records, provisioning_keyboard, provisioning_text, reply_keyboard, render_navigation, result_navigation_keyboard, send_client_bundle, snapshot_health, token_client_scope, token_record_by_prefix, uri_keyboard, valid_bearer_candidate, verify_init_data, client_keyboard, clients_keyboard, format_bytes, format_timestamp, merge_client_help_payloads, parallel_payloads, sparkline, usage_bar
 
 
 class BotTests(unittest.TestCase):
@@ -568,6 +568,14 @@ class BotTests(unittest.TestCase):
         self.assertIn("menu:home", {item["callback_data"] for row in keyboard for item in row})
         admin_keyboard_rows = result_navigation_keyboard("health", "all", True)
         self.assertIn("menu:admin", {item["callback_data"] for row in admin_keyboard_rows for item in row})
+
+    def test_client_summary_is_phone_readable_and_has_device_link(self):
+        rendered = compact_clients({"display_name": "Sunny-Finland", "clients": [{"name": "phone", "ipv4": "10.9.9.2", "online": True, "p2p_ports": [20002]}, {"name": "laptop", "online": False, "p2p_ports": [20003]}]})
+        self.assertIn("Онлайн: <b>1</b> / 2", rendered)
+        self.assertIn("Не подключены: <b>1</b>", rendered)
+        self.assertNotIn("10.9.9.2", rendered)
+        self.assertNotIn("20002", rendered)
+        self.assertIn("👥 Устройства", {item["text"] for row in result_navigation_keyboard("clients", "all", False) for item in row})
 
     def test_maintenance_exposes_scoped_dns_mode_controls(self):
         callbacks = {item["callback_data"] for row in maintenance_keyboard() for item in row}
