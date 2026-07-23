@@ -3292,6 +3292,10 @@ def token_assignments_for_clients():
     assignments = {}
     for digest, value in sorted(data.get("users", {}).items()):
         record = clean_user_record(value)
+        # Service/control-plane tokens grant API access but are not human
+        # owners and must not appear as client ownership badges.
+        if record.get("role") == "system":
+            continue
         label = record.get("name") or f"token: {digest[:6]}"
         item = {"alias": label, "fingerprint": digest[:6], "role": "user"}
         for client_name in record.get("clients", []):
@@ -3305,6 +3309,8 @@ def assignment_records_for_client(config_name):
     out = []
     for digest, value in sorted(data.get("users", {}).items()):
         record = clean_user_record(value)
+        if record.get("role") == "system":
+            continue
         if config_name in record.get("clients", []):
             out.append({"hash": digest, "fingerprint": digest[:6], "alias": record.get("name") or f"token: {digest[:6]}", "role": "user"})
     return out
@@ -4951,7 +4957,7 @@ def clean_user_record(value, strict=False):
             if strict:
                 raise
             clients = []
-        return {"name": "", "clients": clients}
+        return {"name": "", "clients": clients, "role": "user"}
     if isinstance(value, dict):
         try:
             clients = clean_client_list(value.get("clients", []))
@@ -4959,13 +4965,17 @@ def clean_user_record(value, strict=False):
             if strict:
                 raise
             clients = []
+        role = value.get("role", "user")
+        if role not in {"user", "system"}:
+            role = "user"
         return {
             "name": clean_token_name(value.get("name", "")),
             "clients": clients,
+            "role": role,
         }
     if strict:
         raise ValueError("invalid user token record")
-    return {"name": "", "clients": []}
+    return {"name": "", "clients": [], "role": "user"}
 
 
 def load_tokens():

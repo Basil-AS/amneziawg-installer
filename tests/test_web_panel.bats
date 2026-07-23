@@ -315,9 +315,13 @@ spec.loader.exec_module(server)
 super_token = "super-token"
 user_token = "user-token"
 user_hash = server.token_hash(user_token)
+gaullebot_hash = server.token_hash("gaullebot-token")
 server.write_tokens({
     "super_token_hash": server.token_hash(super_token),
-    "users": {user_hash: {"name": "phone-token", "clients": []}},
+    "users": {
+        user_hash: {"name": "phone-token", "clients": []},
+        gaullebot_hash: {"name": "GaulleBot", "role": "system", "clients": ["phone"]},
+    },
 })
 server.secrets.token_hex = lambda _n: "a7f3"
 
@@ -391,6 +395,7 @@ assert rows["phone"]["is_unassigned"] is True
 assert rows["phone-a7f3"]["display_name"] == "phone"
 assert rows["phone-a7f3"]["is_duplicate_display_name"] is True
 assert rows["phone-a7f3"]["assigned_tokens"] == [{"alias": "phone-token", "fingerprint": user_hash[:6], "role": "user"}]
+assert all(item["alias"] != "GaulleBot" for row in rows.values() for item in row["assigned_tokens"])
 PY
     rm -rf "$tmp"
 }
