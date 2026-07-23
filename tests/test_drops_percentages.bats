@@ -101,12 +101,12 @@ report = server.drops_sample_report(before, after, 60)
 assert report["duration_seconds"] == 60
 assert report["wan"]["drops_delta"] == 2
 assert report["wan"]["packets_delta"] == 200
-assert report["wan"]["drop_pct"] == round(100.0 * 2 / 202, 2)
+assert report["wan"]["drop_pct"] == round(100.0 * 2 / 202, 1)
 assert report["qdisc"]["drop_delta"] == 2
 assert report["qdisc"]["sent_delta"] == 200
 assert report["tcp"]["retrans_delta"] == 2
 assert report["tcp"]["out_segs_delta"] == 100
-assert report["tcp"]["retrans_pct"] == round(100.0 * 2 / 100, 2)
+assert report["tcp"]["retrans_pct"] == round(100.0 * 2 / 100, 1)
 assert report["ipv6"]["no_route_delta"] == 1
 assert report["ipv6"]["out_requests_delta"] == 10
 
