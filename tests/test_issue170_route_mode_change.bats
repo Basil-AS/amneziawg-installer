@@ -170,6 +170,15 @@ _client_allowed_ips() {
     done
 }
 
+@test "IPv6 leak-block survives reset-routes regen in RU/EN implementations" {
+    for f in awg_common.sh awg_common_en.sh; do
+        run grep -F '[[ "${AWG_REGEN_RESET_ROUTES:-0}" != "1" ]]' "$BATS_TEST_DIRNAME/../$f"
+        [ "$status" -eq 0 ]
+        run grep -F 'including an explicit IPv6 leak-block sink' "$BATS_TEST_DIRNAME/../$f"
+        [ "$status" -eq 0 ]
+    done
+}
+
 # ---------------------------------------------------------------------------
 # Fix 1 (structural): installer CLI override clears the stale list
 # ---------------------------------------------------------------------------
