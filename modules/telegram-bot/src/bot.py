@@ -868,7 +868,10 @@ def navigation_keyboard(action: str, admin: bool) -> list[list[dict[str, str]]]:
 
 def result_navigation_keyboard(action: str, server: str, admin: bool) -> list[list[dict[str, str]]]:
     """Add an inline refresh action to every rendered server result card."""
-    rows = [[{"text": "🔄 Обновить", "callback_data": f"server:{action}:{server}"}], *navigation_keyboard("result", admin)]
+    rows = [[{"text": "🔄 Обновить", "callback_data": f"server:{action}:{server}"}]]
+    if action == "clients":
+        rows.append([{"text": "👥 Устройства", "callback_data": "user:clients"}])
+    rows.extend(navigation_keyboard("result", admin))
     if admin:
         rows.insert(-1, [{"text": "⚙️ Админка", "callback_data": "menu:admin"}])
     return rows
@@ -2184,13 +2187,15 @@ def send_client_bundle(telegram: Telegram, panels: PanelManager, chat_id: int, s
 def compact_clients(payload: dict[str, Any]) -> str:
     if payload.get("error"):
         return compact_snapshot(payload)
-    lines = [f"<b>{html.escape(str(payload.get('display_name') or payload.get('panel', 'server')))}</b>"]
-    for item in payload.get("clients", []):
-        marker = "🟢" if item.get("online") else "⚪"
-        ports = ", ".join(str(port) for port in item.get("p2p_ports") or [])
-        suffix = f" · ports: {html.escape(ports)}" if ports else ""
-        lines.append(f"{marker} <code>{html.escape(str(item.get('name', '')))}</code> · {html.escape(str(item.get('ipv4', '')))}{suffix}")
-    return "\n".join(lines)[:4096]
+    clients = [item for item in payload.get("clients", []) if isinstance(item, dict)]
+    online = sum(1 for item in clients if item.get("online"))
+    total = len(clients)
+    offline = max(0, total - online)
+    label = html.escape(str(payload.get("display_name") or payload.get("panel", "server")))
+    return (f"<b>👥 Клиенты · {label}</b>\n"
+            f"🟢 Онлайн: <b>{online}</b> / {total}\n"
+            f"⚪ Не подключены: <b>{offline}</b>\n\n"
+            "Для QR, конфигов и управления откройте «👥 Устройства».")
 
 
 def client_stats_card(name: str, server: str, client: dict[str, Any]) -> str:
