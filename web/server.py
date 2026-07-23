@@ -2717,19 +2717,34 @@ def sanitize_leak_checks(value, context=None):
     vpn_ipv6 = str(context.get("vpn_ipv6") or "")[:120]
     browser_ipv4 = str(value.get("browser_public_ipv4") or "")[:80]
     browser_ipv6 = str(value.get("browser_public_ipv6") or "")[:120]
-    webrtc_ipv6 = [str(item)[:120] for item in value.get("webrtc_ipv6_candidates", []) if isinstance(item, str)][:20]
-    webrtc_private = [str(item)[:120] for item in value.get("webrtc_private_candidates", []) if isinstance(item, str)][:20]
+    # Never persist browser ICE addresses: even private RFC1918 candidates
+    # are local-device identifiers. Accept legacy arrays only as booleans so
+    # old clients keep their warning semantics without leaking the addresses.
+    try:
+        webrtc_ipv6_count = max(0, min(100, int(value.get("webrtc_ipv6_candidate_count", 0))))
+    except (TypeError, ValueError):
+        webrtc_ipv6_count = 0
+    try:
+        webrtc_private_count = max(0, min(100, int(value.get("webrtc_private_candidate_count", 0))))
+    except (TypeError, ValueError):
+        webrtc_private_count = 0
+    legacy_ipv6 = value.get("webrtc_ipv6_candidates")
+    legacy_private = value.get("webrtc_private_candidates")
+    if isinstance(legacy_ipv6, list):
+        webrtc_ipv6_count = max(webrtc_ipv6_count, min(100, len(legacy_ipv6)))
+    if isinstance(legacy_private, list):
+        webrtc_private_count = max(webrtc_private_count, min(100, len(legacy_private)))
     notes = [str(item)[:240] for item in value.get("notes", []) if isinstance(item, str)][:12]
     ipv6_mode = str(context.get("ipv6_mode") or "")
     expected_v6 = {item for item in (server_public_ipv6, vpn_ipv6) if item and item not in {"-", "IPv6 disabled"}}
     ipv6_leak = bool(browser_ipv6 and (not expected_v6 or browser_ipv6 not in expected_v6))
-    webrtc_ipv6_risk = bool(webrtc_ipv6)
+    webrtc_ipv6_risk = bool(webrtc_ipv6_count)
     if ipv6_leak:
         notes.append("Browser public IPv6 is visible and does not match the VPN/server IPv6 context.")
         if ipv6_mode in {"", "legacy", "disabled"}:
             notes.append("IPv4-only mode: AAAA disabled in AdGuard recommended to stop apps/browsers resolving non-VPN IPv6 addresses.")
-    if webrtc_ipv6_risk or webrtc_private:
-        notes.append("Disable WebRTC local IP exposure in browser (e.g. browser privacy/WebRTC settings) to stop ICE candidates revealing real addresses.")
+    if webrtc_ipv6_risk or webrtc_private_count:
+        notes.append("WebRTC ICE candidates were detected locally; keep browser WebRTC IP exposure disabled.")
     if ipv6_leak or webrtc_ipv6_risk:
         notes.append("Use VPN DNS for all queries (avoid system/public DNS fallbacks that can bypass the tunnel).")
     return {
@@ -2741,8 +2756,8 @@ def sanitize_leak_checks(value, context=None):
         "ipv6_leak_suspected": ipv6_leak,
         "webrtc_available": bool(value.get("webrtc_available")),
         "webrtc_ipv6_risk": webrtc_ipv6_risk,
-        "webrtc_ipv6_candidates": webrtc_ipv6,
-        "webrtc_private_candidates": webrtc_private,
+        "webrtc_ipv6_candidate_count": webrtc_ipv6_count,
+        "webrtc_private_candidate_count": webrtc_private_count,
         "notes": notes,
     }
 
@@ -6641,6 +6656,7 @@ class Handler(SimpleHTTPRequestHandler):
         )
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("X-Frame-Options", "DENY")
+        self.send_header("Permissions-Policy", "camera=(), microphone=(), geolocation=(), display-capture=()")
         self.send_header("Referrer-Policy", "no-referrer")
         self.send_header("Cache-Control", "no-store")
 

@@ -173,7 +173,10 @@ assert any("VPN DNS" in n for n in result["notes"])
 value2 = {"webrtc_available": True, "webrtc_ipv6_candidates": ["2001:db8::2"], "webrtc_private_candidates": []}
 result2 = server.sanitize_leak_checks(value2, {})
 assert result2["webrtc_ipv6_risk"] is True
-assert any("Disable WebRTC" in n for n in result2["notes"])
+assert any("WebRTC ICE candidates" in n for n in result2["notes"])
+assert result2["webrtc_ipv6_candidate_count"] == 1
+assert "webrtc_ipv6_candidates" not in result2
+assert "webrtc_private_candidates" not in result2
 
 # No leak -> no extra notes
 result3 = server.sanitize_leak_checks({}, {})
