@@ -9,7 +9,7 @@ from unittest.mock import patch
 from urllib.parse import urlencode
 from pathlib import Path
 
-from src.bot import PANEL_TOKEN, PanelManager, ServerManager, Settings, Store, admin_keyboard, callback_command, callback_message_is_media, client_stats_card, compact_snapshot, help_text, maintenance_keyboard, menu_keyboard, navigation_keyboard, panel_client_names, panel_token_records, provisioning_keyboard, provisioning_text, reply_keyboard, render_navigation, result_navigation_keyboard, token_client_scope, token_record_by_prefix, uri_keyboard, valid_bearer_candidate, verify_init_data, client_keyboard, clients_keyboard, format_bytes, format_panel_payload, format_timestamp, merge_client_help_payloads, parallel_payloads, sparkline, usage_bar
+from src.bot import PANEL_TOKEN, PanelManager, ServerManager, Settings, Store, admin_keyboard, callback_command, callback_message_is_media, client_stats_card, compact_snapshot, ensure_user_panel_token, help_text, maintenance_keyboard, menu_keyboard, navigation_keyboard, panel_client_names, panel_token_records, provisioning_keyboard, provisioning_text, reply_keyboard, render_navigation, result_navigation_keyboard, token_client_scope, token_record_by_prefix, uri_keyboard, valid_bearer_candidate, verify_init_data, client_keyboard, clients_keyboard, format_bytes, format_panel_payload, format_timestamp, merge_client_help_payloads, parallel_payloads, sparkline, usage_bar
 
 
 class BotTests(unittest.TestCase):
@@ -109,6 +109,45 @@ class BotTests(unittest.TestCase):
             row = store.get(151599744)
             self.assertEqual(row["finland_token"], "fin-2")
             self.assertEqual(len(store.all()), 1)
+            store.close()
+
+    def test_approved_user_gets_scoped_panel_token_on_first_server_use(self):
+        class FakePanels:
+            def __init__(self):
+                self.calls = []
+
+            def request(self, server, action, token=None, value="", extra=None):
+                self.calls.append((server, action, token, value, extra))
+                if action == "clients":
+                    return {"clients": [{"name": "existing-device"}]}
+                if action == "create-user-token":
+                    if token is not PANEL_TOKEN or value != "telegram-42-finland" or extra != {"clients": ["existing-device"]}:
+                        raise AssertionError("unexpected token provisioning request")
+                    return {"token": "scoped-secret"}
+                raise AssertionError(action)
+
+        with tempfile.TemporaryDirectory() as directory:
+            store = Store(Path(directory) / "state.sqlite3")
+            store.bind(42, "new_user", "New", "", "", resolve_request=False)
+            store.request_access(42)
+            store.resolve_access_request(42, "approved")
+            token, error = ensure_user_panel_token(store, FakePanels(), 42, "finland")
+            self.assertEqual((token, error), ("scoped-secret", None))
+            self.assertEqual(store.get(42)["finland_token"], "scoped-secret")
+            store.close()
+
+    def test_unapproved_user_cannot_auto_provision_panel_token(self):
+        class NoCalls:
+            def request(self, *args, **kwargs):
+                raise AssertionError("panel must not be contacted")
+
+        with tempfile.TemporaryDirectory() as directory:
+            store = Store(Path(directory) / "state.sqlite3")
+            store.bind(43, "pending", "Pending", "", "", resolve_request=False)
+            store.request_access(43)
+            token, error = ensure_user_panel_token(store, NoCalls(), 43, "germany")
+            self.assertIsNone(token)
+            self.assertEqual(error, "access is not approved")
             store.close()
 
     def test_client_refs_are_short_and_user_scoped(self):
