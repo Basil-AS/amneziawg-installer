@@ -672,8 +672,19 @@ class Telegram:
     def call(self, method: str, **params: Any) -> dict[str, Any]:
         body = urlencode({k: str(v) for k, v in params.items()}).encode()
         request = Request(f"{self.base}/{method}", data=body, method="POST")
-        with urlopen(request, timeout=self.poll_timeout + 10) as response:
-            payload = json.loads(response.read())
+        try:
+            with urlopen(request, timeout=self.poll_timeout + 10) as response:
+                payload = json.loads(response.read())
+        except HTTPError as exc:
+            # Telegram reports expected edit races (including an unchanged
+            # refresh) as HTTP 400.  Normalize the response so edit_message
+            # can treat `message is not modified` as a successful in-place
+            # refresh instead of deleting and re-sending the navigation card.
+            try:
+                detail = json.loads(exc.read()).get("description", "")
+            except (OSError, ValueError, TypeError):
+                detail = f"HTTP {exc.code}"
+            raise RuntimeError(f"Telegram {method} failed: {detail}") from exc
         if not payload.get("ok"):
             raise RuntimeError(f"Telegram {method} failed: {payload}")
         return payload["result"]
