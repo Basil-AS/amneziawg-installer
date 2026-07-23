@@ -40,13 +40,18 @@ to that Telegram account.
 
 The button-first interface provides a persistent bottom keyboard, one editable
 navigation message, per-user device cards and inline actions for QR images,
-`.conf` files, `vpn://` URIs and traffic statistics. Device callbacks use
+`.conf` files, `vpn://` URIs and traffic statistics. Advanced/destructive
+operations (P2P, port rules, regeneration and deletion) remain admin-only in
+the bot; regular users get a compact download/status flow and can use the web
+panel for advanced management. Device callbacks use
 short SQLite-backed references, so Telegram's 64-byte callback limit is never
 exceeded even for long client names. Administrative screens also expose
 health, logs, token audit, safe restart confirmation and the panel's verified
 update check/apply API.
 An approved user can also press “➕ Добавить устройство”, choose Finland or
-Germany and enter a profile name. If that server has no binding yet, the bot
+Germany and enter a profile name. The bot immediately sends both the QR image
+and the `.conf` file, then leaves one compact navigation card at the bottom.
+If that server has no binding yet, the bot
 first creates a deterministic `telegram-<telegram_id>-<server>` token with the
 current client scope through the service credential, stores it only in SQLite,
 and then calls `POST /api/clients` with the new user's bearer token. The panel
