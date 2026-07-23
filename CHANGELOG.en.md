@@ -23,6 +23,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Telegram bot now queries panels concurrently, caches snapshots for five seconds, and provides inline actions and compact client views.
 - Web-panel static JS/CSS assets now use gzip negotiation when supported by the client.
 - IPv6 leak-block now also applies to split-tunnel profiles: `::/0` blocks IPv6/WebRTC bypass without assigning a client IPv6 address.
+- Telegram bot now evaluates `awg-quick` and recent handshakes: it renders `degraded/down` instead of a false “ok” and notifies the administrator on outage and recovery.
 
 ## [5.19.2-bas.3] - 2026-07-17
 

@@ -9,7 +9,7 @@ from unittest.mock import patch
 from urllib.parse import urlencode
 from pathlib import Path
 
-from src.bot import PANEL_TOKEN, PanelManager, ServerManager, Settings, Store, admin_keyboard, callback_command, callback_message_is_media, client_stats_card, compact_snapshot, created_client_name, ensure_user_panel_token, format_metric_number, format_panel_payload, help_text, maintenance_keyboard, menu_keyboard, navigation_keyboard, panel_client_names, panel_token_records, provisioning_keyboard, provisioning_text, reply_keyboard, render_navigation, result_navigation_keyboard, send_client_bundle, token_client_scope, token_record_by_prefix, uri_keyboard, valid_bearer_candidate, verify_init_data, client_keyboard, clients_keyboard, format_bytes, format_timestamp, merge_client_help_payloads, parallel_payloads, sparkline, usage_bar
+from src.bot import PANEL_TOKEN, PanelManager, ServerManager, Settings, Store, admin_keyboard, callback_command, callback_message_is_media, client_stats_card, compact_snapshot, created_client_name, ensure_user_panel_token, format_metric_number, format_panel_payload, help_text, maintenance_keyboard, menu_keyboard, navigation_keyboard, panel_client_names, panel_token_records, provisioning_keyboard, provisioning_text, reply_keyboard, render_navigation, result_navigation_keyboard, send_client_bundle, snapshot_health, token_client_scope, token_record_by_prefix, uri_keyboard, valid_bearer_candidate, verify_init_data, client_keyboard, clients_keyboard, format_bytes, format_timestamp, merge_client_help_payloads, parallel_payloads, sparkline, usage_bar
 
 
 class BotTests(unittest.TestCase):
@@ -379,6 +379,16 @@ class BotTests(unittest.TestCase):
         self.assertIn("Sunny-Finland", text)
         self.assertIn("2/5", text)
         self.assertLess(len(text), 500)
+
+    def test_snapshot_marks_service_failure_as_down(self):
+        payload = {"panel": "Sunny-Finland", "service": "failed", "summary": {"online": 5, "total": 5}}
+        self.assertEqual(snapshot_health(payload), ("down", "🔴"))
+        self.assertTrue(compact_snapshot(payload).startswith("🔴"))
+
+    def test_snapshot_marks_zero_recent_handshakes_as_degraded(self):
+        payload = {"panel": "Sunny-Finland", "service": "active", "summary": {"online": 0, "total": 63, "disabled": 0}}
+        self.assertEqual(snapshot_health(payload), ("degraded", "⚠️"))
+        self.assertIn("⚠️", compact_snapshot(payload))
 
     def test_format_bytes_is_human_readable(self):
         self.assertEqual(format_bytes(0), "0 B")

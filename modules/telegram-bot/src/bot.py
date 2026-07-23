@@ -1757,10 +1757,75 @@ def compact_snapshot(payload: dict[str, Any]) -> str:
     if payload.get("error"):
         return f"<b>{html.escape(str(payload.get('panel', 'panel')))}</b>: {html.escape(str(payload['error']))}"
     summary = payload.get("summary") or {}
+    health, health_text = snapshot_health(payload)
     service = html.escape(str(payload.get("service", "unknown")))
-    return (f"<b>{html.escape(str(payload.get('display_name') or payload.get('panel', 'server')))}</b> "
+    return (f"{health_text} <b>{html.escape(str(payload.get('display_name') or payload.get('panel', 'server')))}</b> "
             f"<code>{html.escape(str(payload.get('version', '?')))}</code>\n"
             f"Сервис: <b>{service}</b> · онлайн: <b>{summary.get('online', 0)}/{summary.get('total', 0)}</b>")
+
+
+def snapshot_health(payload: dict[str, Any]) -> tuple[str, str]:
+    """Classify a panel snapshot from service state and recent handshakes.
+
+    HTTP/API success alone is not proof that the VPN is usable.  A running
+    panel with zero recent handshakes is degraded; this is surfaced to both
+    the status card and the background admin monitor.
+    """
+    if payload.get("error"):
+        return "down", "🔴"
+    service = str(payload.get("service", "unknown")).lower()
+    summary = payload.get("summary") or {}
+    try:
+        total = max(0, int(summary.get("total", 0)))
+        online = max(0, int(summary.get("online", 0)))
+        disabled = max(0, int(summary.get("disabled", 0)))
+    except (TypeError, ValueError):
+        total = online = disabled = 0
+    enabled = max(0, total - disabled)
+    if service not in {"active", "running", "ok", "healthy"}:
+        return "down", "🔴"
+    if enabled and online == 0:
+        return "degraded", "⚠️"
+    if enabled and online < enabled:
+        return "degraded", "⚠️"
+    return "ok", "🟢"
+
+
+def monitor_message(label: str, payload: dict[str, Any], state: str) -> str:
+    """Build a concise, non-secret admin alert for a panel state transition."""
+    summary = payload.get("summary") or {}
+    online = summary.get("online", 0)
+    total = summary.get("total", 0)
+    service = html.escape(str(payload.get("service", "unknown")))
+    if state == "ok":
+        return f"🟢 <b>{html.escape(label)}</b> восстановлен\nСервис: <b>{service}</b> · handshakes: <b>{online}/{total}</b>"
+    icon = "🔴" if state == "down" else "⚠️"
+    return f"{icon} <b>{html.escape(label)}</b> · {state}\nСервис: <b>{service}</b> · handshakes: <b>{online}/{total}</b>"
+
+
+def monitor_panels(telegram: Telegram, panels: PanelManager, admin_chat_id: int, stop: threading.Event, interval: int = 60) -> None:
+    """Poll panel snapshots and report outage/recovery transitions to admin."""
+    if not admin_chat_id:
+        return
+    previous: dict[str, str] = {}
+    failures: dict[str, int] = {}
+    while not stop.wait(max(15, interval)):
+        for key, panel in panels.panels.items():
+            payload = panels.request(key, "snapshot", PANEL_TOKEN)
+            state, _icon = snapshot_health(payload or {"error": "panel unavailable", "panel": panel.label})
+            if state != "ok":
+                failures[key] = failures.get(key, 0) + 1
+                if failures[key] < 2 and previous.get(key, "ok") == "ok":
+                    continue
+            else:
+                failures[key] = 0
+            if previous.get(key, "ok") == state:
+                continue
+            previous[key] = state
+            try:
+                telegram.send(admin_chat_id, monitor_message(panel.label, payload or {"error": "panel unavailable"}, state), disable_web_page_preview=True)
+            except (OSError, RuntimeError, ValueError) as exc:
+                LOG.warning("outage notification failed panel=%s error=%s", key, type(exc).__name__)
 
 
 def format_bytes(value: Any) -> str:
@@ -2581,6 +2646,19 @@ def main() -> None:
     manager = ServerManager()
     tunnels = TunnelManager(manager, enabled=os.getenv("PANEL_TUNNELS_ENABLED", "1").lower() not in {"0", "false", "no"})
     panels = PanelManager(settings.panels_path)
+    monitor_stop = threading.Event()
+    try:
+        monitor_interval = max(15, min(int(os.getenv("PANEL_MONITOR_INTERVAL", "60")), 3600))
+    except ValueError:
+        monitor_interval = 60
+    monitor_thread = threading.Thread(
+        target=monitor_panels,
+        args=(telegram, panels, settings.admin_chat_id, monitor_stop, monitor_interval),
+        name="panel-outage-monitor",
+        daemon=True,
+    )
+    monitor_thread.start()
+    atexit.register(monitor_stop.set)
     mini_app = MiniAppServer(settings.mini_app_bind, settings.mini_app_port, settings.token, store, panels, telegram)
     mini_app.start()
     LOG.info("Mini App/API gateway listening bind=%s port=%s", settings.mini_app_bind, settings.mini_app_port)
