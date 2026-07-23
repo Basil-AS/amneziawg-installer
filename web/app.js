@@ -1005,7 +1005,7 @@ function renderLatencyChip(client) {
   const entry = clientLatencyEntry(client);
   const peerIp = entry?.["vp" + "n_ip"] || client.ipv4 || client.ip || "";
   const label = entry?.label || "unknown";
-  const loss = entry?.loss_pct === null || entry?.loss_pct === undefined ? "n/a" : `${Number(entry.loss_pct).toFixed(0)}%`;
+  const loss = entry?.loss_pct === null || entry?.loss_pct === undefined ? "n/a" : formatPercent(entry.loss_pct, 1);
   const handshake = entry?.handshake_age_sec === null || entry?.handshake_age_sec === undefined
     ? "never"
     : `${timeAgo(Math.floor(Date.now() / 1000) - Number(entry.handshake_age_sec))}`;
