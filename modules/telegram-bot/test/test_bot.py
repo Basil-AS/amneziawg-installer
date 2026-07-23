@@ -474,7 +474,9 @@ class BotTests(unittest.TestCase):
         callback_data = {item["callback_data"] for row in menu_keyboard(True) for item in row}
         admin_data = {item["callback_data"] for row in admin_keyboard() for item in row}
         self.assertTrue({"server:status:all", "server:health:all", "server:clients:all", "admin:users:0"}.issubset(callback_data))
-        self.assertTrue({"server:geoip-status:all", "server:web-cert:all", "server:drops-sample:all"}.issubset(admin_data))
+        self.assertTrue({"server:drops-sample:all", "server:health-history:all", "admin:update"}.issubset(admin_data))
+        self.assertNotIn("server:info:all", admin_data)
+        self.assertNotIn("server:resolver:all", admin_data)
         maintenance_data = {item["callback_data"] for row in maintenance_keyboard() for item in row}
         self.assertTrue({"admin:dns-restart:finland", "admin:reboot:all", "admin:geoip-update:all"}.issubset(maintenance_data))
 
@@ -488,9 +490,9 @@ class BotTests(unittest.TestCase):
         self.assertTrue(all(len(value.encode()) <= 64 for value in callbacks))
         self.assertTrue(all(len(button["callback_data"].encode()) <= 64 for row in clients_keyboard([("germany", "a" * 48, "0123456789")]) for button in row))
         self.assertTrue({"client:artifact:0123456789:qr:1", "client:artifact:0123456789:config:1", "client:stats:0123456789:1", "client:favorite-add:0123456789:1"}.issubset({button["callback_data"] for row in buttons for button in row}))
-        self.assertNotIn("client:remove:0123456789:1", {button["callback_data"] for row in buttons for button in row})
+        self.assertTrue({"client:regenerate:0123456789:1", "client:access-link:0123456789:1", "client:remove:0123456789:1", "client:p2p-port:0123456789:1"}.issubset({button["callback_data"] for row in buttons for button in row}))
         self.assertTrue({"client:toggle:0123456789:1", "client:p2p-toggle:0123456789:1", "client:remove:0123456789:1"}.issubset({button["callback_data"] for row in client_keyboard("germany", "client", "0123456789", admin=True) for button in row}))
-        self.assertIn("client:path-check:0123456789:1", {button["callback_data"] for row in client_keyboard("germany", "client", "0123456789", admin=True) for button in row})
+        self.assertNotIn("client:path-check:0123456789:1", {button["callback_data"] for row in client_keyboard("germany", "client", "0123456789", admin=True) for button in row})
         paged = {button["callback_data"] for row in clients_keyboard([], page=2, pages=3) for button in row}
         self.assertTrue({"user:clients:1", "user:clients:2", "user:clients:3"}.issubset(paged))
 
@@ -538,8 +540,10 @@ class BotTests(unittest.TestCase):
 
     def test_admin_help_lists_panel_diagnostics(self):
         text = help_text(True)
-        for command in ("/info", "/readiness", "/dns", "/resolver", "/audit", "/tokens", "/history", "/latency", "/provider"):
+        for command in ("/status", "/health", "/readiness", "/dns", "/clients", "/logs", "/users"):
             self.assertIn(command, text)
+        for command in ("/info", "/resolver", "/audit", "/tokens", "/history", "/latency", "/provider"):
+            self.assertNotIn(command, text)
 
     def test_reply_keyboard_is_compact(self):
         keyboard = reply_keyboard(False)

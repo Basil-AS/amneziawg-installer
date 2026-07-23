@@ -21,10 +21,8 @@ the tunnel use `StrictHostKeyChecking=yes` instead of accepting a new key.
 
 ## Commands
 
-Admin: `/status`, `/health`, `/info`, `/readiness`, `/dns`, `/resolver`,
-`/audit`, `/tokens`, `/servers`, `/clients [finland|germany]`,
-`/logs [finland|germany]`, `/users`, `/bind <tg_id> <fin_token> <ger_token>`,
-`/add`, `/remove`, `/regenerate`, `/restart <finland|germany>`.
+Admin: `/status`, `/health`, `/readiness`, `/dns`, `/servers`,
+`/clients [finland|germany]`, `/logs [finland|germany]`, `/users`.
 User: `/me`, `/servers`, `/clients`, `/menu`, `/help`.
 
 The bot uses the compact `/api/bot/snapshot` endpoint for status and client
@@ -40,14 +38,16 @@ to that Telegram account.
 
 The button-first interface provides a persistent bottom keyboard, one editable
 navigation message, per-user device cards and inline actions for QR images,
-`.conf` files, `vpn://` URIs and traffic statistics. Advanced/destructive
-operations (P2P, port rules, regeneration and deletion) remain admin-only in
-the bot; regular users get a compact download/status flow and can use the web
-panel for advanced management. Device callbacks use
+`.conf` files, `vpn://` URIs and traffic statistics. A user can fully manage
+each device covered by their scoped panel token: regenerate or delete its
+config, toggle VPN/P2P/port forwarding, add or remove a P2P port, create a
+one-time import link, and download fresh QR/`.conf`/URI artifacts. The API
+scope is checked by the panel on every operation; the bot never substitutes
+the administrator token for a missing user token. Device callbacks use
 short SQLite-backed references, so Telegram's 64-byte callback limit is never
 exceeded even for long client names. Administrative screens also expose
-health, logs, token audit, safe restart confirmation and the panel's verified
-update check/apply API.
+health, logs, user/token binding review, safe restart confirmation and the
+panel's verified update check/apply API.
 An approved user can also press “➕ Добавить устройство”, choose Finland or
 Germany and enter a profile name. The bot immediately sends both the QR image
 and the `.conf` file, then leaves one compact navigation card at the bottom.
@@ -81,9 +81,9 @@ panel APIs; secret tokens and private key material are never rendered.
 The separate “Обслуживание” screen exposes API-only DNS/NDP restarts, GeoIP
 database refresh and TLS renewal; server reboot is hidden behind a server
 choice and explicit confirmation.
-Administrator device cards also expose an API-only path diagnostic. It calls
-the panel's RBAC-protected client path-check endpoint and renders the result as
-a compact status/RTT card; regular users do not receive this privileged action.
+Kernel, resolver and raw host internals are not part of the normal
+administrator menu. The panel API still retains authenticated diagnostics for
+incident response, but they are not placed in the everyday bot workflow.
 The maintenance screen also tests the active web access policy on each panel
 without writing configuration or restarting the service; results show whether
 the current authenticated request would remain allowed after a policy change.
