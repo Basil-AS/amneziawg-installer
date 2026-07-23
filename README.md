@@ -307,9 +307,9 @@ IPv6 modes:
 | `routed` | Провайдер выдал отдельный routed IPv6 prefix (`/64`, `/56`, `/48`) именно под VPN-клиентов |
 | `ndp` | У сервера уже есть текущая публичная `/64` на `eth0`/внешнем интерфейсе; клиентские IPv6 будут анонсироваться через NDP proxy |
 | `nat66` | Fallback через NAT66, если routed prefix/NDP не подходят |
-| `block` | IPv6 leak-block для full-tunnel: `::/0` уходит в туннель, но клиентский IPv6 адрес не выдаётся, чтобы native IPv6 оператора не обходил VPN |
+| `block` | IPv6 leak-block для full- и split-tunnel: `::/0` уходит в туннель как sink-маршрут, но клиентский IPv6 адрес не выдаётся, чтобы native IPv6 оператора и WebRTC не обходили VPN |
 
-Если Android/мобильный оператор выдаёт native IPv6, IPv4-only full tunnel может протекать по IPv6. Используйте `routed`/`ndp`/`nat66`, если у сервера есть рабочий IPv6 путь, либо `--ipv6-mode=block` для явной leak-block политики. WebRTC leaks дополнительно зависят от браузера: Network Tester показывает IPv6/WebRTC risk и даёт клиентские рекомендации.
+Если Android/мобильный оператор выдаёт native IPv6, IPv4-only full tunnel или split tunnel может протекать по IPv6. Используйте `routed`/`ndp`/`nat66`, если у сервера есть рабочий IPv6 путь, либо `--ipv6-mode=block` для явной leak-block политики. В block-режиме даже split-профиль получает `::/0`, но остаётся без IPv6-адреса: это блокирует IPv6/WebRTC обход, сохраняя заданные IPv4-маршруты. WebRTC leaks дополнительно зависят от браузера: Network Tester показывает IPv6/WebRTC risk и даёт клиентские рекомендации.
 
 Панель не использует STUN/TURN и не сохраняет ICE-адреса браузера: WebRTC-проверка передаёт только факт и счётчик кандидатов. Для полного запрета WebRTC-утечек на устройстве дополнительно отключите WebRTC или ограничьте host candidates политикой браузера.
 
