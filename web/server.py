@@ -1169,9 +1169,12 @@ def read_iface_stats(iface):
     return out
 
 
-def pct(numerator, denominator, digits=2):
-    """Return numerator/denominator as a percentage rounded to `digits`, or
-    None if the denominator is not a positive number."""
+def pct(numerator, denominator, digits=1):
+    """Return a percentage rounded to one decimal place.
+
+    ``digits`` remains accepted for compatibility with older callers, but the
+    panel has one display precision for every percentage metric.
+    """
     try:
         denominator = float(denominator)
         numerator = float(numerator)
@@ -1179,7 +1182,7 @@ def pct(numerator, denominator, digits=2):
         return None
     if denominator <= 0:
         return None
-    return round(100.0 * numerator / denominator, digits)
+    return round(100.0 * numerator / denominator, 1)
 
 
 def iface_delta(name, current):
@@ -2240,8 +2243,19 @@ def bucket_health_series(rows, bucket_seconds):
 
 
 def summarize_health_history(rows):
-    warn_count = sum(1 for row in rows if row.get("status") == "warn")
-    critical_count = sum(1 for row in rows if row.get("status") == "critical")
+    warn_samples = sum(1 for row in rows if row.get("status") == "warn")
+    critical_samples = sum(1 for row in rows if row.get("status") == "critical")
+    warn_count = 0
+    critical_count = 0
+    previous_status = None
+    for row in rows:
+        status = row.get("status")
+        if status != previous_status:
+            if status == "warn":
+                warn_count += 1
+            elif status == "critical":
+                critical_count += 1
+        previous_status = status
     drops_delta = sum(counter_delta(rows, key) for key in (
         "wan_rx_dropped", "wan_tx_dropped", "vpn_rx_dropped", "vpn_tx_dropped",
     ))
@@ -2293,7 +2307,13 @@ def summarize_health_history(rows):
             },
         },
         "process": {"max_rss_bytes": max_rss, "max_fd_count": max_value(rows, "python_fd_count"), "max_threads": max_value(rows, "python_threads")},
-        "counts": {"samples": len(rows), "warn": warn_count, "critical": critical_count},
+        "counts": {
+            "samples": len(rows),
+            "warn": warn_count,
+            "critical": critical_count,
+            "warn_samples": warn_samples,
+            "critical_samples": critical_samples,
+        },
         "status": status,
         "notes": notes[:6],
     }

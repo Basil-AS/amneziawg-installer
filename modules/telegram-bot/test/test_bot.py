@@ -404,6 +404,21 @@ class BotTests(unittest.TestCase):
         self.assertEqual(format_bytes(0), "0 B")
         self.assertEqual(format_bytes(1024 * 1024), "1.0 MiB")
 
+    def test_telemetry_percentages_always_use_one_decimal(self):
+        self.assertEqual(format_metric_number(8.616187989556135), "8.6")
+        rendered = format_panel_payload({
+            "panel": "Sunny-Finland",
+            "summary": {
+                "cpu": {"avg": 8.616187989556135, "max": 12.34567},
+                "memory": {"avg_used_percent": 31.444932335820965, "max_used_percent": 32.9824},
+                "disk": {"current_used_percent": 32.28923028306412},
+                "load": {"avg1": 0.27, "max1": 0.36},
+            },
+        }, "health-history")
+        self.assertIn("8.6% / 12.3%", rendered)
+        self.assertIn("31.4% / 33.0%", rendered)
+        self.assertNotIn("8.616187989556135", rendered)
+
     def test_telemetry_visuals_are_compact(self):
         self.assertEqual(len(sparkline([1, 2, 3, 4], width=12)), 4)
         self.assertEqual(sparkline([5, 5, 5]), "▁▁▁")

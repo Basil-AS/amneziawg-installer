@@ -932,7 +932,8 @@ function renderOwnerFilter() {
 
 function formatPercent(value, digits = 0) {
   if (value === null || value === undefined || Number.isNaN(Number(value))) return "-";
-  return `${Number(value).toFixed(digits)}%`;
+  // Percentages use one decimal everywhere; keep the legacy argument for callers.
+  return `${Number(value).toFixed(1)}%`;
 }
 
 function healthBadge(status = "unknown") {

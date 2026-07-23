@@ -1920,7 +1920,7 @@ def metric_line(label: str, value: Any, state: Any = None) -> str:
 
 
 def format_metric_number(value: Any, decimals: int = 1) -> str:
-    """Render telemetry numbers compactly without changing their meaning."""
+    """Render telemetry numbers with one decimal place consistently."""
     if value in (None, ""):
         return "—"
     try:
@@ -1929,7 +1929,7 @@ def format_metric_number(value: Any, decimals: int = 1) -> str:
         return str(value)
     if not number == number or number in {float("inf"), float("-inf")}:
         return "—"
-    return f"{number:.{max(0, decimals)}f}"
+    return f"{number:.1f}"
 
 
 def display_value(value: Any) -> str:
@@ -2025,7 +2025,7 @@ def format_panel_payload(payload: dict[str, Any], action: str) -> str:
         summary = payload.get("summary") or {}
         lines.append(f"Период: <b>{html.escape(str(payload.get('range', '1h')))}</b> · samples: <b>{summary.get('counts', {}).get('samples', 0)}</b>")
         cpu, memory, disk, load = summary.get("cpu") or {}, summary.get("memory") or {}, summary.get("disk") or {}, summary.get("load") or {}
-        lines.extend([metric_line("CPU average/max", f"{cpu.get('avg', '—')}% / {cpu.get('max', '—')}%"), metric_line("RAM average/max", f"{memory.get('avg_used_percent', '—')}% / {memory.get('max_used_percent', '—')}%"), metric_line("Disk", f"{disk.get('current_used_percent', '—')}%"), metric_line("Load avg/max", f"{load.get('avg1', '—')} / {load.get('max1', '—')}")])
+        lines.extend([metric_line("CPU average/max", f"{format_metric_number(cpu.get('avg'))}% / {format_metric_number(cpu.get('max'))}%"), metric_line("RAM average/max", f"{format_metric_number(memory.get('avg_used_percent'))}% / {format_metric_number(memory.get('max_used_percent'))}%"), metric_line("Disk", f"{format_metric_number(disk.get('current_used_percent'))}%"), metric_line("Load avg/max", f"{format_metric_number(load.get('avg1'))} / {format_metric_number(load.get('max1'))}")])
         series = payload.get("series") or []
         if series:
             lines.append("<b>Динамика</b>")
