@@ -1856,7 +1856,7 @@ function isPrivateCandidate(ip) {
 
 async function collectWebrtcCandidates() {
   const RTCPeer = window.RTCPeerConnection || window.webkitRTCPeerConnection || window.mozRTCPeerConnection;
-  if (!RTCPeer) return {webrtc_available: false, webrtc_ipv6_candidates: [], webrtc_private_candidates: []};
+  if (!RTCPeer) return {webrtc_available: false, webrtc_ipv6_candidate_count: 0, webrtc_private_candidate_count: 0};
   const ipv6 = new Set();
   const priv = new Set();
   const pc = new RTCPeer({iceServers: []});
@@ -1884,8 +1884,9 @@ async function collectWebrtcCandidates() {
   }
   return {
     webrtc_available: true,
-    webrtc_ipv6_candidates: [...ipv6].slice(0, 20),
-    webrtc_private_candidates: [...priv].slice(0, 20),
+    // Candidate addresses stay in the browser and are never sent to the panel.
+    webrtc_ipv6_candidate_count: ipv6.size,
+    webrtc_private_candidate_count: priv.size,
   };
 }
 
@@ -1901,8 +1902,8 @@ async function runLeakChecks(context) {
       [secureV6Key]: context?.[secureV6Key] || "",
       ipv6_leak_suspected: false,
       webrtc_available: false,
-      webrtc_ipv6_candidates: [],
-      webrtc_private_candidates: [],
+      webrtc_ipv6_candidate_count: 0,
+      webrtc_private_candidate_count: 0,
       notes: ["Skipped: tab inactive or idle"],
     };
   }
@@ -1923,7 +1924,7 @@ async function runLeakChecks(context) {
   const expected6 = [context?.server_public_ipv6, context?.[secureV6Key]].filter(Boolean);
   const ipv6Leak = Boolean(browser6 && (!expected6.length || !expected6.includes(browser6)));
   if (ipv6Leak) notes.push("Browser public IPv6 differs from secure path/server IPv6 context");
-  if (rtc.webrtc_ipv6_candidates?.length) notes.push("WebRTC IPv6 host candidates observed");
+  if (rtc.webrtc_ipv6_candidate_count) notes.push("WebRTC IPv6 host candidates observed (addresses stay local to this browser)");
   return {
     browser_public_ipv4: browser4,
     browser_public_ipv6: browser6,
@@ -1932,8 +1933,8 @@ async function runLeakChecks(context) {
     [secureV6Key]: context?.[secureV6Key] || "",
     ipv6_leak_suspected: ipv6Leak,
     webrtc_available: Boolean(rtc.webrtc_available),
-    webrtc_ipv6_candidates: rtc.webrtc_ipv6_candidates || [],
-    webrtc_private_candidates: rtc.webrtc_private_candidates || [],
+    webrtc_ipv6_candidate_count: rtc.webrtc_ipv6_candidate_count || 0,
+    webrtc_private_candidate_count: rtc.webrtc_private_candidate_count || 0,
     notes,
   };
 }
