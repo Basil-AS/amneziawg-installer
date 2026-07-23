@@ -776,7 +776,7 @@ class Telegram:
 
     def configure_profile(self, mini_app_url: str = "", admin_chat_id: int = 0) -> None:
         commands = [{"command": command, "description": description} for command, description in (("start", "Открыть главное меню"), ("menu", "Показать меню"), ("servers", "Статус серверов"), ("clients", "Список клиентов"), ("me", "Моя привязка"), ("help", "Помощь"))]
-        admin_commands = commands + [{"command": command, "description": description} for command, description in (("health", "Глубокая проверка"), ("readiness", "Готовность VPN"), ("dns", "Состояние DNS"), ("audit", "Аудит клиентов"), ("history", "История нагрузки"), ("latency", "Latency клиентов"), ("provider", "Трафик провайдера"), ("restart", "Перезапуск сервиса"))]
+        admin_commands = commands + [{"command": command, "description": description} for command, description in (("health", "Проверка доступности"), ("readiness", "Готовность VPN"), ("dns", "Состояние DNS"), ("logs", "Последние логи"), ("users", "Пользователи"))]
         self.set_commands(commands)
         if admin_chat_id:
             self.set_commands(admin_commands, chat_id=admin_chat_id)
@@ -791,7 +791,7 @@ class Telegram:
 def help_text(admin: bool) -> str:
     text = "<b>GaulleBot</b>\nВыберите действие кнопками — команды нужны только для восстановления.\n\n/me — моя привязка\n/servers — состояние серверов\n/clients — мои устройства\n/menu — главное меню\n/help — помощь"
     if admin:
-        text += "\n\n<b>Администратор</b>:\n/status — быстрый сводный статус\n/health — глубокая проверка\n/info — сведения о сервере\n/readiness — готовность VPN\n/dns — DNS/AdGuard\n/resolver — состояние resolver\n/audit — аудит клиентов\n/tokens — токены панели\n/history — история нагрузки\n/latency — задержка клиентов\n/provider — трафик провайдера\n/clients [server] — клиенты\n/logs [server] — последние логи\n/users — список привязок\n/add &lt;server&gt; &lt;name&gt;\n/remove &lt;server&gt; &lt;name&gt;\n/regenerate &lt;server&gt; &lt;name&gt;\n/restart &lt;finland|germany&gt;\n\nТокены пользователей выдаются только через мастер «Пользователи»; не вставляйте bearer-секреты в slash-команды."
+        text += "\n\n<b>Администратор</b>:\n/status — сводный статус\n/health — проверка доступности\n/readiness — готовность VPN\n/dns — DNS/AdGuard\n/clients [server] — все клиенты\n/logs [server] — последние логи\n/users — привязки пользователей\n\nОперации с конфигами выполняются через «Мои устройства». Низкоуровневые сведения ядра и bearer-секреты не выводятся в чат."
     return text
 
 
@@ -812,16 +812,12 @@ def menu_keyboard(admin: bool) -> list[list[dict[str, str]]]:
 
 def admin_keyboard() -> list[list[dict[str, str]]]:
     return [
-        [{"text": "ℹ️ Информация", "callback_data": "server:info:all"}, {"text": "🧪 Аудит", "callback_data": "server:audit:all"}],
-        [{"text": "🧭 Resolver", "callback_data": "server:resolver:all"}, {"text": "🔑 Токены", "callback_data": "server:tokens:all"}],
-        [{"text": "📉 Нагрузка", "callback_data": "server:health-history:all"}, {"text": "📶 Latency", "callback_data": "server:latency:all"}],
-        [{"text": "📡 Потери пакетов", "callback_data": "server:drops-sample:all"}],
-        [{"text": "🌐 Provider traffic", "callback_data": "server:provider-traffic:all"}],
+        [{"text": "📉 Нагрузка", "callback_data": "server:health-history:all"}, {"text": "📡 Потери пакетов", "callback_data": "server:drops-sample:all"}],
+        [{"text": "📶 Latency", "callback_data": "server:latency:all"}, {"text": "🌐 Трафик провайдера", "callback_data": "server:provider-traffic:all"}],
         [{"text": "🛡 AdGuard статистика FI", "callback_data": "server:adguard-stats:finland"}, {"text": "🛡 AdGuard статистика DE", "callback_data": "server:adguard-stats:germany"}],
         [{"text": "📋 Фильтры FI", "callback_data": "server:adguard-filters:finland"}, {"text": "📋 Фильтры DE", "callback_data": "server:adguard-filters:germany"}],
-        [{"text": "🧰 GeoIP", "callback_data": "server:geoip-status:all"}, {"text": "🧪 Nettest", "callback_data": "server:nettest-reports:all"}],
-        [{"text": "🛡 Web policy", "callback_data": "server:web-policy:all"}, {"text": "🔒 TLS-сертификат", "callback_data": "server:web-cert:all"}],
-        [{"text": "📈 Трафик", "callback_data": "user:traffic"}, {"text": "🌐 Доступность", "callback_data": "user:nettest"}, {"text": "🔄 Обновления", "callback_data": "admin:update"}],
+        [{"text": "🧪 Nettest", "callback_data": "server:nettest-reports:all"}, {"text": "🔄 Обновления", "callback_data": "admin:update"}],
+        [{"text": "📈 Мой трафик", "callback_data": "user:traffic"}, {"text": "🌐 Доступность", "callback_data": "user:nettest"}],
         [{"text": "🛠 Обслуживание", "callback_data": "admin:maintenance"}],
         [{"text": "➕ Клиент Финляндии", "callback_data": "admin:add:finland"}, {"text": "➕ Клиент Германии", "callback_data": "admin:add:germany"}],
         [{"text": "♻️ Перезапуск Финляндии", "callback_data": "admin:restart:finland"}, {"text": "♻️ Перезапуск Германии", "callback_data": "admin:restart:germany"}],
@@ -886,18 +882,14 @@ def client_keyboard(server: str, name: str, ref: str, *, admin: bool, favorite: 
         [{"text": "📷 QR-код", "callback_data": f"client:artifact:{ref}:qr{suffix}"}, {"text": "📄 Конфиг", "callback_data": f"client:artifact:{ref}:config{suffix}"}],
         [{"text": "🔗 VPN URI", "callback_data": f"client:artifact:{ref}:uri{suffix}"}, {"text": "📈 Статистика", "callback_data": f"client:stats:{ref}{suffix}"}],
         [{"text": "💔 Убрать из избранного" if favorite else "⭐ В избранное", "callback_data": f"client:favorite-{'remove' if favorite else 'add'}:{ref}{suffix}"}],
+        [{"text": "♻️ Обновить конфиг", "callback_data": f"client:regenerate:{ref}{suffix}"}, {"text": "🔗 Ссылка импорта", "callback_data": f"client:access-link:{ref}{suffix}"}],
+        [{"text": "⏻ VPN", "callback_data": f"client:toggle:{ref}{suffix}"}, {"text": "🔌 P2P", "callback_data": f"client:p2p-toggle:{ref}{suffix}"}, {"text": "🔗 Порты", "callback_data": f"client:ports-toggle:{ref}{suffix}"}],
+        [{"text": "🔧 Добавить P2P порт", "callback_data": f"client:p2p-port:{ref}{suffix}"}, {"text": "🗑 Удалить P2P", "callback_data": f"client:p2p-remove:{ref}{suffix}"}],
+        [{"text": "🗑 Удалить конфиг", "callback_data": f"client:remove:{ref}{suffix}"}],
         [{"text": "⬅️ Назад", "callback_data": back}, {"text": "🏠 Меню", "callback_data": "menu:home"}],
     ]
     if admin:
-        rows[3:3] = [
-            [{"text": "♻️ Перегенерировать конфиг", "callback_data": f"client:regenerate:{ref}{suffix}"}],
-            [{"text": "🔗 Одноразовая ссылка импорта", "callback_data": f"client:access-link:{ref}{suffix}"}],
-            [{"text": "⏻ VPN", "callback_data": f"client:toggle:{ref}{suffix}"}, {"text": "🔌 P2P", "callback_data": f"client:p2p-toggle:{ref}{suffix}"}, {"text": "🔗 Порты", "callback_data": f"client:ports-toggle:{ref}{suffix}"}],
-            [{"text": "🔧 Добавить P2P порт", "callback_data": f"client:p2p-port:{ref}{suffix}"}, {"text": "🗑 Удалить P2P", "callback_data": f"client:p2p-remove:{ref}{suffix}"}],
-            [{"text": "🧭 Проверить путь", "callback_data": f"client:path-check:{ref}{suffix}"}],
-            [{"text": "🗑 Удалить", "callback_data": f"client:remove:{ref}{suffix}"}],
-            [{"text": "⚙️ Админка", "callback_data": "menu:admin"}],
-        ]
+        rows[3:3] = [[{"text": "⚙️ Админка", "callback_data": "menu:admin"}]]
     return rows
 
 
@@ -1631,9 +1623,6 @@ def handle_navigation(telegram: Telegram, store: Store, panels: PanelManager, ch
             render_navigation(telegram, store, chat_id, "Недостаточно прав или неверная конфигурация.", menu_keyboard(is_admin), "home", callback_message_id=callback_message_id)
             return True
         token = PANEL_TOKEN if is_admin else tokens[server]
-        if not is_admin and action in {"regenerate", "regenerate-confirm", "access-link", "toggle", "p2p-toggle", "ports-toggle", "p2p-port", "p2p-remove", "remove", "remove-confirm"}:
-            render_navigation(telegram, store, chat_id, "Эта операция доступна в веб-панели администратора.", client_keyboard(server, name, ref, admin=False, favorite=store.is_favorite(principal_id, server, name), back=back_screen), f"client:{action}-denied:{ref}", callback_message_id=callback_message_id)
-            return True
         if action == "path-check":
             if not is_admin:
                 render_navigation(telegram, store, chat_id, "Недостаточно прав для проверки маршрута.", client_keyboard(server, name, ref, admin=False, favorite=store.is_favorite(principal_id, server, name), back=back_screen), f"client:path-check-denied:{ref}", callback_message_id=callback_message_id)
