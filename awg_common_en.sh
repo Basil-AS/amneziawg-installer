@@ -4229,9 +4229,19 @@ regenerate_client() {
     _aip=$(printf '%s' "$current_allowed_ips" | sed 's/[&\\/]/\\&/g')
     _client_conf="$AWG_DIR/${name}.conf"
     if ! sed -i "s/^DNS = .*/DNS = ${_dns}/" "$_client_conf" ||
-       ! sed -i "s/^PersistentKeepalive = .*/PersistentKeepalive = ${_ka}/" "$_client_conf" ||
-       ! sed -i "s|^AllowedIPs = .*|AllowedIPs = ${_aip}|" "$_client_conf"; then
+       ! sed -i "s/^PersistentKeepalive = .*/PersistentKeepalive = ${_ka}/" "$_client_conf"; then
         log_error "Ошибка обновления пользовательских параметров в $_client_conf"
+        AWG_I1="$_old_i1"
+        restore_regenerate_backup "$server_bak" "$client_bak" "$priv_bak" "$pub_bak" "$name"
+        exec {lock_fd}>&-
+        unset CLIENT_PSK
+        return 1
+    fi
+    # --reset-routes keeps the route set rendered from awgsetup_cfg.init,
+    # including an explicit IPv6 leak-block sink on split-tunnel profiles.
+    if [[ "${AWG_REGEN_RESET_ROUTES:-0}" != "1" ]] &&
+       ! sed -i "s|^AllowedIPs = .*|AllowedIPs = ${_aip}|" "$_client_conf"; then
+        log_error "Ошибка обновления AllowedIPs в $_client_conf"
         AWG_I1="$_old_i1"
         restore_regenerate_backup "$server_bak" "$client_bak" "$priv_bak" "$pub_bak" "$name"
         exec {lock_fd}>&-
