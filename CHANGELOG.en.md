@@ -14,6 +14,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Improved
 
+- Telegram bot UX was reduced to the essential device workflow: the main menu now contains only devices, creation, favorites, setup help, servers, and access; each device card separates QR/`.conf`, extra information, and settings. Load, VPN readiness, DNS/AdGuard, logs, network tests, and maintenance moved to the web panel/Mini App.
 - Load and diagnostic percentages in the web panel and Telegram bot now always use one decimal place; history counts incident starts instead of every repeated warning sample.
 - Web health cards also round Load, RAM, and Disk to one decimal place instead of exposing JavaScript floating-point precision.
 - Telegram bot: Refresh edits the current screen; stale text menus are removed while configuration files and media are preserved.
