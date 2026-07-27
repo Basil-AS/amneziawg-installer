@@ -51,6 +51,40 @@ class BotTests(unittest.TestCase):
         self.assertEqual([item[0] for item in telegram.sent], ["photo", "document"])
         self.assertEqual(created_client_name({"id": "phone-2"}, "phone"), "phone-2")
 
+    def test_existing_device_bundle_keeps_media_and_puts_menu_after_it(self):
+        class FakePanels:
+            def artifact(self, server, name, kind, token):
+                content = b"qr" if kind == "qr" else b"conf"
+                return content, "image/png" if kind == "qr" else "text/plain", f"{name}.{kind}"
+
+        class FakeTelegram:
+            def __init__(self):
+                self.sent = []
+
+            def send_photo(self, chat_id, filename, content, caption=""):
+                self.sent.append(("photo", filename, caption))
+
+            def send_document(self, chat_id, filename, content, caption=""):
+                self.sent.append(("document", filename, caption))
+
+            def send(self, chat_id, text, *, keyboard=None, reply_keyboard=None, force_reply=False, disable_web_page_preview=False):
+                self.sent.append(("menu", text, keyboard))
+                return {"message_id": 99}
+
+            def delete_message(self, chat_id, message_id):
+                self.sent.append(("delete", message_id))
+
+        with tempfile.TemporaryDirectory() as directory:
+            store = Store(Path(directory) / "state.sqlite3")
+            try:
+                ref = store.client_ref(42, "finland", "phone")
+                telegram = FakeTelegram()
+                self.assertTrue(handle_navigation(telegram, store, FakePanels(), 42, True, f"client:bundle:{ref}:1", actor_id=42))
+                self.assertEqual([item[0] for item in telegram.sent], ["photo", "document", "menu"])
+                self.assertIn("📥 Получить QR + .conf", {button["text"] for row in telegram.sent[-1][2] for button in row})
+            finally:
+                store.close()
+
     def test_stale_navigation_cleanup_never_classifies_media_as_menu(self):
         self.assertFalse(callback_message_is_media({"text": "Меню", "reply_markup": {}}))
         self.assertTrue(callback_message_is_media({"document": {"file_id": "opaque"}}))
@@ -514,9 +548,10 @@ class BotTests(unittest.TestCase):
     def test_menu_contains_admin_actions(self):
         callback_data = {item["callback_data"] for row in menu_keyboard(True) for item in row}
         admin_data = {item["callback_data"] for row in admin_keyboard() for item in row}
-        self.assertTrue({"server:status:all", "admin:users:0", "admin:update", "menu:admin"}.issubset(callback_data))
-        self.assertTrue({"server:status:all", "admin:users:0", "admin:update", "user:add"}.issubset(admin_data))
+        self.assertTrue({"menu:admin", "user:clients", "user:add", "user:favorites", "user:help"}.issubset(callback_data))
+        self.assertTrue({"server:status:all", "admin:users:0", "admin:update", "menu:home"}.issubset(admin_data))
         self.assertNotIn("server:health:all", callback_data)
+        self.assertNotIn("server:status:all", callback_data)
         self.assertNotIn("server:drops-sample:all", admin_data)
         self.assertNotIn("admin:maintenance", admin_data)
         self.assertNotIn("user:nettest", admin_data)
@@ -525,7 +560,8 @@ class BotTests(unittest.TestCase):
 
     def test_menu_contains_user_controls(self):
         callback_data = {item["callback_data"] for row in menu_keyboard(False) for item in row}
-        self.assertTrue({"user:clients", "user:favorites", "user:help", "user:add", "menu:profile", "menu:servers", "user:request"}.issubset(callback_data))
+        self.assertTrue({"user:clients", "user:favorites", "user:help", "user:add", "menu:servers", "user:request"}.issubset(callback_data))
+        self.assertNotIn("menu:profile", callback_data)
         self.assertNotIn("user:traffic", callback_data)
         self.assertNotIn("user:nettest", callback_data)
 
@@ -535,7 +571,8 @@ class BotTests(unittest.TestCase):
         self.assertTrue(all(len(value.encode()) <= 64 for value in callbacks))
         self.assertTrue(all(len(button["callback_data"].encode()) <= 64 for row in clients_keyboard([("germany", "a" * 48, "0123456789")]) for button in row))
         primary_callbacks = {button["callback_data"] for row in buttons for button in row}
-        self.assertTrue({"client:artifact:0123456789:qr:1", "client:artifact:0123456789:config:1", "client:favorite-add:0123456789:1", "client:more:0123456789:1", "client:settings:0123456789:1"}.issubset(primary_callbacks))
+        self.assertTrue({"client:bundle:0123456789:1", "client:access-link:0123456789:1", "client:favorite-add:0123456789:1", "client:settings:0123456789:1"}.issubset(primary_callbacks))
+        self.assertNotIn("client:more:0123456789:1", primary_callbacks)
         self.assertNotIn("client:regenerate:0123456789:1", primary_callbacks)
         more_callbacks = {button["callback_data"] for row in client_more_keyboard("0123456789", back="user:clients:1") for button in row}
         settings_callbacks = {button["callback_data"] for row in client_settings_keyboard("0123456789", back="user:clients:1") for button in row}
@@ -601,11 +638,12 @@ class BotTests(unittest.TestCase):
 
     def test_reply_keyboard_is_compact(self):
         keyboard = reply_keyboard(False)
-        self.assertEqual(sum(len(row) for row in keyboard), 4)
+        self.assertEqual(sum(len(row) for row in keyboard), 3)
         self.assertIn("🏠 Меню", keyboard[0])
+        self.assertIn("➕ Новое устройство", keyboard[-1])
         self.assertNotIn("⚙️ Управление", [item for row in keyboard for item in row])
         admin_keyboard_rows = reply_keyboard(True)
-        self.assertEqual(sum(len(row) for row in admin_keyboard_rows), 5)
+        self.assertEqual(sum(len(row) for row in admin_keyboard_rows), 4)
         self.assertIn("⚙️ Управление", admin_keyboard_rows[-1])
 
     def test_result_navigation_has_refresh_action(self):

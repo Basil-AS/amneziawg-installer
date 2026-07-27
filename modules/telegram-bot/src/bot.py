@@ -791,7 +791,7 @@ class Telegram:
 def help_text(admin: bool) -> str:
     text = "<b>GaulleBot</b>\nВыберите действие кнопками. Команды оставлены только для восстановления интерфейса.\n\n/start или /menu — открыть меню\n/clients — мои устройства\n/help — эта справка"
     if admin:
-        text += "\n\n<b>Администратору</b>\n/admin — управление пользователями и обновлениями.\n\nДиагностика, AdGuard, DNS, сеть и обслуживание доступны в веб-панели/Mini App: там они не перегружают чат и безопаснее для сложных операций."
+        text += "\n\n<b>Администратору</b>\n/admin — управление пользователями и обновлениями.\n\nДиагностика, AdGuard, DNS, сеть и обслуживание доступны в веб-панели. Mini App открывает её внутри Telegram, только если администратор отдельно настроил HTTPS-адрес."
     return text
 
 
@@ -799,10 +799,10 @@ def menu_keyboard(admin: bool) -> list[list[dict[str, str]]]:
     rows = [
         [{"text": "👥 Устройства", "callback_data": "user:clients"}, {"text": "➕ Добавить", "callback_data": "user:add"}],
         [{"text": "⭐ Избранное", "callback_data": "user:favorites"}, {"text": "📚 Подключение", "callback_data": "user:help"}],
-        [{"text": "📡 Серверы", "callback_data": "menu:servers"}, {"text": "👤 Мой доступ", "callback_data": "menu:profile"}],
+        [{"text": "📡 Состояние серверов", "callback_data": "menu:servers"}],
     ]
     if admin:
-        rows = [[{"text": "📊 Состояние", "callback_data": "server:status:all"}, {"text": "👤 Пользователи", "callback_data": "admin:users:0"}], [{"text": "🔄 Обновления", "callback_data": "admin:update"}, {"text": "⚙️ Управление", "callback_data": "menu:admin"}]] + rows
+        rows = [[{"text": "⚙️ Управление сервером", "callback_data": "menu:admin"}]] + rows
     else:
         rows.append([{"text": "🔐 Запросить доступ", "callback_data": "user:request"}])
     return rows
@@ -812,7 +812,6 @@ def admin_keyboard() -> list[list[dict[str, str]]]:
     return [
         [{"text": "📊 Состояние серверов", "callback_data": "server:status:all"}],
         [{"text": "👤 Пользователи", "callback_data": "admin:users:0"}, {"text": "🔄 Обновления", "callback_data": "admin:update"}],
-        [{"text": "➕ Новое устройство", "callback_data": "user:add"}],
         [{"text": "⬅️ Главное меню", "callback_data": "menu:home"}],
     ]
 
@@ -866,9 +865,9 @@ def client_keyboard(server: str, name: str, ref: str, *, admin: bool, favorite: 
     page = back.rsplit(":", 1)[-1] if back.startswith("user:clients:") else "1"
     suffix = f":{page}{':favorites' if back == 'user:favorites' else ''}"
     rows = [
-        [{"text": "📷 QR-код", "callback_data": f"client:artifact:{ref}:qr{suffix}"}, {"text": "📄 Конфиг", "callback_data": f"client:artifact:{ref}:config{suffix}"}],
-        [{"text": "💔 Убрать из избранного" if favorite else "⭐ В избранное", "callback_data": f"client:favorite-{'remove' if favorite else 'add'}:{ref}{suffix}"}, {"text": "⋯ Ещё", "callback_data": f"client:more:{ref}{suffix}"}],
-        [{"text": "⚙️ Настроить", "callback_data": f"client:settings:{ref}{suffix}"}],
+        [{"text": "📥 Получить QR + .conf", "callback_data": f"client:bundle:{ref}{suffix}"}],
+        [{"text": "🔗 Импорт в приложение", "callback_data": f"client:access-link:{ref}{suffix}"}],
+        [{"text": "⭐ Убрать из избранного" if favorite else "⭐ В избранное", "callback_data": f"client:favorite-{'remove' if favorite else 'add'}:{ref}{suffix}"}, {"text": "⚙️ Настройки", "callback_data": f"client:settings:{ref}{suffix}"}],
     ]
     if admin:
         rows.append([{"text": "⚙️ Админка", "callback_data": "menu:admin"}])
@@ -1525,7 +1524,7 @@ def handle_navigation(telegram: Telegram, store: Store, panels: PanelManager, ch
             render_navigation(telegram, store, chat_id, "Администратору доступ выдаётся автоматически.", menu_keyboard(True), "home", callback_message_id=callback_message_id)
             return True
         if row and (tokens["finland"] or tokens["germany"]):
-            render_navigation(telegram, store, chat_id, "Доступ уже выдан. Откройте устройства или статистику.", menu_keyboard(False), "home", callback_message_id=callback_message_id)
+            render_navigation(telegram, store, chat_id, "Доступ уже выдан. Откройте список устройств.", menu_keyboard(False), "home", callback_message_id=callback_message_id)
             return True
         created = store.request_access(principal_id)
         admin_id = int(os.environ.get("ADMIN_CHAT_ID", "0"))
@@ -1640,7 +1639,7 @@ def handle_navigation(telegram: Telegram, store: Store, panels: PanelManager, ch
         text = (f"<b>👥 Мои устройства</b>\nВыберите устройство: QR, конфиг и настройки находятся в его карточке.\nСтраница <b>{page}/{pages}</b> · всего: <b>{len(available)}</b>" if available else "<b>👥 Мои устройства</b>\nПока нет доступных конфигураций.")
         render_navigation(telegram, store, chat_id, text, clients_keyboard(visible, page=page, pages=pages, admin=is_admin), f"user:clients:{page}", callback_message_id=callback_message_id)
         return True
-    if kind == "client" and action in {"open", "more", "settings", "artifact", "stats", "regenerate", "regenerate-confirm", "access-link", "toggle", "p2p-toggle", "ports-toggle", "p2p-port", "p2p-remove", "path-check", "favorite-add", "favorite-remove", "remove", "remove-confirm"}:
+    if kind == "client" and action in {"open", "more", "settings", "artifact", "bundle", "stats", "regenerate", "regenerate-confirm", "access-link", "toggle", "p2p-toggle", "ports-toggle", "p2p-port", "p2p-remove", "path-check", "favorite-add", "favorite-remove", "remove", "remove-confirm"}:
         if len(parts) < 3:
             return True
         ref = parts[2]
@@ -1659,6 +1658,25 @@ def handle_navigation(telegram: Telegram, store: Store, panels: PanelManager, ch
             render_navigation(telegram, store, chat_id, "Недостаточно прав или неверная конфигурация.", menu_keyboard(is_admin), "home", callback_message_id=callback_message_id)
             return True
         token = PANEL_TOKEN if is_admin else tokens[server]
+        if action == "bundle":
+            qr_sent, config_sent = send_client_bundle(telegram, panels, chat_id, server, name, token)
+            delivered = []
+            if qr_sent:
+                delivered.append("QR-код")
+            if config_sent:
+                delivered.append("файл .conf")
+            result = " и ".join(delivered) if delivered else "не удалось получить артефакты"
+            # Media must remain in chat. Recreate only the tracked text menu
+            # after it so the next navigation control is always at the bottom.
+            render_navigation(
+                telegram,
+                store,
+                chat_id,
+                f"<b>📥 Конфигурация · {html.escape(name)}</b>\nОтправлено: {html.escape(result)}.",
+                client_keyboard(server, name, ref, admin=is_admin, favorite=store.is_favorite(principal_id, server, name), back=back_screen),
+                f"client:bundle:{ref}",
+            )
+            return True
         if action == "more":
             render_navigation(telegram, store, chat_id, f"<b>⋯ Дополнительно · {html.escape(name)}</b>\nСостояние, VPN URI и одноразовая ссылка импорта.", client_more_keyboard(ref, back=back_screen), f"client:more:{ref}", callback_message_id=callback_message_id)
             return True
@@ -1701,7 +1719,15 @@ def handle_navigation(telegram: Telegram, store: Store, panels: PanelManager, ch
                 return True
             ttl = int(payload.get("ttl") or 86400)
             hours = max(1, ttl // 3600)
-            telegram.send(chat_id, f"<b>🔗 Одноразовая ссылка импорта</b>\nУстройство: <code>{html.escape(name)}</code>\nСрок действия: {hours} ч.\nСсылка не сохраняется ботом и станет недействительной после использования.", keyboard=[[{"text": "🔗 Открыть импорт", "url": link}], [{"text": "⬅️ К устройству", "callback_data": f"client:open:{ref}:{source_page}:{source}"}]])
+            telegram.send(chat_id, f"<b>🔗 Импорт в приложение</b>\nУстройство: <code>{html.escape(name)}</code>\nСрок действия ссылки: {hours} ч.\nОна не сохраняется ботом и перестанет работать после первого использования.", keyboard=[[{"text": "🔗 Открыть импорт", "url": link}]])
+            render_navigation(
+                telegram,
+                store,
+                chat_id,
+                f"<b>🔗 Импорт · {html.escape(name)}</b>\nСсылка отправлена отдельным сообщением выше.",
+                client_keyboard(server, name, ref, admin=is_admin, favorite=store.is_favorite(principal_id, server, name), back=back_screen),
+                f"client:access-link:{ref}",
+            )
             return True
         if action == "remove":
             render_navigation(telegram, store, chat_id, f"<b>Удалить устройство {html.escape(name)}?</b>\nДействие необратимо для этого профиля.", [[{"text": "✅ Подтвердить удаление", "callback_data": f"client:remove-confirm:{ref}:{source_page}"}], [{"text": "Отмена", "callback_data": f"client:open:{ref}:{source_page}"}]], f"client:remove:{ref}", callback_message_id=callback_message_id)
@@ -1732,6 +1758,14 @@ def handle_navigation(telegram: Telegram, store: Store, panels: PanelManager, ch
                         telegram.send_document(chat_id, artifact[2], artifact[0], f"📄 <b>{html.escape(name)}</b> · {server}")
                 except (OSError, RuntimeError, ValueError):
                     telegram.send(chat_id, "Файл получен с панели, но Telegram не принял отправку. Повторите попытку.")
+            render_navigation(
+                telegram,
+                store,
+                chat_id,
+                f"<b>📥 Конфигурация · {html.escape(name)}</b>\nАртефакт отправлен отдельным сообщением выше.",
+                client_keyboard(server, name, ref, admin=is_admin, favorite=store.is_favorite(principal_id, server, name), back=back_screen),
+                f"client:artifact:{ref}",
+            )
             return True
         payload = panels.request(server, "clients", token) or {}
         client = next((item for item in payload.get("clients", []) if str(item.get("name") or item.get("id") or item.get("config_name")) == name), None)
@@ -1791,7 +1825,7 @@ def handle_navigation(telegram: Telegram, store: Store, panels: PanelManager, ch
 
 
 def reply_keyboard(admin: bool = False) -> list[list[str]]:
-    rows = [["🏠 Меню", "👥 Устройства"], ["➕ Добавить", "⭐ Избранное"]]
+    rows = [["🏠 Меню", "👥 Устройства"], ["➕ Новое устройство"]]
     if admin:
         rows.append(["⚙️ Управление"])
     return rows
@@ -2693,9 +2727,12 @@ def main() -> None:
     )
     monitor_thread.start()
     atexit.register(monitor_stop.set)
-    mini_app = MiniAppServer(settings.mini_app_bind, settings.mini_app_port, settings.token, store, panels, telegram)
-    mini_app.start()
-    LOG.info("Mini App/API gateway listening bind=%s port=%s", settings.mini_app_bind, settings.mini_app_port)
+    if settings.mini_app_url:
+        mini_app = MiniAppServer(settings.mini_app_bind, settings.mini_app_port, settings.token, store, panels, telegram)
+        mini_app.start()
+        LOG.info("Mini App/API gateway listening bind=%s port=%s", settings.mini_app_bind, settings.mini_app_port)
+    else:
+        LOG.info("Mini App disabled: MINI_APP_URL is not configured")
     webhook = None
     allowed_updates = ["message", "callback_query"]
     if settings.webhook_url:
@@ -2728,7 +2765,7 @@ def main() -> None:
                 if actor_id:
                     store.touch(actor_id, str(sender.get("username", "")), str(sender.get("first_name", "")))
                 command = (message.get("text") or callback.get("data") or "").strip()
-                reply_action = {"🏠 Меню": "menu:home", "👥 Устройства": "user:clients", "➕ Добавить": "user:add", "⭐ Избранное": "user:favorites", "⚙️ Управление": "menu:admin"}.get(command)
+                reply_action = {"🏠 Меню": "menu:home", "👥 Устройства": "user:clients", "➕ Новое устройство": "user:add", "⚙️ Управление": "menu:admin"}.get(command)
                 command = reply_action or command
                 if callback:
                     callback_id = str(callback.get("id", ""))
