@@ -9,7 +9,7 @@ from unittest.mock import patch
 from urllib.parse import urlencode
 from pathlib import Path
 
-from src.bot import PANEL_TOKEN, PanelManager, ServerManager, Settings, Store, Telegram, admin_keyboard, callback_command, callback_message_is_media, client_stats_card, compact_clients, compact_snapshot, created_client_name, ensure_user_panel_token, format_metric_number, format_panel_payload, help_text, maintenance_keyboard, menu_keyboard, navigation_keyboard, panel_client_names, panel_token_records, provisioning_keyboard, provisioning_text, reply_keyboard, render_navigation, result_navigation_keyboard, send_client_bundle, snapshot_health, token_client_scope, token_record_by_prefix, uri_keyboard, valid_bearer_candidate, verify_init_data, client_keyboard, clients_keyboard, format_bytes, format_timestamp, merge_client_help_payloads, parallel_payloads, sparkline, usage_bar
+from src.bot import PANEL_TOKEN, PanelManager, ServerManager, Settings, Store, Telegram, admin_keyboard, callback_command, callback_message_is_media, client_more_keyboard, client_settings_keyboard, client_stats_card, compact_clients, compact_snapshot, created_client_name, ensure_user_panel_token, format_metric_number, format_panel_payload, handle_navigation, help_text, maintenance_keyboard, menu_keyboard, navigation_keyboard, panel_client_names, panel_token_records, provisioning_keyboard, provisioning_text, reply_keyboard, render_navigation, result_navigation_keyboard, send_client_bundle, snapshot_health, token_client_scope, token_record_by_prefix, uri_keyboard, valid_bearer_candidate, verify_init_data, client_keyboard, clients_keyboard, format_bytes, format_timestamp, merge_client_help_payloads, parallel_payloads, sparkline, usage_bar
 
 
 class BotTests(unittest.TestCase):
@@ -58,6 +58,30 @@ class BotTests(unittest.TestCase):
 
     def test_admin_help_does_not_advertise_insecure_bind_command(self):
         self.assertNotIn("/bind", help_text(True))
+
+    def test_retired_chat_diagnostics_do_not_call_panel_api(self):
+        class FakeTelegram:
+            def __init__(self):
+                self.sent = []
+
+            def send(self, chat_id, text, *, keyboard=None, reply_keyboard=None, force_reply=False, disable_web_page_preview=False):
+                self.sent.append((chat_id, text, keyboard))
+                return {"message_id": 10}
+
+            def delete_message(self, *args):
+                return None
+
+        class FakePanels:
+            def request(self, *args, **kwargs):
+                raise AssertionError("retired chat diagnostics must not call panel API")
+
+        with tempfile.TemporaryDirectory() as directory:
+            store = Store(Path(directory) / "state.sqlite3")
+            telegram = FakeTelegram()
+            self.assertTrue(handle_navigation(telegram, store, FakePanels(), 42, True, "server:readiness:all", actor_id=42))
+            self.assertIn("веб-панели", telegram.sent[0][1])
+            self.assertEqual(telegram.sent[0][2][0][0]["callback_data"], "menu:admin")
+            store.close()
 
     def test_navigation_refresh_edits_current_menu_without_sending(self):
         class FakeTelegram:
@@ -490,28 +514,33 @@ class BotTests(unittest.TestCase):
     def test_menu_contains_admin_actions(self):
         callback_data = {item["callback_data"] for row in menu_keyboard(True) for item in row}
         admin_data = {item["callback_data"] for row in admin_keyboard() for item in row}
-        self.assertTrue({"server:status:all", "server:health:all", "server:clients:all", "admin:users:0"}.issubset(callback_data))
-        self.assertTrue({"server:drops-sample:all", "server:health-history:all", "admin:update"}.issubset(admin_data))
-        self.assertNotIn("server:info:all", admin_data)
-        self.assertNotIn("server:resolver:all", admin_data)
+        self.assertTrue({"server:status:all", "admin:users:0", "admin:update", "menu:admin"}.issubset(callback_data))
+        self.assertTrue({"server:status:all", "admin:users:0", "admin:update", "user:add"}.issubset(admin_data))
+        self.assertNotIn("server:health:all", callback_data)
+        self.assertNotIn("server:drops-sample:all", admin_data)
+        self.assertNotIn("admin:maintenance", admin_data)
         self.assertNotIn("user:nettest", admin_data)
         self.assertNotIn("user:traffic", admin_data)
-        maintenance_data = {item["callback_data"] for row in maintenance_keyboard() for item in row}
-        self.assertTrue({"admin:dns-restart:finland", "admin:reboot:all", "admin:geoip-update:all"}.issubset(maintenance_data))
+        self.assertEqual({item["callback_data"] for row in maintenance_keyboard() for item in row}, {"menu:admin"})
 
     def test_menu_contains_user_controls(self):
         callback_data = {item["callback_data"] for row in menu_keyboard(False) for item in row}
-        self.assertTrue({"user:clients", "user:traffic", "user:favorites", "user:nettest", "user:help", "user:add", "menu:profile"}.issubset(callback_data))
+        self.assertTrue({"user:clients", "user:favorites", "user:help", "user:add", "menu:profile", "menu:servers", "user:request"}.issubset(callback_data))
+        self.assertNotIn("user:traffic", callback_data)
+        self.assertNotIn("user:nettest", callback_data)
 
     def test_client_callbacks_fit_telegram_limit(self):
         buttons = client_keyboard("germany", "a" * 48, "0123456789", admin=False)
         callbacks = [button["callback_data"] for row in buttons for button in row]
         self.assertTrue(all(len(value.encode()) <= 64 for value in callbacks))
         self.assertTrue(all(len(button["callback_data"].encode()) <= 64 for row in clients_keyboard([("germany", "a" * 48, "0123456789")]) for button in row))
-        self.assertTrue({"client:artifact:0123456789:qr:1", "client:artifact:0123456789:config:1", "client:stats:0123456789:1", "client:favorite-add:0123456789:1"}.issubset({button["callback_data"] for row in buttons for button in row}))
-        self.assertTrue({"client:regenerate:0123456789:1", "client:access-link:0123456789:1", "client:remove:0123456789:1", "client:p2p-port:0123456789:1"}.issubset({button["callback_data"] for row in buttons for button in row}))
-        self.assertTrue({"client:toggle:0123456789:1", "client:p2p-toggle:0123456789:1", "client:remove:0123456789:1"}.issubset({button["callback_data"] for row in client_keyboard("germany", "client", "0123456789", admin=True) for button in row}))
-        self.assertNotIn("client:path-check:0123456789:1", {button["callback_data"] for row in client_keyboard("germany", "client", "0123456789", admin=True) for button in row})
+        primary_callbacks = {button["callback_data"] for row in buttons for button in row}
+        self.assertTrue({"client:artifact:0123456789:qr:1", "client:artifact:0123456789:config:1", "client:favorite-add:0123456789:1", "client:more:0123456789:1", "client:settings:0123456789:1"}.issubset(primary_callbacks))
+        self.assertNotIn("client:regenerate:0123456789:1", primary_callbacks)
+        more_callbacks = {button["callback_data"] for row in client_more_keyboard("0123456789", back="user:clients:1") for button in row}
+        settings_callbacks = {button["callback_data"] for row in client_settings_keyboard("0123456789", back="user:clients:1") for button in row}
+        self.assertTrue({"client:stats:0123456789:1", "client:access-link:0123456789:1"}.issubset(more_callbacks))
+        self.assertTrue({"client:toggle:0123456789:1", "client:p2p-toggle:0123456789:1", "client:remove:0123456789:1", "client:p2p-port:0123456789:1"}.issubset(settings_callbacks))
         device_list = {button["callback_data"] for row in clients_keyboard([], source="clients") for button in row}
         self.assertNotIn("user:nettest", device_list)
         self.assertNotIn("user:traffic", device_list)
@@ -565,19 +594,19 @@ class BotTests(unittest.TestCase):
 
     def test_admin_help_lists_panel_diagnostics(self):
         text = help_text(True)
-        for command in ("/status", "/health", "/readiness", "/dns", "/clients", "/logs", "/users"):
+        for command in ("/start", "/menu", "/clients", "/help", "/admin"):
             self.assertIn(command, text)
-        for command in ("/info", "/resolver", "/audit", "/tokens", "/history", "/latency", "/provider"):
+        for command in ("/status", "/health", "/readiness", "/dns", "/logs", "/users"):
             self.assertNotIn(command, text)
 
     def test_reply_keyboard_is_compact(self):
         keyboard = reply_keyboard(False)
-        self.assertEqual(sum(len(row) for row in keyboard), 5)
+        self.assertEqual(sum(len(row) for row in keyboard), 4)
         self.assertIn("🏠 Меню", keyboard[0])
-        self.assertNotIn("⚙️ Админка", [item for row in keyboard for item in row])
+        self.assertNotIn("⚙️ Управление", [item for row in keyboard for item in row])
         admin_keyboard_rows = reply_keyboard(True)
-        self.assertEqual(sum(len(row) for row in admin_keyboard_rows), 6)
-        self.assertIn("⚙️ Админка", admin_keyboard_rows[-1])
+        self.assertEqual(sum(len(row) for row in admin_keyboard_rows), 5)
+        self.assertIn("⚙️ Управление", admin_keyboard_rows[-1])
 
     def test_result_navigation_has_refresh_action(self):
         keyboard = result_navigation_keyboard("health", "all", False)
@@ -594,24 +623,9 @@ class BotTests(unittest.TestCase):
         self.assertNotIn("20002", rendered)
         self.assertIn("👥 Устройства", {item["text"] for row in result_navigation_keyboard("clients", "all", False) for item in row})
 
-    def test_maintenance_exposes_scoped_dns_mode_controls(self):
+    def test_maintenance_screen_has_no_infrastructure_controls(self):
         callbacks = {item["callback_data"] for row in maintenance_keyboard() for item in row}
-        self.assertIn("admin:dns-mode:finland", callbacks)
-        self.assertIn("admin:dns-mode:germany", callbacks)
-
-    def test_maintenance_exposes_geoip_operations(self):
-        callbacks = {item["callback_data"] for row in maintenance_keyboard() for item in row}
-        self.assertIn("admin:geoip-providers-test:all", callbacks)
-        self.assertIn("admin:geoip-auto-update:all", callbacks)
-
-    def test_maintenance_routes_ndp_to_scoped_menu(self):
-        callbacks = {item["callback_data"] for row in maintenance_keyboard() for item in row}
-        self.assertEqual(callbacks.intersection({"admin:ndp:finland", "admin:ndp:germany"}), {"admin:ndp:finland", "admin:ndp:germany"})
-
-    def test_maintenance_exposes_profile_rotation_per_server(self):
-        callbacks = {item["callback_data"] for row in maintenance_keyboard() for item in row}
-        self.assertIn("admin:rotate-profile:finland", callbacks)
-        self.assertIn("admin:rotate-profile:germany", callbacks)
+        self.assertEqual(callbacks, {"menu:admin"})
 
     def test_timestamp_card_is_human_readable(self):
         self.assertEqual(format_timestamp(0), "1970-01-01 00:00 UTC")
@@ -634,11 +648,11 @@ class BotTests(unittest.TestCase):
         self.assertTrue(all(len(value.encode()) <= 64 for value in callbacks))
         self.assertIn("не настроен", provisioning_text(151599744, None))
 
-    def test_adguard_admin_controls_are_present(self):
+    def test_adguard_controls_are_not_part_of_chat_navigation(self):
         callbacks = {button["callback_data"] for row in maintenance_keyboard() for button in row}
-        self.assertIn("admin:adguard-filter-refresh:finland", callbacks)
-        self.assertIn("admin:adguard-filter-add:germany", callbacks)
-        self.assertIn("admin:adguard-filter-remove:finland", callbacks)
+        self.assertNotIn("admin:adguard-filter-refresh:finland", callbacks)
+        self.assertNotIn("admin:adguard-filter-add:germany", callbacks)
+        self.assertNotIn("admin:adguard-filter-remove:finland", callbacks)
 
     def test_token_selection_uses_unambiguous_hash_prefix_and_no_secret(self):
         records = panel_token_records({"users": [{"hash": "a" * 64, "name": "Telegram user", "clients": ["phone"]}, {"hash": "b" * 64, "name": "Other", "clients": []}]})
@@ -663,9 +677,9 @@ class BotTests(unittest.TestCase):
         self.assertEqual(len(merged["groups"][0]["clients"]), 1)
 
     def test_uri_keyboard_uses_copy_text_button(self):
-        keyboard = uri_keyboard("vpn://example", "ref123")
+        keyboard = uri_keyboard("vpn://example", "ref123", page=2, source="favorites")
         self.assertEqual(keyboard[0][0]["copy_text"]["text"], "vpn://example")
-        self.assertEqual(keyboard[1][0]["callback_data"], "client:open:ref123")
+        self.assertEqual(keyboard[1][0]["callback_data"], "client:open:ref123:2:favorites")
 
     def test_callback_payloads_are_command_safe(self):
         self.assertEqual(callback_command("nav:status"), "/status")
