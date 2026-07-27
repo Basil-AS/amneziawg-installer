@@ -13,11 +13,21 @@ never executes shell commands on a VPN server and has no SSH fallback.
 
 ## Configuration
 
-Copy `.env.example` to `/etc/gaullebot.env` (mode `0640`, group `gaullebot`);
+Copy `config.example.env` to `/etc/gaullebot.env` (mode `0640`, group `gaullebot`);
 the panel connector file is `/etc/gaullebot-panels.json` by default.
 Never commit the real token or SSH keys.
 For production, set `SSH_KNOWN_HOSTS` to the pinned host-key file; this makes
 the tunnel use `StrictHostKeyChecking=yes` instead of accepting a new key.
+
+### Optional Mini App
+
+The Mini App is disabled unless `MINI_APP_URL` is set. When enabled, Telegram
+shows the `Панель` button beside the message field; it opens that HTTPS URL.
+The bot binds the local gateway to `127.0.0.1:8789` by default, so an HTTPS
+reverse proxy for that exact URL is required. Do not publish this port or use
+an IP-only/self-signed URL: Telegram Web Apps require a trusted HTTPS origin.
+Without `MINI_APP_URL`, the bot exposes its standard command-menu button and
+does not start the Mini App gateway.
 
 ## Commands
 
@@ -36,10 +46,12 @@ the panel token, while a regular user can only use the token explicitly bound
 to that Telegram account.
 
 The button-first interface provides a persistent bottom keyboard, one editable
-navigation message and per-user device cards. The primary device card has only
-QR, `.conf`, favorites, “More” and a settings entry; URI, one-time import links and
-traffic details are grouped under “More”, while VPN/P2P/port controls,
-regeneration and deletion are grouped under “Settings”. A user can fully manage
+navigation message and per-user device cards. The primary device action is
+`📥 Получить QR + .conf`: it immediately sends both import artifacts. Import
+into an application and device settings are separate actions; VPN/P2P/port
+controls, regeneration and deletion are grouped under `⚙️ Настройки`. After
+the bot sends an artifact, it recreates only its text navigation card below the
+media, never deleting QR images, `.conf` files or import links. A user can fully manage
 each device covered by their scoped panel token: regenerate or delete its
 config, toggle VPN/P2P/port forwarding, add or remove a P2P port, create a
 one-time import link, and download fresh QR/`.conf`/URI artifacts. The API
