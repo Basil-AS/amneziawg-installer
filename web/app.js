@@ -1163,8 +1163,8 @@ function renderHealthHistory() {
     <div class="health-range-row items-center">${ranges}${clearButton}</div>
     <div class="health-history-summary">
       <div><span>CPU</span><strong>avg ${formatPercent(cpu.avg, 1)} · peak ${formatPercent(cpu.max, 1)}</strong></div>
-      <div><span>RAM</span><strong>avg ${formatPercent(memory.avg_used_percent, 0)} · peak ${formatPercent(memory.max_used_percent, 0)}</strong><em>min avail ${bytes(memory.min_available_bytes || 0)}</em></div>
-      <div><span>Disk</span><strong>${formatPercent(disk.current_used_percent, 0)}</strong><em>min free ${bytes(disk.min_free_bytes || 0)}</em></div>
+      <div><span>RAM</span><strong>avg ${formatPercent(memory.avg_used_percent, 1)} · peak ${formatPercent(memory.max_used_percent, 1)}</strong><em>min avail ${bytes(memory.min_available_bytes || 0)}</em></div>
+      <div><span>Disk</span><strong>${formatPercent(disk.current_used_percent, 1)}</strong><em>min free ${bytes(disk.min_free_bytes || 0)}</em></div>
       <div><span>Conntrack</span><strong>peak ${formatPercent(conntrack.max_used_percent, 1)}</strong></div>
       <div><span>Drops</span><strong>WAN +${Number(network.wan_rx_dropped_delta || 0) + Number(network.wan_tx_dropped_delta || 0)} · ${"VP" + "N"} +${Number(network["vp" + "n_rx_dropped_delta"] || 0) + Number(network["vp" + "n_tx_dropped_delta"] || 0)}</strong><em>errors +${Number(network.errors_delta || 0)}</em></div>
       <div><span>WAN speed</span><strong>avg ↓ ${speed(rates.wan_rx?.avg_bps || 0)} · ↑ ${speed(rates.wan_tx?.avg_bps || 0)}</strong><em>peak ↓ ${speed(rates.wan_rx?.peak_bps || 0)} · ↑ ${speed(rates.wan_tx?.peak_bps || 0)}</em></div>
@@ -1239,9 +1239,9 @@ function renderServerHealth() {
   const webEdgeLabel = webEdge.mode === "nginx_reverse_proxy" ? "nginx" : "direct";
   const webEdgeStatus = webEdge.status || (webEdge.mode === "legacy_direct" ? "ok" : "unknown");
   host.innerHTML = `
-    ${renderHealthCard("CPU", cpuValue, `load ${Number(load.one || 0).toFixed(2)} / ${load.cpu_count || 1} core`, cpu.status || load.status || "ok")}
-    ${renderHealthCard("RAM", formatPercent(memory.used_percent, 0), `${memoryUsed} used · ${bytes(memory.available_bytes || 0)} available`, memory.status || "unknown")}
-    ${renderHealthCard("Disk", formatPercent(disk.used_percent, 0), `${bytes(disk.free_bytes || 0)} free on ${disk.path || "/"}`, disk.status || "unknown")}
+    ${renderHealthCard("CPU", cpuValue, `load ${Number(load.one || 0).toFixed(1)} / ${load.cpu_count || 1} core`, cpu.status || load.status || "ok")}
+    ${renderHealthCard("RAM", formatPercent(memory.used_percent, 1), `${memoryUsed} used · ${bytes(memory.available_bytes || 0)} available`, memory.status || "unknown")}
+    ${renderHealthCard("Disk", formatPercent(disk.used_percent, 1), `${bytes(disk.free_bytes || 0)} free on ${disk.path || "/"}`, disk.status || "unknown")}
     ${renderHealthCard("Uptime", durationText(hostInfo.uptime_seconds || 0), `web ${durationText(process.uptime_seconds || 0)}`, "ok")}
     ${renderHealthCard("Conntrack", conntrack.available === false ? "n/a" : formatPercent(conntrack.used_percent, 1), conntrack.available === false ? "not exposed" : `${conntrack.count || 0}/${conntrack.max || 0}`, conntrack.status || "unknown")}
     ${renderHealthCard("Network", `${network.drops_delta || 0} drops`, `${network.wan_iface || "wan"} / ${overlayIface} · errors ${network.errors_delta || 0}`, network.status || "unknown")}

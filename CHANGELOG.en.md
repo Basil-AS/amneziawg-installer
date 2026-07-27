@@ -15,6 +15,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Improved
 
 - Load and diagnostic percentages in the web panel and Telegram bot now always use one decimal place; history counts incident starts instead of every repeated warning sample.
+- Web health cards also round Load, RAM, and Disk to one decimal place instead of exposing JavaScript floating-point precision.
 - Telegram bot: Refresh edits the current screen; stale text menus are removed while configuration files and media are preserved.
 - Background diagnostic results now replace the current navigation card instead of creating a second menu screen.
 - The bot administrator now uses a full super-token for server operations while retaining separate scoped user tokens for bound configurations.

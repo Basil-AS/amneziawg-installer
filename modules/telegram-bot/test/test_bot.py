@@ -452,6 +452,23 @@ class BotTests(unittest.TestCase):
         self.assertIn("CPU", rendered)
         self.assertNotIn('"cpu"', rendered)
 
+    def test_health_card_uses_one_decimal_for_all_telemetry_metrics(self):
+        rendered = format_panel_payload({
+            "panel": "Sunny-Finland",
+            "status": "ok",
+            "cpu": {"usage_percent": 8.616187989556135, "status": "ok"},
+            "memory": {"used_percent": 31.444932335820965, "status": "ok"},
+            "disk": {"used_percent": 32.28923028306412, "status": "ok"},
+            "load": {"one": 0.27, "five": 0.36, "status": "ok"},
+            "services": {"vpn_interface": {"status": "ok"}},
+            "network": {"drops_delta": 0, "errors_delta": 0},
+        }, "health")
+        self.assertIn("CPU: <b>8.6%</b>", rendered)
+        self.assertIn("RAM: <b>31.4%</b>", rendered)
+        self.assertIn("Диск: <b>32.3%</b>", rendered)
+        self.assertIn("Load: <b>0.3 / 0.4</b>", rendered)
+        self.assertNotIn("8.616187989556135", rendered)
+
     def test_nettest_ping_is_rendered_as_availability_card(self):
         rendered = format_panel_payload({"panel": "Sunny-Finland", "ok": True, "server_time": "2026-07-19T12:00:00Z"}, "nettest-ping")
         self.assertIn("Доступность API", rendered)
