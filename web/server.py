@@ -488,9 +488,19 @@ def host_is_ip(value):
 
 def web_access_required_hosts(extra_host=""):
     hosts = ["localhost", "127.0.0.1"]
-    configured = parse_config()
+    try:
+        configured = parse_config()
+    except (OSError, ValueError):
+        # Host allowlist generation must remain usable during tests, upgrades,
+        # and restricted service startup when the root-owned init file cannot
+        # be read. Environment-provided and request-provided hosts still work.
+        configured = {}
+    try:
+        vpn_ipv4 = configured_vpn_ipv4()[0]
+    except (OSError, ValueError, IndexError):
+        vpn_ipv4 = ""
     values = [
-        configured_vpn_ipv4()[0],
+        vpn_ipv4,
         configured.get("AWG_WEB_DOMAIN") or "",
         configured.get("AWG_WEB_PUBLIC_URL") or "",
         configured.get("AWG_ENDPOINT") or "",
