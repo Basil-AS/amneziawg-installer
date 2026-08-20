@@ -490,7 +490,8 @@ class PanelManager:
         request = Request(panel.base_url + endpoint, headers=headers, data=body, method=method)
         context = None if panel.verify_tls else ssl._create_unverified_context()
         try:
-            with urlopen(request, timeout=15, context=context) as response:
+            request_timeout = 30 if action == "latency" else 15
+            with urlopen(request, timeout=request_timeout, context=context) as response:
                 payload = json.loads(response.read())
         except HTTPError as exc:
             if exc.code in {401, 403}:
@@ -501,6 +502,11 @@ class PanelManager:
         except Exception as exc:
             LOG.warning("panel request failed panel=%s action=%s error=%s", key, action, type(exc).__name__)
             return {"error": f"API connector error: {type(exc).__name__}", "panel": panel.label}
+        if isinstance(payload, list):
+            # /api/stats is a legacy endpoint that returns a bare client list;
+            # normalize it so every downstream card renderer receives the
+            # same panel-tagged mapping shape as the other API endpoints.
+            payload = {"panel": panel.label, "items": payload}
         if not isinstance(payload, dict):
             return {"error": "invalid API response", "panel": panel.label}
         payload.setdefault("panel", panel.label)
@@ -1833,7 +1839,8 @@ def reply_keyboard(admin: bool = False) -> list[list[str]]:
 
 def compact_snapshot(payload: dict[str, Any]) -> str:
     if payload.get("error"):
-        return f"<b>{html.escape(str(payload.get('panel', 'panel')))}</b>: {html.escape(str(payload['error']))}"
+        return (f"⚪ <b>{html.escape(str(payload.get('display_name') or payload.get('panel', 'server')))}</b>\n"
+                f"Панель недоступна: <b>{html.escape(str(payload['error']))}</b>")
     summary = payload.get("summary") or {}
     health, health_text = snapshot_health(payload)
     service = html.escape(str(payload.get("service", "unknown")))
@@ -1846,12 +1853,15 @@ def snapshot_health(payload: dict[str, Any]) -> tuple[str, str]:
     """Classify a panel snapshot from service state and recent handshakes.
 
     Client presence is not a health signal: phones and laptops are commonly
-    offline.  Only an API error or an inactive VPN service is an incident.
-    The online/total counter remains informational on the card.
+    offline.  Only a reported inactive VPN service is an incident; transport
+    failures and missing service state remain unknown.  The online/total
+    counter remains informational on the card.
     """
     if payload.get("error"):
-        return "down", "🔴"
+        return "unknown", "⚪"
     service = str(payload.get("service", "unknown")).lower()
+    if service in {"", "unknown", "null", "none"}:
+        return "unknown", "⚪"
     if service not in {"active", "running", "ok", "healthy"}:
         return "down", "🔴"
     return "ok", "🟢"
@@ -1879,6 +1889,9 @@ def monitor_panels(telegram: Telegram, panels: PanelManager, admin_chat_id: int,
         for key, panel in panels.panels.items():
             payload = panels.request(key, "snapshot", PANEL_TOKEN)
             state, _icon = snapshot_health(payload or {"error": "panel unavailable", "panel": panel.label})
+            if state == "unknown":
+                failures[key] = 0
+                continue
             if state != "ok":
                 failures[key] = failures.get(key, 0) + 1
                 if failures[key] < 2 and previous.get(key, "ok") == "ok":
@@ -2064,6 +2077,17 @@ def format_panel_payload(payload: dict[str, Any], action: str) -> str:
         for item in entries[:8] if isinstance(entries, list) else []:
             if isinstance(item, dict):
                 lines.append(f"• <code>{html.escape(str(item.get('question', {}).get('name') or item.get('domain') or '—'))}</code>")
+    elif action == "stats":
+        items = payload.get("items") or []
+        lines.append(f"Устройств: <b>{len(items) if isinstance(items, list) else '—'}</b>")
+        for item in items[:12] if isinstance(items, list) else []:
+            if not isinstance(item, dict):
+                continue
+            name = html.escape(str(item.get("name") or "Устройство"))
+            status = html.escape(str(item.get("status") or "—"))
+            rx = format_bytes(item.get("rx", 0))
+            tx = format_bytes(item.get("tx", 0))
+            lines.append(f"• <b>{name}</b> · {status} · ↓ {html.escape(rx)} · ↑ {html.escape(tx)}")
     elif action == "audit":
         summary = payload.get("summary") or {}
         lines.append("<b>Сводка аудита</b>")

@@ -9,7 +9,7 @@ from unittest.mock import patch
 from urllib.parse import urlencode
 from pathlib import Path
 
-from src.bot import PANEL_TOKEN, PanelManager, ServerManager, Settings, Store, Telegram, admin_keyboard, callback_command, callback_message_is_media, client_more_keyboard, client_settings_keyboard, client_stats_card, compact_clients, compact_snapshot, created_client_name, ensure_user_panel_token, format_metric_number, format_panel_payload, handle_navigation, help_text, maintenance_keyboard, menu_keyboard, navigation_keyboard, panel_client_names, panel_token_records, provisioning_keyboard, provisioning_text, reply_keyboard, render_navigation, result_navigation_keyboard, send_client_bundle, snapshot_health, token_client_scope, token_record_by_prefix, uri_keyboard, valid_bearer_candidate, verify_init_data, client_keyboard, clients_keyboard, format_bytes, format_timestamp, merge_client_help_payloads, parallel_payloads, sparkline, usage_bar
+from src.bot import PANEL_TOKEN, PanelManager, ServerManager, Settings, Store, Telegram, admin_keyboard, callback_command, callback_message_is_media, client_more_keyboard, client_settings_keyboard, client_stats_card, compact_clients, compact_snapshot, created_client_name, ensure_user_panel_token, format_metric_number, format_panel_payload, handle_navigation, help_text, maintenance_keyboard, menu_keyboard, monitor_panels, navigation_keyboard, panel_client_names, panel_token_records, provisioning_keyboard, provisioning_text, reply_keyboard, render_navigation, result_navigation_keyboard, send_client_bundle, snapshot_health, token_client_scope, token_record_by_prefix, uri_keyboard, valid_bearer_candidate, verify_init_data, client_keyboard, clients_keyboard, format_bytes, format_timestamp, merge_client_help_payloads, parallel_payloads, sparkline, usage_bar
 
 
 class BotTests(unittest.TestCase):
@@ -343,6 +343,37 @@ class BotTests(unittest.TestCase):
             self.assertEqual(manager.keys(), ["finland"])
             self.assertNotIn("secret", manager.run("finland", "unsupported") or "")
 
+    def test_stats_list_response_is_normalized_for_panel_cards(self):
+        class Response:
+            status = 200
+
+            def __enter__(self): return self
+            def __exit__(self, *args): return False
+            def read(self): return b'[{"name":"phone","status":"Active"}]'
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "panels.json"
+            path.write_text('{"panels":[{"id":"finland","name":"Sunny-Finland","url":"https://vpn.invalid","token":"secret"}]}', encoding="utf-8")
+            manager = PanelManager(path)
+            with patch("src.bot.urlopen", return_value=Response()):
+                result = manager.request("finland", "stats", PANEL_TOKEN)
+            self.assertEqual(result["panel"], "Sunny-Finland")
+            self.assertEqual(result["items"][0]["name"], "phone")
+
+    def test_latency_check_allows_the_panel_probe_window_to_finish(self):
+        class Response:
+            def __enter__(self): return self
+            def __exit__(self, *args): return False
+            def read(self): return b'{"overview":{"active":1}}'
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "panels.json"
+            path.write_text('{"panels":[{"id":"germany","url":"https://vpn.invalid","token":"secret"}]}', encoding="utf-8")
+            manager = PanelManager(path)
+            with patch("src.bot.urlopen", return_value=Response()) as opened:
+                manager.request("germany", "latency", PANEL_TOKEN)
+            self.assertEqual(opened.call_args.kwargs["timeout"], 30)
+
     def test_generic_api_fallback_is_rendered_as_card_not_json(self):
         rendered = format_panel_payload({"panel": "Sunny-Germany", "message": "Обновление завершено", "details": {"service": "active"}}, "restart")
         self.assertIn("Обновление завершено", rendered)
@@ -452,6 +483,41 @@ class BotTests(unittest.TestCase):
         payload = {"panel": "Sunny-Finland", "service": "failed", "summary": {"online": 5, "total": 5}}
         self.assertEqual(snapshot_health(payload), ("down", "🔴"))
         self.assertTrue(compact_snapshot(payload).startswith("🔴"))
+
+    def test_snapshot_marks_panel_transport_failure_as_unknown(self):
+        payload = {"panel": "Sunny-Finland", "error": "panel unavailable"}
+        self.assertEqual(snapshot_health(payload), ("unknown", "⚪"))
+        self.assertTrue(compact_snapshot(payload).startswith("⚪"))
+
+    def test_snapshot_marks_missing_service_state_as_unknown(self):
+        payload = {"panel": "Sunny-Finland", "summary": {"online": 0, "total": 0}}
+        self.assertEqual(snapshot_health(payload), ("unknown", "⚪"))
+
+    def test_monitor_suppresses_panel_transport_failures(self):
+        class FakeStop:
+            def __init__(self):
+                self.calls = 0
+
+            def wait(self, _timeout):
+                self.calls += 1
+                return self.calls > 1
+
+        class FakeTelegram:
+            def __init__(self):
+                self.messages = []
+
+            def send(self, *args, **kwargs):
+                self.messages.append((args, kwargs))
+
+        class FakePanels:
+            panels = {"germany": type("Panel", (), {"label": "Sunny-German"})()}
+
+            def request(self, _key, _action, _token):
+                return {"panel": "Sunny-German", "error": "panel unavailable"}
+
+        telegram = FakeTelegram()
+        monitor_panels(telegram, FakePanels(), 123, FakeStop(), interval=15)
+        self.assertEqual(telegram.messages, [])
 
     def test_snapshot_does_not_treat_idle_clients_as_failure(self):
         payload = {"panel": "Sunny-Finland", "service": "active", "summary": {"online": 0, "total": 63, "disabled": 0}}
