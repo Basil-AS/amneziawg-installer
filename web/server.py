@@ -488,6 +488,13 @@ def host_is_ip(value):
 
 
 def web_access_required_hosts(extra_host=""):
+    """Return the only hosts accepted by the panel access policy.
+
+    The public VPN endpoint is deliberately not part of this list.  It may be
+    a stale literal address, a transport-only name such as s1/s2.charles.men,
+    or a generated sslip.io name.  The panel has its own explicit domain; the
+    VPN gateway and loopback names are the only additional local hosts.
+    """
     hosts = ["localhost", "127.0.0.1"]
     try:
         configured = parse_config()
@@ -500,30 +507,18 @@ def web_access_required_hosts(extra_host=""):
         vpn_ipv4 = configured_vpn_ipv4()[0]
     except (OSError, ValueError, IndexError):
         vpn_ipv4 = ""
-    values = [
-        vpn_ipv4,
-        configured.get("AWG_WEB_DOMAIN") or "",
-        configured.get("AWG_WEB_PUBLIC_URL") or "",
-        configured.get("AWG_ENDPOINT") or "",
-        os.environ.get("AWG_WEB_DOMAIN") or "",
-        os.environ.get("AWG_WEB_PUBLIC_URL") or "",
-        os.environ.get("AWG_ENDPOINT") or "",
-        os.environ.get("AWG_WEB_BIND") or "",
-        extra_host or "",
-    ]
+    values = [vpn_ipv4, configured.get("AWG_WEB_DOMAIN") or "", configured.get("AWG_WEB_PUBLIC_URL") or "",
+              os.environ.get("AWG_WEB_DOMAIN") or "", os.environ.get("AWG_WEB_PUBLIC_URL") or ""]
     for value in values:
         host = split_host(urlparse(str(value)).netloc or str(value))
         if not host or host in {"0.0.0.0", "::"} or host in hosts:
             continue
-        hosts.append(host)
-        try:
-            ip = ipaddress.ip_address(host)
-        except ValueError:
+        if host == vpn_ipv4 and host.startswith("10."):
+            hosts.append(host)
             continue
-        if ip.version == 4:
-            sslip = f"{str(ip).replace('.', '-')}.sslip.io"
-            if sslip not in hosts:
-                hosts.append(sslip)
+        if host_is_ip(host) or re.fullmatch(r"(?:\d{1,3}-){3}\d{1,3}\.(?:sslip\.io|nip\.io)", host):
+            continue
+        hosts.append(host)
     return hosts
 
 
@@ -648,6 +643,11 @@ def clean_access_policy(value):
     host_check_enabled = bool(data.get("host_check_enabled", defaults["host_check_enabled"]))
     source_check_enabled = bool(data.get("source_check_enabled", defaults["source_check_enabled"]))
     allowed_hosts = clean_allowed_hosts(data.get("allowed_hosts", defaults["allowed_hosts"]))
+    required_hosts = web_access_required_hosts()
+    # Do not preserve legacy endpoint/IP/sslip entries from an old policy.
+    # The panel domain comes from AWG_WEB_DOMAIN/AWG_WEB_PUBLIC_URL; the rest
+    # is the local VPN gateway and loopback pair.
+    allowed_hosts = list(required_hosts)
     allowed_source_cidrs = clean_cidr_list(data.get("allowed_source_cidrs", defaults["allowed_source_cidrs"]))
     trusted_proxy_cidrs = clean_cidr_list(data.get("trusted_proxy_cidrs", defaults["trusted_proxy_cidrs"]), "trusted_proxy_cidrs")
     if mode == "public":
