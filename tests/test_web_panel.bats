@@ -2992,6 +2992,109 @@ PY
     rm -rf "$tmp"
 }
 
+@test "web server info follows domain DNS and preserves the panel domain" {
+    command -v python3 &>/dev/null || skip "python3 not available"
+    local tmp
+    tmp=$(mktemp -d)
+    mkdir -p "$tmp/web"
+    cat > "$tmp/awgsetup_cfg.init" <<'CFG'
+export AWG_ENDPOINT='s1.charles.men'
+export AWG_WEB_DOMAIN='fin.charles.men'
+export AWG_WEB_PUBLIC_URL='https://fin.charles.men/'
+export AWG_TUNNEL_SUBNET='10.9.9.1/24'
+export AWG_IPV6_ENABLED=0
+CFG
+    AWG_DIR="$tmp" SERVER_CONF_FILE="$tmp/awg0.conf" REPO_ROOT="$BATS_TEST_DIRNAME/.." python3 - <<'PY'
+import importlib.util
+import os
+from pathlib import Path
+spec = importlib.util.spec_from_file_location("panel_server", Path(os.environ["REPO_ROOT"]) / "web" / "server.py")
+server = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(server)
+server.resolve_endpoint_addresses = lambda _endpoint: ["151.241.229.27"]
+server.detect_public_ipv4 = lambda: "194.180.189.244"
+info = server.server_info_payload()
+assert info["public_ipv4"] == "151.241.229.27"
+assert info["web_public_url"] == "https://fin.charles.men/"
+PY
+    rm -rf "$tmp"
+}
+
+@test "web server info ignores stale literal endpoint when live addresses are available" {
+    command -v python3 &>/dev/null || skip "python3 not available"
+    local tmp
+    tmp=$(mktemp -d)
+    mkdir -p "$tmp/web"
+    cat > "$tmp/awgsetup_cfg.init" <<'CFG'
+export AWG_ENDPOINT='194.180.189.244'
+export AWG_WEB_DOMAIN='fin.charles.men'
+export AWG_WEB_PUBLIC_URL='https://fin.charles.men/'
+export AWG_TUNNEL_SUBNET='10.9.9.1/24'
+export AWG_IPV6_ENABLED=0
+CFG
+    AWG_DIR="$tmp" SERVER_CONF_FILE="$tmp/awg0.conf" REPO_ROOT="$BATS_TEST_DIRNAME/.." python3 - <<'PY'
+import importlib.util
+import os
+from pathlib import Path
+spec = importlib.util.spec_from_file_location("panel_server", Path(os.environ["REPO_ROOT"]) / "web" / "server.py")
+server = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(server)
+server.detect_public_ipv4 = lambda: "151.241.229.27"
+info = server.server_info_payload()
+assert info["public_ipv4"] == "151.241.229.27"
+assert info["web_public_url"] == "https://fin.charles.men/"
+PY
+    rm -rf "$tmp"
+}
+
+@test "web server info refreshes generated sslip domain but preserves custom panel domain" {
+    command -v python3 &>/dev/null || skip "python3 not available"
+    REPO_ROOT="$BATS_TEST_DIRNAME/.." python3 - <<'PY'
+import importlib.util
+import os
+from pathlib import Path
+from unittest.mock import patch
+
+root = Path(os.environ["REPO_ROOT"])
+spec = importlib.util.spec_from_file_location("panel_domain_refresh", root / "web" / "server.py")
+server = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(server)
+
+server.parse_config = lambda: {
+    "AWG_ENDPOINT": "s1.charles.men",
+    "AWG_WEB_DOMAIN": "151-241-229-27.sslip.io",
+    "AWG_WEB_PUBLIC_URL": "https://151-241-229-27.sslip.io/",
+    "AWG_WEB_PORT": "443",
+}
+server.configured_vpn_ipv4 = lambda: ("10.9.9.1", "10.9.9.0/24")
+with patch.object(server, "resolve_endpoint_addresses", return_value=["151.241.229.27"]), \
+     patch.object(server, "detect_public_ipv4", return_value="151.241.229.27"):
+    generated = server.server_info_payload()
+assert generated["web_public_url"] == "https://151-241-229-27.sslip.io/"
+
+server.parse_config = lambda: {
+    "AWG_ENDPOINT": "s1.charles.men",
+    "AWG_WEB_DOMAIN": "fin.charles.men",
+    "AWG_WEB_PUBLIC_URL": "https://fin.charles.men/",
+    "AWG_WEB_PORT": "443",
+}
+with patch.object(server, "resolve_endpoint_addresses", return_value=["151.241.229.27"]), \
+     patch.object(server, "detect_public_ipv4", return_value="151.241.229.27"):
+    custom = server.server_info_payload()
+assert custom["web_public_url"] == "https://fin.charles.men/"
+PY
+}
+
+@test "manage exposes domain-first endpoint migration" {
+    command -v bash &>/dev/null || skip "bash not available"
+    grep -qF 'server set-endpoint <host> [panel-domain]' "$BATS_TEST_DIRNAME/../manage_amneziawg.sh"
+    grep -qF 'set_config_value "AWG_ENDPOINT" "$endpoint"' "$BATS_TEST_DIRNAME/../manage_amneziawg.sh"
+    grep -qF 'regenerate_all_clients_for_endpoint ||' "$BATS_TEST_DIRNAME/../manage_amneziawg.sh"
+    grep -qF 'Пропуск устаревшей записи' "$BATS_TEST_DIRNAME/../manage_amneziawg.sh"
+    grep -qF '_valid_ipv6 "$host"' "$BATS_TEST_DIRNAME/../manage_amneziawg.sh"
+    bash -n "$BATS_TEST_DIRNAME/../manage_amneziawg.sh"
+}
+
 @test "network tester endpoints require auth and cap payloads" {
     command -v python3 &>/dev/null || skip "python3 not available"
     local tmp

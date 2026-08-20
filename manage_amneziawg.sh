@@ -132,6 +132,10 @@ fi
 [[ "$COMMAND" == "regenerate" ]] && COMMAND="regen"
 if [[ "$COMMAND" == "server" ]]; then
     case "${ARGS[0]:-}" in
+        set-endpoint|endpoint|set-domain)
+            COMMAND="set-endpoint"
+            ARGS=("${ARGS[@]:1}")
+            ;;
         rotate-profile|rotate-awg|refresh-server-config)
             COMMAND="rotate-profile"
             ARGS=("${ARGS[@]:1}")
@@ -1368,6 +1372,19 @@ regenerate_all_clients_for_name() {
     return "$rc"
 }
 
+regenerate_all_clients_for_endpoint() {
+    local name rc=0
+    while IFS= read -r name; do
+        [[ -n "$name" ]] || continue
+        if ! get_client_ipv4_from_server "$name" >/dev/null 2>&1; then
+            log_warn "Пропуск устаревшей записи '$name': peer отсутствует в серверном конфиге."
+            continue
+        fi
+        refresh_client_config "$name" || { log_warn "Ошибка обновления '$name'"; rc=1; }
+    done < <(grep '^#_Name = ' "$SERVER_CONF_FILE" 2>/dev/null | sed 's/^#_Name = //')
+    return "$rc"
+}
+
 set_server_name() {
     local name="$1"
     validate_server_name "$name" || { log_error "Использование: set-name \"Новое Имя\""; return 1; }
@@ -1376,6 +1393,59 @@ set_server_name() {
     update_server_conf_name "$name" || return 1
     regenerate_all_clients_for_name || return 1
     log "Имя сервера установлено: $name. Клиентские конфиги и vpn:// перегенерированы."
+}
+
+validate_transport_endpoint() {
+    local endpoint="$1" host="$1"
+    if [[ "$host" == \[*\] ]]; then
+        host="${host#\[}"; host="${host%\]}"
+    fi
+    _valid_host_or_ipv4 "$host" || _valid_ipv6 "$host" || {
+        log_error "Некорректный endpoint '$endpoint': ожидается FQDN, IPv4 или IPv6."
+        return 1
+    }
+    [[ "$endpoint" != *$'\n'* && "$endpoint" != *$'\r'* && "$endpoint" != *[[:space:]]* ]] || {
+        log_error "Endpoint не должен содержать пробелы или переводы строк."
+        return 1
+    }
+}
+
+set_server_endpoint() {
+    local endpoint="$1" panel_domain="${2:-}" panel_url
+    [[ -n "$endpoint" ]] || { log_error "Использование: server set-endpoint <transport-host> [panel-domain]"; return 1; }
+    validate_transport_endpoint "$endpoint" || return 1
+    if [[ -n "$panel_domain" ]]; then
+        _valid_host_or_ipv4 "$panel_domain" || {
+            log_error "Некорректный panel domain '$panel_domain'."
+            return 1
+        }
+    fi
+    backup_configs || { log_error "Не удалось создать backup перед endpoint migration."; return 1; }
+    local rollback="${LAST_BACKUP_PATH:-}"
+    set_config_value "AWG_ENDPOINT" "$endpoint" || {
+        [[ -n "$rollback" ]] && _restore_do_rollback "$rollback"
+        return 1
+    }
+    if [[ -n "$panel_domain" ]]; then
+        set_config_value "AWG_WEB_DOMAIN" "$panel_domain" || { [[ -n "$rollback" ]] && _restore_do_rollback "$rollback"; return 1; }
+        panel_url="https://${panel_domain}"
+        [[ "${AWG_WEB_PORT:-443}" == "443" ]] || panel_url="${panel_url}:${AWG_WEB_PORT:-8443}"
+        set_config_value "AWG_WEB_PUBLIC_URL" "${panel_url}/" || { [[ -n "$rollback" ]] && _restore_do_rollback "$rollback"; return 1; }
+    fi
+    safe_load_config "$CONFIG_FILE" 2>/dev/null || true
+    regenerate_all_clients_for_endpoint || {
+        log_error "Не удалось обновить клиентские артефакты; выполняю rollback."
+        [[ -n "$rollback" ]] && _restore_do_rollback "$rollback"
+        return 1
+    }
+    if systemctl is-enabled --quiet awg-web 2>/dev/null || systemctl is-active --quiet awg-web 2>/dev/null; then
+        systemctl try-restart awg-web.service || {
+            log_error "Панель не перезапустилась; выполняю rollback."
+            [[ -n "$rollback" ]] && _restore_do_rollback "$rollback"
+            return 1
+        }
+    fi
+    log "Endpoint установлен: $endpoint${panel_domain:+; web-panel: $panel_domain}. Клиентские артефакты обновлены без ротации ключей."
 }
 
 web_token_py() {
@@ -2112,6 +2182,8 @@ usage() {
     echo "  geoip auto-update disable  Выключить автообновление GeoIP баз"
     echo "  geoip auto-update status   Показать статус таймера автообновления GeoIP баз"
     echo "  set-name \"ИМЯ\"       Сменить имя сервера и перегенерировать клиентов"
+    echo "  server set-endpoint <host> [panel-domain]"
+    echo "                        Установить доменный endpoint и URL панели без ротации ключей"
     echo "  server rotate-profile --preset mobile|default"
     echo "                        Ротировать H/S/J/I1 AWG profile и перегенерировать клиентов"
     echo "  rotate-awg            Алиас для server rotate-profile"
@@ -2627,6 +2699,11 @@ case $COMMAND in
         else
             _cmd_rc=1
         fi
+        ;;
+
+    set-endpoint)
+        safe_load_config "$CONFIG_FILE" 2>/dev/null || true
+        set_server_endpoint "${ARGS[0]:-}" "${ARGS[1]:-}" || _cmd_rc=1
         ;;
 
     web)
