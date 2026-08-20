@@ -2,10 +2,15 @@
 
 @test "optional Telegram module has isolated service and installer" {
     [ -f "$BATS_TEST_DIRNAME/../modules/telegram-bot/src/bot.py" ]
+    [ -f "$BATS_TEST_DIRNAME/../modules/telegram-bot/test/test_bot.py" ]
     [ -f "$BATS_TEST_DIRNAME/../modules/telegram-bot/deploy/gaullebot.service" ]
     [ -f "$BATS_TEST_DIRNAME/../scripts/install-telegram-bot.sh" ]
     grep -q 'User=gaullebot' "$BATS_TEST_DIRNAME/../modules/telegram-bot/deploy/gaullebot.service"
     grep -q 'TELEGRAM_API_ROOT.*api.telegram.org' "$BATS_TEST_DIRNAME/../scripts/install-telegram-bot.sh"
+    grep -q 'download_or_copy test/test_bot.py' "$BATS_TEST_DIRNAME/../scripts/install-telegram-bot.sh"
+    grep -q 'unittest discover' "$BATS_TEST_DIRNAME/../scripts/install-telegram-bot.sh"
+    grep -q 'FINLAND_SSH_IDENTITY' "$BATS_TEST_DIRNAME/../scripts/install-telegram-bot.sh"
+    grep -q 'GERMANY_SSH_IDENTITY' "$BATS_TEST_DIRNAME/../scripts/install-telegram-bot.sh"
 }
 
 @test "panel exposes compact bot snapshot without browser-only enrichment" {

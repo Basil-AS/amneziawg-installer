@@ -12,6 +12,13 @@
 
 ## [Unreleased]
 
+## [5.19.2-bas.6] - 2026-08-21
+
+### Исправлено
+
+- Installer Telegram-бота теперь доставляет regression-тесты и запускает compile/unit preflight до перезапуска systemd.
+- Повторная установка без нового `--ssh-key` сохраняет действующие пути SSH identity и не ломает туннели к `fin.charles.men` и `ger.charles.men`.
+
 ## [5.19.2-bas.5] - 2026-08-21
 
 ### Исправлено
@@ -1665,6 +1672,7 @@ Hardening-фиксы надёжности и безопасности по ре�
 [5.14.1]: https://github.com/bivlked/amneziawg-installer/compare/v5.14.0...v5.14.1
 [5.14.0]: https://github.com/bivlked/amneziawg-installer/compare/v5.13.0...v5.14.0
 [5.19.2-bas.4]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.19.2-bas.3...v5.19.2-bas.4
+[5.19.2-bas.6]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.19.2-bas.5...v5.19.2-bas.6
 [5.19.2-bas.5]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.19.2-bas.4...v5.19.2-bas.5
 [5.13.0]: https://github.com/bivlked/amneziawg-installer/compare/v5.12.1...v5.13.0
 [5.12.1]: https://github.com/bivlked/amneziawg-installer/compare/v5.12.0...v5.12.1

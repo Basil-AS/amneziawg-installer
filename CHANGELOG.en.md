@@ -12,6 +12,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [5.19.2-bas.6] - 2026-08-21
+
+### Fixed
+
+- The Telegram bot installer now ships regression tests and runs a compile/unit preflight before restarting systemd.
+- Reinstalling without a new `--ssh-key` preserves the existing SSH identity paths, so the `fin.charles.men` and `ger.charles.men` tunnels keep working.
+
 ## [5.19.2-bas.5] - 2026-08-21
 
 ### Fixed
@@ -1658,6 +1665,7 @@ Major security and reliability update after several consecutive code audits. The
 [5.14.1]: https://github.com/bivlked/amneziawg-installer/compare/v5.14.0...v5.14.1
 [5.14.0]: https://github.com/bivlked/amneziawg-installer/compare/v5.13.0...v5.14.0
 [5.19.2-bas.4]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.19.2-bas.3...v5.19.2-bas.4
+[5.19.2-bas.6]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.19.2-bas.5...v5.19.2-bas.6
 [5.19.2-bas.5]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.19.2-bas.4...v5.19.2-bas.5
 [5.13.0]: https://github.com/bivlked/amneziawg-installer/compare/v5.12.1...v5.13.0
 [5.12.1]: https://github.com/bivlked/amneziawg-installer/compare/v5.12.0...v5.12.1

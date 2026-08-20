@@ -16,7 +16,7 @@ fi
 
 # --- Safe mode and Constants ---
 # shellcheck disable=SC2034
-SCRIPT_VERSION="5.19.2-bas.5"
+SCRIPT_VERSION="5.19.2-bas.6"
 set -o pipefail
 AWG_DIR="/root/awg"
 SERVER_CONF_FILE="/etc/amnezia/amneziawg/awg0.conf"

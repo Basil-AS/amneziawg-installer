@@ -16,7 +16,7 @@ fi
 
 # --- Safe mode and Constants ---
 set -o pipefail
-SCRIPT_VERSION="5.19.2-bas.5"
+SCRIPT_VERSION="5.19.2-bas.6"
 
 AWG_DIR="/root/awg"
 INSTALLER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)"
