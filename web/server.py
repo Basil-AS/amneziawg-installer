@@ -211,6 +211,7 @@ HOSTKEY_SESSION_LOCK = threading.Lock()
 HOSTKEY_SESSION_TOKEN = ""
 HOSTKEY_SESSION_EXPIRE = 0.0
 HOSTKEY_SESSION_KEY = ""
+HOSTKEY_SESSION_SERVERS = ()
 SERVER_HEALTH_RANGES = {
     "10m": 10 * 60,
     "1h": 60 * 60,
@@ -4748,33 +4749,37 @@ def hostkey_login(api_key, ttl=3600):
     })
     result = payload.get("result") if isinstance(payload, dict) else None
     if not isinstance(result, dict) or not result.get("token"):
-        raise ValueError(str((payload or {}).get("error") or "login failed")[:160])
+        message = (payload or {}).get("error") or (payload or {}).get("message") or "login failed"
+        raise ValueError(str(message)[:160])
     return result
 
 
 def hostkey_session_token(api_key):
-    global HOSTKEY_SESSION_TOKEN, HOSTKEY_SESSION_EXPIRE, HOSTKEY_SESSION_KEY
+    global HOSTKEY_SESSION_TOKEN, HOSTKEY_SESSION_EXPIRE, HOSTKEY_SESSION_KEY, HOSTKEY_SESSION_SERVERS
     with HOSTKEY_SESSION_LOCK:
         if (
             HOSTKEY_SESSION_TOKEN
             and HOSTKEY_SESSION_KEY == api_key
             and time.time() < HOSTKEY_SESSION_EXPIRE - 60
         ):
-            return HOSTKEY_SESSION_TOKEN, None
+            servers = tuple(HOSTKEY_SESSION_SERVERS)
+            return HOSTKEY_SESSION_TOKEN, (servers[0] if servers else None), servers
         result = hostkey_login(api_key)
         HOSTKEY_SESSION_TOKEN = result["token"]
         HOSTKEY_SESSION_KEY = api_key
         HOSTKEY_SESSION_EXPIRE = float(result.get("token_expire") or (time.time() + 3600))
-        servers = result.get("servers") or []
+        servers = tuple(str(item) for item in (result.get("servers") or []) if str(item).strip())
+        HOSTKEY_SESSION_SERVERS = servers
         default_server_id = str(servers[0]) if servers else None
-        return HOSTKEY_SESSION_TOKEN, default_server_id
+        return HOSTKEY_SESSION_TOKEN, default_server_id, servers
 
 
 def hostkey_invalidate_session():
-    global HOSTKEY_SESSION_TOKEN, HOSTKEY_SESSION_EXPIRE
+    global HOSTKEY_SESSION_TOKEN, HOSTKEY_SESSION_EXPIRE, HOSTKEY_SESSION_SERVERS
     with HOSTKEY_SESSION_LOCK:
         HOSTKEY_SESSION_TOKEN = ""
         HOSTKEY_SESSION_EXPIRE = 0.0
+        HOSTKEY_SESSION_SERVERS = ()
 
 
 def hostkey_traffic_payload(cfg):
@@ -4787,8 +4792,11 @@ def hostkey_traffic_payload(cfg):
     def fetch(force_relogin=False):
         if force_relogin:
             hostkey_invalidate_session()
-        session_token, default_server_id = hostkey_session_token(api_key)
-        server_id = cfg.get("server_id") or default_server_id
+        session_token, default_server_id, available_server_ids = hostkey_session_token(api_key)
+        configured_server_id = str(cfg.get("server_id") or "").strip()
+        server_id = configured_server_id or default_server_id
+        if available_server_ids and server_id not in set(available_server_ids):
+            server_id = default_server_id
         if not server_id:
             raise ValueError("missing server_id")
         payload = hostkey_post("eq.php", {
