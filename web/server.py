@@ -488,8 +488,12 @@ def host_is_ip(value):
 
 def web_access_required_hosts(extra_host=""):
     hosts = ["localhost", "127.0.0.1"]
+    configured = parse_config()
     values = [
         configured_vpn_ipv4()[0],
+        configured.get("AWG_WEB_DOMAIN") or "",
+        configured.get("AWG_WEB_PUBLIC_URL") or "",
+        configured.get("AWG_ENDPOINT") or "",
         os.environ.get("AWG_WEB_DOMAIN") or "",
         os.environ.get("AWG_WEB_PUBLIC_URL") or "",
         os.environ.get("AWG_ENDPOINT") or "",
@@ -2428,25 +2432,110 @@ def detect_public_ipv6(iface=""):
     return ""
 
 
+def _global_ip(value, version=None):
+    try:
+        address = ipaddress.ip_address(str(value).strip())
+    except ValueError:
+        return ""
+    if version is not None and address.version != version:
+        return ""
+    if not address.is_global:
+        return ""
+    return str(address)
+
+
+def resolve_endpoint_addresses(endpoint):
+    """Resolve a transport endpoint into unique global IP addresses."""
+    host, _port = split_endpoint(endpoint)
+    if not host:
+        return []
+    literal = _global_ip(host)
+    if literal:
+        return [literal]
+    try:
+        rows = socket.getaddrinfo(host, None, socket.AF_UNSPEC, socket.SOCK_DGRAM)
+    except (OSError, socket.gaierror):
+        return []
+    addresses = []
+    for _family, _socktype, _proto, _canonname, sockaddr in rows:
+        address = _global_ip(sockaddr[0]) if sockaddr else ""
+        if address and address not in addresses:
+            addresses.append(address)
+    return addresses
+
+
+def detect_public_ipv4(iface=""):
+    """Return the current global IPv4 on the WAN interface, if available."""
+    iface = iface or detect_wan_iface()
+    if not iface:
+        return ""
+    try:
+        out = subprocess.run(
+            ["ip", "-4", "-o", "addr", "show", "dev", iface, "scope", "global"],
+            capture_output=True, text=True, timeout=2.0, check=False,
+        ).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    for line in out.splitlines():
+        fields = line.split()
+        if "inet" not in fields:
+            continue
+        try:
+            address = fields[fields.index("inet") + 1].split("/", 1)[0]
+        except (ValueError, IndexError):
+            continue
+        address = _global_ip(address, version=4)
+        if address:
+            return address
+    return ""
+
+
+def generated_ip_domain(value):
+    value = str(value or "").strip().lower().rstrip(".")
+    return bool(re.fullmatch(r"(?:\d{1,3}-){3}\d{1,3}\.(?:sslip\.io|nip\.io)", value))
+
+
 def server_info_payload():
     cfg = parse_config()
     endpoint = cfg.get("AWG_ENDPOINT") or ""
-    public_ipv4 = ""
-    public_ipv6 = ""
+    endpoint_host, _endpoint_port = split_endpoint(endpoint)
+    resolved = resolve_endpoint_addresses(endpoint_host or endpoint)
+    resolved_ipv4 = next((address for address in resolved if "." in address), "")
+    resolved_ipv6 = next((address for address in resolved if ":" in address), "")
     try:
-        endpoint_ip = ipaddress.ip_address(endpoint)
-        if endpoint_ip.version == 4:
-            public_ipv4 = str(endpoint_ip)
-        else:
-            public_ipv6 = str(endpoint_ip)
+        literal_address = ipaddress.ip_address(endpoint_host or endpoint)
+        literal_endpoint = str(literal_address)
     except ValueError:
-        pass
-    public_ipv6 = public_ipv6 or detect_public_ipv6(detect_wan_iface())
+        literal_address = None
+        literal_endpoint = ""
+    public_ipv4 = (
+        (detect_public_ipv4() if literal_address and literal_address.version == 4 else "")
+        or resolved_ipv4
+        or detect_public_ipv4()
+        or (literal_endpoint if literal_address and literal_address.version == 4 else "")
+    )
+    public_ipv6 = (
+        resolved_ipv6
+        or detect_public_ipv6(detect_wan_iface())
+        or (literal_endpoint if literal_address and literal_address.version == 6 else "")
+    )
     vpn_ipv4 = cfg.get("AWG_TUNNEL_SUBNET") or "10.9.9.1/24"
     vpn_ipv4_host = first_ip_in_subnet(vpn_ipv4) or "10.9.9.1"
     vpn_ipv6 = cfg.get("AWG_IPV6_SUBNET") if cfg.get("AWG_IPV6_ENABLED") == "1" else ""
-    web_host = cfg.get("AWG_WEB_DOMAIN") or (f"{endpoint.replace('.', '-')}.sslip.io" if public_ipv4 else endpoint) or "localhost"
-    web_public_url = cfg.get("AWG_WEB_PUBLIC_URL") or f"https://{web_host}/"
+    configured_web_domain = cfg.get("AWG_WEB_DOMAIN") or ""
+    if configured_web_domain and not generated_ip_domain(configured_web_domain):
+        web_host = configured_web_domain
+    elif public_ipv4:
+        web_host = f"{public_ipv4.replace('.', '-')}.sslip.io"
+    else:
+        web_host = endpoint_host or endpoint or "localhost"
+    configured_public_url = cfg.get("AWG_WEB_PUBLIC_URL") or ""
+    if configured_web_domain and not generated_ip_domain(configured_web_domain):
+        web_public_url = f"https://{web_host}/"
+    elif configured_public_url and not generated_ip_domain(urlparse(configured_public_url).hostname or ""):
+        web_public_url = configured_public_url
+    else:
+        web_public_url = f"https://{web_host}/"
     adguard_enabled = cfg.get("AWG_ADGUARD_ENABLED") == "1"
     adguard_url = f"http://{vpn_ipv4_host}:{cfg.get('AWG_ADGUARD_PORT') or '3000'}/" if adguard_enabled else ""
     dns_mode = cfg.get("AWG_DNS_MODE", "system")

@@ -374,6 +374,33 @@ sudo /root/awg/manage_amneziawg.sh dns status
 sudo /root/awg/manage_amneziawg.sh dns restart
 ```
 
+### Domain-first endpoint migration
+
+Для устойчивости к смене IP задавайте отдельное DNS-имя транспорта и отдельное
+HTTPS-имя панели. Имя транспорта (`s1/s2/s3.charles.men`) должно быть
+`DNS-only`, потому что Cloudflare Proxy не передаёт произвольный UDP-порт
+AmneziaWG. Имена панелей (`fin/ger.charles.men`) могут быть proxied.
+
+После обновления DNS на сервере выполните:
+
+```bash
+sudo /root/awg/manage_amneziawg.sh server set-endpoint s1.charles.men fin.charles.men
+```
+
+Команда делает root-only backup, обновляет `AWG_ENDPOINT`, URL панели и
+производные клиентские `.conf`, QR и `vpn://` артефакты. Ключи клиентов,
+PSK, адреса peer-ов и параметры маршрутизации не ротируются; при ошибке
+регенерации или перезапуска панели выполняется rollback из backup.
+
+Панель разрешает и отображает доменный endpoint, разрешает его текущие A/AAAA
+адреса и использует живой адрес интерфейса как fallback. Поэтому старый
+буквальный IP в конфиге не должен становиться источником истины. Для
+полноценного dual-stack клиентский профиль должен иметь IPv6-адрес и
+`AllowedIPs = ::/0`; при этом транспортный endpoint остаётся одним именем с
+записями `A` и `AAAA`. Для HostUp сейчас подтверждён публичный IPv6 самого
+сервера и ULA IPv6 внутри AWG; публичная IPv6-подсеть клиентам не назначается
+без отдельного подтверждённого provider route.
+
 ## Security notes
 
 * Web-panel по умолчанию bind-ится к IPv4 gateway выбранной tunnel subnet и доступна только подключённым VPN-клиентам.
