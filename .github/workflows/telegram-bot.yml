@@ -1,0 +1,48 @@
+name: Telegram bot
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'modules/telegram-bot/**'
+      - '.github/workflows/telegram-bot.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'modules/telegram-bot/**'
+      - '.github/workflows/telegram-bot.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  unit-tests:
+    name: Bot unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Set up Python
+        uses: actions/setup-python@e797f83bcb11b83ae66e0230d6156d7c80228e7c # v6.0.0
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: modules/telegram-bot/requirements.txt
+
+      - name: Install bot dependencies
+        run: python -m pip install --disable-pip-version-check -r modules/telegram-bot/requirements.txt
+
+      - name: Compile bot sources
+        run: python -m compileall -q modules/telegram-bot/src modules/telegram-bot/test
+
+      - name: Run bot tests
+        working-directory: modules/telegram-bot
+        env:
+          PYTHONPATH: src
+        run: python -m unittest discover -s test -p 'test_*.py' -v
