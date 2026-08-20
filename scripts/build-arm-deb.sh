@@ -254,8 +254,9 @@ cp "$KO_PATH" "$MODULE_INSTALL_PATH/amneziawg.ko"
 KO_FILE="$MODULE_INSTALL_PATH/amneziawg.ko"
 KO_XZ="${KO_FILE}.xz"
 KO_TMP_XZ="${KO_FILE}.tmp.xz"
+XZ_ERR="${KO_TMP_XZ}.err"
 rm -f "$KO_TMP_XZ"
-if xz --check=crc32 --lzma2=dict=1MiB -c "$KO_FILE" > "$KO_TMP_XZ" 2>/dev/null; then
+if xz --check=crc32 --lzma2=dict=1MiB -c "$KO_FILE" > "$KO_TMP_XZ" 2>"$XZ_ERR"; then
     # Sanity: kernel-compatible streams round-trip through `xz -d` and `xz -t`.
     # Catches preset/filter mismatches at build time instead of in users' dmesg.
     if ! xz -t "$KO_TMP_XZ" 2>/dev/null || ! xz -d -c "$KO_TMP_XZ" >/dev/null 2>&1; then
