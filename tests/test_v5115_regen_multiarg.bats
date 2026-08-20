@@ -118,7 +118,7 @@
     # The numeric prefix follows the upstream sync marker; bas.N is this
     # repository's independent downstream revision.
     for f in install_amneziawg.sh install_amneziawg_en.sh manage_amneziawg.sh manage_amneziawg_en.sh; do
-        run grep -E 'SCRIPT_VERSION="5\.19\.2-bas\.4"' "$BATS_TEST_DIRNAME/../$f"
+        run grep -E 'SCRIPT_VERSION="5\.19\.2-bas\.5"' "$BATS_TEST_DIRNAME/../$f"
         [ "$status" -eq 0 ]
     done
     run grep -E '# Версия: 5\.19\.2' "$BATS_TEST_DIRNAME/../awg_common.sh"
