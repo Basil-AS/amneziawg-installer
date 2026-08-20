@@ -12,6 +12,13 @@
 
 ## [Unreleased]
 
+## [5.19.2-bas.4] - 2026-08-21
+
+### Исправлено
+
+- Telegram-бот корректно обрабатывает legacy-формат статистики, не объявляет панель недоступной при неизвестном состоянии транспорта и ждёт завершения долгой проверки latency.
+- Для Telegram-бота добавлен отдельный строгий GitHub Actions workflow с компиляцией и регрессионными тестами.
+
 ### Улучшено
 
 - Telegram-бот: основной путь получения существующего профиля теперь однозначный — «Устройства» → профиль → «Получить QR + .conf». После выдачи QR, `.conf` или ссылки импорта бот переносит только своё навигационное сообщение под артефакты; сами файлы, QR и ссылки не удаляются. Нижняя клавиатура сокращена до глобальных действий.
@@ -1650,6 +1657,7 @@ Hardening-фиксы надёжности и безопасности по ре�
 [5.14.2]: https://github.com/bivlked/amneziawg-installer/compare/v5.14.1...v5.14.2
 [5.14.1]: https://github.com/bivlked/amneziawg-installer/compare/v5.14.0...v5.14.1
 [5.14.0]: https://github.com/bivlked/amneziawg-installer/compare/v5.13.0...v5.14.0
+[5.19.2-bas.4]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.19.2-bas.3...v5.19.2-bas.4
 [5.13.0]: https://github.com/bivlked/amneziawg-installer/compare/v5.12.1...v5.13.0
 [5.12.1]: https://github.com/bivlked/amneziawg-installer/compare/v5.12.0...v5.12.1
 [5.12.0]: https://github.com/bivlked/amneziawg-installer/compare/v5.11.5...v5.12.0
