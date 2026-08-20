@@ -784,22 +784,25 @@ PY
     PYTHONPATH="$BATS_TEST_DIRNAME/../web" python3 - <<'PY'
 import server
 
+server.parse_config = lambda: {"AWG_TUNNEL_SUBNET": "10.9.10.1/24", "AWG_WEB_DOMAIN": "ger.charles.men"}
 policy = server.clean_access_policy({
     "bind_mode": "custom",
     "bind_host": "0.0.0.0",
-    "allowed_hosts": ["77-90-29-231.sslip.io", "77.90.29.231"],
+    "allowed_hosts": ["ger.charles.men", "s2.charles.men", "77.90.29.231", "77-90-29-231.sslip.io"],
     "allowed_source_cidrs": ["10.66.66.0/24"],
     "host_check_enabled": True,
     "source_check_enabled": True,
 })
-assert server.host_allowed("77-90-29-231.sslip.io", "10.66.66.2", policy)
-assert server.host_allowed("77-90-29-231.sslip.io:443", "10.66.66.2", policy)
-assert server.host_allowed("77.90.29.231:443", "10.66.66.2", policy)
+assert policy["allowed_hosts"] == ["localhost", "127.0.0.1", "10.9.10.1", "ger.charles.men"]
+assert server.host_allowed("ger.charles.men", "10.66.66.2", policy)
+assert server.host_allowed("ger.charles.men:443", "10.66.66.2", policy)
+assert not server.host_allowed("77.90.29.231:443", "10.66.66.2", policy)
+assert not server.host_allowed("77-90-29-231.sslip.io", "10.66.66.2", policy)
 assert not server.host_allowed("example.invalid", "10.66.66.2", policy)
 assert server.source_allowed("10.66.66.42", policy)
 assert not server.source_allowed("10.66.67.42", policy)
-assert server.request_allowed_by_policy("77-90-29-231.sslip.io:443", "10.66.66.42", policy)
-assert not server.request_allowed_by_policy("77-90-29-231.sslip.io:443", "10.66.67.42", policy)
+assert server.request_allowed_by_policy("ger.charles.men:443", "10.66.66.42", policy)
+assert not server.request_allowed_by_policy("ger.charles.men:443", "10.66.67.42", policy)
 ctx = server.client_ip_context("127.0.0.1", {"X-Forwarded-For": "46.34.133.234, 10.0.0.2"}, policy)
 assert ctx["client_ip"] == "46.34.133.234"
 assert ctx["socket_remote_ip"] == "127.0.0.1"
@@ -810,42 +813,33 @@ assert spoofed["trusted_proxy_used"] is False
 proxy_policy = server.clean_access_policy({
     "bind_mode": "custom",
     "bind_host": "127.0.0.1",
-    "allowed_hosts": ["77-90-29-231.sslip.io", "127.0.0.1"],
+    "allowed_hosts": ["ger.charles.men", "s2.charles.men", "127.0.0.1"],
     "allowed_source_cidrs": ["46.34.133.0/24"],
     "trusted_proxy_cidrs": ["127.0.0.0/8", "::1/128"],
     "host_check_enabled": True,
     "source_check_enabled": True,
 })
 ctx = server.client_ip_context("127.0.0.1", {"X-Forwarded-For": "46.34.133.234"}, proxy_policy)
-assert server.request_allowed_by_policy("77-90-29-231.sslip.io", "127.0.0.1", proxy_policy, ctx["client_ip"], ctx["trusted_proxy_used"])
+assert server.request_allowed_by_policy("ger.charles.men", "127.0.0.1", proxy_policy, ctx["client_ip"], ctx["trusted_proxy_used"])
 blocked_ctx = server.client_ip_context("127.0.0.1", {"X-Forwarded-For": "82.197.73.253"}, proxy_policy)
-assert not server.request_allowed_by_policy("77-90-29-231.sslip.io", "127.0.0.1", proxy_policy, blocked_ctx["client_ip"], blocked_ctx["trusted_proxy_used"])
+assert not server.request_allowed_by_policy("ger.charles.men", "127.0.0.1", proxy_policy, blocked_ctx["client_ip"], blocked_ctx["trusted_proxy_used"])
 assert server.clean_allowed_host("[::1]:443") == "::1"
-try:
-    server.clean_access_policy({
-        "bind_mode": "custom",
-        "bind_host": "0.0.0.0",
-        "allowed_hosts": [],
-        "allowed_source_cidrs": ["0.0.0.0/0"],
-        "host_check_enabled": True,
-        "source_check_enabled": False,
-    })
-except ValueError:
-    pass
-else:
-    raise AssertionError("empty allowed_hosts with host check must fail")
+assert server.clean_access_policy({
+    "bind_mode": "custom", "bind_host": "0.0.0.0",
+    "allowed_hosts": [], "allowed_source_cidrs": ["0.0.0.0/0"],
+})["allowed_hosts"] == ["localhost", "127.0.0.1", "10.9.10.1", "ger.charles.men"]
 assert not server.bind_allows_current_remote("127.0.0.1", "203.0.113.9")
 vpn_policy = server.clean_access_policy({
     "bind_mode": "vpn_only",
     "bind_host": "0.0.0.0",
-    "allowed_hosts": ["77-90-29-231.sslip.io", "localhost", "127.0.0.1"],
+    "allowed_hosts": ["s2.charles.men", "77.90.29.231", "localhost", "127.0.0.1"],
     "allowed_source_cidrs": ["0.0.0.0/0", "::/0"],
     "host_check_enabled": True,
     "source_check_enabled": False,
 })
 assert vpn_policy["bind_mode"] == "vpn_only"
 assert vpn_policy["source_check_enabled"] is True
-assert vpn_policy["allowed_source_cidrs"] == ["10.9.9.0/24", "127.0.0.0/8"]
+assert vpn_policy["allowed_source_cidrs"] == ["10.9.10.0/24", "127.0.0.0/8"]
 local_policy = server.clean_access_policy({
     "bind_mode": "localhost_only",
     "bind_host": "0.0.0.0",
@@ -860,7 +854,7 @@ assert local_policy["allowed_source_cidrs"] == ["127.0.0.0/8", "::1/128"]
 nginx_policy = server.clean_access_policy({
     "bind_mode": "public_nginx",
     "bind_host": "0.0.0.0",
-    "allowed_hosts": ["77-90-29-231.sslip.io"],
+    "allowed_hosts": ["s2.charles.men", "77.90.29.231"],
     "allowed_source_cidrs": ["0.0.0.0/0"],
     "trusted_proxy_cidrs": ["127.0.0.0/8"],
     "host_check_enabled": True,
@@ -881,23 +875,23 @@ restricted = server.clean_access_policy({
 assert restricted["bind_host"] == "127.0.0.1"
 assert restricted["source_check_enabled"] is True
 ctx = server.client_ip_context("127.0.0.1", {"X-Forwarded-For": "46.34.133.234"}, restricted)
-assert server.request_allowed_by_policy("77-90-29-231.sslip.io", "127.0.0.1", restricted, ctx["client_ip"], ctx["trusted_proxy_used"])
+assert server.request_allowed_by_policy("ger.charles.men", "127.0.0.1", restricted, ctx["client_ip"], ctx["trusted_proxy_used"])
 blocked_ctx = server.client_ip_context("127.0.0.1", {"X-Forwarded-For": "203.0.113.9"}, restricted)
-assert not server.request_allowed_by_policy("77-90-29-231.sslip.io", "127.0.0.1", restricted, blocked_ctx["client_ip"], blocked_ctx["trusted_proxy_used"])
+assert not server.request_allowed_by_policy("ger.charles.men", "127.0.0.1", restricted, blocked_ctx["client_ip"], blocked_ctx["trusted_proxy_used"])
 spoofed = server.client_ip_context("198.51.100.7", {"X-Forwarded-For": "46.34.133.234"}, restricted)
 assert spoofed["client_ip"] == "198.51.100.7"
 assert spoofed["trusted_proxy_used"] is False
 safe_tunnel = server.clean_access_policy({
     "bind_mode": "v" + "pn_only_nginx",
     "bind_host": "0.0.0.0",
-    "allowed_hosts": ["77-90-29-231.sslip.io"],
+    "allowed_hosts": ["s2.charles.men", "77.90.29.231"],
     "allowed_source_cidrs": ["0.0.0.0/0"],
     "trusted_proxy_cidrs": ["127.0.0.0/8"],
     "host_check_enabled": True,
     "source_check_enabled": False,
 })
 assert safe_tunnel["bind_host"] == "127.0.0.1"
-assert safe_tunnel["allowed_source_cidrs"] == ["10.9.9.0/24", "127.0.0.0/8", "::1/128"]
+assert safe_tunnel["allowed_source_cidrs"] == ["10.9.10.0/24", "127.0.0.0/8", "::1/128"]
 maintenance = server.clean_access_policy({
     "bind_mode": "localhost_maintenance",
     "bind_host": "0.0.0.0",
@@ -1968,7 +1962,7 @@ PY
     fi
 }
 
-@test "web host allowlist accepts configured domain and managed public IP" {
+@test "web host allowlist accepts configured panel domain and rejects endpoint addresses" {
     command -v python3 &>/dev/null || skip "python3 not available"
     REPO_ROOT="$BATS_TEST_DIRNAME/.." python3 - <<'PY'
 import importlib.util
@@ -1978,23 +1972,24 @@ from pathlib import Path
 spec = importlib.util.spec_from_file_location("panel_server", Path(os.environ["REPO_ROOT"]) / "web" / "server.py")
 server = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(server)
-os.environ["AWG_WEB_DOMAIN"] = "64-112-125-125.sslip.io"
+os.environ["AWG_WEB_DOMAIN"] = "ger.charles.men"
 os.environ["AWG_WEB_BIND"] = "0.0.0.0"
 os.environ["AWG_ENDPOINT"] = "64.112.125.125"
 policy = server.clean_access_policy({
     "bind_mode": "public",
     "bind_host": "0.0.0.0",
-    "allowed_hosts": ["64-112-125-125.sslip.io", "64.112.125.125", "10.9.9.1", "localhost"],
+    "allowed_hosts": ["ger.charles.men", "s2.charles.men", "77.90.29.231", "77-90-29-231.sslip.io", "10.9.9.1", "localhost"],
     "allowed_source_cidrs": ["0.0.0.0/0"],
     "host_check_enabled": True,
     "source_check_enabled": False,
 })
-assert server.host_allowed("64-112-125-125.sslip.io", "198.51.100.1", policy)
-assert server.host_allowed("64-112-125-125.sslip.io:8443", "198.51.100.1", policy)
-assert server.host_allowed("64.112.125.125:443", "198.51.100.1", policy)
+assert server.host_allowed("ger.charles.men", "198.51.100.1", policy)
+assert server.host_allowed("ger.charles.men:8443", "198.51.100.1", policy)
+assert not server.host_allowed("77.90.29.231:443", "198.51.100.1", policy)
+assert not server.host_allowed("77-90-29-231.sslip.io", "198.51.100.1", policy)
 assert not server.host_allowed("[2001:db8::1]:8443", "198.51.100.1", policy)
 assert server.host_allowed("10.9.9.1:8443", "10.9.9.2", policy)
-assert server.host_allowed("panel.example:8443", "127.0.0.1", policy)
+assert server.host_allowed("localhost:8443", "127.0.0.1", policy)
 PY
 }
 
