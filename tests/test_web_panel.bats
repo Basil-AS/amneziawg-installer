@@ -2567,6 +2567,7 @@ server.PROVIDER_TRAFFIC_FILE.write_text(json.dumps({
     "label": "HOSTKEY",
     "token": "secret-token",
     "ip": "192.0.2.10",
+    "server_id": "stale-server-id",
     "period_days": 30,
     "unit": "gb",
     "limit_total_gb": 10,
