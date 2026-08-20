@@ -12,6 +12,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [5.19.2-bas.5] - 2026-08-21
+
+### Fixed
+
+- Web panels no longer regenerate legacy public IPs, transport domains, or sslip/nip aliases into `Allowed hosts`; only the panel domain, local `10.x` gateway, `localhost`, and `127.0.0.1` remain.
+- The Telegram bot installer now uses the domain SSH endpoints `s1.charles.men` and `s2.charles.men` instead of stale IP addresses.
+
 ## [5.19.2-bas.4] - 2026-08-21
 
 ### Fixed
@@ -1651,6 +1658,7 @@ Major security and reliability update after several consecutive code audits. The
 [5.14.1]: https://github.com/bivlked/amneziawg-installer/compare/v5.14.0...v5.14.1
 [5.14.0]: https://github.com/bivlked/amneziawg-installer/compare/v5.13.0...v5.14.0
 [5.19.2-bas.4]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.19.2-bas.3...v5.19.2-bas.4
+[5.19.2-bas.5]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.19.2-bas.4...v5.19.2-bas.5
 [5.13.0]: https://github.com/bivlked/amneziawg-installer/compare/v5.12.1...v5.13.0
 [5.12.1]: https://github.com/bivlked/amneziawg-installer/compare/v5.12.0...v5.12.1
 [5.12.0]: https://github.com/bivlked/amneziawg-installer/compare/v5.11.5...v5.12.0
