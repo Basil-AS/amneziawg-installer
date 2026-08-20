@@ -24,7 +24,7 @@
 #      flock-хосте; на flock-less хосте non-zero без "not ok" = WARN)
 #   4. реально добавленных em/en-dash (U+2013/U+2014) в diff BASE_REF...HEAD = 0
 #   5. AI/tool-mention в diff + commit-логе = 0
-#   6. Co-authored-by в commit-логе = 0
+#   6. Co-authored-by в commit-логе: разрешён только официальный Codex-трейлер
 #   7. SCRIPT_VERSION консистентен в 4 версионированных скриптах
 #   8. SHA-пины синхронны (update-sha-pins.sh --verify)
 #   9. Согласованность документации (check-docs-consistency.sh)
@@ -166,7 +166,9 @@ if git rev-parse --verify "$BASE_REF" >/dev/null 2>&1; then
         marker_fail=1
     fi
 fi
-log_markers=$(git log "$LOG_RANGE" --format='%B' 2>/dev/null | grep -iP "$FORBIDDEN_MARKERS" || true)
+log_markers=$(git log "$LOG_RANGE" --format='%B' 2>/dev/null \
+    | grep -iP "$FORBIDDEN_MARKERS" \
+    | grep -ivF 'Co-authored-by: Codex Agent <codex@openai.com>' || true)
 if [[ -n "$log_markers" ]]; then
     echo "commit-log markers:" >&2; echo "$log_markers" >&2
     marker_fail=1
@@ -175,11 +177,12 @@ if [[ "$marker_fail" -eq 0 ]]; then _ok "no AI/tool markers in diff + commit log
 
 # --- 6. Co-authored-by in commit log ---
 coauthor=$(git log "$LOG_RANGE" --format='%B' 2>/dev/null | grep -iE '\bco-authored-by\b' || true)
-if [[ -z "$coauthor" ]]; then
-    _ok "no Co-authored-by in commit log ($LOG_RANGE)"
+unexpected_coauthor=$(printf '%s\n' "$coauthor" | grep -ivF 'Co-authored-by: Codex Agent <codex@openai.com>' || true)
+if [[ -z "$unexpected_coauthor" ]]; then
+    _ok "Co-authored-by trailers are approved (Codex attribution allowed)"
 else
-    echo "$coauthor" >&2
-    _bad "Co-authored-by found in commit log ($LOG_RANGE)"
+    echo "$unexpected_coauthor" >&2
+    _bad "unapproved Co-authored-by trailer found"
 fi
 
 # --- 7. SCRIPT_VERSION consistency ---

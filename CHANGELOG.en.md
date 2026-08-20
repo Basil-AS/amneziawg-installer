@@ -12,6 +12,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [5.19.2-bas.4] - 2026-08-21
+
+### Fixed
+
+- Telegram bot diagnostics now normalize legacy statistics, avoid false outage alerts for unknown transport state, and allow the longer latency probe to finish.
+- Added a strict GitHub Actions workflow with compilation and regression tests for the Telegram bot.
+
 ### Improved
 
 - Telegram bot UX was reduced to the essential device workflow: the main menu now contains only devices, creation, favorites, setup help, servers, and access; each device card separates QR/`.conf`, extra information, and settings. Load, VPN readiness, DNS/AdGuard, logs, network tests, and maintenance moved to the web panel/Mini App.
@@ -1643,6 +1650,7 @@ Major security and reliability update after several consecutive code audits. The
 [5.14.2]: https://github.com/bivlked/amneziawg-installer/compare/v5.14.1...v5.14.2
 [5.14.1]: https://github.com/bivlked/amneziawg-installer/compare/v5.14.0...v5.14.1
 [5.14.0]: https://github.com/bivlked/amneziawg-installer/compare/v5.13.0...v5.14.0
+[5.19.2-bas.4]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.19.2-bas.3...v5.19.2-bas.4
 [5.13.0]: https://github.com/bivlked/amneziawg-installer/compare/v5.12.1...v5.13.0
 [5.12.1]: https://github.com/bivlked/amneziawg-installer/compare/v5.12.0...v5.12.1
 [5.12.0]: https://github.com/bivlked/amneziawg-installer/compare/v5.11.5...v5.12.0
