@@ -12,6 +12,13 @@
 
 ## [Unreleased]
 
+## [5.19.2-bas.5] - 2026-08-21
+
+### Исправлено
+
+- Веб-панели больше не возвращают в `Allowed hosts` старые публичные IP, transport-домены и sslip/nip-алиасы: остаются только домен панели, локальный шлюз `10.x`, `localhost` и `127.0.0.1`.
+- Инсталлятор Telegram-бота использует доменные SSH endpoint’ы `s1.charles.men` и `s2.charles.men` вместо устаревших IP.
+
 ## [5.19.2-bas.4] - 2026-08-21
 
 ### Исправлено
@@ -1658,6 +1665,7 @@ Hardening-фиксы надёжности и безопасности по ре�
 [5.14.1]: https://github.com/bivlked/amneziawg-installer/compare/v5.14.0...v5.14.1
 [5.14.0]: https://github.com/bivlked/amneziawg-installer/compare/v5.13.0...v5.14.0
 [5.19.2-bas.4]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.19.2-bas.3...v5.19.2-bas.4
+[5.19.2-bas.5]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.19.2-bas.4...v5.19.2-bas.5
 [5.13.0]: https://github.com/bivlked/amneziawg-installer/compare/v5.12.1...v5.13.0
 [5.12.1]: https://github.com/bivlked/amneziawg-installer/compare/v5.12.0...v5.12.1
 [5.12.0]: https://github.com/bivlked/amneziawg-installer/compare/v5.11.5...v5.12.0
