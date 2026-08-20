@@ -38,6 +38,11 @@ setup() {
     grep -qF 'xz -t "$KO_TMP_XZ"' "$BUILD"
 }
 
+@test "build script initializes the xz error path under set -u" {
+    grep -qF 'XZ_ERR="${KO_TMP_XZ}.err"' "$BUILD"
+    grep -qF '2>"$XZ_ERR"' "$BUILD"
+}
+
 @test "v5.12.1: build script uses --check=crc32 (kernel-compatible)" {
     grep -qE 'xz .*--check=crc32' "$BUILD"
 }
