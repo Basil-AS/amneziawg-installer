@@ -1446,6 +1446,8 @@ MSS4="$(( ${AWG_MTU:-1280} - 40 ))"
 MSS6="$(( ${AWG_MTU:-1280} - 60 ))"
 P2P_RULES="${p2p}"
 SERVER_CONF_FILE="${SERVER_CONF_FILE:-/etc/amnezia/amneziawg/awg0.conf}"
+WEB_ENABLED="${AWG_WEB_ENABLED:-1}"
+PANEL_WEB_PORT="${AWG_WEB_PORT:-8443}"
 
 case "\$IPV6_MODE" in
     native) IPV6_MODE="ndp" ;;
@@ -1471,12 +1473,35 @@ else
     ipt_add nat POSTROUTING -o "\$NIC" -j MASQUERADE
 fi
 
+block_panel_from_vpn() {
+    [[ "\$WEB_ENABLED" == "1" ]] || return 0
+    local panel_addr panel_port
+    {
+        ip -4 -o addr show scope global 2>/dev/null | awk '{split(\$4,a,"/"); print a[1]}'
+        ip -4 -o addr show dev "\$AWG_IFACE" 2>/dev/null | awk '{split(\$4,a,"/"); print a[1]}'
+    } | while IFS= read -r panel_addr; do
+        [[ -n "\$panel_addr" ]] || continue
+        for panel_port in 80 443 "\$PANEL_WEB_PORT"; do
+            ipt_ins FORWARD -i "\$AWG_IFACE" -d "\$panel_addr" -p tcp --dport "\$panel_port" -j REJECT
+        done
+    done
+}
+block_panel_from_vpn
+
 ipt_ins FORWARD -i "\$AWG_IFACE" -j ACCEPT
 ipt_ins FORWARD -o "\$AWG_IFACE" -m state --state RELATED,ESTABLISHED -j ACCEPT
 ipt_add mangle FORWARD -o "\$AWG_IFACE" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss "\$MSS4"
 ipt_add mangle FORWARD -i "\$AWG_IFACE" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss "\$MSS4"
 
 if [[ "\$IPV6_ENABLED" == "1" ]]; then
+    if [[ "\$WEB_ENABLED" == "1" ]]; then
+        ip -6 -o addr show scope global 2>/dev/null | awk '{split(\$4,a,"/"); print a[1]}' | while IFS= read -r panel_addr; do
+            [[ -n "\$panel_addr" ]] || continue
+            for panel_port in 80 443 "\$PANEL_WEB_PORT"; do
+                ip6t_ins FORWARD -i "\$AWG_IFACE" -d "\$panel_addr" -p tcp --dport "\$panel_port" -j REJECT
+            done
+        done
+    fi
     ip6t_ins FORWARD -i "\$AWG_IFACE" -j ACCEPT
     ip6t_ins FORWARD -o "\$AWG_IFACE" -m state --state RELATED,ESTABLISHED -j ACCEPT
     ip6t_ins FORWARD -i "\$NIC" -o "\$AWG_IFACE" -m state --state RELATED,ESTABLISHED -j ACCEPT
@@ -1519,6 +1544,8 @@ MSS4="$(( ${AWG_MTU:-1280} - 40 ))"
 MSS6="$(( ${AWG_MTU:-1280} - 60 ))"
 P2P_RULES="${p2p}"
 SERVER_CONF_FILE="${SERVER_CONF_FILE:-/etc/amnezia/amneziawg/awg0.conf}"
+WEB_ENABLED="${AWG_WEB_ENABLED:-1}"
+PANEL_WEB_PORT="${AWG_WEB_PORT:-8443}"
 
 case "\$IPV6_MODE" in
     native) IPV6_MODE="ndp" ;;
@@ -1538,6 +1565,18 @@ ndp_peer_ipv6_routes() {
 
 [[ -x "\$P2P_RULES" ]] && "\$P2P_RULES" down
 
+if [[ "\$WEB_ENABLED" == "1" ]]; then
+    {
+        ip -4 -o addr show scope global 2>/dev/null | awk '{split(\$4,a,"/"); print a[1]}'
+        ip -4 -o addr show dev "\$AWG_IFACE" 2>/dev/null | awk '{split(\$4,a,"/"); print a[1]}'
+    } | while IFS= read -r panel_addr; do
+        [[ -n "\$panel_addr" ]] || continue
+        for panel_port in 80 443 "\$PANEL_WEB_PORT"; do
+            del_ipt FORWARD -i "\$AWG_IFACE" -d "\$panel_addr" -p tcp --dport "\$panel_port" -j REJECT
+        done
+    done
+fi
+
 del_ipt_nat PREROUTING -i "\$NIC" -j FULLCONENAT
 del_ipt_nat POSTROUTING -o "\$NIC" -j FULLCONENAT
 del_ipt_nat POSTROUTING -o "\$NIC" -j MASQUERADE
@@ -1547,6 +1586,14 @@ del_ipt_table mangle FORWARD -o "\$AWG_IFACE" -p tcp --tcp-flags SYN,RST SYN -j 
 del_ipt_table mangle FORWARD -i "\$AWG_IFACE" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss "\$MSS4"
 
 if [[ "\$IPV6_ENABLED" == "1" ]]; then
+    if [[ "\$WEB_ENABLED" == "1" ]]; then
+        ip -6 -o addr show scope global 2>/dev/null | awk '{split(\$4,a,"/"); print a[1]}' | while IFS= read -r panel_addr; do
+            [[ -n "\$panel_addr" ]] || continue
+            for panel_port in 80 443 "\$PANEL_WEB_PORT"; do
+                del_ip6t FORWARD -i "\$AWG_IFACE" -d "\$panel_addr" -p tcp --dport "\$panel_port" -j REJECT
+            done
+        done
+    fi
     if [[ "\$IPV6_MODE" == "ndp" ]]; then
         while IFS= read -r route; do
             [[ -n "\$route" ]] || continue
