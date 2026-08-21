@@ -1493,15 +1493,16 @@ ipt_ins FORWARD -o "\$AWG_IFACE" -m state --state RELATED,ESTABLISHED -j ACCEPT
 ipt_add mangle FORWARD -o "\$AWG_IFACE" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss "\$MSS4"
 ipt_add mangle FORWARD -i "\$AWG_IFACE" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss "\$MSS4"
 
-if [[ "\$IPV6_ENABLED" == "1" ]]; then
-    if [[ "\$WEB_ENABLED" == "1" ]]; then
-        ip -6 -o addr show scope global 2>/dev/null | awk '{split(\$4,a,"/"); print a[1]}' | while IFS= read -r panel_addr; do
-            [[ -n "\$panel_addr" ]] || continue
-            for panel_port in 80 443 "\$PANEL_WEB_PORT"; do
-                ip6t_ins FORWARD -i "\$AWG_IFACE" -d "\$panel_addr" -p tcp --dport "\$panel_port" -j REJECT
-            done
+if [[ "\$WEB_ENABLED" == "1" ]]; then
+    ip -6 -o addr show scope global 2>/dev/null | awk '{split(\$4,a,"/"); print a[1]}' | while IFS= read -r panel_addr; do
+        [[ -n "\$panel_addr" ]] || continue
+        for panel_port in 80 443 "\$PANEL_WEB_PORT"; do
+            ip6t_ins FORWARD -i "\$AWG_IFACE" -d "\$panel_addr" -p tcp --dport "\$panel_port" -j REJECT
         done
-    fi
+    done
+fi
+
+if [[ "\$IPV6_ENABLED" == "1" ]]; then
     ip6t_ins FORWARD -i "\$AWG_IFACE" -j ACCEPT
     ip6t_ins FORWARD -o "\$AWG_IFACE" -m state --state RELATED,ESTABLISHED -j ACCEPT
     ip6t_ins FORWARD -i "\$NIC" -o "\$AWG_IFACE" -m state --state RELATED,ESTABLISHED -j ACCEPT
@@ -1585,15 +1586,16 @@ del_ipt FORWARD -o "\$AWG_IFACE" -m state --state RELATED,ESTABLISHED -j ACCEPT
 del_ipt_table mangle FORWARD -o "\$AWG_IFACE" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss "\$MSS4"
 del_ipt_table mangle FORWARD -i "\$AWG_IFACE" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss "\$MSS4"
 
-if [[ "\$IPV6_ENABLED" == "1" ]]; then
-    if [[ "\$WEB_ENABLED" == "1" ]]; then
-        ip -6 -o addr show scope global 2>/dev/null | awk '{split(\$4,a,"/"); print a[1]}' | while IFS= read -r panel_addr; do
-            [[ -n "\$panel_addr" ]] || continue
-            for panel_port in 80 443 "\$PANEL_WEB_PORT"; do
-                del_ip6t FORWARD -i "\$AWG_IFACE" -d "\$panel_addr" -p tcp --dport "\$panel_port" -j REJECT
-            done
+if [[ "\$WEB_ENABLED" == "1" ]]; then
+    ip -6 -o addr show scope global 2>/dev/null | awk '{split(\$4,a,"/"); print a[1]}' | while IFS= read -r panel_addr; do
+        [[ -n "\$panel_addr" ]] || continue
+        for panel_port in 80 443 "\$PANEL_WEB_PORT"; do
+            del_ip6t FORWARD -i "\$AWG_IFACE" -d "\$panel_addr" -p tcp --dport "\$panel_port" -j REJECT
         done
-    fi
+    done
+fi
+
+if [[ "\$IPV6_ENABLED" == "1" ]]; then
     if [[ "\$IPV6_MODE" == "ndp" ]]; then
         while IFS= read -r route; do
             [[ -n "\$route" ]] || continue
