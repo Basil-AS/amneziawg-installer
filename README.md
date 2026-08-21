@@ -24,7 +24,7 @@
   <a href="https://github.com/bivlked/amneziawg-installer/blob/main/LICENSE"><img src="https://img.shields.io/github/license/bivlked/amneziawg-installer" alt="License"></a>
   <img src="https://img.shields.io/badge/Status-Stable-success" alt="Status">
   <a href="https://github.com/bivlked/amneziawg-installer/releases"><img src="https://img.shields.io/badge/Upstream_Base-5.13.0-blue" alt="Upstream base version"></a>
-  <img src="https://img.shields.io/badge/Fork_Version-5.19.2--bas.6-6f42c1" alt="Fork version 5.19.2-bas.6">
+  <img src="https://img.shields.io/badge/Fork_Version-5.19.2--bas.7-6f42c1" alt="Fork version 5.19.2-bas.7">
   <img src="https://img.shields.io/badge/Fork_Delta-IPv6_|_P2P_|_Web-0aa" alt="Fork delta">
   <img src="https://img.shields.io/badge/AmneziaWG-2.0-blueviolet" alt="AWG 2.0">
   <a href="https://github.com/bivlked/amneziawg-installer/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="License"></a>
@@ -419,7 +419,7 @@ PSK, адреса peer-ов и параметры маршрутизации н�
 
 Этот репозиторий — форк [bivlked/amneziawg-installer](https://github.com/bivlked/amneziawg-installer), а не самостоятельная новая upstream-линейка. База намеренно обозначается как **upstream `v5.13.0`**, чтобы было проще подтягивать изменения из оригинала и видеть, поверх какой версии сделаны доработки.
 
-Собственная версия форка — **`v5.19.2-bas.6`**. Формат `<upstream-sync>-bas.<revision>` сохраняет связь с оригиналом: `5.19.2` — текущий полный upstream sync marker, а `bas.6` — очередная fork-ревизия после синхронизации. История существующих коммитов и их даты не переписываются.
+Собственная версия форка — **`v5.19.2-bas.7`**. Формат `<upstream-sync>-bas.<revision>` сохраняет связь с оригиналом: `5.19.2` — текущий полный upstream sync marker, а `bas.7` — очередная fork-ревизия после синхронизации. История существующих коммитов и их даты не переписываются.
 
 **Главные отличия форка от оригинала:**
 
@@ -433,9 +433,9 @@ PSK, адреса peer-ов и параметры маршрутизации н�
 * **Автогенерация firewall hooks:** `/root/awg/postup.sh`, `/root/awg/postdown.sh`, `/root/awg/p2p_rules.sh`.
 * **Fork patchset:** версия upstream остаётся `5.13.0`, отличия живут как fork delta поверх неё.
 
-**Правило версий:** fork-only релизы увеличивают `bas.N` (`5.19.2-bas.6`), а после перехода на новый upstream sync marker нумерация начинается заново. Старые коммиты и их даты не переписываются; версия указывается только в новых релизных коммитах и тегах.
+**Правило версий:** fork-only релизы увеличивают `bas.N` (`5.19.2-bas.7`), а после перехода на новый upstream sync marker нумерация начинается заново. Старые коммиты и их даты не переписываются; версия указывается только в новых релизных коммитах и тегах.
 
-> Команды установки ниже идут напрямую из ветки `main`. Текущий sync marker — upstream `v5.19.2`, версия форка — `v5.19.2-bas.6`.
+> Команды установки ниже идут напрямую из ветки `main`. Текущий sync marker — upstream `v5.19.2`, версия форка — `v5.19.2-bas.7`.
 
 ---
 

@@ -9,7 +9,7 @@ fi
 # ==============================================================================
 # Скрипт для установки и настройки AmneziaWG 2.0 на Ubuntu/Debian серверах
 # Автор: @bivlked
-# Версия: 5.19.2-bas.6
+# Версия: 5.19.2-bas.7
 # Дата: 2026-05-13
 # Репозиторий: https://github.com/bivlked/amneziawg-installer
 # ==============================================================================
@@ -17,7 +17,7 @@ fi
 # --- Безопасный режим и Константы ---
 set -o pipefail
 
-SCRIPT_VERSION="5.19.2-bas.6"
+SCRIPT_VERSION="5.19.2-bas.7"
 AWG_DIR="/root/awg"
 INSTALLER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)"
 CONFIG_FILE="$AWG_DIR/awgsetup_cfg.init"
@@ -35,7 +35,7 @@ MANAGE_SCRIPT_PATH="$AWG_DIR/manage_amneziawg.sh"
 # при явном AWG_ALLOW_UNVERIFIED_DOWNLOAD=1 для разработки.
 declare -A AWG_ASSET_SHA256=(
     ["awg_common.sh"]="5035075921ca530ef490a65d7a53c9cfe41edf8818a9343107bb205f33aa19bc"
-    ["manage_amneziawg.sh"]="8721269a1cb14271aa564c40c4af6b86e71993b48825e8e51e5cc87d9b77400e"
+    ["manage_amneziawg.sh"]="6b68924d2ad9fea1af090f8a241309cdf46af34f0f07c2bf58a996d4aa5c0618"
     ["web/server.py"]="ded8e87bdeb70b8555c2e3887a4109c5971e1f73d8298c8ca5a72a94a283bbc8"
     ["web/index.html"]="7c07ed1d1991e08c0f9fc31e86ed8eb2bba5fa96387088f1f18918396cf7e662"
     ["web/app.js"]="6c9e082032b7c099221a35066fe969ae91e1ca6aab057030d277584d91f36cda"
@@ -5818,7 +5818,7 @@ write_install_summary() {
     timestamp="$(date '+%Y%m%d-%H%M%S')"
     route_label="$(route_mode_label)"
     server_v6="$(server_ipv6_addr_for_summary)"
-    web_host="${AWG_ENDPOINT:-server}"
+    web_host="${AWG_WEB_DOMAIN:-${AWG_ENDPOINT:-server}}"
     trusted_https="$(compute_trusted_https_status)"
     cert_summary="$(compute_cert_summary)"
     domain_only_access="no"
@@ -5950,7 +5950,7 @@ Admin password: ${ag_password_display}
 Config file: ${AWG_ADGUARD_DIR:-/opt/AdGuardHome}/AdGuardHome.yaml
 
 [Network]
-Endpoint: ${AWG_ENDPOINT:-not set}
+Endpoint: ${AWG_WEB_DOMAIN:-${AWG_ENDPOINT:-not set}}
 VPN UDP port: ${AWG_PORT}
 Tunnel IPv4 subnet: ${AWG_TUNNEL_SUBNET}
 Route mode: ${route_label}

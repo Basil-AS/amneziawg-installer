@@ -168,6 +168,13 @@ PY
     rm -rf "$tmp"
 }
 
+@test "INSTALL_SUMMARY prefers the configured panel domain over a stale endpoint IP" {
+    for installer in install_amneziawg.sh install_amneziawg_en.sh; do
+        grep -q 'web_host="\${AWG_WEB_DOMAIN:-\${AWG_ENDPOINT:-server}}"' "$BATS_TEST_DIRNAME/../$installer"
+        grep -q 'Endpoint: \${AWG_WEB_DOMAIN:-\${AWG_ENDPOINT:-not set}}' "$BATS_TEST_DIRNAME/../$installer"
+    done
+}
+
 @test "installer final output has no placeholder web URLs and prints grouped client files" {
     local installer="$BATS_TEST_DIRNAME/../install_amneziawg.sh"
     grep -qF 'print_client_files_console' "$installer"
