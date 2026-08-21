@@ -54,6 +54,16 @@ done
 command -v python3 >/dev/null 2>&1 || die "python3 is required"
 command -v systemctl >/dev/null 2>&1 || die "systemd is required"
 
+# Re-installs often refresh the bot code without rotating its SSH key.  Keep
+# the existing generated identity paths unless a new --ssh-key was supplied;
+# otherwise a routine upgrade would silently break both panel tunnels.
+existing_finland_identity=""
+existing_germany_identity=""
+if [[ -r /etc/gaullebot.env ]]; then
+    existing_finland_identity="$(sed -n 's/^FINLAND_SSH_IDENTITY=//p' /etc/gaullebot.env | head -n 1)"
+    existing_germany_identity="$(sed -n 's/^GERMANY_SSH_IDENTITY=//p' /etc/gaullebot.env | head -n 1)"
+fi
+
 if ! getent group gaullebot >/dev/null; then groupadd --system gaullebot; fi
 if ! id gaullebot >/dev/null 2>&1; then useradd --system --home-dir "$BOT_ROOT" --shell /usr/sbin/nologin --gid gaullebot gaullebot; fi
 install -d -o gaullebot -g gaullebot -m 0750 "$BOT_ROOT" "$BOT_ROOT/src" "$BOT_ROOT/test" "$BOT_ROOT/deploy" "$BOT_ROOT/data" "$BOT_ROOT/var" "$BOT_ROOT/logs"
@@ -72,9 +82,17 @@ download_or_copy() {
 }
 download_or_copy src/bot.py
 download_or_copy src/__init__.py
+download_or_copy test/test_bot.py
 download_or_copy deploy/gaullebot.service
-install -d -o root -g gaullebot -m 0750 "$BOT_ROOT/src" "$BOT_ROOT/deploy"
+install -d -o root -g gaullebot -m 0750 "$BOT_ROOT/src" "$BOT_ROOT/test" "$BOT_ROOT/deploy"
 chmod 0750 "$BOT_ROOT/src" "$BOT_ROOT/deploy"
+
+# Validate the exact files that are about to be activated.  This catches a
+# truncated download, a syntax error, or a bot regression before systemd is
+# restarted.  The test suite uses temporary directories and never reads the
+# production database or credentials.
+python3 -m py_compile "$BOT_ROOT/src/bot.py"
+(cd "$BOT_ROOT" && PYTHONPATH="$BOT_ROOT" python3 -m unittest discover -s test -p 'test_*.py' >/dev/null)
 
 env_tmp="$(mktemp)"
 trap 'rm -f "$env_tmp"' EXIT
@@ -96,6 +114,9 @@ trap 'rm -f "$env_tmp"' EXIT
     if [[ -n "$SSH_KEY" ]]; then
         install -o root -g gaullebot -m 0640 "$SSH_KEY" "$BOT_ROOT/var/vpn-admin-ed25519"
         printf 'FINLAND_SSH_IDENTITY=%q\nGERMANY_SSH_IDENTITY=%q\n' "$BOT_ROOT/var/vpn-admin-ed25519" "$BOT_ROOT/var/vpn-admin-ed25519"
+    else
+        [[ -n "$existing_finland_identity" ]] && printf 'FINLAND_SSH_IDENTITY=%s\n' "$existing_finland_identity"
+        [[ -n "$existing_germany_identity" ]] && printf 'GERMANY_SSH_IDENTITY=%s\n' "$existing_germany_identity"
     fi
 } > "$env_tmp"
 install -o root -g gaullebot -m 0640 "$env_tmp" /etc/gaullebot.env
