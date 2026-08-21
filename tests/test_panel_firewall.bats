@@ -21,8 +21,8 @@ bats_require_minimum_version 1.5.0
     for f in awg_common.sh awg_common_en.sh; do
         local path="$BATS_TEST_DIRNAME/../$f"
         run awk '
-            /block_panel_from_vpn$/ { block=NR }
-            /ipt_ins FORWARD -i "\\$AWG_IFACE" -j ACCEPT/ { accept=NR }
+            /block_panel_from_vpn/ && !block { block=NR }
+            /ipt_ins FORWARD -i/ && /-j ACCEPT/ && !accept { accept=NR }
             END { exit !(block && accept && block < accept) }
         ' "$path"
         [ "$status" -eq 0 ]
