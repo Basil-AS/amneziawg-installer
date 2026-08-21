@@ -5390,6 +5390,9 @@ PY
     validate_no_control_chars "${AWG_WEB_PORT:-}" || die "Web Panel: unsafe port value"
     validate_no_control_chars "${AWG_WEB_DOMAIN:-}" || die "Web Panel: unsafe domain value"
     validate_no_control_chars "${AWG_ENDPOINT:-}" || die "Web Panel: unsafe endpoint value"
+    if [[ -n "${AWG_WEB_DOMAIN:-}" && "${AWG_WEB_DOMAIN}" == "${AWG_ENDPOINT:-}" ]]; then
+        die "Web Panel domain must be separate from the VPN endpoint; use a web-only domain and a distinct VPN transport endpoint."
+    fi
     local web_server_unit
     web_server_unit="$(systemd_abs_path_value "$web_dir/server.py")" || die "Invalid web/server.py path"
 
