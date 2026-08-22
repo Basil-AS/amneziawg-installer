@@ -12,6 +12,13 @@
 
 ## [Unreleased]
 
+## [5.19.2-bas.9] - 2026-08-22
+
+### Исправлено
+
+- Панель остаётся доступной из VPN-туннеля; удалены ошибочные panel-port reject-правила.
+- Генератор клиентских конфигов запрещает использовать домен веб-панели как VPN endpoint и сохраняет отдельный VPN endpoint/IP.
+
 ## [5.19.2-bas.8] - 2026-08-21
 
 ### Исправлено
@@ -1684,6 +1691,7 @@ Hardening-фиксы надёжности и безопасности по ре�
 [5.14.2]: https://github.com/bivlked/amneziawg-installer/compare/v5.14.1...v5.14.2
 [5.14.1]: https://github.com/bivlked/amneziawg-installer/compare/v5.14.0...v5.14.1
 [5.14.0]: https://github.com/bivlked/amneziawg-installer/compare/v5.13.0...v5.14.0
+[5.19.2-bas.9]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.19.2-bas.8...v5.19.2-bas.9
 [5.19.2-bas.8]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.19.2-bas.7...v5.19.2-bas.8
 [5.19.2-bas.4]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.19.2-bas.3...v5.19.2-bas.4
 [5.19.2-bas.7]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.19.2-bas.6...v5.19.2-bas.7
