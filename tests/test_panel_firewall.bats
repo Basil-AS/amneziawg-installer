@@ -2,28 +2,25 @@
 
 bats_require_minimum_version 1.5.0
 
-@test "RU and EN firewall generators isolate panel ports from VPN clients" {
+@test "RU and EN firewall generators keep panel reachable from VPN clients" {
     for f in awg_common.sh awg_common_en.sh; do
         local path="$BATS_TEST_DIRNAME/../$f"
-        grep -qF 'WEB_ENABLED="${AWG_WEB_ENABLED:-1}"' "$path"
-        grep -qF 'PANEL_WEB_PORT="${AWG_WEB_PORT:-8443}"' "$path"
-        grep -qF 'block_panel_from_vpn()' "$path"
-        grep -qF 'ipt_ins FORWARD -i "\$AWG_IFACE" -d "\$panel_addr" -p tcp --dport "\$panel_port" -j REJECT' "$path"
-        grep -qF 'ip6t_ins FORWARD -i "\$AWG_IFACE" -d "\$panel_addr" -p tcp --dport "\$panel_port" -j REJECT' "$path"
-        grep -qF 'del_ipt FORWARD -i "\$AWG_IFACE" -d "\$panel_addr" -p tcp --dport "\$panel_port" -j REJECT' "$path"
-        grep -qF 'del_ip6t FORWARD -i "\$AWG_IFACE" -d "\$panel_addr" -p tcp --dport "\$panel_port" -j REJECT' "$path"
+        ! grep -qF 'ipt_ins FORWARD -i "\$AWG_IFACE" -d "\$panel_addr" -p tcp --dport "\$panel_port" -j REJECT' "$path"
+        ! grep -qF 'ip6t_ins FORWARD -i "\$AWG_IFACE" -d "\$panel_addr" -p tcp --dport "\$panel_port" -j REJECT' "$path"
+        ! grep -qF 'del_ipt FORWARD -i "\$AWG_IFACE" -d "\$panel_addr" -p tcp --dport "\$panel_port" -j REJECT' "$path"
+        ! grep -qF 'del_ip6t FORWARD -i "\$AWG_IFACE" -d "\$panel_addr" -p tcp --dport "\$panel_port" -j REJECT' "$path"
         grep -qF 'ipt_ins FORWARD -i "\$AWG_IFACE" -j ACCEPT' "$path"
         grep -qF 'ip6t_ins FORWARD -i "\$AWG_IFACE" -j ACCEPT' "$path"
     done
 }
 
-@test "panel isolation is installed before broad VPN forwarding accept" {
+@test "broad VPN forwarding remains available without panel-specific rejects" {
     for f in awg_common.sh awg_common_en.sh; do
         local path="$BATS_TEST_DIRNAME/../$f"
         run awk '
-            /block_panel_from_vpn/ && !block { block=NR }
-            /ipt_ins FORWARD -i/ && /-j ACCEPT/ && !accept { accept=NR }
-            END { exit !(block && accept && block < accept) }
+            /panel_addr.*REJECT/ { reject=1 }
+            /ipt_ins FORWARD -i/ && /-j ACCEPT/ { accept=1 }
+            END { exit !(accept && !reject) }
         ' "$path"
         [ "$status" -eq 0 ]
     done
@@ -44,4 +41,13 @@ bats_require_minimum_version 1.5.0
     done
     grep -qF 'ufw route allow in on awg0 out on' "$BATS_TEST_DIRNAME/../install_amneziawg.sh"
     grep -qF 'ufw route allow in on awg0 out on' "$BATS_TEST_DIRNAME/../install_amneziawg_en.sh"
+}
+
+@test "client rendering keeps panel domain out of generated VPN endpoints" {
+    for f in awg_common.sh awg_common_en.sh; do
+        local path="$BATS_TEST_DIRNAME/../$f"
+        grep -qF 'is_panel_domain_endpoint()' "$path"
+        grep -qF 'VPN endpoint cannot use the web panel domain' "$path"
+        grep -qF 'is_panel_domain_endpoint "$endpoint"' "$path"
+    done
 }
