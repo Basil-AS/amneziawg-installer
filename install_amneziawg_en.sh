@@ -685,7 +685,7 @@ configure_ipv6_tunnel() {
     # from a default past install (IPv6 was runtime-disabled), the kernel hides
     # all IPv6 addresses, so detect_native_ipv6 would false-negative and a client
     # would be rendered with an IPv6 Address while the kernel has IPv6 off
-    # (awg-quick restart can fail). weaq P1.
+    # (awg-quick restart can fail).
     if [[ "$ALLOW_IPV6_TUNNEL" -eq 1 ]]; then
         if [[ "$DISABLE_IPV6" -eq 1 ]]; then
             log_warn "--allow-ipv6-tunnel requires host IPv6 forwarding; overriding --disallow-ipv6 (DISABLE_IPV6=0)"
@@ -3103,7 +3103,7 @@ initialize_setup() {
     _cfg_server_name=""
     if [[ "$config_exists" -eq 1 ]]; then _cfg_server_name="${AWG_SERVER_NAME:-AWG Server}"; fi
 
-    # --mobile expands into CLI_PRESET/CLI_PORT before their consumers (g0vd).
+    # --mobile expands into CLI_PRESET/CLI_PORT before their consumers.
     resolve_mobile_flag
 
     # CLI override

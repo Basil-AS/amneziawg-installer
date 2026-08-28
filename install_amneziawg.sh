@@ -675,7 +675,7 @@ configure_ipv6_tunnel() {
     # активно включаю IPv6 в рантайме ДО detection/render: при upgrade с дефолтной
     # прошлой установки (IPv6 был выключен в рантайме) ядро скрывает все IPv6-адреса,
     # поэтому detect_native_ipv6 дал бы false-negative, а клиент отрендерился бы с
-    # IPv6 Address при выключенном в ядре IPv6 (awg-quick restart может упасть). weaq P1.
+    # IPv6 Address при выключенном в ядре IPv6 (awg-quick restart может упасть).
     if [[ "$ALLOW_IPV6_TUNNEL" -eq 1 ]]; then
         if [[ "$DISABLE_IPV6" -eq 1 ]]; then
             log_warn "--allow-ipv6-tunnel requires host IPv6 forwarding; overriding --disallow-ipv6 (DISABLE_IPV6=0)"
@@ -3062,7 +3062,7 @@ initialize_setup() {
     _cfg_server_name=""
     if [[ "$config_exists" -eq 1 ]]; then _cfg_server_name="${AWG_SERVER_NAME:-AWG Server}"; fi
 
-    # --mobile разворачивается в CLI_PRESET/CLI_PORT до их потребителей (g0vd).
+    # --mobile разворачивается в CLI_PRESET/CLI_PORT до их потребителей.
     resolve_mobile_flag
 
     # Переопределение из CLI
