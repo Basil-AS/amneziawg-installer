@@ -141,13 +141,15 @@ The 3.0 features themselves - header encryption, extra padding, timing knobs - a
 | | WireGuard | AmneziaWG 2.0 |
 |---|---|---|
 | **DPI detection** | Fingerprinted by fixed packet sizes and magic bytes | Hard to fingerprint - randomized headers, padding, protocol mimicry |
-| **Blocked in** | China, Russia, Iran, UAE, Turkmenistan | No known blocks (as of April 2026) |
+| **Blocked in** | China, Russia, Iran, UAE, Turkmenistan | Nothing to block by fixed signature - there is none. Address and UDP port blocking remain: another port or `--mobile` can help |
 | **Server setup** | Manual: keys, iptables, sysctl, systemd | One command, 20 min, fully automatic |
 | **Hardening** | DIY: UFW, Fail2Ban, sysctl | Automatic: firewall + brute-force protection + kernel tuning |
 | **Client management** | Edit configs by hand, restart | `add`/`remove`/`list`/`stats` with hot-reload |
 | **Temporary access** | Not built-in | `--expires=7d` with auto-cleanup |
 | **Server requirements** | - | Same - any $3-5/mo VPS, 1 GB RAM |
-| **Speed overhead** | Baseline | Negligible (<2% in typical tests) |
+| **Speed overhead** | Baseline | Kernel module: encryption and obfuscation run in kernel space, no userspace round-trip |
+
+> On speed: on a server with a single shared vCPU the CPU becomes the bottleneck, because encryption and obfuscation run on that same core. Diagnostics: [FAQ in ADVANCED](ADVANCED.en.md#faq-advanced-adv).
 
 > If WireGuard works for you and isn't blocked - keep using it. If it's blocked or throttled - AmneziaWG 2.0 is the drop-in replacement.
 
