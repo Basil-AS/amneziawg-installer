@@ -52,8 +52,10 @@ setup() {
     [ "$status" -eq 0 ]
 }
 
-@test ".4 integration: docs-check still passes 12/12 with ROADMAP included" {
+@test ".4 integration: docs-check still passes 13/13 with ROADMAP included" {
     run bash "$SCRIPT"
     [ "$status" -eq 0 ]
-    [[ "$output" == *"12 passed, 0 failed"* ]]
+    [[ "$output" == *"13 passed, 0 failed"* ]]
+    # Мощность набора проверок сама по себе не доказывает его состав.
+    [[ "$output" == *"lifecycle в матрице сходится с датами"* ]]
 }

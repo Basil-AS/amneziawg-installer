@@ -55,6 +55,10 @@ declare -a RESULTS
 
 _ok()  { echo "PASS: $1"; RESULTS+=("PASS: $1"); PASS=$((PASS+1)); }
 _bad() { echo "FAIL: $1" >&2; RESULTS+=("FAIL: $1"); FAIL=$((FAIL+1)); }
+# Предупреждение НЕ входит в счёт: строку итога "N passed, M failed"
+# проверяют bats-тесты, и третий счётчик их сломает. Сигнал при этом не
+# теряется: он идёт в stderr и в список результатов.
+_warn() { echo "WARN: $1" >&2; RESULTS+=("WARN: $1"); }
 
 # Файлы документации с внутренними якорями. Обнаруживаются динамически: ВСЕ
 # tracked *.md, чтобы новый markdown (например CODE_OF_CONDUCT.md) автоматически
@@ -187,25 +191,276 @@ if [[ "$top_en" != "$script_ver" ]]; then echo "  CHANGELOG.en.md top heading '$
 if [[ "$ver_fail" -eq 0 ]]; then _ok "version triple согласован ($script_ver)"; else _bad "version triple рассинхрон"; fi
 
 # --- 4. Матрица ОС + архитектур: полный набор во всех заявленных местах ---
-# Единый источник ожидаемого набора. Прежняя узкая проверка ловила только
-# "26.04" и пропускала общий drift: при будущем добавлении/удалении одной ОС
-# часть документов осталась бы со старой матрицей при зелёном docs-check.
+# Ожидаемый набор выводится из docs/support-matrix.json. Раньше он стоял здесь
+# литеральным массивом, то есть был ШЕСТОЙ копией матрицы: проверка сравнивала
+# копии друг с другом и потому означала "копии совпадают", а не "написана
+# правда". Ubuntu 25.10 вышла из поддержки 2026-07-01, Debian 12 - 2026-07-11,
+# и ни одна сверка документов между собой этого поймать не могла, потому что
+# факт изменился СНАРУЖИ. Теперь платформы берутся из матрицы, а её собственные
+# lifecycle-значения пересчитываются из дат (проверка 4b ниже).
+#
 # Токены подобраны так, чтобы матчиться во всех форматах (badge, таблица
 # совместимости, install --help, issue dropdown): голые версии Ubuntu +
 # "Debian N" с контекстом семейства.
-EXPECTED_OS=("24.04" "25.10" "26.04" "Debian 12" "Debian 13")
-OS_MATRIX_FILES=(README.md README.en.md install_amneziawg.sh install_amneziawg_en.sh .github/ISSUE_TEMPLATE/bug_report.yml)
-os_fail=0
-for f in "${OS_MATRIX_FILES[@]}"; do
-    [[ -f "$f" ]] || { echo "  нет $f (проверка матрицы ОС)" >&2; os_fail=1; continue; }
-    for os in "${EXPECTED_OS[@]}"; do
-        if ! grep -qF "$os" "$f"; then
-            echo "  $f: нет '$os' в матрице ОС" >&2
-            os_fail=1
-        fi
-    done
+MATRIX_FILE="${AWG_MATRIX_FILE:-docs/support-matrix.json}"
+
+# python выбирается ЗАПУСКОМ, а не наличием в PATH: на Windows `python3` часто
+# оказывается заглушкой Microsoft Store, которая command -v проходит, а код не
+# выполняет.
+PY=""
+for _c in python3 python; do
+    if printf 'print(1)' | "$_c" - >/dev/null 2>&1; then PY="$_c"; break; fi
 done
-if [[ "$os_fail" -eq 0 ]]; then _ok "матрица ОС полна во всех заявленных местах (${EXPECTED_OS[*]})"; else _bad "матрица ОС неполна где-то"; fi
+
+if [[ -z "$PY" ]]; then
+    _bad "не найден рабочий python (нужен для чтения $MATRIX_FILE)"
+elif [[ ! -f "$MATRIX_FILE" ]]; then
+    _bad "нет $MATRIX_FILE - единого источника матрицы ОС"
+else
+    # Вывод захватывается С ПРОВЕРКОЙ СТАТУСА, а не читается через process
+    # substitution: там статусом команды становится статус mapfile, а не Python.
+    # Питон, упавший на середине списка, оставил бы массив непустым, и проверка
+    # прошла бы по урезанному набору, ничего не сказав.
+    EXPECTED_OS=()
+    if ! expected_os_out="$("$PY" - "$MATRIX_FILE" <<'PYEOF'
+import io, json, sys
+
+# На Windows текстовый stdout дописывает к каждой строке возврат каретки, и
+# токен приезжает в bash вместе с ним: grep -qF ищет "24.04CR" и не находит
+# ничего ни в одном файле. В CI на Linux этого нет, поэтому дефект был бы
+# виден только тому, кто гоняет проверку локально.
+sys.stdout.reconfigure(newline='\n')
+
+d = json.load(io.open(sys.argv[1], encoding='utf-8'))
+for p in d['platforms']:
+    # Неизвестное семейство иначе стало бы токеном вида "Debian 41" и молча
+    # проверялось бы как Debian.
+    if p['os'] not in ('ubuntu', 'debian'):
+        sys.exit('неизвестный os %r у платформы %r' % (p['os'], p.get('id')))
+    if not isinstance(p.get('version'), str) or not p['version'].strip():
+        sys.exit('version у %r не непустая строка: %r' % (p.get('id'), p.get('version')))
+    print(p['version'] if p['os'] == 'ubuntu' else 'Debian %s' % p['version'])
+PYEOF
+)"; then
+        _bad "не удалось вывести набор ОС из $MATRIX_FILE (см. ошибку выше)"
+    else
+        # printf без перевода строки, а не here-string: `<<<""` даёт массив
+        # из ОДНОГО пустого элемента, и проверка на пустоту становится
+        # недостижимой, а пустой токен матчится грепом в любом файле.
+        mapfile -t EXPECTED_OS < <(printf '%s' "$expected_os_out")
+    fi
+    if [[ "${#EXPECTED_OS[@]}" -eq 0 ]]; then
+        _bad "из $MATRIX_FILE не прочиталась ни одна платформа"
+    else
+        OS_MATRIX_FILES=(README.md README.en.md install_amneziawg.sh install_amneziawg_en.sh .github/ISSUE_TEMPLATE/bug_report.yml)
+        os_fail=0
+        for f in "${OS_MATRIX_FILES[@]}"; do
+            [[ -f "$f" ]] || { echo "  нет $f (проверка матрицы ОС)" >&2; os_fail=1; continue; }
+            for os in "${EXPECTED_OS[@]}"; do
+                # Пустой токен превратил бы grep -qF в поиск пустой строки,
+                # то есть в совпадение с любым файлом.
+                if [[ -z "$os" ]]; then
+                    echo "  пустой токен ОС из $MATRIX_FILE" >&2
+                    os_fail=1
+                    continue
+                fi
+                if ! grep -qF -- "$os" "$f"; then
+                    echo "  $f: нет '$os' в матрице ОС" >&2
+                    os_fail=1
+                fi
+            done
+        done
+        if [[ "$os_fail" -eq 0 ]]; then _ok "матрица ОС полна во всех заявленных местах (${EXPECTED_OS[*]})"; else _bad "матрица ОС неполна где-то"; fi
+    fi
+
+    # --- 4b. lifecycle в матрице пересчитывается из дат ---
+    # Ловит класс, который сверка документов между собой не ловит В ПРИНЦИПЕ:
+    # внешний факт изменился, а запись осталась прежней. Именно так пропустили
+    # окончание поддержки Debian 12 - аудит смотрел на согласованность
+    # документов, а не на календарь.
+    if lifecycle_out="$("$PY" - "$MATRIX_FILE" <<'PYEOF'
+import datetime, io, json, sys
+
+sys.stdout.reconfigure(newline='\n')  # см. про возврат каретки выше
+
+import re
+
+
+def die_schema(msg):
+    """Ошибка схемы или чтения - это НЕ расхождение с датами. Отдельный код,
+    иначе испорченный файл отчитается как «lifecycle разошёлся», и чинить пойдут
+    не то."""
+    print('матрица не прошла проверку формата: %s' % msg)
+    sys.exit(4)
+
+
+try:
+    d = json.load(io.open(sys.argv[1], encoding='utf-8'))
+    platforms = d['platforms']
+except Exception as exc:
+    die_schema('%s: %s' % (type(exc).__name__, exc))
+
+if not isinstance(platforms, list):
+    die_schema('platforms не список')
+
+today = datetime.date.today()
+DATE_RE = re.compile(r'^\d{4}-\d{2}-\d{2}$')
+
+
+def as_date(value, field, pid):
+    """fromisoformat принимает и компактную форму 20290531, поэтому лексика
+    проверяется отдельно: матрица объявляет именно YYYY-MM-DD."""
+    if value is None:
+        return None
+    if not isinstance(value, str) or not DATE_RE.match(value):
+        die_schema('%s.%s не дата вида YYYY-MM-DD: %r' % (pid, field, value))
+    try:
+        return datetime.date.fromisoformat(value)
+    except ValueError as exc:
+        die_schema('%s.%s: %s' % (pid, field, exc))
+
+
+# Инварианты, объявленные в самой матрице. Раньше не проверялся ни один, а
+# нарушение половины из них прямо меняет то, что мы рекомендуем пользователю.
+ids, pairs_ov, defaults = [], [], {}
+for p in platforms:
+    if not isinstance(p, dict):
+        die_schema('элемент platforms не объект')
+    pid = p.get('id', '<без id>')
+    for req in ('id', 'os', 'version', 'released', 'lifecycle', 'project_policy'):
+        if req not in p:
+            die_schema('%s: нет поля %s' % (pid, req))
+    if p['os'] not in ('ubuntu', 'debian'):
+        die_schema('%s: неизвестный os %r' % (pid, p['os']))
+    if p['project_policy'] not in ('default', 'allowed', 'discouraged'):
+        die_schema('%s: неизвестный project_policy %r' % (pid, p['project_policy']))
+    for f in ('id', 'version'):
+        # Пустая version деградирует токен до пустой строки, а она грепается
+        # в любом файле: проверка полноты матрицы стала бы тавтологией.
+        if not isinstance(p[f], str) or not p[f].strip():
+            die_schema('%s: %s должно быть непустой строкой, а не %r' % (pid, f, p[f]))
+    ids.append(p['id'])
+    pairs_ov.append((p['os'], p['version']))
+    rel = as_date(p['released'], 'released', pid)
+    if rel is None:
+        die_schema('%s: released обязателен' % pid)
+    reg = as_date(p.get('vendor_regular_eol'), 'vendor_regular_eol', pid)
+    lts = as_date(p.get('vendor_lts_eol'), 'vendor_lts_eol', pid)
+    if reg is not None and not rel < reg:
+        die_schema('%s: released не раньше vendor_regular_eol' % pid)
+    if lts is not None and reg is not None and not lts > reg:
+        die_schema('%s: vendor_lts_eol не позже vendor_regular_eol' % pid)
+    if p['project_policy'] == 'default':
+        defaults[p['os']] = defaults.get(p['os'], 0) + 1
+    if p['project_policy'] in ('default', 'allowed') and p['lifecycle'] != 'supported':
+        die_schema('%s: policy %s при lifecycle %s - рекомендуем систему без '
+                   'поддержки вендора' % (pid, p['project_policy'], p['lifecycle']))
+
+if len(ids) != len(set(ids)):
+    die_schema('идентификаторы платформ не уникальны')
+if len(pairs_ov) != len(set(pairs_ov)):
+    die_schema('пара (os, version) не уникальна')
+# Обход по НАЙДЕННЫМ ключам не может обнаружить отсутствующее семейство:
+# если ни одна Ubuntu не помечена default, словарь просто не содержит ключа,
+# и цикл по нему молчит. Идём по известному списку семейств.
+for os_name in ('ubuntu', 'debian'):
+    n = defaults.get(os_name, 0)
+    if n != 1:
+        die_schema('у %s ровно один default быть должен, а их %d' % (os_name, n))
+
+
+def classify(released, regular, lts):
+    """Правило записано в самой матрице, ключ lifecycle.derivation."""
+    if datetime.date.fromisoformat(released) > today:
+        return 'unreleased'
+    if regular and datetime.date.fromisoformat(regular) >= today:
+        return 'supported'
+    if lts and datetime.date.fromisoformat(lts) >= today:
+        return 'extended-support'
+    return 'eol'
+
+
+# Контроль классификатора. По существу этой проверке предстоит срабатывать раз
+# в годы, а проверка, которая никогда не срабатывала, может быть сломана, и об
+# этом никто не узнает. Контроль отличает "проверка отработала и ничего не
+# нашла" от "проверка не выполнилась".
+past = (today - datetime.timedelta(days=400)).isoformat()
+future = (today + datetime.timedelta(days=400)).isoformat()
+today_s = today.isoformat()
+control = [
+    classify('2000-01-01', past, None) == 'eol',
+    classify('2000-01-01', future, None) == 'supported',
+    classify('2000-01-01', past, future) == 'extended-support',
+    classify(future, None, None) == 'unreleased',
+    # Граница, объявленная в самой матрице: дата, равная сегодняшней, всё
+    # ещё считается поддержкой. Без этого случая замена >= на > проходит
+    # контроль, а вердикт врёт ровно в день окончания поддержки - в
+    # единственный день, когда проверка кому-то нужна.
+    classify('2000-01-01', today_s, None) == 'supported',
+    classify('2000-01-01', past, today_s) == 'extended-support',
+    # Обычной поддержки нет вовсе, но продлённая жива.
+    classify('2000-01-01', None, future) == 'extended-support',
+    # Выпущено сегодня - уже выпущено.
+    classify(today_s, future, None) == 'supported',
+    # Действуют ОБЕ даты: обычная поддержка должна побеждать продлённую. Без
+    # этого случая перестановка двух веток проходит контроль целиком и при
+    # этом объявляет три живые платформы продлённой поддержкой.
+    classify('2000-01-01', future, future) == 'supported',
+]
+if not all(control):
+    print('контроль классификатора ПРОВАЛЕН: %r' % control)
+    sys.exit(2)
+
+bad = 0
+checked = 0
+for p in platforms:
+    want = classify(p['released'], p.get('vendor_regular_eol'), p.get('vendor_lts_eol'))
+    checked += 1
+    if want != p['lifecycle']:
+        print('  %s: записано "%s", по датам "%s"' % (p['id'], p['lifecycle'], want))
+        bad += 1
+if bad:
+    sys.exit(1)
+
+# Сверено ноль платформ - это не успех, а невыполненная проверка. Раньше
+# печаталось len(platforms), поэтому пустой список давал бодрое
+# 'сходятся с датами' при нулевой работе.
+if checked == 0:
+    print('ни одна платформа не сверена: список platforms пуст')
+    sys.exit(3)
+
+print('контроль %d/%d, сверено платформ: %d' % (len(control), len(control), checked))
+
+# Возраст снимка внешних фактов - предупреждение, не отказ: краснеть просто от
+# течения времени значит приучить к красному.
+ver = d.get('verification')
+if not isinstance(ver, dict):
+    die_schema('verification не объект')
+lv = as_date(ver.get('last_verified'), 'last_verified', 'verification')
+if lv:
+    age = (today - lv).days
+    if age > 180:
+        print('STALE %d' % age)
+PYEOF
+)"; then
+        _ok "lifecycle в матрице сходится с датами ($(printf '%s' "$lifecycle_out" | head -n1))"
+        stale="$(printf '%s' "$lifecycle_out" | grep -oP '^STALE \K[0-9]+' || true)"
+        [[ -n "$stale" ]] && _warn "внешние факты в $MATRIX_FILE сверялись $stale дней назад (verification.last_verified)"
+    else
+        rc=$?
+        printf '%s\n' "$lifecycle_out" >&2
+        case "$rc" in
+            1) _bad "lifecycle в $MATRIX_FILE разошёлся с датами (пересчитать и обновить)" ;;
+            2) _bad "проверка lifecycle НЕ ВЫПОЛНИЛАСЬ: контроль классификатора провален" ;;
+            3) _bad "проверка lifecycle НЕ ВЫПОЛНИЛАСЬ: сверять было нечего" ;;
+            4) _bad "проверка lifecycle НЕ ВЫПОЛНИЛАСЬ: матрица не прошла формат" ;;
+            # Любой другой код - это упавший python, а не вердикт о датах.
+            # Раньше он приходил под тем же кодом 1 и отчитывался как
+            # расхождение, то есть называл неверную причину.
+            *) _bad "проверка lifecycle НЕ ВЫПОЛНИЛАСЬ: неожиданный код $rc" ;;
+        esac
+    fi
+fi
 
 # Архитектуры: x86_64 / ARM64 / ARMv7 согласованы между README RU/EN и issue-шаблоном.
 EXPECTED_ARCH=("x86_64" "ARM64" "ARMv7")
@@ -328,7 +583,11 @@ if [[ "$tmpl_fail" -eq 0 ]]; then _ok "issue-template: placeholder версии 
 # arm-build.yml, поэтому проверка не протухнет при добавлении/удалении таргета.
 arm_yml=".github/workflows/arm-build.yml"
 arm_matrix_fail=0
-if [[ -f "$arm_yml" ]]; then
+if [[ "${#EXPECTED_OS[@]}" -eq 0 ]]; then
+    # Пустой набор дал бы ноль итераций и бодрый PASS о работе, которой не
+    # было. Проверка зависит от секции 4 и обязана падать вместе с ней.
+    _bad "ARM prebuilt-покрытие НЕ ПРОВЕРЕНО: набор ОС пуст"
+elif [[ -f "$arm_yml" ]]; then
     mapfile -t arm_ubuntu < <(grep -oP 'image:[[:space:]]*ubuntu:\K[0-9]+\.[0-9]+' "$arm_yml" | sort -u)
     for os in "${EXPECTED_OS[@]}"; do
         [[ "$os" =~ ^[0-9]+\.[0-9]+$ ]] || continue   # только Ubuntu version-токены
@@ -344,7 +603,9 @@ if [[ -f "$arm_yml" ]]; then
 else
     echo "  нет $arm_yml (проверка ARM prebuilt-матрицы)" >&2; arm_matrix_fail=1
 fi
-if [[ "$arm_matrix_fail" -eq 0 ]]; then _ok "ARM prebuilt-покрытие согласовано (OS×arch×target)"; else _bad "ARM prebuilt-покрытие рассинхронизировано"; fi
+if [[ "${#EXPECTED_OS[@]}" -eq 0 ]]; then
+    :   # уже сообщено выше
+elif [[ "$arm_matrix_fail" -eq 0 ]]; then _ok "ARM prebuilt-покрытие согласовано (OS×arch×target)"; else _bad "ARM prebuilt-покрытие рассинхронизировано"; fi
 
 # --- 10. Установочные wget-сниппеты используют -O (re-run .1-ловушка) ---
 # Голый `wget <url>/install_amneziawg*.sh` без -O при повторном запуске пишет
