@@ -17,18 +17,40 @@ already what a GitHub Release proves. A signature produced offline proves that
 the holder of a key that has never touched the network approved these exact
 bytes.
 
-## Producing them
+## Producing them for a release
+
+The next prepared release is `v5.28.1-bas.11`. Run these commands from the
+release commit, using the existing private key that matches the public key in
+`KEYS.txt`. Never copy the private key into the repository, a GitHub secret, or
+this chat.
 
 ```bash
-TAG=v5.29.0                                   # the tag about to be pushed
+TAG=v5.28.1-bas.11                             # the tag about to be pushed
 KEY=~/.minisign/amneziawg-installer.key
 mkdir -p signing
-for f in $(bash scripts/signed-file-list.sh); do
+while IFS= read -r f; do
   minisign -Sm "$f" -s "$KEY" -x "signing/$f.minisig" \
            -t "amneziawg-installer $TAG $f"
-done
+done < <(bash scripts/signed-file-list.sh)
 bash scripts/verify-signatures.sh "$TAG"      # confirm before committing
 ```
+
+If the key is stored elsewhere, set `KEY` to that local path. If minisign
+reports a public-key mismatch, stop: do not replace `KEYS.txt` and do not
+generate a new key as a workaround. Ask the maintainer to confirm the trust
+root first.
+
+After verification, commit the six files under `signing/` in a PR, let CI
+finish, merge the PR, and only then create and push the matching tag:
+
+```bash
+git tag -a v5.28.1-bas.11 -m "AmneziaWG installer v5.28.1-bas.11"
+git push origin v5.28.1-bas.11
+```
+
+The tag starts the release workflow. It verifies the signatures before the
+GitHub Release is created and uploads the signed safe-update bundle only after
+the preflight checks pass.
 
 The `-t` trusted comment is not decoration. A signature proves that some bytes
 were signed, not that they were signed *for this release*: an old file with its
