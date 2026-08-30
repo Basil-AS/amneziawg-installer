@@ -67,9 +67,19 @@ IPv6 offers `auto` | Auto-select, a separate routed IPv6 prefix, NDP proxy, NAT6
 
 Use `--psk` for an additional PresharedKey; compatibility with clients such as Shadowrocket is documented in [ADVANCED.en.md#manage-cli-adv](ADVANCED.en.md#manage-cli-adv).
 
+<details>
+<summary>Example: my_iphone with PresharedKey</summary>
+
+```bash
+sudo /root/awg/manage_amneziawg_en.sh add my_iphone --psk
+```
+</details>
+
 Pressing Enter at the Web Panel access step keeps the safe VPN-only URL on the selected subnet gateway. The final URL for port `443` is shown without `:443`; your own domain + Let’s Encrypt is best-effort because they share Let’s Encrypt rate limits, and TCP/80 must be open in the provider firewall/security group.
 
 When no domain is configured, the panel uses a self-signed certificate and safe VPN-only access.
+
+When using a reverse proxy, set `client_header_timeout` and `client_body_timeout` with enough margin for slow mobile clients. To explicitly allow the PPA fallback, use `AWG_ALLOW_PPA_CODENAME_FALLBACK=1` or `--allow-ppa-codename-fallback`.
 
 Manage an installation with:
 

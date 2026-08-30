@@ -38,20 +38,46 @@ ROOT="$BATS_TEST_DIRNAME/.."
 
 # ---------- D4: full OS + arch matrix in docs-check ----------
 
-@test "D4: check-docs defines EXPECTED_OS and EXPECTED_ARCH sets" {
-    run grep -E '^EXPECTED_OS=\(' "$ROOT/scripts/check-docs-consistency.sh"
+@test "D4: check-docs takes the OS set from the support matrix, not from a copy" {
+    # Раньше здесь проверялось наличие литерального EXPECTED_OS=(...) в самом
+    # скрипте. Это была шестая копия матрицы, и тест закреплял её существование.
+    # Путь переопределяем через AWG_MATRIX_FILE, чтобы проверку 4b можно было
+    # прогнать на испорченной копии; значение по умолчанию то же самое.
+    run grep -F 'AWG_MATRIX_FILE:-docs/support-matrix.json' "$ROOT/scripts/check-docs-consistency.sh"
     [ "$status" -eq 0 ]
+    run grep -E 'mapfile -t EXPECTED_OS' "$ROOT/scripts/check-docs-consistency.sh"
+    [ "$status" -eq 0 ]
+    # Литерального массива остаться не должно: иначе снова две правды.
+    # Ловим литерал С СОДЕРЖИМЫМ, а не пустое объявление EXPECTED_OS=(),
+    # которое нужно, чтобы зависящая проверка ARM не итерировала по
+    # неустановленному массиву и не печатала незаработанный PASS.
+    run grep -E '^[[:space:]]*EXPECTED_OS=\([^)]' "$ROOT/scripts/check-docs-consistency.sh"
+    [ "$status" -ne 0 ]
+    # Архитектуры в матрицу не переезжали, их литерал на месте.
     run grep -E '^EXPECTED_ARCH=\(' "$ROOT/scripts/check-docs-consistency.sh"
     [ "$status" -eq 0 ]
 }
 
-@test "D4: EXPECTED_OS lists all five supported releases" {
-    line=$(grep -E '^EXPECTED_OS=\(' "$ROOT/scripts/check-docs-consistency.sh")
-    [[ "$line" == *"24.04"* ]]
-    [[ "$line" == *"25.10"* ]]
-    [[ "$line" == *"26.04"* ]]
-    [[ "$line" == *"Debian 12"* ]]
-    [[ "$line" == *"Debian 13"* ]]
+@test "D4: the tokens derived from the matrix are the five expected ones" {
+    # Проверяем не id, а ТОКЕНЫ, которые чекер потом ищет в документах.
+    # По id тест был слабее: подмена поля os у debian-12 на ubuntu
+    # деградирует токен до голого "12", который грепается где угодно, а id
+    # остаётся прежним и тест этого не видит.
+    local m="$ROOT/docs/support-matrix.json"
+    [ -f "$m" ]
+    run python3 -c "
+import io, json, sys
+d = json.load(io.open(sys.argv[1], encoding='utf-8'))
+print(';'.join(p['version'] if p['os'] == 'ubuntu' else 'Debian ' + p['version']
+                for p in d['platforms']))
+" "$m"
+    [ "$status" -eq 0 ]
+    for tok in "24.04" "25.10" "26.04" "Debian 12" "Debian 13"; do
+        [[ "$output" == *"$tok"* ]]
+    done
+    # Ровно пять, ни больше ни меньше: выпавшая платформа гасит заодно и
+    # проверку ARM-таргетов, которая ходит по тому же набору.
+    [ "$(printf '%s' "$output" | tr -cd ';' | wc -c)" -eq 4 ]
 }
 
 @test "D4 functional: every OS-matrix doc carries the whole release set" {
