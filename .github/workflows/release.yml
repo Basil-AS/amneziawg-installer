@@ -116,7 +116,7 @@ jobs:
           cat /tmp/release-notes.md
 
       - name: Build deterministic safe-update bundle
-        if: steps.check.outputs.exists != 'true'
+        if: steps.check.outputs.state != 'published'
         run: |
           VERSION="$(tr -d '\r\n' < VERSION)"
           ASSET="/tmp/amneziawg-update-${VERSION}.tar.gz"
@@ -127,6 +127,7 @@ jobs:
             awg_common.sh awg_common_en.sh \
             manage_amneziawg.sh manage_amneziawg_en.sh \
             scripts/update-installed.sh scripts/migrate-tunnel-subnet.sh scripts/update_geoip_dbs.py \
+            scripts/awg_profile.py scripts/probe-awg31.sh \
             web/server.py web/index.html web/style.css web/app.js web/awg_i1.js web/favicon.svg \
             web/vendor/tailwindcss.js web/vendor/apexcharts.min.js
           cd /tmp
@@ -135,7 +136,7 @@ jobs:
           sha256sum update-installed.sh > update-installed.sh.sha256
 
       - name: Create Release
-        if: steps.check.outputs.exists != 'true'
+        if: steps.check.outputs.state != 'published'
         uses: softprops/action-gh-release@718ea10b132b3b2eba29c1007bb80653f286566b # v3.0.1
         with:
           name: ${{ steps.changelog.outputs.title }}

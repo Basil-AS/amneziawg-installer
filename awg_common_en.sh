@@ -4,7 +4,7 @@
 # ==============================================================================
 # Common function library for AmneziaWG 2.0
 # Author: @bivlked
-# Version: 5.28.1-bas.10
+# Version: 5.28.1-bas.11
 # Date: 2026-05-13
 # Repository: https://github.com/bivlked/amneziawg-installer
 # ==============================================================================

@@ -45,7 +45,7 @@ setup() {
 # and returns non-zero, because "could not check" must never read as "passed".
 _expected_sha() {
     local installer="$1" helper="$2" ver tag
-    ver=$(grep -oP 'SCRIPT_VERSION="\K[0-9.]+' "$ROOT/$installer" | head -1)
+    ver=$(grep -oP 'SCRIPT_VERSION="\K[0-9][0-9A-Za-z.-]*' "$ROOT/$installer" | head -1)
     if [ -z "$ver" ]; then
         echo "cannot read SCRIPT_VERSION from $installer" >&2
         return 1

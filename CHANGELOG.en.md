@@ -12,6 +12,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [5.28.1-bas.11] - 2026-08-30
+
+### Added
+
+- Synced with upstream `bivlked/amneziawg-installer:main`, including the current OS matrix and SHA pin verification against the actual download source.
+- Added the AWG 3.1 capability probe, canonical profile validator, 1.5/2.0/3.0/3.1 selection and a fully rewritten project README.
+
+### Fixed
+
+- The installer now downloads helper files from an immutable release tag by default instead of the moving `main` branch.
+- Preserved web-panel CI, JavaScript, manifest and full Bats coverage after the upstream merge.
+
 ## [5.28.1-bas.10] - 2026-08-30
 
 ### Added
@@ -1666,7 +1678,8 @@ Major security and reliability update after several consecutive code audits. The
 - Diagnostic report (`--diagnostic`).
 - Full uninstall (`--uninstall`).
 
-[Unreleased]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.28.1-bas.10...HEAD
+[Unreleased]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.28.1-bas.11...HEAD
+[5.28.1-bas.11]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.28.1-bas.10...v5.28.1-bas.11
 [5.28.1-bas.10]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.19.2-bas.9...v5.28.1-bas.10
 [5.19.2-bas.3]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.19.2-bas.2...v5.19.2-bas.3
 [5.19.2-bas.2]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.19.2-bas.1...v5.19.2-bas.2

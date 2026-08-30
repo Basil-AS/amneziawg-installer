@@ -12,6 +12,18 @@
 
 ## [Unreleased]
 
+## [5.28.1-bas.11] - 2026-08-30
+
+### Добавлено
+
+- Синхронизация с upstream `bivlked/amneziawg-installer:main`, включая актуальную матрицу ОС и проверку SHA-пинов по фактическому источнику загрузки.
+- Включены AWG 3.1 capability probe, канонический валидатор профиля, выбор версий 1.5/2.0/3.0/3.1 и полностью обновлённая документация проекта.
+
+### Исправлено
+
+- Установщик по умолчанию загружает helper-файлы из immutable release tag, а не из подвижной ветки `main`.
+- Сохранены CI-проверки веб-панели, JavaScript, manifest и полное покрытие Bats после upstream merge.
+
 ## [5.28.1-bas.10] - 2026-08-30
 
 ### Добавлено
@@ -1673,7 +1685,8 @@ Hardening-фиксы надёжности и безопасности по ре�
 - Диагностический отчет (`--diagnostic`).
 - Полная деинсталляция (`--uninstall`).
 
-[Unreleased]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.28.1-bas.10...HEAD
+[Unreleased]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.28.1-bas.11...HEAD
+[5.28.1-bas.11]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.28.1-bas.10...v5.28.1-bas.11
 [5.28.1-bas.10]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.19.2-bas.9...v5.28.1-bas.10
 [5.19.2-bas.3]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.19.2-bas.2...v5.19.2-bas.3
 [5.19.2-bas.2]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.19.2-bas.1...v5.19.2-bas.2
