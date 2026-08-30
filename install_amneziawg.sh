@@ -36,7 +36,7 @@ AWG_PROFILE_SCRIPT_PATH="$AWG_DIR/scripts/awg_profile.py"
 # используются первыми; remote download разрешён только с pinned SHA256 либо
 # при явном AWG_ALLOW_UNVERIFIED_DOWNLOAD=1 для разработки.
 declare -A AWG_ASSET_SHA256=(
-    ["awg_common.sh"]="8056806edffd28c6ceabf96e960a78ca4d573fbdce90b5e6664e9a58ef934898"
+    ["awg_common.sh"]="8a6d639a66809665aff54678a8ae8dc801447dc26f15d2fe64200768659fe698"
     ["manage_amneziawg.sh"]="6f32c7912d4120457908e420f1779ffea7913053ccda5403391d3bd5f5732d08"
     ["web/server.py"]="2415b0abe9b3ca34717139bb5c3d9315e03cb27b55e3afd31475726ea129756d"
     ["web/index.html"]="7c07ed1d1991e08c0f9fc31e86ed8eb2bba5fa96387088f1f18918396cf7e662"
@@ -50,7 +50,7 @@ declare -A AWG_ASSET_SHA256=(
     ["scripts/gen_vpn_uri.py"]="4aa47bc3843c8d0b5aafa67735531bf9f7c7164849e57a7afa214bdc3974b3cd"
     ["scripts/update-installed.sh"]="de611d33ccbeaafd79eb2ef59eab1c7827f54f1ee943159f5f5d14b9ecf3e481"
     ["scripts/migrate-tunnel-subnet.sh"]="a8b40101e8f02627c10d2bb769802bf860fdf41dd2bc8ac38a180e953329c3bb"
-    ["scripts/awg_profile.py"]="4c437b08cebbcbf60a9b79c4c8519731762403954b070f92b58b8597a61f19d9"
+    ["scripts/awg_profile.py"]="5364ca9fcedeb20b3b49082e76bbe2a25d0a4da5467d64b8f3eea9ee88791495"
     ["scripts/probe-awg31.sh"]="67867c7acfd2569b31a7266feac942d0f16b6f580f61e4f377be70cfed9036bf"
 )
 
@@ -2350,7 +2350,13 @@ generate_awg_params() {
     # ПРИ ВКЛЮЧЕНИИ header protection поднять обе нижние границы до 12, иначе
     # часть установок просто не поднимет интерфейс. Держать в паре с гейтом
     # _kernel_supports_awg3.
-    AWG_S3=$(rand_range 8 55)
+    if [[ "${AWG_PROTOCOL_VERSION:-3.1}" == "3.0" || "${AWG_PROTOCOL_VERSION:-3.1}" == "3.1" ]]; then
+        AWG_S3=$(rand_range 12 55)
+    elif [[ "${AWG_PROTOCOL_VERSION:-3.1}" == "1.5" ]]; then
+        unset AWG_S3
+    else
+        AWG_S3=$(rand_range 8 55)
+    fi
 
     # Вторая коллизия размеров: response+S2 != cookie+S3, то есть S3 != S2+28.
     # Размеры сообщений (src/messages.h модуля ядра): init 148, response 92,
@@ -2367,7 +2373,13 @@ generate_awg_params() {
         [[ $((AWG_S2 + 28)) -eq $AWG_S3 ]] && AWG_S3=9
     fi
 
-    AWG_S4=$(rand_range 4 27)
+    if [[ "${AWG_PROTOCOL_VERSION:-3.1}" == "3.0" || "${AWG_PROTOCOL_VERSION:-3.1}" == "3.1" ]]; then
+        AWG_S4=$(rand_range 12 27)
+    elif [[ "${AWG_PROTOCOL_VERSION:-3.1}" == "1.5" ]]; then
+        unset AWG_S4
+    else
+        AWG_S4=$(rand_range 4 27)
+    fi
 
     # H1-H4: 4 случайных непересекающихся uint32 диапазона.
     # Рандомизация на каждую установку защищает от ТСПУ-фингерпринта
@@ -2383,8 +2395,17 @@ generate_awg_params() {
     AWG_H3="${_h_lines[2]}"
     AWG_H4="${_h_lines[3]}"
 
+    if [[ "${AWG_PROTOCOL_VERSION:-3.1}" == "1.5" ]]; then
+        AWG_H1="${AWG_H1%%-*}"; AWG_H2="${AWG_H2%%-*}"
+        AWG_H3="${AWG_H3%%-*}"; AWG_H4="${AWG_H4%%-*}"
+    fi
+
     # I1: CPS concealment
-    AWG_I1=$(generate_cps_i1)
+    if [[ "${AWG_PROTOCOL_VERSION:-3.1}" == "1.5" ]]; then
+        unset AWG_I1
+    else
+        AWG_I1=$(generate_cps_i1)
+    fi
 
     # I2-I5 are administrator-supplied; a new profile must not inherit stale values.
     unset AWG_I2 AWG_I3 AWG_I4 AWG_I5
@@ -6703,20 +6724,20 @@ step6_generate_configs() {
     # Создаём директорию для ключей
     mkdir -p "$KEYS_DIR" || die "Ошибка создания $KEYS_DIR"
 
-    if [[ "${AWG_PROTOCOL_VERSION:-3.1}" == "3.1" ]]; then
+    if [[ "${AWG_PROTOCOL_VERSION:-3.1}" == "3.0" || "${AWG_PROTOCOL_VERSION:-3.1}" == "3.1" ]]; then
         [[ -x "$AWG_DIR/scripts/probe-awg31.sh" ]] || die "AWG 3.1 capability probe не найден."
-        "$AWG_DIR/scripts/probe-awg31.sh" || die "Установленный awg не подтвердил AWG 3.1 через setconf + read-back. Конфиги не изменены."
+        "$AWG_DIR/scripts/probe-awg31.sh" || die "Установленный awg не подтвердил AWG 3.x через setconf + read-back. Конфиги не изменены."
         if [[ ! -f "$AWG_DIR/awg31-profile.json" ]]; then
             local profile_tmp
             profile_tmp=$(mktemp "$AWG_DIR/awg31-profile.json.XXXXXX") || die "Не удалось создать AWG 3.1 profile."
-            if ! python3 "$AWG_PROFILE_SCRIPT_PATH" generate --version 3.1 > "$profile_tmp"; then
-                rm -f "$profile_tmp"; die "Не удалось сгенерировать AWG 3.1 profile."
+            if ! python3 "$AWG_PROFILE_SCRIPT_PATH" generate --version "${AWG_PROTOCOL_VERSION}" > "$profile_tmp"; then
+                rm -f "$profile_tmp"; die "Не удалось сгенерировать AWG 3.x profile."
             fi
             chmod 600 "$profile_tmp" && mv -f "$profile_tmp" "$AWG_DIR/awg31-profile.json" \
                 || { rm -f "$profile_tmp"; die "Не удалось сохранить AWG 3.1 profile."; }
         else
-            python3 "$AWG_PROFILE_SCRIPT_PATH" validate --version 3.1 --input "$AWG_DIR/awg31-profile.json" >/dev/null \
-                || die "Существующий AWG 3.1 profile не прошёл валидацию."
+            python3 "$AWG_PROFILE_SCRIPT_PATH" validate --version "${AWG_PROTOCOL_VERSION}" --input "$AWG_DIR/awg31-profile.json" >/dev/null \
+                || die "Существующий AWG 3.x profile не прошёл валидацию."
         fi
         chmod 600 "$AWG_DIR/awg31-profile.json"
         sync_awg31_profile_from_env || die "AWG 3.1 profile не удалось синхронизировать с параметрами конфигурации."

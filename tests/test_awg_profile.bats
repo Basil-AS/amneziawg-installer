@@ -21,6 +21,23 @@ setup() {
     done
 }
 
+@test "protocol generation emits only fields supported by the selected version" {
+    run "$PYTHON_BIN" "$SCRIPT" generate --version 1.5 --seed 7
+    [ "$status" -eq 0 ]
+    run "$PYTHON_BIN" -c 'import json,sys; p=json.loads(sys.argv[1]); assert "s3" not in p and "s4" not in p and "headerProtectionKey" not in p; assert all("-" not in p[k] for k in ("h1","h2","h3","h4"))' "$output"
+    [ "$status" -eq 0 ]
+
+    run "$PYTHON_BIN" "$SCRIPT" generate --version 2.0 --seed 7
+    [ "$status" -eq 0 ]
+    run "$PYTHON_BIN" -c 'import json,sys; p=json.loads(sys.argv[1]); assert all(k in p for k in ("s3","s4")); assert "headerProtectionKey" not in p' "$output"
+    [ "$status" -eq 0 ]
+
+    run "$PYTHON_BIN" "$SCRIPT" generate --version 3.0 --seed 7
+    [ "$status" -eq 0 ]
+    run "$PYTHON_BIN" -c 'import json,sys; p=json.loads(sys.argv[1]); assert all(k in p for k in ("s3","s4","headerProtectionKey","contentPaddingAddition","keepaliveTimeout")); assert "randomTrailers" not in p and "disableCookies" not in p' "$output"
+    [ "$status" -eq 0 ]
+}
+
 @test "overlapping H ranges are rejected" {
     run "$PYTHON_BIN" "$SCRIPT" generate --seed 1
     [ "$status" -eq 0 ]

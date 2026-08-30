@@ -22,17 +22,32 @@ KEYS_DIR="${KEYS_DIR:-$AWG_DIR/keys}"
 AWG_HOSTS_FILE="${AWG_HOSTS_FILE:-/etc/hosts}"
 AWG_PROFILE_SCRIPT_PATH="${AWG_PROFILE_SCRIPT_PATH:-$AWG_DIR/scripts/awg_profile.py}"
 
+_awg_protocol_version() {
+    case "${AWG_PROTOCOL_VERSION:-2.0}" in
+        1.5|2.0|3.0|3.1) printf '%s' "${AWG_PROTOCOL_VERSION:-2.0}" ;;
+        *) log_error "Unsupported AWG protocol version: ${AWG_PROTOCOL_VERSION:-}"; return 1 ;;
+    esac
+}
+
+_awg_protocol_has_s34() {
+    [[ "$(_awg_protocol_version)" != "1.5" ]]
+}
+
+_awg_protocol_has_cps() {
+    [[ "$(_awg_protocol_version)" != "1.5" ]]
+}
+
 _awg31_render_extra_fields() {
-    [[ "${AWG_PROTOCOL_VERSION:-2.0}" == "3.1" ]] || return 0
-    [[ -x "$AWG_PROFILE_SCRIPT_PATH" ]] || { log_error "AWG 3.1 profile renderer is missing."; return 1; }
-    [[ -f "$AWG_DIR/awg31-profile.json" ]] || { log_error "AWG 3.1 profile is missing."; return 1; }
+    case "${AWG_PROTOCOL_VERSION:-2.0}" in 3.0|3.1) ;; *) return 0 ;; esac
+    [[ -x "$AWG_PROFILE_SCRIPT_PATH" ]] || { log_error "AWG 3.x profile renderer is missing."; return 1; }
+    [[ -f "$AWG_DIR/awg31-profile.json" ]] || { log_error "AWG 3.x profile is missing."; return 1; }
     python3 "$AWG_PROFILE_SCRIPT_PATH" render --input "$AWG_DIR/awg31-profile.json" \
         | grep -E '^(ContentPaddingAddition|HeaderProtectionKey|MaxHandshakeAttempts|KeepaliveTimeout|RejectAfterTime|RekeyAfterTime|RekeyTimeout|RandomTrailers|DisableCookies) = '
 }
 
 # Keep the validated JSON profile and legacy AWG_* settings in lockstep.
 sync_awg31_profile_from_env() {
-    [[ "${AWG_PROTOCOL_VERSION:-2.0}" == "3.1" ]] || return 0
+    case "${AWG_PROTOCOL_VERSION:-2.0}" in 3.0|3.1) ;; *) return 0 ;; esac
     [[ -f "$AWG_DIR/awg31-profile.json" ]] || return 1
     python3 - "$AWG_DIR/awg31-profile.json" <<'PY'
 import json, os, sys
@@ -46,11 +61,25 @@ mapping = {
     "h1": "AWG_H1", "h2": "AWG_H2", "h3": "AWG_H3", "h4": "AWG_H4",
 }
 
+for field, env_name in mapping.items():
+    value = os.environ.get(env_name)
+    if value is not None and value != "":
+        data[field] = int(value) if value.isdigit() else value
+data["protocolVersion"] = os.environ.get("AWG_PROTOCOL_VERSION", "3.1")
+tmp = path.with_name(path.name + f".tmp.{os.getpid()}")
+tmp.write_text(json.dumps(data, ensure_ascii=True, sort_keys=True) + "\n", encoding="utf-8")
+tmp.chmod(0o600)
+tmp.replace(path)
+path.chmod(0o600)
+PY
+    python3 "$AWG_PROFILE_SCRIPT_PATH" validate --version "${AWG_PROTOCOL_VERSION}" --input "$AWG_DIR/awg31-profile.json" >/dev/null
+}
+
 awg_profile_status() {
     local version="${AWG_PROTOCOL_VERSION:-2.0}" profile="missing" capability="not_required"
-    if [[ "$version" == "3.1" ]]; then
+    if [[ "$version" == "3.0" || "$version" == "3.1" ]]; then
         if [[ -f "$AWG_DIR/awg31-profile.json" ]] &&
-           python3 "$AWG_PROFILE_SCRIPT_PATH" validate --version 3.1 --input "$AWG_DIR/awg31-profile.json" >/dev/null 2>&1; then
+           python3 "$AWG_PROFILE_SCRIPT_PATH" validate --version "$version" --input "$AWG_DIR/awg31-profile.json" >/dev/null 2>&1; then
             profile="valid"
         else
             profile="invalid_or_missing"
@@ -62,19 +91,6 @@ awg_profile_status() {
         fi
     fi
     printf 'protocol_version=%s\nprofile=%s\ncapability=%s\n' "$version" "$profile" "$capability"
-}
-for field, env_name in mapping.items():
-    value = os.environ.get(env_name)
-    if value is not None and value != "":
-        data[field] = int(value) if value.isdigit() else value
-data["protocolVersion"] = "3.1"
-tmp = path.with_name(path.name + f".tmp.{os.getpid()}")
-tmp.write_text(json.dumps(data, ensure_ascii=True, sort_keys=True) + "\n", encoding="utf-8")
-tmp.chmod(0o600)
-tmp.replace(path)
-path.chmod(0o600)
-PY
-    python3 "$AWG_PROFILE_SCRIPT_PATH" validate --version 3.1 --input "$AWG_DIR/awg31-profile.json" >/dev/null
 }
 
 # Library version. The manage script verifies it after sourcing this file so a
@@ -2606,6 +2622,12 @@ render_server_config() {
         postdown="iptables -D FORWARD -i %i -o %i -j DROP 2>/dev/null || true; ip6tables -D FORWARD -i %i -o %i -j DROP 2>/dev/null || true; ${postdown}"
     fi
 
+    local protocol_version="${AWG_PROTOCOL_VERSION:-2.0}"
+    local h1="${AWG_H1}" h2="${AWG_H2}" h3="${AWG_H3}" h4="${AWG_H4}"
+    if [[ "$protocol_version" == "1.5" ]]; then
+        h1="${h1%%-*}"; h2="${h2%%-*}"; h3="${h3%%-*}"; h4="${h4%%-*}"
+    fi
+
     # Формируем конфиг через временный файл (атомарная запись)
     local tmpfile
     tmpfile=$(awg_mktemp) || { log_error "Ошибка mktemp"; return 1; }
@@ -2623,24 +2645,32 @@ Jmin = ${AWG_Jmin}
 Jmax = ${AWG_Jmax}
 S1 = ${AWG_S1}
 S2 = ${AWG_S2}
+EOF
+    if _awg_protocol_has_s34; then
+        cat >> "$tmpfile" << EOF
 S3 = ${AWG_S3}
 S4 = ${AWG_S4}
-H1 = ${AWG_H1}
-H2 = ${AWG_H2}
-H3 = ${AWG_H3}
-H4 = ${AWG_H4}
+EOF
+    fi
+    cat >> "$tmpfile" << EOF
+H1 = ${h1}
+H2 = ${h2}
+H3 = ${h3}
+H4 = ${h4}
 EOF
 
-    if [[ "${AWG_PROTOCOL_VERSION:-2.0}" == "3.1" ]]; then
+    if [[ "$protocol_version" == "3.0" || "$protocol_version" == "3.1" ]]; then
         _awg31_render_extra_fields >> "$tmpfile" || { rm -f "$tmpfile"; return 1; }
     fi
 
     # I1-I5 are optional; I2-I5 may be supplied manually by the administrator.
+    if _awg_protocol_has_cps; then
     [[ -n "${AWG_I1:-}" ]] && echo "I1 = ${AWG_I1}" >> "$tmpfile"
     [[ -n "${AWG_I2:-}" ]] && echo "I2 = ${AWG_I2}" >> "$tmpfile"
     [[ -n "${AWG_I3:-}" ]] && echo "I3 = ${AWG_I3}" >> "$tmpfile"
     [[ -n "${AWG_I4:-}" ]] && echo "I4 = ${AWG_I4}" >> "$tmpfile"
     [[ -n "${AWG_I5:-}" ]] && echo "I5 = ${AWG_I5}" >> "$tmpfile"
+    fi
 
     if ! mv "$tmpfile" "$SERVER_CONF_FILE"; then
         rm -f "$tmpfile"
@@ -2759,6 +2789,12 @@ render_client_config() {
     local tmpfile
     tmpfile=$(awg_mktemp) || { log_error "Ошибка mktemp"; return 1; }
 
+    local protocol_version="${AWG_PROTOCOL_VERSION:-2.0}"
+    local h1="${AWG_H1}" h2="${AWG_H2}" h3="${AWG_H3}" h4="${AWG_H4}"
+    if [[ "$protocol_version" == "1.5" ]]; then
+        h1="${h1%%-*}"; h2="${h2%%-*}"; h3="${h3%%-*}"; h4="${h4%%-*}"
+    fi
+
     cat > "$tmpfile" << EOF
 [Interface]
 # IPv6 leak protection: $(if awg_ipv6_enabled; then echo "IPv6 is routed through VPN (${AWG_IPV6_MODE:-legacy})."; elif awg_ipv6_leak_block_enabled; then echo "block mode enabled; ::/0 is routed into the tunnel without assigning a VPN IPv6 address."; else echo "IPv4-only; native client IPv6 can leak unless the client blocks IPv6 outside VPN."; fi)
@@ -2771,23 +2807,31 @@ Jmin = ${AWG_Jmin}
 Jmax = ${AWG_Jmax}
 S1 = ${AWG_S1}
 S2 = ${AWG_S2}
+EOF
+    if _awg_protocol_has_s34; then
+        cat >> "$tmpfile" << EOF
 S3 = ${AWG_S3}
 S4 = ${AWG_S4}
-H1 = ${AWG_H1}
-H2 = ${AWG_H2}
-H3 = ${AWG_H3}
-H4 = ${AWG_H4}
+EOF
+    fi
+    cat >> "$tmpfile" << EOF
+H1 = ${h1}
+H2 = ${h2}
+H3 = ${h3}
+H4 = ${h4}
 EOF
 
-    if [[ "${AWG_PROTOCOL_VERSION:-2.0}" == "3.1" ]]; then
+    if [[ "$protocol_version" == "3.0" || "$protocol_version" == "3.1" ]]; then
         _awg31_render_extra_fields >> "$tmpfile" || { rm -f "$tmpfile"; return 1; }
     fi
 
+    if _awg_protocol_has_cps; then
     [[ -n "${AWG_I1:-}" ]] && echo "I1 = ${AWG_I1}" >> "$tmpfile"
     [[ -n "${AWG_I2:-}" ]] && echo "I2 = ${AWG_I2}" >> "$tmpfile"
     [[ -n "${AWG_I3:-}" ]] && echo "I3 = ${AWG_I3}" >> "$tmpfile"
     [[ -n "${AWG_I4:-}" ]] && echo "I4 = ${AWG_I4}" >> "$tmpfile"
     [[ -n "${AWG_I5:-}" ]] && echo "I5 = ${AWG_I5}" >> "$tmpfile"
+    fi
     if [[ "${AWG_WIRESOCK_HINTS:-off}" != "off" ]]; then
         render_wiresock_hints >> "$tmpfile" || { rm -f "$tmpfile"; log_error "Invalid WireSock compatibility hints"; return 1; }
     fi
@@ -3788,8 +3832,8 @@ generate_vpn_uri() {
     local awg31_header_key="" awg31_max_handshake="" awg31_keepalive_timeout=""
     local awg31_reject_after="" awg31_rekey_after="" awg31_rekey_timeout=""
     local awg31_random_trailers="" awg31_disable_cookies=""
-    if [[ "$protocol_version" == "3.1" ]]; then
-        python3 "$AWG_PROFILE_SCRIPT_PATH" validate --version 3.1 --input "$AWG_DIR/awg31-profile.json" >/dev/null || return 1
+    if [[ "$protocol_version" == "3.0" || "$protocol_version" == "3.1" ]]; then
+        python3 "$AWG_PROFILE_SCRIPT_PATH" validate --version "$protocol_version" --input "$AWG_DIR/awg31-profile.json" >/dev/null || return 1
         awg31_content_padding=$(grep -oP '^ContentPaddingAddition\s*=\s*\K\S+' "$conf_file" | head -n1)
         awg31_header_key=$(grep -oP '^HeaderProtectionKey\s*=\s*\K\S+' "$conf_file" | head -n1)
         awg31_max_handshake=$(grep -oP '^MaxHandshakeAttempts\s*=\s*\K\S+' "$conf_file" | head -n1)
@@ -3833,15 +3877,18 @@ generate_vpn_uri() {
         my $inner = "{";
         $inner .= qq("H1":"$h1","H2":"$h2","H3":"$h3","H4":"$h4",);
         $inner .= qq("Jc":"$jc","Jmin":"$jmin","Jmax":"$jmax",);
-        $inner .= qq("S1":"$s1","S2":"$s2","S3":"$s3","S4":"$s4",);
-        if ($protocol_version eq "3.1") {
+        $inner .= qq("S1":"$s1","S2":"$s2",);
+        if ($protocol_version ne "1.5") {
+            $inner .= qq("S3":"$s3","S4":"$s4",);
+        }
+        if ($protocol_version eq "3.0" || $protocol_version eq "3.1") {
             $inner .= qq("ContentPaddingAddition":"$cpadding","HeaderProtectionKey":"$hpk",);
             $inner .= qq("MaxHandshakeAttempts":"$max_handshake","KeepaliveTimeout":"$keepalive_timeout",);
             $inner .= qq("RejectAfterTime":"$reject_after","RekeyAfterTime":"$rekey_after",);
             $inner .= qq("RekeyTimeout":"$rekey_timeout","RandomTrailers":"$random_trailers",);
             $inner .= qq("DisableCookies":"$disable_cookies",);
         }
-        if ($i1 ne "" || $i2 ne "" || $i3 ne "" || $i4 ne "" || $i5 ne "") {
+        if ($protocol_version ne "1.5" && ($i1 ne "" || $i2 ne "" || $i3 ne "" || $i4 ne "" || $i5 ne "")) {
             my $ei1 = je($i1); my $ei2 = je($i2); my $ei3 = je($i3);
             my $ei4 = je($i4); my $ei5 = je($i5);
             $inner .= qq("I1":"$ei1","I2":"$ei2","I3":"$ei3","I4":"$ei4","I5":"$ei5",);
@@ -4459,7 +4506,7 @@ generate_runtime_awg_profile() {
             AWG_Jc=3
             AWG_Jmin=$(awg_rand_range 30 50)
             AWG_Jmax=$(( AWG_Jmin + $(awg_rand_range 20 80) ))
-            if [[ "${AWG_PROTOCOL_VERSION:-2.0}" == "3.1" ]]; then
+            if [[ "${AWG_PROTOCOL_VERSION:-2.0}" == "3.0" || "${AWG_PROTOCOL_VERSION:-2.0}" == "3.1" ]]; then
                 mapfile -t s_lines < <(generate_awg31_s_values_runtime) || return 1
                 [[ ${#s_lines[@]} -eq 4 ]] || return 1
                 AWG_S1="${s_lines[0]}"; AWG_S2="${s_lines[1]}"
@@ -4479,7 +4526,7 @@ generate_runtime_awg_profile() {
             AWG_Jc=$(awg_rand_range 3 6)
             AWG_Jmin=$(awg_rand_range 40 89)
             AWG_Jmax=$(( AWG_Jmin + $(awg_rand_range 50 150) ))
-            if [[ "${AWG_PROTOCOL_VERSION:-2.0}" == "3.1" ]]; then
+            if [[ "${AWG_PROTOCOL_VERSION:-2.0}" == "3.0" || "${AWG_PROTOCOL_VERSION:-2.0}" == "3.1" ]]; then
                 mapfile -t s_lines < <(generate_awg31_s_values_runtime) || return 1
                 [[ ${#s_lines[@]} -eq 4 ]] || return 1
                 AWG_S1="${s_lines[0]}"; AWG_S2="${s_lines[1]}"
@@ -4502,7 +4549,13 @@ generate_runtime_awg_profile() {
     mapfile -t h_lines < <(generate_awg_h_ranges_runtime) || true
     [[ ${#h_lines[@]} -eq 4 ]] || { log_error "Failed to generate H ranges"; return 1; }
     AWG_H1="${h_lines[0]}"; AWG_H2="${h_lines[1]}"; AWG_H3="${h_lines[2]}"; AWG_H4="${h_lines[3]}"
-    AWG_I1="$(generate_cps_i1_runtime)"
+    if [[ "${AWG_PROTOCOL_VERSION:-2.0}" == "1.5" ]]; then
+        unset AWG_S3 AWG_S4 AWG_I1
+        AWG_H1="${AWG_H1%%-*}"; AWG_H2="${AWG_H2%%-*}"
+        AWG_H3="${AWG_H3%%-*}"; AWG_H4="${AWG_H4%%-*}"
+    else
+        AWG_I1="$(generate_cps_i1_runtime)"
+    fi
     export AWG_PRESET AWG_Jc AWG_Jmin AWG_Jmax AWG_S1 AWG_S2 AWG_S3 AWG_S4 AWG_H1 AWG_H2 AWG_H3 AWG_H4 AWG_I1
 }
 

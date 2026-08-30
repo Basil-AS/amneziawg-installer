@@ -18,6 +18,14 @@ bats_require_minimum_version 1.5.0
     done
 }
 
+@test "runtime renderers contain explicit compatibility branches for 1.5 and 3.0" {
+    for file in awg_common.sh awg_common_en.sh; do
+        grep -q '_awg_protocol_has_s34' "$BATS_TEST_DIRNAME/../$file"
+        grep -q 'protocol_version.*== "1.5"' "$BATS_TEST_DIRNAME/../$file"
+        grep -q 'protocol_version.*== "3.0"' "$BATS_TEST_DIRNAME/../$file"
+    done
+}
+
 @test "installers deploy the pinned canonical profile renderer" {
     for file in install_amneziawg.sh install_amneziawg_en.sh; do
         grep -q 'scripts/awg_profile.py' "$BATS_TEST_DIRNAME/../$file"
