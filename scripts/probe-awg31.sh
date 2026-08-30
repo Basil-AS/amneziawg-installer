@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Capability probe for AWG 3.1.  A kernel version is not evidence of support.
+# Capability probe for AWG 3.1.  Host release strings are not evidence of support.
 set -euo pipefail
 
 command -v ip >/dev/null 2>&1 || exit 1
