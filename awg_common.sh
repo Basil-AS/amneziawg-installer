@@ -4752,7 +4752,7 @@ generate_runtime_awg_profile() {
             fi
             if [[ "${AWG_PROTOCOL_VERSION:-2.0}" == "3.1" ]]; then
                 AWG_S3=$(awg_rand_range 8 10)
-                AWG_S4=$(awg_rand_range 8 10)
+                AWG_S4=$(awg_rand_range 12 24)
             else
                 AWG_S3=$(awg_rand_range 0 10)
                 AWG_S4=$(awg_rand_range 0 10)
