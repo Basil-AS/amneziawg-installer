@@ -175,6 +175,7 @@ manage_amneziawg_en.sh
 scripts/update-installed.sh
 scripts/migrate-tunnel-subnet.sh
 scripts/update_geoip_dbs.py
+scripts/gen_vpn_uri.py
 web/server.py
 web/index.html
 web/style.css
@@ -201,7 +202,7 @@ validate_payload() {
         scripts/migrate-tunnel-subnet.sh; do
         bash -n "$WORK_DIR/payload/$rel" || die "Bash syntax validation failed: $rel"
     done
-    python3 - "$WORK_DIR/payload/web/server.py" "$WORK_DIR/payload/scripts/update_geoip_dbs.py" <<'PY'
+    python3 - "$WORK_DIR/payload/web/server.py" "$WORK_DIR/payload/scripts/update_geoip_dbs.py" "$WORK_DIR/payload/scripts/gen_vpn_uri.py" <<'PY'
 import ast
 import pathlib
 import sys
@@ -252,7 +253,7 @@ destination_for() {
             printf '%s/%s\n' "$AWG_DIR" "$1" ;;
         scripts/update-installed.sh) printf '%s/update-installed.sh\n' "$AWG_DIR" ;;
         scripts/migrate-tunnel-subnet.sh) printf '%s/migrate-tunnel-subnet.sh\n' "$AWG_DIR" ;;
-        scripts/update_geoip_dbs.py) printf '%s/scripts/update_geoip_dbs.py\n' "$AWG_DIR" ;;
+        scripts/update_geoip_dbs.py|scripts/gen_vpn_uri.py) printf '%s/%s\n' "$AWG_DIR" "$1" ;;
         web/*) printf '%s/%s\n' "$AWG_DIR" "$1" ;;
         *) die "Internal error: unapproved payload path: $1" ;;
     esac

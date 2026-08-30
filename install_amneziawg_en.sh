@@ -36,7 +36,7 @@ AWG_PROFILE_SCRIPT_PATH="$AWG_DIR/scripts/awg_profile.py"
 # are used first; remote download is allowed only with pinned SHA256 or explicit
 # AWG_ALLOW_UNVERIFIED_DOWNLOAD=1 for development.
 declare -A AWG_ASSET_SHA256=(
-    ["awg_common_en.sh"]="72a43bd4350588d91df9696e1bec5cc1684227e4464199926c9c369595400903"
+    ["awg_common_en.sh"]="4e29ab0be4e38b9c44ccee0b4a8026baa677502a8be9a00fbc857737c77c25d7"
     ["manage_amneziawg_en.sh"]="aaa958adfb655e70439e6c94bff2dfeed564e65f08d8e686d062e8ac83bcb94d"
     ["web/server.py"]="2415b0abe9b3ca34717139bb5c3d9315e03cb27b55e3afd31475726ea129756d"
     ["web/index.html"]="7c07ed1d1991e08c0f9fc31e86ed8eb2bba5fa96387088f1f18918396cf7e662"
@@ -47,7 +47,8 @@ declare -A AWG_ASSET_SHA256=(
     ["web/vendor/tailwindcss.js"]="176e894661aa9cdc9a5cba6c720044cbbf7b8bd80d1c9a142a7c24b1b6c50d15"
     ["web/vendor/apexcharts.min.js"]="a7400cd48b40b4f39d1c15137ae0cc8cbec31dc2b55a606640f1cd11912416dd"
     ["scripts/update_geoip_dbs.py"]="7ca3db88709a7ba8aed79b57c1f7aba834a80c57cacd513604ef2a68582513e3"
-    ["scripts/update-installed.sh"]="f9857a9b4ccd43b3741b2140c7676a935cab261ea87c2d4f9895ae6658e81318"
+    ["scripts/gen_vpn_uri.py"]="4aa47bc3843c8d0b5aafa67735531bf9f7c7164849e57a7afa214bdc3974b3cd"
+    ["scripts/update-installed.sh"]="de611d33ccbeaafd79eb2ef59eab1c7827f54f1ee943159f5f5d14b9ecf3e481"
     ["scripts/migrate-tunnel-subnet.sh"]="a8b40101e8f02627c10d2bb769802bf860fdf41dd2bc8ac38a180e953329c3bb"
     ["scripts/awg_profile.py"]="4c437b08cebbcbf60a9b79c4c8519731762403954b070f92b58b8597a61f19d9"
     ["scripts/probe-awg31.sh"]="67867c7acfd2569b31a7266feac942d0f16b6f580f61e4f377be70cfed9036bf"
@@ -5851,6 +5852,7 @@ step5_download_scripts() {
     _deploy_asset "awg_common_en.sh" "$COMMON_SCRIPT_PATH" 700
     _deploy_asset "manage_amneziawg_en.sh" "$MANAGE_SCRIPT_PATH" 700
     _deploy_asset "scripts/update_geoip_dbs.py" "$AWG_DIR/scripts/update_geoip_dbs.py" 755
+    _deploy_asset "scripts/gen_vpn_uri.py" "$AWG_DIR/scripts/gen_vpn_uri.py" 755
     _deploy_asset "scripts/update-installed.sh" "$AWG_DIR/update-installed.sh" 700
     _deploy_asset "scripts/migrate-tunnel-subnet.sh" "$AWG_DIR/migrate-tunnel-subnet.sh" 700
     _deploy_asset "scripts/awg_profile.py" "$AWG_PROFILE_SCRIPT_PATH" 700

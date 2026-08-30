@@ -3683,6 +3683,30 @@ generate_vpn_uri() {
 
     load_awg_params || return 1
 
+    # Prefer the typed Python renderer. Keep the Perl path below as a
+    # compatibility fallback for already-installed versions during upgrades.
+    local uri_generator="$AWG_DIR/scripts/gen_vpn_uri.py" py_uri_tmp py_uri_err
+    if [[ -f "$uri_generator" ]] && command -v python3 &>/dev/null; then
+        local _uri_client_key _uri_server_key _uri_psk
+        _uri_client_key=$(grep -oP 'PrivateKey\s*=\s*\K\S+' "$conf_file") || return 1
+        _uri_psk=$(awk '/^[[:space:]]*PresharedKey[[:space:]]*=/{sub(/^[[:space:]]*PresharedKey[[:space:]]*=[[:space:]]*/, ""); sub(/\r$/, ""); sub(/[ \t]+$/, ""); print; exit}' "$conf_file" 2>/dev/null)
+        _ensure_server_public_key || return 1
+        _uri_server_key=$(cat "$AWG_DIR/server_public.key" 2>/dev/null) || return 1
+        py_uri_tmp=$(awg_mktemp "$AWG_DIR") || return 1
+        py_uri_err=$(awg_mktemp "$AWG_DIR") || { rm -f "$py_uri_tmp"; return 1; }
+        if AWG_URI_CPK="$_uri_client_key" AWG_URI_PSK="$_uri_psk" AWG_URI_SPK="$_uri_server_key" \
+            python3 "$uri_generator" --conf "$conf_file" >"$py_uri_tmp" 2>"$py_uri_err"; then
+            chmod 600 "$py_uri_tmp" && mv -f "$py_uri_tmp" "$uri_file"
+            rm -f "$py_uri_err"
+            log_debug "vpn:// URI for '$name' created: $uri_file"
+            return 0
+        fi
+        rm -f "$py_uri_tmp"
+        [[ -s "$py_uri_err" ]] && log_warn "Python vpn:// renderer failed for '$name': $(cat "$py_uri_err")"
+        rm -f "$py_uri_err"
+        return 1
+    fi
+
     # AWG_PORT is the only UNquoted numeric field of the inner JSON ("port":N).
     # An empty/non-numeric value would produce "port":, - syntactically broken
     # JSON, which Amnezia Client silently fails to import.

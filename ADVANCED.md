@@ -1459,7 +1459,7 @@ sudo bash /root/awg/manage_amneziawg.sh add guest --expires=7d
 - `/root/awg/<имя_клиента>.vpnuri` — текстовый `vpn://` URI
 - `/root/awg/<имя_клиента>.vpnuri.png` — QR-код этого URI (с v5.11.3)
 
-**Формат:** конфигурация сжимается через zlib (Perl `Compress::Zlib`) и кодируется в Base64, формируя URI вида `vpn://...`.
+**Формат:** конфигурация сжимается через zlib и кодируется в URL-safe Base64, формируя URI вида `vpn://...`. В актуальных установках URI рендерит типизированный `scripts/gen_vpn_uri.py`; приватные ключи передаются ему через окружение и не попадают в аргументы процесса.
 
 > Perl с модулями `Compress::Zlib` и `MIME::Base64` должен быть на сервере. На Ubuntu и Debian они установлены по умолчанию. Если Perl отсутствует, `.vpnuri` / `.vpnuri.png` не создаются, но `.conf` работают штатно. `qrencode` (уже обязательный для `.conf` QR) нужен и для `.vpnuri.png`.
 
