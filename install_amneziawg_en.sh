@@ -9,14 +9,14 @@ fi
 # ==============================================================================
 # AmneziaWG 2.0 installation and configuration script for Ubuntu/Debian servers
 # Author: @bivlked
-# Version: 5.28.1-bas.10
+# Version: 5.28.1-bas.11
 # Date: 2026-05-13
 # Repository: https://github.com/bivlked/amneziawg-installer
 # ==============================================================================
 
 # --- Safe mode and Constants ---
 set -o pipefail
-SCRIPT_VERSION="5.28.1-bas.10"
+SCRIPT_VERSION="5.28.1-bas.11"
 
 AWG_DIR="/root/awg"
 INSTALLER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)"
@@ -27,7 +27,7 @@ LOG_FILE="$AWG_DIR/install_amneziawg.log"
 KEYS_DIR="$AWG_DIR/keys"
 SERVER_CONF_FILE="/etc/amnezia/amneziawg/awg0.conf"
 AWG_REPO="${AWG_REPO:-Basil-AS/amneziawg-installer}"
-AWG_BRANCH="${AWG_BRANCH:-main}"
+AWG_BRANCH="${AWG_BRANCH:-v${SCRIPT_VERSION}}"
 COMMON_SCRIPT_PATH="$AWG_DIR/awg_common.sh"
 MANAGE_SCRIPT_PATH="$AWG_DIR/manage_amneziawg.sh"
 AWG_PROFILE_SCRIPT_PATH="$AWG_DIR/scripts/awg_profile.py"
@@ -36,8 +36,8 @@ AWG_PROFILE_SCRIPT_PATH="$AWG_DIR/scripts/awg_profile.py"
 # are used first; remote download is allowed only with pinned SHA256 or explicit
 # AWG_ALLOW_UNVERIFIED_DOWNLOAD=1 for development.
 declare -A AWG_ASSET_SHA256=(
-    ["awg_common_en.sh"]="a55b2ec518e55257883b56c2c76a11155c867337956466978848a4975db52fd6"
-    ["manage_amneziawg_en.sh"]="96a53e4584e5704eac1ee78bc8b5a1f7344d1b894645860e95fd37319c609135"
+    ["awg_common_en.sh"]="091723f7b6fe18e7714dbfceee62c2c87c6b762449de58820b4a14cde3f13556"
+    ["manage_amneziawg_en.sh"]="f7f86e0c71a7a7ed67e062fdc240b5c603c8c7ef2472ed93cdf62b4133e253a4"
     ["web/server.py"]="ded8e87bdeb70b8555c2e3887a4109c5971e1f73d8298c8ca5a72a94a283bbc8"
     ["web/index.html"]="7c07ed1d1991e08c0f9fc31e86ed8eb2bba5fa96387088f1f18918396cf7e662"
     ["web/app.js"]="6c9e082032b7c099221a35066fe969ae91e1ca6aab057030d277584d91f36cda"

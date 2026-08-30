@@ -58,7 +58,7 @@ _sha256() {
 # перед выпуском полагается git fetch --tags --force (docs/RELEASE_PROCESS.md).
 _tag_of_installer() {
     local ver
-    ver="$(grep -oP '^SCRIPT_VERSION="\K[0-9.]+' "$REPO_ROOT/$1" | head -n1)"
+    ver="$(grep -oP '^SCRIPT_VERSION="\K[0-9][0-9A-Za-z.-]*' "$REPO_ROOT/$1" | head -n1)"
     [[ -n "$ver" ]] || return 1
     printf 'v%s' "$ver"
 }

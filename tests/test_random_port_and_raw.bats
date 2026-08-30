@@ -17,9 +17,9 @@
     fi
 }
 
-@test "installer supports single-file bootstrap from raw main with local-first assets" {
+@test "installer supports single-file bootstrap from pinned release raw source with local-first assets" {
     grep -q 'AWG_REPO="${AWG_REPO:-Basil-AS/amneziawg-installer}"' "$BATS_TEST_DIRNAME/../install_amneziawg.sh"
-    grep -q 'AWG_BRANCH="${AWG_BRANCH:-main}"' "$BATS_TEST_DIRNAME/../install_amneziawg.sh"
+    grep -q 'AWG_BRANCH="${AWG_BRANCH:-v${SCRIPT_VERSION}}"' "$BATS_TEST_DIRNAME/../install_amneziawg.sh"
     grep -q 'raw.githubusercontent.com/${AWG_REPO}/${AWG_BRANCH}/${asset_path}' "$BATS_TEST_DIRNAME/../install_amneziawg.sh"
     grep -qF 'src="${INSTALLER_DIR}/${asset_path}"' "$BATS_TEST_DIRNAME/../install_amneziawg.sh"
     grep -qF '_deploy_asset "awg_common.sh" "$COMMON_SCRIPT_PATH" 700' "$BATS_TEST_DIRNAME/../install_amneziawg.sh"
