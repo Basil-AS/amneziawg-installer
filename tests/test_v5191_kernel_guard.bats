@@ -12,6 +12,9 @@ ROOT="$BATS_TEST_DIRNAME/.."
 
 setup() {
     LAST_WARN=""
+    # This file covers the legacy AWG 2.0 compatibility guard explicitly.
+    # AWG 3.1 is capability-probed and is covered by test_v5230_awg3_kernel_gate.bats.
+    AWG_PROTOCOL_VERSION=2.0
     log()       { :; }
     log_warn()  { LAST_WARN="$LAST_WARN $*"; }
     log_error() { :; }
@@ -74,6 +77,13 @@ _set_uname() { eval "uname() { echo '$1'; }"; }
     _set_uname "weirdkernel"; AUTO_YES=1
     check_kernel_version
     [[ "$LAST_WARN" == *"weirdkernel"* ]]
+}
+
+@test "AWG 3.1 bypasses the legacy kernel release gate" {
+    AWG_PROTOCOL_VERSION=3.1
+    _set_uname "5.4.0-216-generic"
+    check_kernel_version
+    [ -z "${LAST_WARN// /}" ]
 }
 
 @test "v5.19.1 #163: dotless numeric kernel ('5'/'6') is unparseable, not read as major.minor" {
