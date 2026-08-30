@@ -3452,6 +3452,12 @@ PY
     grep -qF 'NETTEST_PING_SAMPLES = 30' "$app"
 }
 
+@test "web panel exposes the selected AWG protocol and profile presence" {
+    grep -qF '"protocol_version"' "$BATS_TEST_DIRNAME/../web/server.py"
+    grep -qF '"protocol_profile"' "$BATS_TEST_DIRNAME/../web/server.py"
+    grep -qF 'AWG protocol' "$BATS_TEST_DIRNAME/../web/app.js"
+}
+
 @test "web app supports persistent collapsible dashboard sections" {
     local app="$BATS_TEST_DIRNAME/../web/app.js"
     local css="$BATS_TEST_DIRNAME/../web/style.css"
