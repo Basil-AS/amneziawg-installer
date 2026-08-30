@@ -105,6 +105,21 @@ load test_helper
     [ "${lines[3]}" != "100000000-800000000" ]
 }
 
+@test "AWG 3.1 runtime profile keeps S bounds and padded lengths unique" {
+    export AWG_PROTOCOL_VERSION=3.1
+    generate_runtime_awg_profile mobile
+    [ "$AWG_S1" -ge 12 ] && [ "$AWG_S1" -le 149 ]
+    [ "$AWG_S2" -ge 12 ] && [ "$AWG_S2" -le 149 ]
+    [ "$AWG_S3" -ge 12 ] && [ "$AWG_S3" -le 63 ]
+    [ "$AWG_S4" -eq 12 ]
+    [ "$((148 + AWG_S1))" -ne "$((92 + AWG_S2))" ]
+    [ "$((148 + AWG_S1))" -ne "$((64 + AWG_S3))" ]
+    [ "$((148 + AWG_S1))" -ne "$((32 + AWG_S4))" ]
+    [ "$((92 + AWG_S2))" -ne "$((64 + AWG_S3))" ]
+    [ "$((92 + AWG_S2))" -ne "$((32 + AWG_S4))" ]
+    [ "$((64 + AWG_S3))" -ne "$((32 + AWG_S4))" ]
+}
+
 @test "rand_range: uint32 boundary values" {
     run rand_range 0 4294967295
     [ "$status" -eq 0 ]
