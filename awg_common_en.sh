@@ -45,6 +45,24 @@ mapping = {
     "s1": "AWG_S1", "s2": "AWG_S2", "s3": "AWG_S3", "s4": "AWG_S4",
     "h1": "AWG_H1", "h2": "AWG_H2", "h3": "AWG_H3", "h4": "AWG_H4",
 }
+
+awg_profile_status() {
+    local version="${AWG_PROTOCOL_VERSION:-2.0}" profile="missing" capability="not_required"
+    if [[ "$version" == "3.1" ]]; then
+        if [[ -f "$AWG_DIR/awg31-profile.json" ]] &&
+           python3 "$AWG_PROFILE_SCRIPT_PATH" validate --version 3.1 --input "$AWG_DIR/awg31-profile.json" >/dev/null 2>&1; then
+            profile="valid"
+        else
+            profile="invalid_or_missing"
+        fi
+        if [[ -x "$AWG_DIR/scripts/probe-awg31.sh" ]] && "$AWG_DIR/scripts/probe-awg31.sh" >/dev/null 2>&1; then
+            capability="confirmed"
+        else
+            capability="not_confirmed"
+        fi
+    fi
+    printf 'protocol_version=%s\nprofile=%s\ncapability=%s\n' "$version" "$profile" "$capability"
+}
 for field, env_name in mapping.items():
     value = os.environ.get(env_name)
     if value is not None and value != "":

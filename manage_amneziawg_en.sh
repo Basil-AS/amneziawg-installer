@@ -262,6 +262,18 @@ if [[ "$COMMAND" == "server" ]]; then
             ;;
     esac
 fi
+if [[ "$COMMAND" == "profile" ]]; then
+    case "${ARGS[0]:-}" in
+        status|validate)
+            COMMAND="profile-${ARGS[0]}"
+            ARGS=("${ARGS[@]:1}")
+            ;;
+        *)
+            echo "Unknown profile command: ${ARGS[0]:-}" >&2
+            COMMAND="help"
+            ;;
+    esac
+fi
 case "$COMMAND" in
     rotate-profile|rotate-awg|refresh-server-config) COMMAND="rotate-profile" ;;
 esac
@@ -2418,6 +2430,8 @@ usage() {
     echo "  list [-v] [--json]    List clients (--json: machine-readable, includes client_ipv6)"
     echo "  stats [--json]        Client traffic statistics"
     echo "  diagnose [--carrier=N] Diagnose kernel/sysctl/UFW and fork-specific sections"
+    echo "  profile status         Show AWG version, profile validity, and capability probe"
+    echo "  profile validate       Validate the AWG 3.1 profile without printing secrets"
     echo "  voice-check           UDP/STUN/NAT diagnostics for calls"
     echo "  p2p list              Show P2P ports for all clients"
     echo "  p2p show <name>       Show client P2P information"
@@ -3269,6 +3283,23 @@ case $COMMAND in
 
     diagnose)
         diagnose_server || _cmd_rc=1
+        ;;
+
+    profile-status)
+        safe_load_config "$CONFIG_FILE" >/dev/null 2>&1 || true
+        awg_profile_status
+        ;;
+
+    profile-validate)
+        safe_load_config "$CONFIG_FILE" >/dev/null 2>&1 || true
+        if [[ "${AWG_PROTOCOL_VERSION:-2.0}" != "3.1" ]]; then
+            echo "Profile validation is only applicable to AWG 3.1."
+        elif awg_profile_status | grep -q '^profile=valid$'; then
+            echo "AWG 3.1 profile: valid"
+        else
+            echo "AWG 3.1 profile: invalid_or_missing" >&2
+            _cmd_rc=1
+        fi
         ;;
 
     # No help) branch here on purpose: every path that sets COMMAND="help"
