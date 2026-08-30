@@ -104,7 +104,7 @@ CONF
     [ "$status" -eq 0 ]
     printf '%s' "$output" | jq -e 'type == "array"' >/dev/null
     keys=$(printf '%s' "$output" | jq -cS '.[0] | keys')
-    [ "$keys" = '["ip","last_handshake","name","rx","status","status_code","tx"]' ]
+    [ "$keys" = '["endpoint","ip","ipv6","last_handshake","name","p2p_ports","rx","status","status_code","tx"]' ]
     printf '%s' "$output" | jq -e '
         .[0] | (.rx | type == "number") and (.tx | type == "number")
         and (.last_handshake | type == "number")' >/dev/null

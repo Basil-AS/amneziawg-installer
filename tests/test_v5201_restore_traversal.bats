@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+bats_require_minimum_version 1.5.0
 # Path traversal check in restore_backup(): segment match, not substring.
 #
 # The old check rejected any tar entry containing the substring "..", which
