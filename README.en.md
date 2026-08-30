@@ -1,6 +1,6 @@
 # AmneziaWG Installer
 
-![Version](https://img.shields.io/badge/Installer_Version-5.28.1-blue)
+![Version](https://img.shields.io/badge/Installer_Version-5.29.0-blue)
 
 An installer and administration toolkit for deploying AmneziaWG servers on Ubuntu and Debian. It creates the tunnel, client profiles, QR codes and VPN URIs, with IPv6, split/full-tunnel routing, client isolation, P2P/DNAT, AdGuard Home, a web panel and a Telegram bot.
 

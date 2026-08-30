@@ -66,7 +66,7 @@ SCRIPTS=(
 
 # Запрещённые маркеры в публичном тексте и коммитах (case-insensitive).
 # Слитный список во избежание ложных срабатываний на доменных терминах.
-FORBIDDEN_MARKERS='claude|anthropic|\bcodex\b|chatgpt|openai|gpt-[0-9]|copilot|\bllm\b'
+FORBIDDEN_MARKERS='claude|anthropic|\bcodex\b|chatgpt|openai|gpt-[0-9]|copilot|\bllm\b|myai-[a-z0-9]{4}'
 APPROVED_COAUTHOR='Co-authored-by: OpenAI Codex <noreply@openai.com>'
 
 PASS=0
