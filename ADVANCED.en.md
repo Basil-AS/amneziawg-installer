@@ -661,8 +661,9 @@ Options:
   --route-custom=NETS   Mode: Only specified networks
   --endpoint=IP         Specify external IP (for servers behind NAT)
   --ssh-port=PORT       SSH port for the UFW rule (auto-detected; comma-separated list)
-  --preset=TYPE         Obfuscation parameter preset: default, mobile
-                        mobile: Jc=3, narrow Jmax — for mobile carriers (Tele2, Yota, Megafon)
+  --preset=TYPE         Obfuscation parameter preset: balanced, mobile, stealth, compatibility
+                        balanced: general purpose; mobile: LTE/5G and CGNAT;
+                        stealth: wider junk/padding; compatibility: older clients
   --jc=N                Set Jc manually (1-128, overrides preset)
   --jmin=N              Set Jmin manually (0-1280, overrides preset)
   --jmax=N              Set Jmax manually (0-1280, overrides preset, must be >= Jmin)

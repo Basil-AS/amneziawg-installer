@@ -2457,7 +2457,7 @@ usage() {
     echo "  geoip auto-update disable  Disable GeoIP database auto-update"
     echo "  geoip auto-update status   Show GeoIP auto-update timer status"
     echo '  set-name "NAME"       Change server name and regenerate clients'
-    echo "  server rotate-profile --preset mobile|default"
+    echo "  server rotate-profile --preset mobile|default|balanced|stealth|compatibility"
     echo "                        Rotate H/S/J/I1 AWG profile and regenerate clients"
     echo "  rotate-awg            Alias for server rotate-profile"
     echo "  refresh-server-config Alias for server rotate-profile"
@@ -2854,8 +2854,8 @@ case $COMMAND in
 
     rotate-profile)
         case "${ROTATE_PRESET:-default}" in
-            mobile|default) ;;
-            *) die "Invalid --preset. Allowed: mobile or default" ;;
+            mobile|default|balanced|stealth|compatibility) ;;
+            *) die "Invalid --preset. Allowed: balanced, mobile, stealth, or compatibility" ;;
         esac
         if ! confirm_action "rotate AWG profile" "and regenerate all client configs"; then exit 1; fi
         if [[ "${AWG_SKIP_APPLY:-0}" != "1" ]]; then

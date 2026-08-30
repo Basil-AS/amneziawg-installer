@@ -5,14 +5,43 @@ from __future__ import annotations
 import argparse
 import base64
 import json
-import os
 import random
 import sys
 from pathlib import Path
 
 VERSIONS = ("1.5", "2.0", "3.0", "3.1")
+PROFILES = ("mobile", "balanced", "stealth", "compatibility")
 UINT16_MAX = 65535
 UINT32_MAX = 4294967295
+INT32_MAX = 2147483647
+
+# Profiles describe traffic-shape choices, not protocol versions.  Keep the
+# ranges deliberately broad and generate H ranges per installation so two
+# servers do not receive the same static fingerprint.  The values are kept in
+# one canonical generator so the installer, management commands, and tests do
+# not slowly acquire different parameter rules.
+PROFILE_SPECS = {
+    "mobile": {
+        "jc": (3, 3), "jmin": (30, 50), "jspan": (20, 80),
+        "s12": (12, 149), "s3": (12, 63), "h_width": 32768,
+        "keepalive": (25, 35), "padding": (8, 64),
+    },
+    "balanced": {
+        "jc": (4, 6), "jmin": (40, 89), "jspan": (50, 150),
+        "s12": (12, 149), "s3": (12, 63), "h_width": 65536,
+        "keepalive": (25, 35), "padding": (10, 100),
+    },
+    "stealth": {
+        "jc": (3, 8), "jmin": (64, 160), "jspan": (160, 420),
+        "s12": (20, 149), "s3": (16, 63), "h_width": 131072,
+        "keepalive": (20, 35), "padding": (16, 160),
+    },
+    "compatibility": {
+        "jc": (3, 5), "jmin": (20, 64), "jspan": (20, 80),
+        "s12": (15, 150), "s3": (12, 63), "h_width": 4096,
+        "keepalive": (25, 35), "padding": (4, 32),
+    },
+}
 
 
 def _integer(value: object, name: str, maximum: int = UINT32_MAX) -> int:
@@ -113,22 +142,41 @@ def validate(profile: dict[str, object], version: str = "3.1") -> dict[str, obje
     return result
 
 
-def generate(version: str, seed: int | None = None) -> dict[str, object]:
+def _generate_h_ranges(rng: random.Random, width: int) -> tuple[str, str, str, str]:
+    """Generate four non-overlapping ranges in the Windows-safe int32 space."""
+    minimum = 5
+    available = INT32_MAX - minimum + 1
+    segment = available // 4
+    starts = []
+    for index in range(4):
+        segment_start = minimum + index * segment
+        segment_end = minimum + (index + 1) * segment - 1
+        latest = segment_end - width + 1
+        start = rng.randrange(segment_start, max(segment_start, latest) + 1)
+        starts.append(start)
+    return tuple(f"{start}-{start + width - 1}" for start in starts)  # type: ignore[return-value]
+
+
+def generate(version: str, seed: int | None = None, profile: str = "balanced") -> dict[str, object]:
+    if profile not in PROFILES:
+        raise ValueError("unsupported profile")
     rng = random.SystemRandom() if seed is None else random.Random(seed)
+    spec = PROFILE_SPECS[profile]
     if version in ("3.0", "3.1"):
-        s1, s2, s3 = _generate_s_values(rng)
-        # Keep every endpoint <= INT32_MAX for standalone Windows clients.
-        h_ranges = ("268435456-368435455", "536870912-636870911",
-                     "1073741824-1173741823", "1610612736-1710612735")
+        s1, s2, s3 = _generate_s_values(rng, spec["s12"], spec["s3"])
+        h_ranges = _generate_h_ranges(rng, spec["h_width"])
     elif version == "1.5":
         s1, s2 = (rng.randrange(15, 151), rng.randrange(15, 151))
         s3 = s4 = None
         h_ranges = ("1", "2", "3", "4")
     else:
-        s1, s2, s3 = (rng.randrange(12, 151), rng.randrange(12, 151), rng.randrange(12, 65))
-        h_ranges = ("1000-1999", "3000-3999", "5000-5999", "7000-7999")
+        s1, s2, s3 = _generate_s_values(rng, spec["s12"], spec["s3"])
+        h_ranges = _generate_h_ranges(rng, spec["h_width"])
+    jmin = rng.randrange(spec["jmin"][0], spec["jmin"][1] + 1)
+    jmax = min(UINT32_MAX, jmin + rng.randrange(spec["jspan"][0], spec["jspan"][1] + 1))
     profile: dict[str, object] = {
-        "jc": rng.randrange(4, 7), "jmin": 10, "jmax": 50,
+        "profile": profile, "jc": rng.randrange(spec["jc"][0], spec["jc"][1] + 1),
+        "jmin": jmin, "jmax": jmax,
         "s1": s1, "s2": s2,
         "h1": h_ranges[0], "h2": h_ranges[1],
         "h3": h_ranges[2], "h4": h_ranges[3],
@@ -137,20 +185,27 @@ def generate(version: str, seed: int | None = None) -> dict[str, object]:
         profile.update({"s3": s3, "s4": 12})
     if version in ("3.0", "3.1"):
         profile.update({
-            "headerProtectionKey": base64.b64encode(os.urandom(32)).decode("ascii"),
-            "contentPaddingAddition": "10-100", "rekeyAfterTime": "100-120",
+            # SystemRandom remains cryptographically strong for normal runs;
+            # using the selected RNG here also makes --seed fully reproducible
+            # for CI fixtures without ever printing or logging the key.
+            "headerProtectionKey": base64.b64encode(bytes(rng.randrange(256) for _ in range(32))).decode("ascii"),
+            "contentPaddingAddition": f"{spec['padding'][0]}-{spec['padding'][1]}",
+            "rekeyAfterTime": "100-120",
             "rekeyTimeout": "3-7", "rejectAfterTime": "150-180",
-            "keepaliveTimeout": "25-35", "maxHandshakeAttempts": "15-20",
+            "keepaliveTimeout": f"{spec['keepalive'][0]}-{spec['keepalive'][1]}",
+            "maxHandshakeAttempts": "15-20",
         })
         if version == "3.1":
             profile.update({"randomTrailers": False, "disableCookies": False})
     return validate(profile, version)
 
 
-def _generate_s_values(rng: random.Random) -> tuple[int, int, int]:
+def _generate_s_values(rng: random.Random, s12_range: tuple[int, int], s3_range: tuple[int, int]) -> tuple[int, int, int]:
     """Choose 3.1 S values whose resulting handshake lengths cannot collide."""
     for _ in range(128):
-        values = (rng.randrange(12, 150), rng.randrange(12, 150), rng.randrange(12, 64))
+        values = (rng.randrange(s12_range[0], s12_range[1] + 1),
+                  rng.randrange(s12_range[0], s12_range[1] + 1),
+                  rng.randrange(s3_range[0], s3_range[1] + 1))
         lengths = (148 + values[0], 92 + values[1], 64 + values[2], 44)
         if len(set(lengths)) == len(lengths):
             return values
@@ -183,10 +238,11 @@ def main() -> int:
     parser.add_argument("--version", default="3.1", choices=VERSIONS)
     parser.add_argument("--input", type=Path)
     parser.add_argument("--seed", type=int)
+    parser.add_argument("--profile", default="balanced", choices=PROFILES)
     args = parser.parse_args()
     try:
         if args.command == "generate":
-            value = generate(args.version, args.seed)
+            value = generate(args.version, args.seed, args.profile)
         else:
             if not args.input:
                 raise ValueError("--input is required")

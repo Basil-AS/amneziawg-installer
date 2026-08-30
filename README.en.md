@@ -51,7 +51,14 @@ The main installed paths are `/root/awg` and `/etc/amnezia/amneziawg`. Private k
 
 ## Mobile networks
 
-`--preset=mobile` targets LTE/5G, CGNAT and unstable roaming. It uses moderate junk/padding sizes, non-overlapping H ranges, `S4 >= 12` and a 25-35 second `KeepaliveTimeout` range for AWG 3.1.
+Choose a generator profile with `--preset`:
+
+- `balanced` (default) - general-purpose compatibility and variation;
+- `mobile` - conservative junk/padding sizes for LTE/5G, CGNAT and roaming;
+- `stealth` - a wider junk/padding range for aggressive filtering;
+- `compatibility` - a conservative profile for older clients.
+
+Every profile generates fresh, non-overlapping H ranges within the Windows-client-compatible integer space. AWG 3.0/3.1 generation enforces `S1-S4 >= 12` and unique handshake sizes, while keeping server and client parameters aligned.
 
 Keep `PersistentKeepalive = 25`, use a short-TTL domain when the VPS address changes and start MTU troubleshooting at 1280. Download a fresh client profile or QR code after rotating parameters. A preset cannot bypass a network that blocks UDP by itself.
 

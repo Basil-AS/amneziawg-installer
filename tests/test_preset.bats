@@ -97,6 +97,26 @@ teardown() {
     [ "$AWG_PRESET" = "mobile" ]
 }
 
+@test "preset stealth: uses the wider junk range" {
+    CLI_PRESET=stealth
+    unset CLI_JC CLI_JMIN CLI_JMAX
+    generate_awg_params
+    [[ "$AWG_Jc" -ge 3 ]] && [[ "$AWG_Jc" -le 8 ]]
+    [[ "$AWG_Jmin" -ge 64 ]] && [[ "$AWG_Jmin" -le 160 ]]
+    [[ "$AWG_Jmax" -ge $((AWG_Jmin + 160)) ]] && [[ "$AWG_Jmax" -le $((AWG_Jmin + 420)) ]]
+    [ "$AWG_PRESET" = "stealth" ]
+}
+
+@test "preset compatibility: stays in conservative ranges" {
+    CLI_PRESET=compatibility
+    unset CLI_JC CLI_JMIN CLI_JMAX
+    generate_awg_params
+    [[ "$AWG_Jc" -ge 3 ]] && [[ "$AWG_Jc" -le 5 ]]
+    [[ "$AWG_Jmin" -ge 20 ]] && [[ "$AWG_Jmin" -le 64 ]]
+    [[ "$AWG_Jmax" -ge "$AWG_Jmin" ]] && [[ "$AWG_Jmax" -le $((AWG_Jmin + 80)) ]]
+    [ "$AWG_PRESET" = "compatibility" ]
+}
+
 # --- CLI overrides ---
 
 @test "override: --jc=5 overrides preset default" {
@@ -151,7 +171,7 @@ teardown() {
 }
 
 @test "validate: unknown preset rejected" {
-    CLI_PRESET=stealth
+    CLI_PRESET=unknown
     unset CLI_JC CLI_JMIN CLI_JMAX
     run generate_awg_params
     [ "$status" -ne 0 ]

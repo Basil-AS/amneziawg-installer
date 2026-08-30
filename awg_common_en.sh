@@ -4527,7 +4527,7 @@ generate_runtime_awg_profile() {
                 AWG_S4=$(awg_rand_range 0 10)
             fi
             ;;
-        default)
+        default|balanced)
             AWG_PRESET="default"
             AWG_Jc=$(awg_rand_range 3 6)
             AWG_Jmin=$(awg_rand_range 40 89)
@@ -4545,6 +4545,36 @@ generate_runtime_awg_profile() {
                 fi
                 AWG_S3=$(awg_rand_range 8 55)
                 AWG_S4=$(awg_rand_range 4 32)
+            fi
+            ;;
+        stealth)
+            AWG_PRESET="stealth"
+            AWG_Jc=$(awg_rand_range 3 8)
+            AWG_Jmin=$(awg_rand_range 64 160)
+            AWG_Jmax=$(( AWG_Jmin + $(awg_rand_range 160 420) ))
+            if [[ "${AWG_PROTOCOL_VERSION:-2.0}" == "3.0" || "${AWG_PROTOCOL_VERSION:-2.0}" == "3.1" ]]; then
+                mapfile -t s_lines < <(generate_awg31_s_values_runtime) || return 1
+                [[ ${#s_lines[@]} -eq 4 ]] || return 1
+                AWG_S1="${s_lines[0]}"; AWG_S2="${s_lines[1]}"
+                AWG_S3="${s_lines[2]}"; AWG_S4="${s_lines[3]}"
+            else
+                AWG_S1=$(awg_rand_range 20 149); AWG_S2=$(awg_rand_range 20 149)
+                AWG_S3=$(awg_rand_range 16 55); AWG_S4=$(awg_rand_range 12 32)
+            fi
+            ;;
+        compatibility)
+            AWG_PRESET="compatibility"
+            AWG_Jc=$(awg_rand_range 3 5)
+            AWG_Jmin=$(awg_rand_range 20 64)
+            AWG_Jmax=$(( AWG_Jmin + $(awg_rand_range 20 80) ))
+            if [[ "${AWG_PROTOCOL_VERSION:-2.0}" == "3.0" || "${AWG_PROTOCOL_VERSION:-2.0}" == "3.1" ]]; then
+                mapfile -t s_lines < <(generate_awg31_s_values_runtime) || return 1
+                [[ ${#s_lines[@]} -eq 4 ]] || return 1
+                AWG_S1="${s_lines[0]}"; AWG_S2="${s_lines[1]}"
+                AWG_S3="${s_lines[2]}"; AWG_S4="${s_lines[3]}"
+            else
+                AWG_S1=$(awg_rand_range 15 150); AWG_S2=$(awg_rand_range 15 150)
+                AWG_S3=$(awg_rand_range 12 55); AWG_S4=$(awg_rand_range 12 32)
             fi
             ;;
         *)

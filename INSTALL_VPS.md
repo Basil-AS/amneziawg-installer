@@ -63,7 +63,7 @@ flowchart LR
     C --> D["VPN ready"]
 ```
 
-For a non-interactive run pass `--yes` and the routing flag of your choice, e.g. `sudo bash ./install_amneziawg_en.sh --yes --route-amnezia`. Common flags: `--port=39743` (any port 1-65535), `--subnet=10.9.9.1/24`, `--disallow-ipv6`, `--allow-ipv6-tunnel` (dual-stack IPv6 inside the tunnel), `--mobile` (mobile obfuscation preset plus port 443/udp in one flag; an explicit `--port` wins), `--isolation=on|off` (client-to-client isolation, on by default), `--endpoint=<public-IP>` (required when the server's public IP differs from its interface IP, typical on Oracle Cloud, GCP, or any NAT'd cloud setup). Full CLI: `--help` or [ADVANCED.en.md](ADVANCED.en.md#install-cli-adv).
+For a non-interactive run pass `--yes` and the routing flag of your choice, e.g. `sudo bash ./install_amneziawg_en.sh --yes --route-amnezia`. Common flags: `--port=39743` (any port 1-65535), `--subnet=10.9.9.1/24`, `--disallow-ipv6`, `--allow-ipv6-tunnel` (dual-stack IPv6 inside the tunnel), `--preset=balanced|mobile|stealth|compatibility`, `--mobile` (mobile obfuscation preset plus port 443/udp in one flag; an explicit `--port` wins), `--isolation=on|off` (client-to-client isolation, on by default), `--endpoint=<public-IP>` (required when the server's public IP differs from its interface IP, typical on Oracle Cloud, GCP, or any NAT'd cloud setup). Full CLI: `--help` or [ADVANCED.en.md](ADVANCED.en.md#install-cli-adv).
 
 ## First-time client setup
 
