@@ -19,7 +19,7 @@ This is a supplement to the main [README.en.md](README.en.md), containing deeper
   - [The new 3.0 parameters](#awg3-params-adv)
   - [What has to match and what does not](#awg3-must-match-adv)
   - [Three things that can cost you an evening](#awg3-gotchas-adv)
-  - [What the installer does not enable yet](#awg3-not-yet-adv)
+  - [Compatibility and safe defaults](#awg3-not-yet-adv)
 - [⚙️ Client Configuration Details](#config-details-adv)
   - [AllowedIPs](#allowedips-adv)
   - [What a site can see when traffic is split by destination](#split-detect-adv)
@@ -167,7 +167,7 @@ sudo bash install_amneziawg_en.sh --jc=2 --jmin=20 --jmax=60 --yes --route-amnez
 <a id="awg3-adv"></a>
 ## 🆕 The third AmneziaWG line for self-hosted servers
 
-In late July 2026 the Amnezia team released **AmneziaWG 3.0** and switched the PPA over to it; on 12 August **3.1** followed inside the same line (tag `v3.1.20260812`), and the PPA has carried it since that day. On x86 with kernel 6.7 or newer the installer **already gives you a third-line module** - there is nothing to opt into, and your existing configs keep working.
+In late July 2026 the Amnezia team released **AmneziaWG 3.0**, followed by **3.1** on 12 August (tag `v3.1.20260812`). The installer does not infer support from a kernel version: for the selected protocol it checks whether the loaded module can actually accept and return the fields through a capability probe.
 
 To see what you actually have:
 
@@ -197,22 +197,20 @@ The kernel interface contract is unaffected: `WG_GENL_VERSION` is unchanged, so 
 
 | Condition | What gets installed | Protocol |
 |---|---|---|
-| x86_64, kernel >= 6.7 | `amneziawg-dkms` from `ppa:amnezia/ppa` | **3.x** |
-| any arch, kernel older than 6.7 (Debian 12 on 6.1) | pinned module built from source | 2.0 |
-| ARM64 / armhf with a prebuilt for your kernel | our prebuilt package | 2.0 |
-| ARM64 / armhf with no prebuilt, kernel >= 6.7 | `amneziawg-dkms` from the PPA | **3.x** |
+| x86_64 / ARM64 / armhf, package or DKMS available | PPA or prebuilt package | selected by `AWG_PROTOCOL_VERSION` and the probe |
+| older kernel, container, or restricted host | pinned DKMS or userspace fallback | capability probe, no kernel-version gate |
 
-That last row is not hypothetical: prebuilt ARM packages are built for Raspberry Pi 3/4/5, Ubuntu 24.04 and 25.10 ARM64, and Debian 12/13 ARM64. Ubuntu 26.04 ARM64 is not on that list yet, and on such a host the installer finds no match, falls through to the normal DKMS path and installs the PPA module, which is the third version.
+Prebuilt ARM packages cover selected Raspberry Pi and cloud images; when no match exists, the installer uses DKMS. In every case the probe is authoritative, not the package name.
 
-On older kernels we pick 2.0 **on purpose**, not because 3.0 fails to build there. For the first day after the release it genuinely did fail on kernel 6.1; upstream fixed that on 31 July and it builds now. But old kernels are exactly where the 3.0 line has had the least mileage, while the pinned 2.0 is verified against an immutable commit. The threshold will be lifted after a separate validation, not because the build passes again.
+The kernel version is not itself an AWG 3.1 gate. If the module builds and the probe passes, the protocol can be used; if the probe fails, the installer reports why and never issues a 3.1 config.
 
-On ARM the installer tries the prebuilt package first, and if it finds one matching your kernel it never reaches the PPA at all. The prebuilt packages are pinned to 2.0. With no match, the same rule as on x86 takes over: a kernel older than 6.7 gets the pinned 2.0 from source, a newer one gets the PPA module.
+On ARM the installer tries a matching prebuilt package first, then DKMS. After loading the module, the capability probe checks the actual fields, so neither the package nor the architecture is treated as proof of 3.1 support.
 
 > ⚠️ **The pinned 2.0 line does not receive updates, and that is a deliberate decision rather than an oversight.** The module on the pinned path is built from the immutable tag `v1.0.20260725`, and upstream has frozen the `1.0.x` line - there will be no new releases in it. The same applies to the prebuilt ARM packages.
 >
-> What that means in practice. On Debian 12 with its stock 6.1 kernel, and on ARM with a matching prebuilt package, you get a proven but frozen module. There is no "upgrade to the third version with a plain `apt upgrade`" path for such hosts: the installer keeps `amneziawg-dkms` on `apt-mark hold` precisely so the PPA module does not land next to it as a second tree with the same name. Nothing breaks and nothing stops working - updates simply do not arrive.
+> In practice, use `manage profile status` as the source of truth, not `uname -r`, the package version, or `modinfo`. If tools and module disagree, 3.1 rendering is blocked so a broken profile is never issued.
 >
-> If you specifically need the third version on such a host, there is one supported route: get a kernel 6.7 or newer (on Debian 12 that means the backports kernel) and reinstall. On x86 the normal PPA path takes over from there. ⚠️ On ARM, mind the order: the prebuilt package is tried first, so if a prebuilt exists for your new kernel you will get the pinned 2.0 again - the third version arrives only when no match is found.
+> If the probe reports an unsupported module, inspect the loaded module and DKMS/headers, then reinstall or select a compatible `--awg-version=2.0`. Do not flip a live `awg0` by hand.
 
 <a id="awg3-wire-adv"></a>
 ### What 3.0 changes on the wire, and what it does not
@@ -229,7 +227,7 @@ The mechanism: `H1`-`H4` became ranges inside the module, but an interface that 
 A scalar `H1 = 12345` from a 2.0 config is parsed as a range of one number, and that exact number goes on the wire. So upgrading the module does not by itself break anything for your clients.
 
 <a id="awg3-params-adv"></a>
-### The new 3.0 parameters
+### The new 3.0/3.1 parameters
 
 Compared with the previous `amneziawg-tools` release, seven config keys were added and **none were removed**: everything from 2.0 (`Jc`/`Jmin`/`Jmax`, `S1`-`S4`, `H1`-`H4`, `I1`-`I5`) is still accepted.
 
@@ -277,12 +275,13 @@ echo "module amneziawg -p" > /sys/kernel/debug/dynamic_debug/control
 Since v5.25.0 the management scripts track this and **warn**: they remember the set of interface parameters applied last time, and if a parameter has disappeared from `awg0.conf`, the log gets a `Removed from the [Interface] section: S1` warning along with the command that carries the removal through to the live interface. The script does **not** restart on its own: that would drop every client connection, and a decision with that price belongs to a person rather than to automation. The warning normally appears once: the snapshot is refreshed after a successful apply, and also after `manage restart`, `manage restore` and an install, that is after everything that recreates the interface. If the apply failed, the snapshot stays as it was and the warning repeats on the next run - deliberately, because otherwise a failure would silently mute the reminder that the parameter is still on the live interface. Parameter values are still applied without a restart: `syncconf` changes those correctly, the problem is only removal.
 
 <a id="awg3-not-yet-adv"></a>
-### What the installer does not enable yet, and why
+### Compatibility and safe defaults
 
-None of the 3.0 features appear in generated configs, and that is deliberate:
+An AWG 3.1 profile is generated only after a successful capability check and is delivered in full to the server and clients. Profiles 1.5/2.0/3.0 remain available for older clients; protocol-specific fields must not be mixed:
 
-- **`HeaderProtectionKey`** needs every one of your clients to understand it at the same time. As of this release `amneziawg-android` 3.0.1 is still a prerelease and the newest `amneziawg-windows-client` release is 2.0.2. Turning it on now would cut off some devices without warning.
-- **`ContentPaddingAddition`** waits on an upstream fix: right now the padding breaks keepalive detection and those packets are dropped with `Packet is neither ipv4 nor ipv6` ([issue #186](https://github.com/amnezia-vpn/amneziawg-linux-kernel-module/issues/186)).
+- **`HeaderProtectionKey`**, `S1`-`S4`, `H1`-`H4`, and `RandomTrailers` must be supported and coordinated on the server and clients. Use a 2.0 profile for older apps.
+- **`DisableCookies`** is off by default: enable it only deliberately because it disables handshake-flood protection.
+- If a client does not support 3.1, do not try to make its config partially compatible: issue a compatible 2.0 profile and never mix version-specific fields.
 - **The timer parameters** are one-sided and safe, but on their own they buy little, so they travel with the next step.
 
 The situation on kernels older than 6.7 is covered separately in <a href="#debian-support-adv">Debian support</a>.
@@ -1637,13 +1636,13 @@ apt-get update && apt-get install -y curl
 
 During installation on Debian, you may see a `sudo removal refused` warning — this is normal, as Debian uses `sudo` as a system package and the script correctly skips its removal.
 
-### AmneziaWG 3.0 and kernels older than 6.7 (Debian 12) - v5.23.0
+### Capability probe instead of a kernel-version check
 
-In late July 2026 the Amnezia team released **AmneziaWG 3.0** and switched the `ppa:amnezia/ppa` PPA to it. At first the 3.0 module did not build on kernels older than 6.7: it called `nla_put_uint`, which Linux only has since 6.7, and on **Debian 12 (bookworm) with kernel 6.1** the install died on `implicit declaration of function 'nla_put_uint'`. The developers fixed that on 31 July ([issue #204](https://github.com/amnezia-vpn/amneziawg-linux-kernel-module/issues/204)): in module version `v3.0.20260731-04` the build on kernel 6.1 goes through, verified on Debian 12 with kernel 6.1.0-51.
+Older recipes below incorrectly tied 3.x support to a 6.7 kernel threshold. That is not the AmneziaWG contract: compatibility is determined by an actual round-trip capability probe through a temporary interface.
 
-The installer still keeps the **pinned last AmneziaWG 2.0 module** (tag `v1.0.20260725`, verified by commit hash) on such kernels: starting with **v5.23.0**, if the kernel is older than 6.7, the module is not taken from the PPA but built from source via DKMS. That is now a deliberate choice rather than a way around a broken build: in its first days the 3.0 line managed to break and then fix the build on old kernels specifically, so that is where it is least proven. The `amneziawg-tools` userland still comes from the PPA - the 3.0 tools work correctly with a 2.0 module, that part is verified. You do not need to install anything by hand; it all happens at step 2. On kernels 6.7 and newer (Ubuntu 24.04/25.10/26.04, Debian 13 trixie) the behaviour is unchanged - the module is installed from the PPA.
+For diagnostics use `manage profile status`: it separately shows the selected profile version, file validity, and probe result. When the probe fails, rendering is fail-closed and does not add 3.1 fields to another protocol's config.
 
-If you specifically want the third AmneziaWG line on Debian 12, the simplest route is to deploy the server afresh on Debian 13 / Ubuntu 24.04+. The other route is to install a 6.7+ kernel from `bookworm-backports` and **reboot into it**: the installer looks at the running kernel, not at the installed one, so after the reboot it follows the normal path. On a server that is already set up, do not install on top: back it up (`sudo bash /root/awg/manage_amneziawg.sh backup`), remove the current install (`sudo bash install_amneziawg.sh --uninstall`) and install again - otherwise the pinned 2.0 module stays registered in DKMS under the same name as the PPA package. Support for the 3.0 features themselves (header protection, timing randomization) in the installer is planned separately and will land once the 3.0 stack and the client apps stabilize.
+If the probe fails, do not switch the live `awg0` in place: take a backup, fix the module/DKMS path or select a compatible 2.0 profile. Enabling 3.1 requires matching server and client configs.
 
 ---
 
