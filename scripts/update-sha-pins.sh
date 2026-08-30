@@ -118,9 +118,6 @@ _expected_sha() {
         printf '%s tag %s' "$sha" "$tag"
         return 0
     fi
-    echo "ЗАМЕЧАНИЕ: тега $tag в этом чекауте нет - считаю, что релиз готовится," >&2
-    echo "           и сверяю с рабочим деревом. Если тег уже опубликован," >&2
-    echo "           выполните git fetch --tags --force и повторите." >&2
     printf '%s worktree' "$(_sha256 "$REPO_ROOT/$helper")"
 }
 
@@ -156,11 +153,31 @@ _write_pin() {
     # installer на 0600 (git mode не меняется, diff-сигнала нет).
     chmod --reference="$src" "$tmp" 2>/dev/null || chmod 644 "$tmp"
     mv "$tmp" "$src" || { rm -f "$tmp"; return 1; }
+    # Записанное ПЕРЕЧИТЫВАЕТСЯ. Успех sed не означает замену: при нуле замен он
+    # тоже возвращает 0, и тогда скрипт печатал бы "UPDATE: <желаемый sha>",
+    # то есть отчитывался бы о работе, которой не было, показывая при этом
+    # значение, которого в файле нет. Достижимо, например, если присваивание
+    # перестанет стоять в первой колонке: _read_pin ищет пин где угодно в
+    # строке, а замена заякорена на ^.
+    local written_pin
+    written_pin="$(_read_pin "$installer" "$pin_name")"
+    if [[ -z "$written_pin" ]]; then
+        case "$pin_name" in
+            awg_common.sh|awg_common_en.sh) written_pin=$(grep -oP '^COMMON_SCRIPT_SHA256="\K[0-9a-f]{64}' "$src" | head -n1) ;;
+            manage_amneziawg.sh|manage_amneziawg_en.sh) written_pin=$(grep -oP '^MANAGE_SCRIPT_SHA256="\K[0-9a-f]{64}' "$src" | head -n1) ;;
+        esac
+    fi
+    if [[ "$written_pin" != "$new_hash" ]]; then
+        echo "ОШИБКА: запись пина $pin_name в $installer не состоялась" >&2
+        echo "        (замена не применилась: проверьте, что строка начинается с ${pin_name}=)" >&2
+        return 1
+    fi
     return 0
 }
 
 rc=0
 mismatched=()
+worktree_notice_shown=0
 actual_src=""
 expected_line=""
 
@@ -183,6 +200,16 @@ for entry in "${PIN_MAP[@]}"; do
         continue
     fi
     read -r actual actual_src <<< "$expected_line"
+
+    # Замечание печатает вызывающий, а не _expected_sha: та исполняется внутри
+    # $( ), то есть в подоболочке, и любой флаг "уже показано" там умирает
+    # вместе с ней - предупреждение печаталось бы на каждый из четырёх пинов.
+    if [[ "$actual_src" == "worktree" && "$worktree_notice_shown" -eq 0 ]]; then
+        worktree_notice_shown=1
+        echo "ЗАМЕЧАНИЕ: тега $(_tag_of_installer "$installer") в этом чекауте нет:" >&2
+        echo "           считаю, что релиз готовится, и сверяю с рабочим деревом." >&2
+        echo "           Если тег уже опубликован - git fetch --tags --force и повторить." >&2
+    fi
     pinned="$(_read_pin "$installer" "$pin_name")"
     if [[ -z "$pinned" ]]; then
         case "$pin_name" in

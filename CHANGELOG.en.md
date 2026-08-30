@@ -12,6 +12,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [5.29.0] - 2026-08-30
+
+### Added
+
+- Synced upstream 5.29.0 release tooling: atomic release assembly, minisign signatures, a machine-readable support matrix, and one-command signing.
+- Added a typed Python `vpn://` renderer with IPv6, PSK, and AWG 3.1 checks; private keys are never passed as process arguments.
+
+### Fixed
+
+- Preserved the fork's IPv6, P2P/DNAT, AdGuard Home, web panel, Telegram, and operator-preset features during the upstream sync.
+
 ## [5.28.1-bas.11] - 2026-08-30
 
 ### Added
@@ -1678,7 +1689,8 @@ Major security and reliability update after several consecutive code audits. The
 - Diagnostic report (`--diagnostic`).
 - Full uninstall (`--uninstall`).
 
-[Unreleased]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.28.1-bas.11...HEAD
+[Unreleased]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.29.0...HEAD
+[5.29.0]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.28.1-bas.11...v5.29.0
 [5.28.1-bas.11]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.28.1-bas.10...v5.28.1-bas.11
 [5.28.1-bas.10]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.19.2-bas.9...v5.28.1-bas.10
 [5.19.2-bas.3]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.19.2-bas.2...v5.19.2-bas.3

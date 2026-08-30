@@ -12,6 +12,17 @@
 
 ## [Unreleased]
 
+## [5.29.0] - 2026-08-30
+
+### Добавлено
+
+- Синхронизация release tooling с upstream 5.29.0: атомарная сборка релиза, minisign-подписи, машинная матрица поддержки и единая команда подписи.
+- Типизированный Python-рендерер `vpn://` с проверками IPv6, PSK и AWG 3.1; приватные ключи не передаются в аргументах процесса.
+
+### Исправлено
+
+- Сохранены fork-specific IPv6, P2P/DNAT, AdGuard Home, веб-панель, Telegram и операторские пресеты при синхронизации upstream.
+
 ## [5.28.1-bas.11] - 2026-08-30
 
 ### Добавлено
@@ -1685,7 +1696,8 @@ Hardening-фиксы надёжности и безопасности по ре�
 - Диагностический отчет (`--diagnostic`).
 - Полная деинсталляция (`--uninstall`).
 
-[Unreleased]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.28.1-bas.11...HEAD
+[Unreleased]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.29.0...HEAD
+[5.29.0]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.28.1-bas.11...v5.29.0
 [5.28.1-bas.11]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.28.1-bas.10...v5.28.1-bas.11
 [5.28.1-bas.10]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.19.2-bas.9...v5.28.1-bas.10
 [5.19.2-bas.3]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.19.2-bas.2...v5.19.2-bas.3
