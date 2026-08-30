@@ -2210,6 +2210,7 @@ safe_load_config() {
 load_awg_params_from_server_conf() {
     local conf="${1:-$SERVER_CONF_FILE}"
     [[ -f "$conf" ]] || return 1
+    local protocol_version="${AWG_PROTOCOL_VERSION:-2.0}"
 
     # Локальное накопление — экспортируем всё-или-ничего в конце
     local _Jc="" _Jmin="" _Jmax=""
@@ -2253,10 +2254,13 @@ load_awg_params_from_server_conf() {
         fi
     done < "$conf"
 
-    # Atomic check: все 11 обязательных полей найдены?
+    # Atomic check: AWG 1.5 intentionally has no S3/S4.
     [[ -n "$_Jc" && -n "$_Jmin" && -n "$_Jmax" && \
-       -n "$_S1" && -n "$_S2" && -n "$_S3" && -n "$_S4" && \
+       -n "$_S1" && -n "$_S2" && \
        -n "$_H1" && -n "$_H2" && -n "$_H3" && -n "$_H4" ]] || return 1
+    if [[ "$protocol_version" != "1.5" ]] && [[ -z "$_S3" || -z "$_S4" ]]; then
+        return 1
+    fi
 
     # Atomic export — окружение модифицируется только при полном успехе
     export AWG_Jc="$_Jc" AWG_Jmin="$_Jmin" AWG_Jmax="$_Jmax"
@@ -2328,10 +2332,12 @@ load_awg_params() {
         log_debug "$SERVER_CONF_FILE не существует — использую AWG params из $CONFIG_FILE (bootstrap)"
     fi
 
-    # 3. Проверка обязательных AWG 2.0 параметров
+    # 3. Проверка обязательных параметров выбранной версии
     local missing=0
     local param
-    for param in AWG_Jc AWG_Jmin AWG_Jmax AWG_S1 AWG_S2 AWG_S3 AWG_S4 AWG_H1 AWG_H2 AWG_H3 AWG_H4; do
+    local required_params=(AWG_Jc AWG_Jmin AWG_Jmax AWG_S1 AWG_S2 AWG_H1 AWG_H2 AWG_H3 AWG_H4)
+    [[ "${AWG_PROTOCOL_VERSION:-2.0}" == "1.5" ]] || required_params+=(AWG_S3 AWG_S4)
+    for param in "${required_params[@]}"; do
         if [[ -z "${!param:-}" ]]; then
             log_error "Параметр $param не найден"
             missing=1

@@ -36,7 +36,7 @@ AWG_PROFILE_SCRIPT_PATH="$AWG_DIR/scripts/awg_profile.py"
 # are used first; remote download is allowed only with pinned SHA256 or explicit
 # AWG_ALLOW_UNVERIFIED_DOWNLOAD=1 for development.
 declare -A AWG_ASSET_SHA256=(
-    ["awg_common_en.sh"]="c1a9d8832bfe95bd3a07586385d8926ed5e98066bcdbcd801f3e69c183f2ea8d"
+    ["awg_common_en.sh"]="506e0377f665051f1fd78595f9548c06bd8d479874aecb4f3ed976288c1153c7"
     ["manage_amneziawg_en.sh"]="573e2f62ccbb4500d4e42b52440beab83902babfe832098fafa772ab31366327"
     ["web/server.py"]="2415b0abe9b3ca34717139bb5c3d9315e03cb27b55e3afd31475726ea129756d"
     ["web/index.html"]="7c07ed1d1991e08c0f9fc31e86ed8eb2bba5fa96387088f1f18918396cf7e662"
