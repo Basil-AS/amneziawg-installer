@@ -2578,6 +2578,8 @@ def server_info_payload():
         "route_mode": "amnezia-routes",
         "ipv6_mode": cfg.get("AWG_IPV6_MODE_EFFECTIVE") or cfg.get("AWG_IPV6_MODE") or "legacy",
         "preset": cfg.get("AWG_PRESET") or "",
+        "protocol_version": cfg.get("AWG_PROTOCOL_VERSION") or "2.0",
+        "protocol_profile": "present" if (cfg.get("AWG_PROTOCOL_VERSION") or "2.0") != "3.1" or (AWG_DIR / "awg31-profile.json").is_file() else "missing",
     }
 
 
