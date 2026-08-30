@@ -84,7 +84,7 @@ def render(conf_path: Path) -> str:
         "H3": fields["AWG_H3"], "H4": fields["AWG_H4"],
         "Jc": fields["AWG_Jc"], "Jmin": fields["AWG_Jmin"],
         "Jmax": fields["AWG_Jmax"], "S1": fields["AWG_S1"],
-        "S2": fields["AWG_S2"], "S3": fields["AWG_S3"], "S4": fields["AWG_S4"],
+        "S2": fields["AWG_S2"],
         "allowed_ips": allowed, "client_ip": client_ip, "client_ipv6": client_ipv6,
         "client_priv_key": env_required("AWG_URI_CPK"), "config": raw.rstrip("\r\n"),
         "hostName": endpoint, "mtu": cfg.get("mtu", "1280"),
@@ -93,7 +93,10 @@ def render(conf_path: Path) -> str:
     }
     if cfg.get("presharedkey"):
         inner["psk_key"] = cfg["presharedkey"]
-    if protocol == "3.1":
+    if protocol != "1.5":
+        inner["S3"] = fields["AWG_S3"]
+        inner["S4"] = fields["AWG_S4"]
+    if protocol in ("3.0", "3.1"):
         required = {
             "ContentPaddingAddition": "contentpaddingaddition",
             "HeaderProtectionKey": "headerprotectionkey",
@@ -108,9 +111,9 @@ def render(conf_path: Path) -> str:
         for output, input_key in required.items():
             value = cfg.get(input_key, "")
             if not value:
-                raise ValueError(f"missing AWG 3.1 field {output}")
+                raise ValueError(f"missing AWG {protocol} field {output}")
             inner[output] = value
-    if any(fields[f"AWG_I{i}"] for i in range(1, 6)):
+    if protocol != "1.5" and any(fields[f"AWG_I{i}"] for i in range(1, 6)):
         for i in range(1, 6):
             inner[f"I{i}"] = fields[f"AWG_I{i}"]
 
