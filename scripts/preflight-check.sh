@@ -66,7 +66,11 @@ SCRIPTS=(
 
 # Запрещённые маркеры в публичном тексте и коммитах (case-insensitive).
 # Слитный список во избежание ложных срабатываний на доменных терминах.
-FORBIDDEN_MARKERS='claude|anthropic|\bcodex\b|chatgpt|openai|gpt-[0-9]|copilot|\bllm\b'
+# Идентификаторы приватного трекера (MyAI-xxxx) читателю со стороны не говорят
+# ничего, а утекают в публичное дерево незаметно: 30 aug 2026 их вычистили
+# целым PR, и следующий же PR внёс новую ссылку в комментарий теста. Ловится
+# тем же гейтом, что и упоминания посторонних инструментов.
+FORBIDDEN_MARKERS='claude|anthropic|\bcodex\b|chatgpt|openai|gpt-[0-9]|copilot|\bllm\b|myai-[a-z0-9]{4}'
 
 PASS=0
 FAIL=0
@@ -265,12 +269,26 @@ else
     # an earlier release is stale by design and only warns, one naming THIS
     # version and still failing is real. A gate that is red on every branch
     # stops being read, and then it protects nothing.
-    sig_tag=$(sed -n 's/^trusted comment: amneziawg-installer \([^ ]*\) .*/\1/p' \
-                  signing/*.minisig 2>/dev/null | head -n1)
+    # ALL signatures are read, not the first one the glob returns. A signing run
+    # interrupted midway leaves a mixture: some files carry the new tag, the rest
+    # still carry the previous release's. The file count stays at six either way,
+    # because the old signatures are always present in the tree, so the count
+    # check above cannot see it. Judging by the first file then made the verdict
+    # depend on the alphabet: signing order is install, install_en, manage,
+    # manage_en, awg_common, awg_common_en, while the glob returns awg_common
+    # first, so an early interruption looked like "all of them are simply from
+    # the previous release" and was downgraded to a warning. A warning does not
+    # block the tag, and the message asserted a single old tag that was not true
+    # of the files on disk.
+    sig_tags=$(sed -n 's/^trusted comment: amneziawg-installer \([^ ]*\) .*/\1/p' \
+                  signing/*.minisig 2>/dev/null | sort -u)
+    sig_tag_count=$(printf '%s' "$sig_tags" | grep -c . || true)
     if bash "$SCRIPT_DIR/verify-signatures.sh" "v${ref_ver}" >/tmp/preflight-sig.$$ 2>&1; then
         _ok "release signatures verified for v${ref_ver} ($sig_expected files)"
-    elif [[ -n "$sig_tag" && "$sig_tag" != "v${ref_ver}" ]]; then
-        _warn "signatures on disk are for $sig_tag, not v${ref_ver} - re-sign before tagging"
+    elif [[ "$sig_tag_count" -gt 1 ]]; then
+        _bad "release signatures name several tags at once ($(printf '%s' "$sig_tags" | tr '\n' ' ')) - a signing run was interrupted, re-sign all of them"
+    elif [[ "$sig_tag_count" -eq 1 && "$sig_tags" != "v${ref_ver}" ]]; then
+        _warn "signatures on disk are for $sig_tags, not v${ref_ver} - re-sign before tagging"
     else
         cat /tmp/preflight-sig.$$ >&2
         _bad "release signatures (run: bash scripts/verify-signatures.sh v${ref_ver})"
