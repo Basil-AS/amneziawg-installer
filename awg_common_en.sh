@@ -30,6 +30,35 @@ _awg31_render_extra_fields() {
         | grep -E '^(ContentPaddingAddition|HeaderProtectionKey|MaxHandshakeAttempts|KeepaliveTimeout|RejectAfterTime|RekeyAfterTime|RekeyTimeout|RandomTrailers|DisableCookies) = '
 }
 
+# Keep the validated JSON profile and legacy AWG_* settings in lockstep.
+sync_awg31_profile_from_env() {
+    [[ "${AWG_PROTOCOL_VERSION:-2.0}" == "3.1" ]] || return 0
+    [[ -f "$AWG_DIR/awg31-profile.json" ]] || return 1
+    python3 - "$AWG_DIR/awg31-profile.json" <<'PY'
+import json, os, sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+data = json.loads(path.read_text(encoding="utf-8"))
+mapping = {
+    "jc": "AWG_Jc", "jmin": "AWG_Jmin", "jmax": "AWG_Jmax",
+    "s1": "AWG_S1", "s2": "AWG_S2", "s3": "AWG_S3", "s4": "AWG_S4",
+    "h1": "AWG_H1", "h2": "AWG_H2", "h3": "AWG_H3", "h4": "AWG_H4",
+}
+for field, env_name in mapping.items():
+    value = os.environ.get(env_name)
+    if value is not None and value != "":
+        data[field] = int(value) if value.isdigit() else value
+data["protocolVersion"] = "3.1"
+tmp = path.with_name(path.name + f".tmp.{os.getpid()}")
+tmp.write_text(json.dumps(data, ensure_ascii=True, sort_keys=True) + "\n", encoding="utf-8")
+tmp.chmod(0o600)
+tmp.replace(path)
+path.chmod(0o600)
+PY
+    python3 "$AWG_PROFILE_SCRIPT_PATH" validate --version 3.1 --input "$AWG_DIR/awg31-profile.json" >/dev/null
+}
+
 # Library version. The manage script verifies it after sourcing this file so a
 # partial update fails with a clear message instead of a later missing symbol.
 # shellcheck disable=SC2034
@@ -4345,8 +4374,13 @@ generate_runtime_awg_profile() {
             if [[ $((AWG_S1 + 56)) -eq $AWG_S2 ]]; then
                 AWG_S2=$((AWG_S2 + 1)); (( AWG_S2 <= 150 )) || AWG_S2=15
             fi
-            AWG_S3=$(awg_rand_range 0 10)
-            AWG_S4=$(awg_rand_range 0 10)
+            if [[ "${AWG_PROTOCOL_VERSION:-2.0}" == "3.1" ]]; then
+                AWG_S3=$(awg_rand_range 8 10)
+                AWG_S4=$(awg_rand_range 8 10)
+            else
+                AWG_S3=$(awg_rand_range 0 10)
+                AWG_S4=$(awg_rand_range 0 10)
+            fi
             ;;
         default)
             AWG_PRESET="default"
@@ -4359,7 +4393,11 @@ generate_runtime_awg_profile() {
                 AWG_S2=$((AWG_S2 + 1)); (( AWG_S2 <= 150 )) || AWG_S2=15
             fi
             AWG_S3=$(awg_rand_range 8 55)
-            AWG_S4=$(awg_rand_range 4 32)
+            if [[ "${AWG_PROTOCOL_VERSION:-2.0}" == "3.1" ]]; then
+                AWG_S4=$(awg_rand_range 8 32)
+            else
+                AWG_S4=$(awg_rand_range 4 32)
+            fi
             ;;
         *)
             log_error "Unknown preset: $preset"

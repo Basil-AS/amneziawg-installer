@@ -6717,6 +6717,7 @@ step6_generate_configs() {
                 || die "Существующий AWG 3.1 profile не прошёл валидацию."
         fi
         chmod 600 "$AWG_DIR/awg31-profile.json"
+        sync_awg31_profile_from_env || die "AWG 3.1 profile не удалось синхронизировать с параметрами конфигурации."
     fi
 
     if [[ "$FORCE_REINSTALL" -ne 1 && "$CLI_UPGRADE_IPV6" -ne 1 ]] && configs_ready_for_step6_resume; then
