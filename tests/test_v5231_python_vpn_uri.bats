@@ -70,3 +70,23 @@ PY
     [ "$status" -ne 0 ]
     [[ "$output" == *"missing AWG 3.1 field DisableCookies"* ]]
 }
+
+@test "Python vpn URI renderer applies the selected 1.5 field contract" {
+    run env \
+        AWG_PORT=51820 AWG_PROTOCOL_VERSION=1.5 AWG_SERVER_NAME="Legacy" \
+        AWG_URI_CPK=client-private AWG_URI_SPK=server-public \
+        AWG_H1=1-9 AWG_H2=2-10 AWG_H3=3-11 AWG_H4=4-12 AWG_Jc=4 AWG_Jmin=10 AWG_Jmax=50 \
+        AWG_S1=12 AWG_S2=13 AWG_S3=14 AWG_S4=12 AWG_I1='<r 32>' \
+        python3 "$SCRIPT" --conf "$CONF"
+    [ "$status" -eq 0 ]
+    run python3 - "$output" <<'PY'
+import base64, json, sys, zlib
+payload = sys.argv[1][6:] + "=" * (-len(sys.argv[1][6:]) % 4)
+raw = base64.urlsafe_b64decode(payload)
+outer = json.loads(zlib.decompress(raw[4:]))
+inner = json.loads(outer["containers"][0]["awg"]["last_config"])
+assert "S3" not in inner and "S4" not in inner and "I1" not in inner
+assert outer["containers"][0]["awg"]["protocol_version"] == "1.5"
+PY
+    [ "$status" -eq 0 ]
+}
