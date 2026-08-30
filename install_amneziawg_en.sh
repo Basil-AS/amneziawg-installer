@@ -580,6 +580,10 @@ check_os_version() {
 }
 
 check_kernel_version() {
+    [[ "${AWG_PROTOCOL_VERSION:-3.1}" == "3.1" ]] && {
+        log "AWG 3.1: kernel release checks disabled; capability probe is authoritative."
+        return 0
+    }
     # The AmneziaWG 2.0 module is built via DKMS against the host kernel. On
     # kernels older than 5.15 (Ubuntu < 22.04, e.g. 5.4 on 20.04) the build
     # usually fails at step 2 with an opaque package-failure. Warn EXPLICITLY and
@@ -4070,7 +4074,7 @@ initialize_setup() {
 
     check_os_version
     check_container
-    [[ "$AWG_PROTOCOL_VERSION" == "3.1" ]] || check_kernel_version
+    check_kernel_version
     check_free_space
 
     local default_port
