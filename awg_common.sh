@@ -4737,23 +4737,44 @@ generate_cps_i1_runtime() {
     echo "<r $(awg_rand_range 32 256)>"
 }
 
+generate_awg31_s_values_runtime() {
+    local attempt s1 s2 s3
+    for attempt in {1..64}; do
+        s1=$(awg_rand_range 12 149)
+        s2=$(awg_rand_range 12 149)
+        s3=$(awg_rand_range 12 63)
+        if [[ $((148 + s1)) -ne $((92 + s2)) ]] &&
+           [[ $((148 + s1)) -ne $((64 + s3)) ]] &&
+           [[ $((148 + s1)) -ne 44 ]] &&
+           [[ $((92 + s2)) -ne $((64 + s3)) ]] &&
+           [[ $((92 + s2)) -ne 44 ]] &&
+           [[ $((64 + s3)) -ne 44 ]]; then
+            printf '%s\n%s\n%s\n12\n' "$s1" "$s2" "$s3"
+            return 0
+        fi
+    done
+    return 1
+}
+
 generate_runtime_awg_profile() {
-    local preset="${1:-default}" h_lines
+    local preset="${1:-default}" h_lines s_lines
     case "$preset" in
         mobile)
             AWG_PRESET="mobile"
             AWG_Jc=3
             AWG_Jmin=$(awg_rand_range 30 50)
             AWG_Jmax=$(( AWG_Jmin + $(awg_rand_range 20 80) ))
-            AWG_S1=$(awg_rand_range 15 150)
-            AWG_S2=$(awg_rand_range 15 150)
-            if [[ $((AWG_S1 + 56)) -eq $AWG_S2 ]]; then
-                AWG_S2=$((AWG_S2 + 1)); (( AWG_S2 <= 150 )) || AWG_S2=15
-            fi
             if [[ "${AWG_PROTOCOL_VERSION:-2.0}" == "3.1" ]]; then
-                AWG_S3=$(awg_rand_range 8 10)
-                AWG_S4=$(awg_rand_range 12 24)
+                mapfile -t s_lines < <(generate_awg31_s_values_runtime) || return 1
+                [[ ${#s_lines[@]} -eq 4 ]] || return 1
+                AWG_S1="${s_lines[0]}"; AWG_S2="${s_lines[1]}"
+                AWG_S3="${s_lines[2]}"; AWG_S4="${s_lines[3]}"
             else
+                AWG_S1=$(awg_rand_range 15 150)
+                AWG_S2=$(awg_rand_range 15 150)
+                if [[ $((AWG_S1 + 56)) -eq $AWG_S2 ]]; then
+                    AWG_S2=$((AWG_S2 + 1)); (( AWG_S2 <= 150 )) || AWG_S2=15
+                fi
                 AWG_S3=$(awg_rand_range 0 10)
                 AWG_S4=$(awg_rand_range 0 10)
             fi
@@ -4763,15 +4784,18 @@ generate_runtime_awg_profile() {
             AWG_Jc=$(awg_rand_range 3 6)
             AWG_Jmin=$(awg_rand_range 40 89)
             AWG_Jmax=$(( AWG_Jmin + $(awg_rand_range 50 150) ))
-            AWG_S1=$(awg_rand_range 15 150)
-            AWG_S2=$(awg_rand_range 15 150)
-            if [[ $((AWG_S1 + 56)) -eq $AWG_S2 ]]; then
-                AWG_S2=$((AWG_S2 + 1)); (( AWG_S2 <= 150 )) || AWG_S2=15
-            fi
-            AWG_S3=$(awg_rand_range 8 55)
             if [[ "${AWG_PROTOCOL_VERSION:-2.0}" == "3.1" ]]; then
-                AWG_S4=$(awg_rand_range 8 32)
+                mapfile -t s_lines < <(generate_awg31_s_values_runtime) || return 1
+                [[ ${#s_lines[@]} -eq 4 ]] || return 1
+                AWG_S1="${s_lines[0]}"; AWG_S2="${s_lines[1]}"
+                AWG_S3="${s_lines[2]}"; AWG_S4="${s_lines[3]}"
             else
+                AWG_S1=$(awg_rand_range 15 150)
+                AWG_S2=$(awg_rand_range 15 150)
+                if [[ $((AWG_S1 + 56)) -eq $AWG_S2 ]]; then
+                    AWG_S2=$((AWG_S2 + 1)); (( AWG_S2 <= 150 )) || AWG_S2=15
+                fi
+                AWG_S3=$(awg_rand_range 8 55)
                 AWG_S4=$(awg_rand_range 4 32)
             fi
             ;;
