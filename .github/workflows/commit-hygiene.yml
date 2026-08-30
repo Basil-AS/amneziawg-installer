@@ -107,7 +107,18 @@ jobs:
           # one: the redirect leaves an empty file and the check passes having
           # scanned nothing. Only grep is allowed to "fail", and only because
           # finding no added lines is a legitimate result.
-          git diff "${BASE}...${HEAD}" --unified=0 -- . > /tmp/raw.txt
+          # Do not diff the full merge tree here: an upstream sync merge would
+          # re-scan every upstream documentation line. Regular PR commits are
+          # checked commit-by-commit; merge commits are covered by the source
+          # branch's own hygiene check.
+          shas="$(git rev-list --first-parent "${BASE}..${HEAD}")"
+          : > /tmp/raw.txt
+          for sha in $shas; do
+            parents="$(git rev-list --parents -n1 "$sha")"
+            set -- $parents
+            [ "$#" -eq 2 ] || continue
+            git diff "$sha^" "$sha" --unified=0 -- . >> /tmp/raw.txt
+          done
           grep '^+' /tmp/raw.txt | grep -v '^+++' > /tmp/added.txt || true
           python3 - <<'PY'
           import io, sys
