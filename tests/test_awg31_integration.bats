@@ -42,7 +42,7 @@ H4 = 4
 EOF
     run bash -c 'source "$1"; AWG_PROTOCOL_VERSION=1.5; load_awg_params_from_server_conf "$2"; printf "%s|%s|%s" "$AWG_H1" "${AWG_S3:-}" "${AWG_S4:-}"' _ "$BATS_TEST_DIRNAME/../awg_common.sh" "$conf"
     [ "$status" -eq 0 ]
-    [ "$output" = "1|||" ]
+    [ "$output" = "1||" ]
 
     run bash -c 'source "$1"; AWG_PROTOCOL_VERSION=2.0; load_awg_params_from_server_conf "$2"' _ "$BATS_TEST_DIRNAME/../awg_common.sh" "$conf"
     [ "$status" -ne 0 ]
