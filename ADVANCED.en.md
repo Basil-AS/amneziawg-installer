@@ -1461,7 +1461,7 @@ When a client is created, a `.vpnuri` file is automatically generated with a `vp
 - `/root/awg/<client_name>.vpnuri` — plain-text `vpn://` URI
 - `/root/awg/<client_name>.vpnuri.png` — QR code of that URI (since v5.11.3)
 
-**Format:** the configuration is compressed via zlib (Perl `Compress::Zlib`) and Base64-encoded, forming a URI like `vpn://...`.
+**Format:** the configuration is compressed via zlib and URL-safe Base64-encoded, forming a URI like `vpn://...`. Current installations use the typed `scripts/gen_vpn_uri.py` renderer; private keys are passed through the environment and never appear in process arguments.
 
 > Perl with `Compress::Zlib` and `MIME::Base64` modules must be present on the server. On Ubuntu and Debian they are installed by default. If Perl is absent, neither `.vpnuri` nor `.vpnuri.png` is created, but `.conf` files work as usual. `qrencode` (already required for `.conf` QR) is also used for `.vpnuri.png`.
 

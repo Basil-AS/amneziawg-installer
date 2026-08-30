@@ -47,6 +47,7 @@ for asset in \
     web/vendor/tailwindcss.js \
     web/vendor/apexcharts.min.js \
     scripts/update_geoip_dbs.py \
+    scripts/gen_vpn_uri.py \
     scripts/update-installed.sh \
     scripts/migrate-tunnel-subnet.sh \
     scripts/awg_profile.py \
