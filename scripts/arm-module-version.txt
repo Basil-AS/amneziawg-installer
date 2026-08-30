@@ -11,4 +11,19 @@
 #
 # A commit SHA is NOT valid here: the build clones with --depth=1 --branch, which
 # accepts only a tag or branch. Pin a tag for true reproducibility.
-HEAD
+#
+# Pinned on 2026-07-31. Upstream merged AmneziaWG 3.0 into the default branch on
+# 2026-07-30, so HEAD stopped being an AWG 2.0 module. It also stopped building
+# on Debian 12: netlink.c calls nla_put_uint, which kernel 6.1 does not have, and
+# debian-bookworm-arm64 failed for the v5.22.0 tag while the other six targets
+# passed. v1.0.20260725 is the last tag of the 1.0.x line, one compat commit
+# ahead of what the previous releases were built from.
+#
+# Update 2026-08-01: upstream fixed the pre-6.7 build the same evening
+# (v3.0.20260731-04, amnezia-vpn/amneziawg-linux-kernel-module#204), verified by
+# us on Debian 12 / kernel 6.1.0-51, so debian-bookworm-arm64 would build from
+# HEAD again. The pin stays anyway, and now for the reason that matters more:
+# HEAD is a moving 3.0 target, while ARM users must get the same 2.0 module as
+# everyone else. Revisit when 3.0 support is a deliberate decision rather than a
+# side effect of tracking HEAD.
+v1.0.20260725

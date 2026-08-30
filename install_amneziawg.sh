@@ -9,7 +9,7 @@ fi
 # ==============================================================================
 # Скрипт для установки и настройки AmneziaWG 2.0 на Ubuntu/Debian серверах
 # Автор: @bivlked
-# Версия: 5.19.2-bas.9
+# Версия: 5.28.1-bas.10
 # Дата: 2026-05-13
 # Репозиторий: https://github.com/bivlked/amneziawg-installer
 # ==============================================================================
@@ -17,11 +17,12 @@ fi
 # --- Безопасный режим и Константы ---
 set -o pipefail
 
-SCRIPT_VERSION="5.19.2-bas.9"
+SCRIPT_VERSION="5.28.1-bas.10"
 AWG_DIR="/root/awg"
 INSTALLER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)"
 CONFIG_FILE="$AWG_DIR/awgsetup_cfg.init"
 STATE_FILE="$AWG_DIR/setup_state"
+BOOT_CRITICAL_SNAPSHOT_FILE="$AWG_DIR/boot-critical.pkgs"
 LOG_FILE="$AWG_DIR/install_amneziawg.log"
 KEYS_DIR="$AWG_DIR/keys"
 SERVER_CONF_FILE="/etc/amnezia/amneziawg/awg0.conf"
@@ -34,8 +35,8 @@ MANAGE_SCRIPT_PATH="$AWG_DIR/manage_amneziawg.sh"
 # используются первыми; remote download разрешён только с pinned SHA256 либо
 # при явном AWG_ALLOW_UNVERIFIED_DOWNLOAD=1 для разработки.
 declare -A AWG_ASSET_SHA256=(
-    ["awg_common.sh"]="1f1d8f7e30f786eb7c7557150eb27472614548c2969a9c6c70f1ec4258245ebb"
-    ["manage_amneziawg.sh"]="16dca1567cb778cd781e05d93bf349095c186b1a9ad6698ae59589a9bb03ed58"
+    ["awg_common.sh"]="e00458ac5be13840bc36dfbbaf14447d936de769693b81ecd194dba41c02aa38"
+    ["manage_amneziawg.sh"]="2f386dc61ad9578c3a88c44846f65d14d48da08233810695d53824bc3a892d0a"
     ["web/server.py"]="ded8e87bdeb70b8555c2e3887a4109c5971e1f73d8298c8ca5a72a94a283bbc8"
     ["web/index.html"]="7c07ed1d1991e08c0f9fc31e86ed8eb2bba5fa96387088f1f18918396cf7e662"
     ["web/app.js"]="6c9e082032b7c099221a35066fe969ae91e1ca6aab057030d277584d91f36cda"
@@ -49,8 +50,12 @@ declare -A AWG_ASSET_SHA256=(
     ["scripts/migrate-tunnel-subnet.sh"]="a8b40101e8f02627c10d2bb769802bf860fdf41dd2bc8ac38a180e953329c3bb"
 )
 
+# Проверенный AWG 2.0 для ядер, где третья линия пока не используется.
+AWG2_PIN_TAG="v1.0.20260725"
+AWG2_PIN_COMMIT="ae0924ca700520ca34c5bdbcfd05b2f683ea9353"
+
 # Флаги CLI
-UNINSTALL=0; HELP=0; HELP_EXIT_RC=0; DIAGNOSTIC=0; VERBOSE=0; NO_COLOR=0; AUTO_YES=0; NO_TWEAKS=0; NO_CPS=0
+UNINSTALL=0; HELP=0; HELP_EXIT_RC=0; DIAGNOSTIC=0; VERBOSE=0; NO_COLOR=0; AUTO_YES=0; NO_TWEAKS=0; NO_CPS=0; KEEP_PACKAGES=""
 FORCE_REINSTALL=0
 _APT_UPDATED=0
 CLI_PORT=""; CLI_SUBNET=""; CLI_DISABLE_IPV6="default"; CLI_SSH_PORT=""
@@ -159,7 +164,9 @@ while [[ $# -gt 0 ]]; do
         --route-all)     CLI_ROUTING_MODE=1 ;;
         --route-amnezia) CLI_ROUTING_MODE=2 ;;
         --route-custom=*) CLI_ROUTING_MODE=3; CLI_CUSTOM_ROUTES="${1#*=}" ;;
+        --isolation=*)   CLI_ISOLATION="${1#*=}" ;;
         --endpoint=*)    CLI_ENDPOINT="${1#*=}" ;;
+        --mobile)        CLI_MOBILE=1 ;;
         --yes|-y)        AUTO_YES=1 ;;
         --no-tweaks)     NO_TWEAKS=1; CLI_NO_TWEAKS=1 ;;
         --disable-ufw)   CLI_DISABLE_UFW=1 ;;
@@ -450,7 +457,7 @@ request_reboot() {
     # Перед reboot-gate 1→2 сохраняем boot_id. На входе step 2
     # сравниваем с текущим — если совпадает, reboot не произошёл
     # и DKMS соберёт модуль под старое ядро (которое после следующего
-    # reboot будет уже apt full-upgrade'нутым и не подхватит модуль).
+    # reboot будет уже обновлённым на шаге 1 и не подхватит модуль).
     if [[ "$next_step" == "2" ]] && [[ -r /proc/sys/kernel/random/boot_id ]]; then
         if cat /proc/sys/kernel/random/boot_id > "$AWG_DIR/.boot_id_before_step2" 2>/dev/null; then
             log_debug "boot_id captured before reboot"
@@ -498,6 +505,16 @@ parse_reboot_choice() {
         n|N|no|NO|No) return 1 ;;
         *) return 2 ;;
     esac
+}
+
+check_container() {
+    command -v systemd-detect-virt &>/dev/null || return 0
+    local virt
+    virt=$(systemd-detect-virt --container 2>/dev/null) || true
+    [[ -z "$virt" || "$virt" == "none" ]] && return 0
+    log_error "Обнаружен контейнер: ${virt}."
+    log_error "AmneziaWG требует загрузки модуля ядра (DKMS), а контейнеры (LXC/OpenVZ/Docker/WSL) разделяют ядро с хостом и не позволяют загружать свои модули."
+    die "Возьмите полноценный VPS (KVM/QEMU) или bare-metal. Вариант для контейнеров - userspace amneziawg-go: ADVANCED.md, раздел 'LXC / Docker через amneziawg-go'."
 }
 
 check_os_version() {
@@ -577,6 +594,35 @@ check_kernel_version() {
     else
         log "Ядро $kver (OK для модуля AmneziaWG 2.0)."
     fi
+}
+
+# shellcheck disable=SC2120  # в установщике зовётся без аргументов (берёт uname -r); bats передаёт версии
+_kernel_supports_awg3() {
+    # Возвращает 0, если версия ядра >= 6.7 - там модуль берём из PPA как есть.
+    # Возвращает 1, если ядро старее 6.7 - там идём пиновым 2.0-путём.
+    # ⚠️ Имя историческое, читать его буквально НЕЛЬЗЯ. Порог 6.7 появился 30-31 jul
+    # 2026: 3.0-код звал nla_put_uint, которой до mainline v6.7 не было, и на 6.1
+    # (Debian 12) сборка падала с 'implicit declaration of nla_put_uint'. 31 jul
+    # upstream это починил (v3.0.20260731-04), и на 6.1 3.0-модуль СОБИРАЕТСЯ -
+    # проверено на стенде 1 aug. Порог оставлен сознательно: линия 3.0 за сутки
+    # успела сломать и починить сборку именно на старых ядрах, то есть там она
+    # обкатана меньше всего, а пиновый 2.0 сверяется по immutable-коммиту. Снимать
+    # порог после отдельной валидации 3.0, а не потому, что сборка снова проходит.
+    # Arg $1: kernel release (default uname -r). Неразбираемую версию считаем
+    # "НЕ поддерживает" -> пиновый 2.0 (он собирается на ЛЮБОМ нашем ядре, так что
+    # консервативный выбор не ломает связь, лишь не даёт 3.0-фич, которых в H0 нет).
+    # Чистая функция без внешних зависимостей (bats: извлекается sed-range + source).
+    local kver="${1:-$(uname -r)}" kmaj kmin
+    local min_maj=6 min_min=7
+    if [[ "$kver" =~ ^([0-9]+)\.([0-9]+) ]]; then
+        kmaj=${BASH_REMATCH[1]}; kmin=${BASH_REMATCH[2]}
+    else
+        return 1
+    fi
+    if (( kmaj > min_maj || (kmaj == min_maj && kmin >= min_min) )); then
+        return 0
+    fi
+    return 1
 }
 
 check_free_space() {
@@ -743,13 +789,12 @@ safe_load_config() {
                 OS_ID|OS_VERSION|OS_CODENAME|AWG_PORT|AWG_TUNNEL_SUBNET|\
                 DISABLE_IPV6|ALLOWED_IPS_MODE|ALLOWED_IPS|AWG_ENDPOINT|AWG_MTU|\
                 AWG_Jc|AWG_Jmin|AWG_Jmax|AWG_S1|AWG_S2|AWG_S3|AWG_S4|\
-                AWG_H1|AWG_H2|AWG_H3|AWG_H4|AWG_I1|AWG_I2|AWG_I3|AWG_I4|AWG_I5|AWG_PRESET|NO_TWEAKS|AWG_APPLY_MODE|\
+                AWG_H1|AWG_H2|AWG_H3|AWG_H4|AWG_I1|AWG_I2|AWG_I3|AWG_I4|AWG_I5|AWG_PRESET|NO_TWEAKS|AWG_APPLY_MODE|PREV_AWG_PORT|CLIENT_ISOLATION|CLIENT_ISOLATION_NET|\
                 AWG_IPV6_ENABLED|AWG_IPV6_MODE|AWG_IPV6_MODE_REQUESTED|AWG_IPV6_MODE_EFFECTIVE|AWG_IPV6_MODE_REASON|AWG_IPV6_SUBNET|AWG_IPV6_NDP_PROXY|AWG_IPV6_LEAK_PROTECTION|\
                 AWG_P2P_ENABLED|AWG_P2P_BASE_PORT|AWG_P2P_PORTS_PER_CLIENT|AWG_FULLCONE_NAT|AWG_DISABLE_UFW|\
                 AWG_WEB_ENABLED|AWG_WEB_PORT|AWG_WEB_BIND|AWG_WEB_CERT_MODE|AWG_WEB_DOMAIN|AWG_WEB_CERT_FILE|AWG_WEB_KEY_FILE|AWG_WEB_CERT_PROVIDER|AWG_WEB_LE_EMAIL|AWG_WEB_PUBLIC_URL|AWG_WEB_CERT_FALLBACK|AWG_WEB_CERT_ATTEMPTED_MODE|AWG_WEB_CERT_FAILURE_REASON|AWG_WEB_CERT_FALLBACK_USED|\
                 AWG_DNS_MODE|AWG_CUSTOM_DNS|AWG_ADGUARD_ENABLED|AWG_ADGUARD_PORT|AWG_ADGUARD_DIR|\
-                AWG_WIRESOCK_HINTS|AWG_WIRESOCK_ID|AWG_WIRESOCK_IP|AWG_WIRESOCK_IB|\
-                AWG_SERVER_NAME)
+                AWG_WIRESOCK_HINTS|AWG_WIRESOCK_ID|AWG_WIRESOCK_IP|AWG_WIRESOCK_IB|AWG_SERVER_NAME)
                     export "$key=$value"
                     ;;
             esac
@@ -888,6 +933,201 @@ validate_subnet() {
     fi
     # Нормализация глобала к <network+1>/<prefix> (сервер = network+1).
     AWG_TUNNEL_SUBNET="${srv}/${prefix}"
+}
+
+# Сеть туннеля из CIDR-строки (<network+1>/<prefix> -> <network>/<prefix>).
+# Нужен изоляции клиентов (issue #178): при отключённой изоляции в AllowedIPs
+# клиентов уходит именно network-адрес. Самодостаточно (шаг 0, ДО загрузки
+# awg_common.sh): не используем _cidr_bounds/_int_to_ipv4.
+tunnel_network_cidr() {
+    local subnet="${1:-$AWG_TUNNEL_SUBNET}"
+    if ! [[ "$subnet" =~ ^(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,2})/([0-9]{1,2})$ ]]; then
+        return 1
+    fi
+    local a="${BASH_REMATCH[1]}" b="${BASH_REMATCH[2]}" c="${BASH_REMATCH[3]}" d="${BASH_REMATCH[4]}" prefix="${BASH_REMATCH[5]}"
+    (( 10#$prefix <= 32 )) || return 1
+    local o
+    for o in "$a" "$b" "$c" "$d"; do (( 10#$o <= 255 )) || return 1; done
+    local ip=$(( (10#$a << 24) | (10#$b << 16) | (10#$c << 8) | 10#$d ))
+    local mask
+    if (( 10#$prefix == 0 )); then mask=0; else mask=$(( (0xFFFFFFFF << (32 - 10#$prefix)) & 0xFFFFFFFF )); fi
+    local net=$(( ip & mask ))
+    echo "$(( (net >> 24) & 255 )).$(( (net >> 16) & 255 )).$(( (net >> 8) & 255 )).$(( net & 255 ))/${prefix}"
+}
+
+# Явный выбор изоляции клиентов (issue #178). Приоритет:
+# CLI-флаг > сохранённый конфиг > интерактивный вопрос (только первый запуск,
+# без --yes) > 1 (изолированно). Старый конфиг без ключа = 1: до этой фичи
+# split-режимы были изолированы де-факто, поведение сохраняется.
+configure_client_isolation() {
+    case "$CLI_ISOLATION" in
+        on)  CLIENT_ISOLATION=1; log "Изоляция клиентов из CLI: включена." ;;
+        off) CLIENT_ISOLATION=0; log "Изоляция клиентов из CLI: отключена." ;;
+        default)
+            if [[ -n "${CLIENT_ISOLATION:-}" ]]; then
+                log "Изоляция клиентов (из конфига): $( [[ "$CLIENT_ISOLATION" -eq 1 ]] && echo включена || echo отключена )."
+            elif [[ "${config_exists:-0}" -eq 1 ]]; then
+                CLIENT_ISOLATION=1
+                log "Изоляция клиентов: включена (конфиг до v5.20 - прежнее поведение)."
+            elif [[ "$AUTO_YES" -eq 1 ]]; then
+                CLIENT_ISOLATION=1
+                log "Изоляция клиентов: включена (--yes, по умолчанию)."
+            else
+                local r_iso
+                read -rp "Изолировать клиентов VPN друг от друга? [Y/n]: " r_iso < /dev/tty
+                case "$r_iso" in
+                    [nN]*) CLIENT_ISOLATION=0; log "Изоляция клиентов отключена: клиенты будут видеть друг друга внутри VPN." ;;
+                    *)     CLIENT_ISOLATION=1; log "Изоляция клиентов включена." ;;
+                esac
+            fi
+            ;;
+        *) die "Некорректное значение --isolation='$CLI_ISOLATION'. Допустимо: on|off." ;;
+    esac
+    export CLIENT_ISOLATION
+}
+
+# Приводит ALLOWED_IPS в соответствие с CLIENT_ISOLATION (идемпотентно,
+# вызывается на каждом запуске после определения режима маршрутизации).
+# Изоляция ВЫКЛ: сеть туннеля дописывается в список (режимы 2/3; в режиме 1
+# 0.0.0.0/0 уже покрывает её). Изоляция ВКЛ: наш токен убирается из режима 2
+# (round-trip off->on); режим 3 не трогаем - кастомный список принадлежит
+# пользователю, а изоляцию всё равно обеспечивает DROP-правило на сервере.
+# CLIENT_ISOLATION_NET хранит ownership нашего токена (пуст, если токен
+# пользовательский или изоляция включена) - нужен, чтобы вычистить прежний
+# маршрут при смене подсети туннеля (issue #178, финальный аудит).
+_apply_isolation_to_allowed_ips() {
+    local net
+    net=$(tunnel_network_cidr "$AWG_TUNNEL_SUBNET") || return 0
+    # Убираем ВЕСЬ whitespace, не только пробелы: validate_cidr_list принимает
+    # табы как разделители, и токен с табом иначе не распознавался бы pattern-
+    # матчем ниже - задваивание вместо no-op (ревью PR #179).
+    local compact=",${ALLOWED_IPS//[[:space:]]/},"
+
+    # Смена подсети туннеля: наш прежний токен (persisted CLIENT_ISOLATION_NET)
+    # отличается от текущей сети - убираем в любом режиме и при любом состоянии
+    # изоляции: токен по конструкции добавлен нами, а не пользователем.
+    if [[ -n "${CLIENT_ISOLATION_NET:-}" && "$CLIENT_ISOLATION_NET" != "$net" ]]; then
+        if [[ "$compact" == *",${CLIENT_ISOLATION_NET},"* ]]; then
+            # Цикл, а не одиночный replace: в испорченном списке токен может
+            # встречаться несколько раз - вычищаем все копии (ревью PR #179).
+            while [[ "$compact" == *",${CLIENT_ISOLATION_NET},"* ]]; do
+                compact="${compact/,${CLIENT_ISOLATION_NET},/,}"
+            done
+            compact="${compact#,}"; compact="${compact%,}"
+            ALLOWED_IPS="${compact//,/, }"
+            log "Смена подсети туннеля: прежний маршрут ${CLIENT_ISOLATION_NET} убран из AllowedIPs клиентов."
+            compact=",${ALLOWED_IPS// /},"
+        fi
+        CLIENT_ISOLATION_NET=""
+    fi
+
+    if [[ "${CLIENT_ISOLATION:-1}" -eq 0 ]]; then
+        if [[ "$ALLOWED_IPS_MODE" == "1" ]]; then
+            CLIENT_ISOLATION_NET=""
+        elif [[ "$compact" == *",${net},"* ]]; then
+            # Уже есть: наш прежний (CLIENT_ISOLATION_NET==net сохранён) или
+            # пользовательский (CLIENT_ISOLATION_NET пуст) - ownership не меняем.
+            :
+        else
+            ALLOWED_IPS="${ALLOWED_IPS}, ${net}"
+            CLIENT_ISOLATION_NET="$net"
+            log "Изоляция отключена: подсеть туннеля ${net} добавлена в AllowedIPs клиентов."
+        fi
+    else
+        # Изоляция ВКЛ: режим 2 - токен убираем всегда (список генерируется нами);
+        # режим 3 - только если токен добавили мы (ownership в CLIENT_ISOLATION_NET).
+        if [[ "$compact" == *",${net},"* ]] \
+           && { [[ "$ALLOWED_IPS_MODE" == "2" ]] || [[ "${CLIENT_ISOLATION_NET:-}" == "$net" ]]; }; then
+            while [[ "$compact" == *",${net},"* ]]; do
+                compact="${compact/,${net},/,}"
+            done
+            compact="${compact#,}"; compact="${compact%,}"
+            ALLOWED_IPS="${compact//,/, }"
+            log "Изоляция включена: подсеть туннеля ${net} убрана из AllowedIPs клиентов."
+        fi
+        CLIENT_ISOLATION_NET=""
+    fi
+    export CLIENT_ISOLATION_NET
+}
+
+# Валидация имени сервера для vpn:// URI (D#180): поле description показывается
+# в приложении Amnezia после импорта. Ограничения продиктованы хранением в
+# awgsetup_cfg.init (обёртка '...') и вложением в JSON: без кавычек и бэкслеша,
+# без управляющих символов ([[:cntrl:]] целиком: ESC от стрелок в интерактивном
+# вводе ломал бы JSON - je() контролы не экранирует), без пробелов по краям
+# (клиент показал бы визуально пустое имя). Длина - до 128 БАЙТ в C-локали
+# (LC_ALL=C даёт предсказуемый счёт на любой системной локали; 128 байт
+# вмещают 64 кириллических символа UTF-8).
+validate_server_name() {
+    local n="$1"
+    local LC_ALL=C
+    [[ -n "$n" ]] || return 1
+    (( ${#n} <= 128 )) || return 1
+    [[ "$n" == *"'"* || "$n" == *'"'* || "$n" == *'\'* ]] && return 1
+    [[ "$n" == *[[:cntrl:]]* ]] && return 1
+    [[ "$n" == " "* || "$n" == *" " ]] && return 1
+    return 0
+}
+
+# Срез пробелов по краям (для дружелюбия: случайный хвостовой пробел в
+# --server-name или интерактивном вводе не должен валить установку).
+_trim_ws() {
+    local s="$1"
+    s="${s#"${s%%[![:space:]]*}"}"
+    s="${s%"${s##*[![:space:]]}"}"
+    printf '%s' "$s"
+}
+
+# --mobile (D#38, полевой тест 26 jun): shorthand мобильного сетапа =
+# --preset=mobile + порт 443/udp. Главная мобильная проблема - порт: на МТС
+# дефолтный 39743/udp глушится, 443/udp (похож на QUIC/HTTP3) работает.
+# Разворачивается в CLI_PRESET/CLI_PORT ДО их потребителей: явный --port
+# пользователя выигрывает, противоречащий --preset - ошибка.
+resolve_mobile_flag() {
+    [[ "${CLI_MOBILE:-0}" -eq 1 ]] || return 0
+    if [[ -n "${CLI_PRESET:-}" && "$CLI_PRESET" != "mobile" ]]; then
+        die "--mobile несовместим с --preset=${CLI_PRESET}: --mobile уже включает preset mobile."
+    fi
+    CLI_PRESET="mobile"
+    if [[ -z "$CLI_PORT" ]]; then
+        CLI_PORT=443
+        log "--mobile: порт 443/udp (мобильные операторы часто глушат нестандартные UDP-порты)."
+    fi
+}
+
+# Имя сервера в приложении Amnezia (D#180). Приоритет: CLI-флаг > сохранённый
+# конфиг > интерактивный вопрос (первый запуск без --yes) > 'AWG Server'.
+# Значение из конфига перепроверяется: файл могли править руками, а имя
+# уходит в JSON vpn:// URI.
+configure_server_name() {
+    local _name
+    if [[ -n "$CLI_SERVER_NAME" ]]; then
+        _name=$(_trim_ws "$CLI_SERVER_NAME")
+        validate_server_name "$_name" \
+            || die "Некорректное --server-name: без кавычек, бэкслеша и управляющих символов, не длиннее 128 байт."
+        AWG_SERVER_NAME="$_name"
+        log "Имя сервера из CLI: ${AWG_SERVER_NAME}"
+    elif [[ -n "${AWG_SERVER_NAME:-}" ]]; then
+        _name=$(_trim_ws "$AWG_SERVER_NAME")
+        if validate_server_name "$_name"; then
+            AWG_SERVER_NAME="$_name"
+        else
+            log_warn "AWG_SERVER_NAME из $CONFIG_FILE не валидно, использую 'AWG Server'."
+            AWG_SERVER_NAME="AWG Server"
+        fi
+    elif [[ "${config_exists:-0}" -eq 1 || "$AUTO_YES" -eq 1 ]]; then
+        AWG_SERVER_NAME="AWG Server"
+    else
+        local input_name
+        while true; do
+            read -rp "Имя сервера в приложении Amnezia [AWG Server]: " input_name < /dev/tty
+            input_name=$(_trim_ws "$input_name")
+            if [[ -z "$input_name" ]]; then AWG_SERVER_NAME="AWG Server"; break; fi
+            if validate_server_name "$input_name"; then AWG_SERVER_NAME="$input_name"; break; fi
+            log_warn "Без кавычек, бэкслеша и управляющих символов, не длиннее 128 байт. Повторите ввод."
+        done
+    fi
+    export AWG_SERVER_NAME
 }
 
 # Guard смены подсети: [Peer]-блоки переносятся при переустановке как есть
@@ -1170,14 +1410,6 @@ select_effective_ipv6_mode() {
         *) return 1 ;;
     esac
     AWG_IPV6_MODE_EFFECTIVE="$AWG_IPV6_MODE"
-}
-
-validate_server_name() {
-    local name="$1"
-    [[ -n "${name//[[:space:]]/}" ]] || return 1
-    [[ "$name" != *$'\n'* && "$name" != *$'\r'* ]] || return 1
-    [[ ${#name} -le 128 ]] || return 1
-    [[ "$name" =~ ^[[:alnum:]_.\ ,!\?\(\)-]+$ ]] || return 1
 }
 
 validate_no_control_chars() {
@@ -1953,7 +2185,7 @@ rand_range() {
     local min=$1 max=$2
     local range=$((max - min + 1))
     local random_val
-    random_val=$(od -An -tu4 -N4 /dev/urandom | tr -d ' ')
+    random_val=$(od -An -tu4 -N4 /dev/urandom 2>/dev/null | tr -d ' ')
     if [[ -z "$random_val" || ! "$random_val" =~ ^[0-9]+$ ]]; then
         # Fallback: три $RANDOM (15 бит каждый) с XOR-перекрытием покрывают
         # биты 0-30, т.е. весь [0, 2^31-1]. Прежний вариант (RANDOM<<15|RANDOM)
@@ -2094,7 +2326,34 @@ generate_awg_params() {
         AWG_S2=$(rand_range 15 150)
     done
 
+    # ⚠️ Нижние границы S3/S4 несовместимы с header protection из AmneziaWG 3.0.
+    # Там nonce для ChaCha20 нигде не передаётся, а берётся из первых 12 байт
+    # S-паддинга соответствующего сообщения (HEADER_PROTECTION_NONCE_SIZE = 12),
+    # поэтому обе реализации ОТКАЗЫВАЮТ в конфиге, если при заданном ключе
+    # защиты заголовков любой из S1-S4 меньше 12: модуль ядра возвращает -EINVAL
+    # (src/netlink.c, проверка has_protection && val16 < HEADER_PROTECTION_NONCE_SIZE),
+    # amneziawg-go отдаёт ошибку из device/uapi.go (есть с v3.0.0). То есть отказ
+    # ГРОМКИЙ, тихого ослабления шифра нет - проверено по исходникам 2 aug 2026.
+    # Пока мы на 2.0 и ключа защиты заголовков не ставим, эти диапазоны безопасны.
+    # ПРИ ВКЛЮЧЕНИИ header protection поднять обе нижние границы до 12, иначе
+    # часть установок просто не поднимет интерфейс. Держать в паре с гейтом
+    # _kernel_supports_awg3.
     AWG_S3=$(rand_range 8 55)
+
+    # Вторая коллизия размеров: response+S2 != cookie+S3, то есть S3 != S2+28.
+    # Размеры сообщений (src/messages.h модуля ядра): init 148, response 92,
+    # cookie reply 64. Первые два измерены в проводе, cookie считается как
+    # 4 (header) + 4 (receiver_index) + 24 (nonce) + 32 (cookie 16 + authtag 16).
+    # Отсюда три условия совпадения итоговых размеров:
+    #   init/response   -> S2 = S1 + 56  (проверено циклом выше)
+    #   response/cookie -> S3 = S2 + 28  (проверяем здесь)
+    #   init/cookie     -> S3 = S1 + 84  (недостижимо: минимум S1+84 = 99 при
+    #                                     максимуме S3 = 55, цикл не нужен)
+    # Перегенерируем именно S3, а не S2: S2 уже прошёл проверку на S1+56.
+    while [[ $((AWG_S2 + 28)) -eq $AWG_S3 ]]; do
+        AWG_S3=$(rand_range 8 55)
+    done
+
     AWG_S4=$(rand_range 4 27)
 
     # H1-H4: 4 случайных непересекающихся uint32 диапазона.
@@ -2142,6 +2401,517 @@ detect_hardware() {
     log "Железо: RAM=${TOTAL_RAM_MB}MB, CPU=${CPU_CORES} ядер, NIC=${MAIN_NIC}"
 }
 
+# _cleanup_package_list : имена пакетов, которые cleanup_system удалит на этой ОС.
+# Один источник для очистки и для вопроса на шаге 0 - иначе они разъедутся.
+# ⚠️ У OS_ID НЕТ дефолта намеренно: неизвестная ОС не должна получать разрушительный
+# суперсет (snapd, lxd-agent-loader и снос каталогов снапов). Пусто = считаем не Ubuntu.
+_cleanup_package_list() {
+    local list="modemmanager networkd-dispatcher unattended-upgrades packagekit udisks2"
+    [[ "${OS_ID:-}" == "ubuntu" ]] && list="snapd $list lxd-agent-loader"
+    printf '%s' "$list"
+}
+
+# _boot_critical_package_list : пакеты, потеря которых оставляет сервер без
+# загрузки или без сети. Ядро списка пришло из разбора Issue #223: там
+# `apt full-upgrade` на шаге 1 удалил пакеты, включая udev, initramfs-tools
+# и netplan.io, после чего сервер перестал грузиться. Без udev не создаётся
+# /dev/disk/by-label, systemd не дожидается разделов, записанных в fstab
+# метками, и уходит в аварийный режим (по умолчанию через 90 секунд ожидания,
+# см. DefaultDeviceTimeoutSec; оба раздела ждались параллельно, а не по
+# очереди). Часть имён добавлена по смыслу, а не по тому инциденту: потеря
+# openssh-server, systemd-resolved или ifupdown отрезает доступ так же надёжно.
+#
+# Как до этого доходит. cleanup_system удаляет свой список, а метапакет
+# ubuntu-server оказывается обратной зависимостью удаляемого и уходит вместе с
+# ним. На образах, где он был единственным manual-корнем, всё висевшее под ним
+# (ubuntu-standard, ubuntu-minimal и их зависимости) получает статус "больше не
+# требуется". Само по себе это ещё не удаление: apt такие пакеты перечисляет и
+# предлагает `apt autoremove`. Но при разрешении зависимостей во время
+# обновления резолвер вправе выбрать удаление вместо обновления, и для пакета,
+# который больше никому не нужен, это дешёвый выбор. В Issue #223 он его и
+# сделал. Решение резолвера мы не воспроизводили: известен исход, а не мотив.
+#
+# ⚠️ Имена ubuntu-server/ubuntu-minimal/ubuntu-standard существуют только в
+# Ubuntu. На Debian той же цепочки нет, и там список работает как обычная
+# страховка: _installed_boot_critical просто не найдёт отсутствующих.
+#
+# ⚠️ Список НЕ равен hold-списку из cleanup_system: тот защищает во время
+# purge, этот - во время обновления. Пересечение есть, назначение разное.
+_boot_critical_package_list() {
+    printf '%s' "udev initramfs-tools openssh-server netplan.io netplan-generator systemd-resolved ifupdown ubuntu-minimal ubuntu-standard"
+}
+
+# _pkg_present : 0, если пакет присутствует в системе в любом рабочем виде.
+# Смотрим на третье поле Status, а не на подстроку "ok installed": сразу после
+# purge или прерванного обновления пакет может стоять как half-configured или
+# unpacked. Для наших целей он присутствует, и защищать его надо.
+_pkg_present() {
+    local state
+    state="$(dpkg-query -W -f='${Status}' "$1" 2>/dev/null | awk '{print $3}')"
+    case "$state" in
+        ""|not-installed|config-files) return 1 ;;
+        *) return 0 ;;
+    esac
+}
+
+# _installed_boot_critical : те из них, что реально стоят в этой системе.
+# Печатает по одному имени в строке; пустой вывод - повод насторожиться,
+# а не нормальная ситуация: udev есть практически на любом сервере.
+_installed_boot_critical() {
+    local critical_list
+    critical_list="$(_boot_critical_package_list)"
+    local pkg
+    for pkg in $critical_list; do
+        if _pkg_present "$pkg"; then
+            printf '%s\n' "$pkg"
+        fi
+    done
+}
+
+# _pkg_installed_ok : 0 только если пакет полностью установлен И настроен.
+# Отличие от _pkg_present намеренное, и оно несимметрично по риску. Для СНИМКА
+# "распакован, но не настроен" - это присутствие: пакет есть, его надо
+# защищать. Для ВЕРДИКТА перед перезагрузкой - нет: initramfs-tools в
+# состоянии unpacked означает, что postinst не отработал и initramfs под новое
+# ядро не собран. Сервер не загрузится, хотя пакет формально "есть".
+_pkg_installed_ok() {
+    # Смотрим ТОЛЬКО третье поле. Полная строка Status это "<желание> <ошибка>
+    # <состояние>", и привязка к "install ok installed" целиком пинит заодно
+    # флаг желания: `apt-mark hold` ставит "hold ok installed", то есть
+    # полностью исправный пакет читался бы как потерянный. Для нас это не
+    # теория - cleanup_system специально бережёт пользовательские hold'ы.
+    # Состояние installed отсекает то, ради чего предикат и заведён:
+    # unpacked, half-configured, half-installed, config-files.
+    [[ "$(dpkg-query -W -f='${Status}' "$1" 2>/dev/null | awk '{print $3}')" == "installed" ]]
+}
+
+# Снимок ПЕРЕЖИВАЕТ перезапуски установщика и умеет только расти.
+#
+# Установщик сам просит запустить себя заново после отказа, а к этому моменту
+# пакет уже может быть удалён: apt способен снести udev и следом упасть, и
+# тогда проверка в конце шага просто не выполнится. Снимок, взятый заново в
+# следующем запуске, удалённого пакета уже не увидит, и проверка сверит
+# систему с обеднённым эталоном - то есть промолчит ровно про то состояние,
+# ради которого написана. Поэтому объединяем с записанным ранее.
+#
+# Из файла берутся ТОЛЬКО известные имена: испорченный или подменённый файл не
+# должен превращаться в список произвольных пакетов для установки.
+_boot_critical_snapshot() {
+    local now stored known union
+    now="$(_installed_boot_critical)"
+    stored=""
+    if [[ -e "$BOOT_CRITICAL_SNAPSHOT_FILE" && ! -r "$BOOT_CRITICAL_SNAPSHOT_FILE" ]]; then
+        # Иначе нечитаемый файл был бы неотличим от отсутствующего: список
+        # молча ужался бы, и функция тут же перезаписала бы им историю, хотя
+        # её договор - только расти.
+        log_warn "Файл $BOOT_CRITICAL_SNAPSHOT_FILE существует, но не читается. Список за прошлые запуски не будет учтён."
+    elif [[ -r "$BOOT_CRITICAL_SNAPSHOT_FILE" ]]; then
+        known="$(_boot_critical_package_list | tr ' ' '\n')"
+        stored="$(grep -Fxf <(printf '%s\n' "$known") "$BOOT_CRITICAL_SNAPSHOT_FILE" 2>/dev/null || true)"
+    fi
+    union="$(printf '%s\n%s\n' "$now" "$stored" | grep -v '^$' | sort -u)"
+    if [[ -n "$union" ]]; then
+        mkdir -p "$AWG_DIR" 2>/dev/null || true
+        printf '%s\n' "$union" > "$BOOT_CRITICAL_SNAPSHOT_FILE" 2>/dev/null \
+            || log_warn "Не удалось сохранить список защищаемых пакетов в $BOOT_CRITICAL_SNAPSHOT_FILE. Проверка переживёт этот запуск, но не следующий."
+    fi
+    printf '%s' "$union"
+}
+
+# _verify_boot_critical : последний рубеж перед перезагрузкой. Принимает снимок,
+# снятый ДО обновления, и сверяет его с состоянием прямо сейчас.
+#
+# Вызов стоит вплотную к request_reboot и не должен от него отрываться. Смысл
+# проверки в том, что после неё не выполняется больше ничего, способного
+# удалить пакет: в шаге 1 между обновлением и перезагрузкой живёт ещё
+# install_packages, а он зовёт apt install без --no-remove. Проверка, стоящая
+# раньше него, оставила бы окно ровно того же класса, который она закрывает.
+#
+# Почему это вообще нужно: apt вправе удалять пакеты ради разрешения
+# зависимостей, и в Issue #223 так ушёл udev - сервер перестал грузиться, а
+# перезагрузку инициируем мы сами. Значит ловить надо здесь, пока доступ к
+# серверу есть: после reboot чинить придётся через консоль хостера.
+_verify_boot_critical() {
+    local critical_before="$1"
+    if [[ -z "$critical_before" ]]; then
+        log_warn "Список защищаемых пакетов пуст, сверять нечего. Это ненормально для Ubuntu и Debian: проверьте dpkg-query -W udev, сервер может не загрузиться после перезагрузки."
+        return 0
+    fi
+    local critical_lost=""
+    local pkg
+    for pkg in $critical_before; do
+        _pkg_installed_ok "$pkg" || critical_lost+="$pkg "
+    done
+    [[ -n "$critical_lost" ]] || return 0
+    critical_lost="${critical_lost% }"
+
+    # Прежде чем винить обновление: неисправный dpkg даёт ровно ту же картину,
+    # и сообщение "пакеты удалены" увело бы разбор не туда.
+    _dpkg_usable || die "dpkg перестал отвечать, состояние пакетов проверить нечем. НЕ ПЕРЕЗАГРУЖАЙТЕ сервер. Выполните: dpkg --configure -a; apt-get check - и запустите установщик снова."
+
+    log_warn "Исчезли пакеты, без которых сервер не загрузится: $critical_lost"
+    log_warn "Восстанавливаю их..."
+    local restore_out restore_rc
+
+    # Ступень 1: ОДНА транзакция, все потерянные имена сразу.
+    # Дело в том, ЧТО становится целью резолвера. Поштучно `apt-get install
+    # udev` не знает про остальные потерянные имена: они не цели, и apt волен
+    # оставить их отсутствующими. Одной командой целями становятся все, и apt
+    # ищет набор версий, устраивающий группу целиком. В Issue #223 поштучный
+    # проход дал пять отказов, а одной транзакцией там не пробовали вовсе, и
+    # это причина начинать именно с неё.
+    # ⚠️ Не гарантия, по двум причинам.
+    # Первая: если старую версию держит пакет, которого в списке потерянных НЕТ
+    # (в Issue #223 это systemd-resolved с Depends на точные 8.12 у systemd и
+    # libsystemd-shared; вторым звеном там udev объявляет Breaks на systemd
+    # старше 8.17, и вместе эти два условия и заперли группу), целью он не
+    # станет и здесь. Тронуть его apt ВПРАВЕ и
+    # иногда трогает, но это его выбор, а не обязанность: нецелевые пакеты он
+    # предпочитает оставлять как есть.
+    # Вторая: --no-remove прерывает транзакцию при ЛЮБОМ удалении в плане, а не
+    # только при удалении защищаемого. Решение вида "снести мешающий пакет и
+    # поставить группу" будет отвергнуто целиком.
+    # Поэтому ступень 2 сохранена, а окончательный вердикт выносит сверка всего
+    # набора. Флаг всё равно нужен: восстанавливать одно, теряя другое, нельзя.
+    restore_out="$(DEBIAN_FRONTEND=noninteractive apt-get install -y --no-remove $critical_lost 2>&1)"
+    restore_rc=$?
+    # Формулировка осторожная намеренно: нулевой код у apt означает "делать было
+    # нечего" ровно так же, как "сделано". Что пакеты на месте, решает не эта
+    # строка, а ступень 2 ниже и сверка всего набора в конце.
+    if [[ "$restore_rc" -eq 0 ]]; then
+        log "Одна транзакция отработала без ошибок."
+    elif [[ -n "$restore_out" ]]; then
+        log_warn "Одной транзакцией не вышло (код $restore_rc), пробую по одному. Ответ apt: $(printf '%s' "$restore_out" | tr '\n' ' ' | tail -c 300)"
+    else
+        log_warn "Одной транзакцией не вышло (код $restore_rc), причём apt не выдал ни строки. Пробую по одному."
+    fi
+
+    # Ступень 2: по одному, и только для тех, кто всё ещё отсутствует.
+    # Отдельный проход нужен потому, что одно имя без кандидата на установку
+    # отменяет транзакцию целиком, и тогда не восстановится ничего, включая
+    # пакеты, которые ставятся прекрасно. Этот урок в проекте уже оплачен:
+    # cleanup_system (она определена НИЖЕ по файлу) ставит netplan.io и
+    # netplan-generator по отдельности, потому что на Debian 12 второго пакета
+    # нет и он валит всю транзакцию.
+    for pkg in $critical_lost; do
+        _pkg_installed_ok "$pkg" && continue
+        restore_out="$(DEBIAN_FRONTEND=noninteractive apt-get install -y --no-remove "$pkg" 2>&1)"
+        restore_rc=$?
+        if [[ "$restore_rc" -eq 0 ]] && _pkg_installed_ok "$pkg"; then
+            log "Восстановлен: $pkg"
+        elif [[ "$restore_rc" -eq 0 ]]; then
+            # apt возвращает ноль и когда решил, что делать нечего. Без этой
+            # ветки журнал противоречил бы сам себе: "Восстановлен", а тремя
+            # строками ниже "Отсутствуют критичные пакеты".
+            log_warn "apt отчитался об успехе, но $pkg по-прежнему не установлен."
+        elif [[ -n "$restore_out" ]]; then
+            # В одну строку: log_msg ставит отметку времени только на первую,
+            # а многострочный ответ ломает формат журнала ровно там, где его
+            # потом будут разбирать.
+            log_warn "Не удалось установить $pkg (код $restore_rc). Ответ apt: $(printf '%s' "$restore_out" | tr '\n' ' ' | tail -c 300)"
+        else
+            log_warn "Не удалось установить $pkg (код $restore_rc), причём apt не выдал ни строки: похоже, команда не запустилась вовсе."
+        fi
+    done
+
+    # Сверяем ВЕСЬ набор, а не только пропавшее. Прямой путь к потере соседа
+    # закрыт флагом --no-remove выше; это страховка на случай, если он
+    # перестанет действовать.
+    local still_lost=""
+    for pkg in $critical_before; do
+        _pkg_installed_ok "$pkg" || still_lost+="$pkg "
+    done
+    if [[ -n "$still_lost" ]]; then
+        still_lost="${still_lost% }"
+        log_error "НЕ ПЕРЕЗАГРУЖАЙТЕ сервер: в текущем состоянии он не загрузится."
+        log_error "Отсутствуют критичные пакеты: $still_lost"
+        log_error "Попробуйте поставить их ОДНОЙ командой, всеми именами сразу: sudo apt-get install $still_lost"
+        log_error "Одной, а не по очереди: так apt подбирает версии сразу для всей группы."
+        log_error "Без -y намеренно: если apt при этом захочет что-то УДАЛИТЬ, прочитайте список перед подтверждением. Потеря ещё одного пакета из перечисленных выше только усугубит положение."
+        log_error "Если apt ответит, что мешает пакет, которого в команде нет (вида 'X : Breaks: Y' или 'X : Depends: Y'), допишите Y туда же: в Issue #223 так потребовался systemd, а его в списке выше нет."
+        log_error "Если apt отказывается ставить из-за удержанных пакетов, снимите удержание: sudo apt-mark unhold <имя>"
+        log_error "Если пакета больше нет в репозиториях (переименован после смены выпуска), уберите его имя из $BOOT_CRITICAL_SNAPSHOT_FILE"
+        die "Останавливаюсь, пока доступ к серверу есть. Разберитесь с перечисленным и запустите установщик снова."
+    fi
+    log "Критичные пакеты восстановлены."
+}
+
+
+# _die_upgrade_failed : назвать причину неудачного обновления и остановиться.
+#
+# Вынесено в отдельную функцию не ради красоты. Пока разбор жил инлайном внутри
+# step1_update_and_optimize, тесты могли проверять его только грепом по
+# исходнику, и стороннее ревью показало, что почти любая мутация внутри
+# переживала весь набор зелёной: удаление повторного замера блокировки,
+# инверсия условия, потеря -s, потеря timeout. Функцию тест поднимает целиком и
+# проверяет, КАКОЙ вердикт печатается при каком состоянии системы.
+#
+# Правило блока: причину называем по факту, а не по догадке. Прежняя редакция
+# винила dpkg-lock безусловно, включая случай, когда fuser ничего не нашёл, и
+# уводила разбор в сторону: в Issue #223 настоящим ответом был отказ резолвера.
+_die_upgrade_failed() {
+    local lock_holder apt_why apt_why_rc
+    # Замер берём ЗАНОВО, а не переиспользуем сделанный до повторной попытки:
+    # между ними прошли dpkg --configure -a и целый второй прогон apt, за
+    # которые найденный процесс мог завершиться, а новый появиться.
+    lock_holder="$(fuser /var/lib/dpkg/lock-frontend 2>/dev/null | tr -s ' ' || true)"
+    if [[ -n "$lock_holder" ]]; then
+        die "Обновление системы не прошло, и dpkg-lock занят процессами:${lock_holder}. Дождитесь их завершения либо выполните: systemctl stop unattended-upgrades; dpkg --configure -a - и запустите скрипт снова."
+    fi
+    # Холостой прогон (-s) спрашивает apt, сходится ли план. Чаще всего его
+    # отказ означает зависимости, но не только: непарсимый sources.list,
+    # отсутствующие списки пакетов или повреждённое состояние dpkg дадут отказ
+    # ровно так же. Поэтому его ответ мы ЦИТИРУЕМ, а не толкуем.
+    # timeout нужен именно здесь, на фатальном пути: боевые попытки выше идут
+    # без него намеренно, а тут висеть нельзя - у пользователя может остаться
+    # только эта SSH-сессия. Сам timeout есть всегда, coreutils Essential.
+    apt_why="$(timeout 120 env DEBIAN_FRONTEND=noninteractive apt-get upgrade -s --with-new-pkgs 2>&1)"
+    apt_why_rc=$?
+    if [[ "$apt_why_rc" -eq 0 ]]; then
+        die "Обновление системы не прошло, но зависимости при повторной проверке сходятся - значит причина не в них. Смотрите вывод apt на экране, в файл журнала он не пишется: чаще всего это сеть или зеркало, нехватка места на диске или в /boot, либо скрипт самого пакета."
+    fi
+    if [[ -n "$apt_why" ]]; then
+        die "Обновление системы не прошло. Повторная проверка зависимостей ответила: $(printf '%s' "$apt_why" | tr '\n' ' ' | tail -c 400)"
+    fi
+    # Третий исход: проверка не прошла и при этом ничего не сказала. Заявлять
+    # здесь что-либо о зависимостях нельзя - ровно так неизвестное превращается
+    # в уверенный неверный диагноз.
+    die "Обновление системы не прошло, и повторная проверка зависимостей тоже не ответила (код $apt_why_rc, вывода нет; код 124 означает, что она не уложилась в 120 секунд). Смотрите вывод apt на экране, в файл журнала он не пишется."
+}
+
+# _warn_kept_back : сказать вслух, что обновилось не всё.
+# apt-get upgrade оставляет необновлённым пакет, которому для обновления
+# потребовалось бы удаление соседа, и возвращает при этом НОЛЬ. Это осознанный
+# размен (см. блок обновления шага 1), но молчать о нём нельзя: у full-upgrade
+# этот исход был редким (он придерживал разве что пакеты под hold и то, что
+# придерживает сама Ubuntu), а у upgrade он штатный, и без отдельной строки
+# он проходил бы совсем незаметно. Предупреждение, не отказ: сервер загрузится
+# в любом случае, а вот при разборе будущей жалобы этот список решает.
+#
+# ⚠️ Точного списка "отложено" apt в машиночитаемом виде не даёт, поэтому берём
+# upgradable, а это НАДМНОЖЕСТВО: туда же попадают пакеты под удержанием и
+# застрявшие на неразрешимой цепочке зависимостей. Выдавать его за более узкий
+# нельзя, и сообщение ниже этого не делает.
+_warn_kept_back() {
+    local raw rc kept list
+    raw="$(apt list --upgradable 2>/dev/null)"
+    rc=$?
+    # Код возврата снимаем с САМОГО apt, а не с конвейера: в конвейере он
+    # достаётся от awk, если не включён pipefail, и тогда отказ apt читается как
+    # "обновлять нечего". Ветка ниже решает, молчать или предупредить, поэтому
+    # опираться на глобальную опцию оболочки здесь нельзя.
+    if [[ "$rc" -ne 0 ]]; then
+        # Отказ самой проверки нельзя превращать в благополучное молчание:
+        # функция существует ради диагностируемости, и её собственный отказ
+        # обязан быть слышен.
+        log_warn "Не удалось получить список необновившихся пакетов (apt list вернул $rc). Посмотрите вручную: apt list --upgradable"
+        return 0
+    fi
+    kept="$(printf '%s\n' "$raw" | awk -F/ '/\//{printf "%s ", $1}')"
+    [[ -n "${kept// /}" ]] || return 0
+    list="${kept% }"
+    # Обрезка ЯВНАЯ, с пометкой: на сервере с месяцами накопленных обновлений
+    # список уходит в тысячи символов, а молчаливое усечение рядом уже названо
+    # дефектом.
+    if [[ "${#list}" -gt 400 ]]; then
+        list="${list:0:400}... (обрезано, полный список: apt list --upgradable)"
+    fi
+    log "Обновились не все пакеты, на прежних версиях остались: $list"
+    log "Чаще всего это значит, что обновление такого пакета потребовало бы удалить другой, и мы этого намеренно не делаем (Issue #223), либо что выпуск ещё раскатывается поэтапно. Но перечень не исчерпывающий: сюда же попадают пакеты под удержанием и застрявшие на неразрешимых зависимостях. Если список непустой и вас это беспокоит, посмотрите причину: apt-get -s upgrade"
+}
+
+# _boot_critical_guard : снять снимок и проверить его. Обёртка нужна для тех
+# точек, где до неё снимок ещё не брали, то есть для шага 2.
+#
+# ⚠️ Самопроверки стоят ЗДЕСЬ, до присваивания, а не внутри
+# _boot_critical_snapshot, и это принципиально: die внутри подстановки команд
+# завершил бы только подоболочку, скрипт продолжил бы работу с пустым снимком,
+# и фатальная проверка молча превратилась бы в необязательную.
+_boot_critical_guard() {
+    _dpkg_usable || die "dpkg не отвечает, а без него не проверить, переживут ли перезагрузку udev и initramfs-tools (Issue #223). Выполните: dpkg --configure -a; apt-get check - и запустите установщик снова."
+    _pkg_present dpkg || die "Проверить состояние пакетов не удалось (dpkg-query или awk работают не так, как ожидается). Без этого нельзя убедиться, что сервер загрузится (Issue #223)."
+    local snapshot
+    snapshot="$(_boot_critical_snapshot)"
+    _verify_boot_critical "$snapshot"
+}
+
+# _dpkg_usable : 0, если ответам dpkg можно верить.
+# Отличить "пакет не установлен" от "база dpkg сломана" по коду возврата НЕЛЬЗЯ:
+# замер на Ubuntu 24.04 дал rc=1 в обоих случаях. Поэтому спрашиваем про заведомо
+# установленный пакет: не нашёлся и он - значит сломан сам механизм, а не пакеты.
+# Без этой проверки пустой список молча пропустил бы вопрос, а шаг 1 позже отработал
+# бы уже с исправным dpkg и снёс то, о чём не спрашивали.
+_dpkg_usable() {
+    command -v dpkg-query >/dev/null 2>&1 || return 1
+    dpkg-query -W -f='${Status}' dpkg 2>/dev/null | grep -q "ok installed"
+}
+
+# _cloud_init_removable : 0, если установленный cloud-init действительно будет удалён.
+# cloud-init стоит отдельно от списка выше: его удаляют только когда он НЕ управляет
+# сетью. Ответ нужен в двух местах - в самой очистке и в вопросе на шаге 0, поэтому он
+# живёт здесь. Иначе согласие спрашивалось бы про один набор, а удалялся другой, то есть
+# ровно та претензия, из-за которой заведён issue #213.
+# 🔴 Любая НЕудача проверки означает "управляет сетью, не трогаем". Цена ошибок
+# несимметрична: лишний оставленный cloud-init стоит десятков мегабайт, а удалённый по
+# ошибке - потери сети после перезагрузки на удалённом сервере. Поэтому от ls по маске
+# здесь отказались: он отдаёт rc=2 и когда каталога нет, и когда маска не совпала.
+_cloud_init_removable() {
+    dpkg-query -W -f='${Status}' cloud-init 2>/dev/null | grep -q "ok installed" || return 1
+    local f
+    if [ -d /etc/netplan ]; then
+        [ -r /etc/netplan ] || return 1
+        for f in /etc/netplan/*cloud-init*; do
+            [ -e "$f" ] && return 1
+        done
+        grep -rq "cloud-init" /etc/netplan/ 2>/dev/null
+        case $? in
+            0) return 1 ;;
+            1) : ;;
+            *) return 1 ;;
+        esac
+    fi
+    if [ -f /etc/network/interfaces ] && grep -q "cloud-init" /etc/network/interfaces 2>/dev/null; then
+        return 1
+    fi
+    # На Debian cloud-init пишет именно сюда, а не в основной файл.
+    if [ -d /etc/network/interfaces.d ] \
+       && grep -rq "cloud-init" /etc/network/interfaces.d/ 2>/dev/null; then
+        return 1
+    fi
+    return 0
+}
+
+# _snaps_dir_readable : 0, если каталог снапов есть и читается.
+# Пустой ответ _user_snaps при нечитаемом каталоге означает "не смог посмотреть", а не
+# "снапов нет". Путать эти случаи нельзя: от них зависит дефолт разрушительного вопроса.
+_snaps_dir_readable() {
+    [ -d /var/lib/snapd/snaps ] && [ -r /var/lib/snapd/snaps ]
+}
+
+# _user_snaps : имена снапов, поставленных ПОЛЬЗОВАТЕЛЕМ, по одному в строке, БЕЗ ПОВТОРОВ.
+# В каталоге лежит по файлу на КАЖДУЮ удержанную ревизию, поэтому без dedup обновлённый
+# однажды снап попал бы в предупреждение несколько раз подряд.
+# Базовыми считаем только те, что не несут пользовательских данных: snapd, bare и core*.
+# 🔴 lxd НЕ фильтруем: LXD из снапа держит контейнеры и их данные в /var/snap/lxd, и
+# назвать такой хост "терять нечего" значит молча снести их.
+# ⚠️ Читаем файлы, а не вывод 'snap list': бинарь snap к этому моменту мог быть уже снесён
+# прошлым прогоном, и список молча оказался бы пуст.
+_user_snaps() {
+    local f name
+    for f in /var/lib/snapd/snaps/*.snap; do
+        [ -e "$f" ] || continue
+        name="${f##*/}"; name="${name%_*.snap}"
+        case "$name" in
+            snapd|bare|core|core[0-9]*) continue ;;
+        esac
+        printf '%s\n' "$name"
+    done | sort -u
+}
+
+# Согласие на удаление системных пакетов (issue #213). Спрашиваем на ШАГЕ 0, где и так
+# задаются остальные вопросы: дальше установка должна идти без участия человека.
+# Ответ сохраняется в awgsetup_cfg.init, чтобы повторный или возобновлённый запуск не
+# спрашивал заново и, главное, не считал молчание согласием.
+configure_package_cleanup() {
+    [[ "$NO_TWEAKS" -eq 1 ]] && return 0
+    # Решение уже есть: флаг командной строки или запись из прошлого запуска.
+    [[ -n "$KEEP_PACKAGES" ]] && return 0
+
+    if ! _dpkg_usable; then
+        KEEP_PACKAGES=1
+        log_warn "Опросить dpkg не удалось, поэтому системные пакеты трогать не буду."
+        return 0
+    fi
+
+    local installed=() pkg
+    for pkg in $(_cleanup_package_list); do
+        if dpkg-query -W -f='${Status}' "$pkg" 2>/dev/null | grep -q "ok installed"; then
+            installed+=("$pkg")
+        fi
+    done
+    # cloud-init удаляется отдельной веткой очистки и только когда не управляет сетью,
+    # поэтому в список берём его по тому же условию: спросить надо ровно про то, что
+    # реально удалят.
+    if _cloud_init_removable; then
+        installed+=("cloud-init")
+    fi
+
+    # Каталоги снапов сносит отдельный rm -rf, и он НЕ зависит от того, попал ли snapd
+    # в список выше: пакет мог остаться в состоянии 'deinstall ok config-files'.
+    local snap_dirs=0
+    if [[ "${OS_ID:-}" == "ubuntu" ]] && { [ -d /snap ] || [ -d /var/snap ]; }; then
+        snap_dirs=1
+    fi
+
+    if [ ${#installed[@]} -eq 0 ] && [ "$snap_dirs" -eq 0 ]; then
+        KEEP_PACKAGES=0
+        return 0
+    fi
+
+    # Свои снапы ищем только когда им что-то грозит: на Debian snapd в список не входит.
+    local snaps="" snaps_unknown=0
+    if [ "$snap_dirs" -eq 1 ] || [[ " ${installed[*]} " == *" snapd "* ]]; then
+        if _snaps_dir_readable; then
+            snaps="$(_user_snaps | tr '\n' ' ')"; snaps="${snaps% }"
+        else
+            snaps_unknown=1
+        fi
+    fi
+
+    log_warn "Сервер настраивается как однозадачный, поэтому будут удалены пакеты:"
+    [ ${#installed[@]} -gt 0 ] && log_warn "  ${installed[*]}"
+    if [ "$snap_dirs" -eq 1 ]; then
+        log_warn "  Плюс каталоги /snap, /var/snap и /var/lib/snapd со всеми снапами и их данными."
+        if [ "$snaps_unknown" -eq 1 ]; then
+            log_warn "  Что именно у вас установлено, проверить не удалось: каталог снапов недоступен."
+        elif [[ -n "$snaps" ]]; then
+            log_warn "  Ваши снапы, которые будут потеряны: $snaps"
+        fi
+    fi
+    if [[ " ${installed[*]} " == *" cloud-init "* ]]; then
+        log_warn "  Вместе с cloud-init удаляются каталоги /etc/cloud и /var/lib/cloud."
+    fi
+
+    if [[ "$AUTO_YES" -eq 1 ]]; then
+        KEEP_PACKAGES=0
+        log "Удаление подтверждено автоматически (--yes). Сохранить пакеты: --keep-packages."
+        return 0
+    fi
+
+    # Есть что терять - удаляем ТОЛЬКО по явному "да" (allowlist, как у остальных
+    # разрушительных вопросов скрипта). Прежний вариант проверял ответ на букву n, и
+    # тогда "нет", "не", "ok" и любая случайная клавиша означали УДАЛИТЬ.
+    local risky=0
+    if [[ -n "$snaps" ]] || [ "$snaps_unknown" -eq 1 ]; then risky=1; fi
+
+    local answer="" hint="[Y/n]"
+    [ "$risky" -eq 1 ] && hint="[y/N]"
+    if ! read -rp "Удалить эти пакеты? $hint: " answer < /dev/tty; then
+        KEEP_PACKAGES=1
+        log_warn "Терминал недоступен, вопрос задать не смог - пакеты сохраняю."
+        return 0
+    fi
+    # Обрезаем пробелы и CR: ответ из putty приходит с \r.
+    answer="$(printf '%s' "$answer" | tr -d '[:space:]')"
+
+    if [ "$risky" -eq 1 ]; then
+        case "$answer" in
+            [Yy]|[Yy][Ee][Ss]|да|Да|ДА|д|Д) KEEP_PACKAGES=0 ;;
+            *)                              KEEP_PACKAGES=1 ;;
+        esac
+    else
+        case "$answer" in
+            [Nn]|[Nn][Oo]|нет|Нет|НЕТ|не|Не|н|Н) KEEP_PACKAGES=1 ;;
+            *)                                    KEEP_PACKAGES=0 ;;
+        esac
+    fi
+
+    if [[ "$KEEP_PACKAGES" -eq 1 ]]; then
+        log "Пакеты сохраняются. Фаервол, Fail2Ban и оптимизация при этом остаются."
+    fi
+    return 0
+}
+
 # Удаление ненужных пакетов и сервисов
 cleanup_system() {
     log "Очистка системы от ненужных компонентов..."
@@ -2174,10 +2944,8 @@ cleanup_system() {
     # snapd и lxd-agent-loader — только на Ubuntu, на Debian их нет
     local packages_to_remove=()
     local pkg
-    local cleanup_list="modemmanager networkd-dispatcher unattended-upgrades packagekit udisks2"
-    if [[ "${OS_ID:-ubuntu}" == "ubuntu" ]]; then
-        cleanup_list="snapd $cleanup_list lxd-agent-loader"
-    fi
+    local cleanup_list
+    cleanup_list="$(_cleanup_package_list)"
     for pkg in $cleanup_list; do
         if dpkg-query -W -f='${Status}' "$pkg" 2>/dev/null | grep -q "ok installed"; then
             packages_to_remove+=("$pkg")
@@ -2190,7 +2958,7 @@ cleanup_system() {
     fi
 
     # Очистка snap артефактов (только Ubuntu)
-    if [[ "${OS_ID:-ubuntu}" == "ubuntu" && -d /snap ]]; then
+    if [[ "${OS_ID:-}" == "ubuntu" && -d /snap ]]; then
         log "Очистка snap артефактов..."
         rm -rf /snap /var/snap /var/lib/snapd 2>/dev/null || log_warn "Ошибка очистки snap"
     fi
@@ -2198,16 +2966,7 @@ cleanup_system() {
     # cloud-init: удалять только если НЕ управляет сетью
     # Консервативный подход: сначала проверяем маркеры cloud-init, затем renderer
     if dpkg-query -W -f='${Status}' cloud-init 2>/dev/null | grep -q "ok installed"; then
-        local cloud_manages_network=0
-        # Проверяем маркеры cloud-init (приоритет — безопасность)
-        if ls /etc/netplan/*cloud-init* &>/dev/null 2>&1; then
-            cloud_manages_network=1
-        elif grep -rq "cloud-init" /etc/netplan/ 2>/dev/null; then
-            cloud_manages_network=1
-        elif [[ -f /etc/network/interfaces ]] && grep -q "cloud-init" /etc/network/interfaces 2>/dev/null; then
-            cloud_manages_network=1
-        fi
-        if [[ $cloud_manages_network -eq 0 ]]; then
+        if _cloud_init_removable; then
             log "Удаление cloud-init (сеть не зависит от него)..."
             DEBIAN_FRONTEND=noninteractive apt-get purge -y cloud-init 2>/dev/null || log_warn "Ошибка удаления cloud-init"
             rm -rf /etc/cloud /var/lib/cloud 2>/dev/null
@@ -2304,6 +3063,15 @@ optimize_swap() {
         # `/swapfile.bak` или старая строка в комментарии).
         if ! awk '!/^[[:space:]]*#/ && $1 == "/swapfile" && $3 == "swap" {found=1} END {exit !(found+0)}' \
              /etc/fstab; then
+            # Гарантируем перевод строки в конце файла. Без него запись
+            # приклеится к последней строке fstab, и та станет некорректной:
+            # получится одна строка из 11 полей вместо шести. Подстановка
+            # команды срезает завершающие переводы строки, поэтому у
+            # нормально завершённого файла проверка даёт пустую строку и
+            # лишний перевод НЕ добавляется.
+            if [[ -s /etc/fstab && -n "$(tail -c1 /etc/fstab)" ]]; then
+                echo >> /etc/fstab
+            fi
             echo '/swapfile none swap sw 0 0' >> /etc/fstab
         fi
         log "Swap файл создан: ${target_swap_mb}MB"
@@ -2812,19 +3580,87 @@ check_service_status() {
 # Диагностика
 # ==============================================================================
 
+# Отчёт собирают для вставки в ПУБЛИЧНЫЙ issue: наш же шаблон бага просит приложить
+# его содержимое. Значения ключей вырезает одна общая функция, а не отдельная
+# маскировка в каждой секции: секции со временем добавляются, и разовая маскировка
+# внутри одной из них расходится с остальными. Именно так PresharedKey и оказался в
+# отчёте открытым, пока в соседней строке маскировался PrivateKey.
+# Применяется в ДВУХ точках (одна реализация, не два источника правды): на выходе
+# всего отчёта и отдельно к серверному конфигу.
+# ВАЖНО: второй рубеж закрывает ТОЛЬКО серверный конфиг. Вывод awg show и журнал
+# через него не проходят, так что при отвязанном внешнем конвейере утекут именно они.
+# ВАЖНО: маскировка AWG_ENDPOINT ниже по функции - осознанное исключение из правила
+# "одна функция": она прячет адрес, а не ключ, и живёт своей строкой.
+#
+# Выражения КОНТЕКСТНЫЕ. Безъякорная редакция резала значение всюду, где встречалось
+# имя ключа, и портила чужие поля: имя сервера - свободный текст, где разрешены
+# пробелы и знак равенства, поэтому строка вида AWG_SERVER_NAME с текстом
+# "PrivateKey = Office" внутри теряла и значение, и закрывающую кавычку. Имена
+# клиентов от этого защищены валидацией ^[a-zA-Z0-9_-]+$ (она живёт в
+# manage_amneziawg.sh и awg_common.sh, не здесь), но правленный руками #_Name может
+# содержать что угодно.
+#
+# Четыре контекста:
+#   1. строка конфигурации В НАЧАЛЕ СТРОКИ, с необязательным символом комментария.
+#      Он нужен НЕ потому, что awg разберёт такую строку: он её как раз отбрасывает
+#      целиком (config_read_line обрезает всё от первой решётки ДО разбора). Нужен
+#      потому, что значение физически лежит в файле, который вставят в публичный
+#      issue. Маскируем ДО КОНЦА СТРОКИ: разбор вычищает пробелы перед разбором,
+#      поэтому запись вида "PrivateKey = AA BB=" валидна, и обрезка по первому
+#      пробелу оставила бы хвост ключа в отчёте.
+#   2. метка вывода awg show в начале строки. HeaderProtectionKey здесь обязателен:
+#      awg show печатает его ОТКРЫТЫМ ТЕКСТОМ (show.c: key() вместо masked_key()),
+#      в отличие от приватного и общего ключей, которые прячет сам. Заодно снимается
+#      вопрос про WG_HIDE_KEYS=never.
+#   3. "Line unrecognized: ..." - без якоря. awg печатает в stderr строку УЖЕ
+#      ОЧИЩЕННУЮ (обрезана по решётке, пробелы удалены) и обёрнутую в обратный
+#      апостроф с закрывающей кавычкой. Отсюда ".?" в выражении: он пропускает этот
+#      апостроф. НЕ УДАЛЯТЬ ".?": без него настоящая строка не совпадает вовсе.
+#      Ветка error срабатывает на ЛЮБОЙ неопознанной строке: опечатка в имени ключа,
+#      ключ не в своей секции (PrivateKey внутри [Peer] уедет в stderr целиком),
+#      ключ чужой реализации. Дописанный руками параметр третьей линии - лишь один
+#      из случаев, а не единственный.
+#   4. "Key is not the correct length or format: ..." - то же место, но имени ключа
+#      в сообщении НЕТ вовсе, поэтому по имени его не поймать.
+# ВАЖНО: якоря у 1 и 2 означают, что эти формы НЕ ловятся в секции Service Status,
+# где systemctl status добавляет свой префикс со штампом времени. Журнальная секция
+# этим не страдает: journalctl вызывается там с --output=cat, то есть без префикса.
+# Регистронезависимость (флаг I) - разбор конфига тоже регистронезависим (strncasecmp).
+#
+# ЧЕТЫРЕ СТРОКОВЫХ ЛИТЕРАЛА UPSTREAM, на которых всё держится: "private key:",
+# "header protection key:", "Line unrecognized:", "Key is not the correct length or
+# format:". Сверены с amneziawg-tools ee0f0a9 (src/config.c, src/show.c) 25 aug 2026.
+# Переформулируют любой - фильтр молча перестанет совпадать, а тесты останутся
+# зелёными, потому что зашивают те же строки. ПЕРЕСВЕРЯТЬ при обновлении tools.
+_mask_report_secrets() {
+    sed -E \
+        -e 's/^([[:space:]]*#?[[:space:]]*(PrivateKey|PresharedKey|HeaderProtectionKey)[[:space:]]*=[[:space:]]*).*/\1[HIDDEN]/I' \
+        -e 's/^([[:space:]]*(private key|preshared key|header protection key)[[:space:]]*:[[:space:]]*).*/\1(hidden)/I' \
+        -e 's/(Line unrecognized:[[:space:]]*.?(PrivateKey|PresharedKey|HeaderProtectionKey)[[:space:]]*=[[:space:]]*).*/\1[HIDDEN]/I' \
+        -e 's/(Key is not the correct length or format:[[:space:]]*).*/\1[HIDDEN]/I'
+}
+
 create_diagnostic_report() {
     # --diagnostic вызывается ДО initialize_setup (где живёт основной root-check):
     # под обычным пользователем запись в /root/awg падает на каждом log_msg,
     # отчёт не создаётся, а exit 0 выглядел бы как ложный успех.
     if [ "$(id -u)" -ne 0 ]; then die "Запустите скрипт от root (sudo bash $0 --diagnostic)."; fi
     log "Создание диагностики..."
-    local rf
+    local rf _diag_umask
     rf="$AWG_DIR/diag_$(date +%F_%T).txt"
+    # Файл создаётся редиректом ДО chmod, поэтому режим на момент создания задаёт
+    # umask. Тот же приём, что для ключей в awg_common.sh: сузить права сразу, а не
+    # чинить после. --diagnostic отрабатывает ДО secure_files, поэтому /root/awg
+    # может быть создан с правами по умолчанию, и окно 0644 реально достижимо.
+    _diag_umask=$(umask); umask 077
     {
         echo "=== AMNEZIAWG 2.0 DIAGNOSTIC REPORT ==="
         echo ""
-        echo "!!! ВНИМАНИЕ: Отчёт содержит IP-адреса, порты и маршруты."
-        echo "!!! Перед публикацией в issue проверьте и замените приватные данные."
+        echo "!!! ВНИМАНИЕ: значения PrivateKey, PresharedKey и HeaderProtectionKey"
+        echo "!!! вырезаны везде, где они подписаны своим именем или меткой awg show."
+        echo "!!! В отчёте остаются: IP-адреса, порты, маршруты, параметры обфускации,"
+        echo "!!! имена и публичные ключи клиентов. Адрес сервера дополнительно скрыт."
+        echo "!!! Перед публикацией в issue проверьте, что из этого вы не хотите раскрывать."
         echo ""
         echo "Generated: $(date)"
         echo "Hostname: $(hostname)"
@@ -2847,9 +3683,11 @@ create_diagnostic_report() {
         fi
         echo ""
         echo "--- Server Config ($SERVER_CONF_FILE) ---"
-        # Маскируем приватный ключ
+        # Второй рубеж ТОЙ ЖЕ функцией: одна реализация, две точки применения.
+        # Дубля правды это не создаёт, а если внешний фильтр когда-нибудь отвяжут
+        # от блока, самый опасный сырой ввод останется прикрытым.
         if [[ -f "$SERVER_CONF_FILE" ]]; then
-            sed 's/PrivateKey = .*/PrivateKey = [HIDDEN]/' "$SERVER_CONF_FILE"
+            _mask_report_secrets < "$SERVER_CONF_FILE" || echo "ОШИБКА: не удалось прочитать или отфильтровать $SERVER_CONF_FILE"
         else
             echo "File not found"
         fi
@@ -2875,6 +3713,54 @@ create_diagnostic_report() {
         echo "--- Routing Table ---"
         ip route 2>/dev/null
         echo ""
+        echo "--- Cascade / Split Routing ---"
+        # Каскад (CASCADE.md) живёт вне awg0.conf: своя таблица, метка, ipset и правила mangle.
+        # Без этого блока по отчёту нельзя понять, применено деление или нет (issue #212).
+        if [ -f "$AWG_DIR/awg-routing.sh" ] || ip link show awg1 &>/dev/null; then
+            # is-active печатает "inactive" И возвращает ненулевой код, поэтому подстановка
+            # вида $(... || echo N/A) выдала бы ОБЕ строки сразу. Берём вывод, N/A - только на пустом.
+            local _casc_active _casc_enabled _casc_out
+            _casc_active=$(systemctl is-active awg-routing 2>/dev/null || true)
+            _casc_enabled=$(systemctl is-enabled awg-routing 2>/dev/null || true)
+            echo "unit awg-routing: active=${_casc_active:-N/A}, enabled=${_casc_enabled:-N/A}"
+            # Ниже намеренно разделены "не нашёл" и "не смог посмотреть": если гасить stderr и
+            # печатать одно и то же, отчёт превратит отказ команды в утверждение "правил нет",
+            # и разбор уйдёт не туда. grep -m10 вместо | head -10: он не рвёт пайп, поэтому
+            # pipefail не отдаёт 141 и ветка || не срабатывает после уже напечатанных строк.
+            if _casc_out=$(ip rule show 2>&1); then
+                grep -w fwmark <<< "$_casc_out" || echo "ip rule: правил по метке нет"
+            else
+                echo "ip rule: ПРОВЕРИТЬ НЕ УДАЛОСЬ: $(head -1 <<< "$_casc_out")"
+            fi
+            echo "table 100: $(ip route show table 100 2>/dev/null | tr '\n' '; ')"
+            echo "ipset sets: $(ipset list -n 2>/dev/null | tr '\n' ' ' || echo 'N/A')"
+            if _casc_out=$(ipset list ru 2>&1); then
+                grep "Number of entries" <<< "$_casc_out" || echo "ipset ru: счётчик не найден"
+            else
+                echo "ipset ru: набора нет ($(head -1 <<< "$_casc_out"))"
+            fi
+            echo "ru.zone: $(stat -c '%y, %s байт' "$AWG_DIR/ru.zone" 2>/dev/null || echo 'файла нет')"
+            if _casc_out=$(iptables -t mangle -S PREROUTING 2>&1); then
+                grep -m10 -E "match-set|MARK" <<< "$_casc_out" || echo "mangle PREROUTING: правил каскада нет"
+            else
+                echo "mangle PREROUTING: ПРОВЕРИТЬ НЕ УДАЛОСЬ: $(head -1 <<< "$_casc_out")"
+            fi
+            # Грепаем именно "-o awg1", а не MASQUERADE: обычное MASQUERADE на внешний интерфейс
+            # ставит сам установщик в PostUp, оно есть на ЛЮБОЙ установке, и по нему ветка "нет
+            # правил" была бы недостижима, а отчёт показывал бы NAT на месте при отсутствующем
+            # каскадном правиле. NAT проверяем обязательно: его скрипт ставит ПОСЛЕДНИМ, поэтому
+            # оборванный запуск оставляет всё остальное на месте, а его - нет. Симптом при этом
+            # обманчивый: российские сайты работают, остальное молчит, а отчёт без этой строки
+            # показывал бы полностью исправный каскад.
+            if _casc_out=$(iptables -t nat -S POSTROUTING 2>&1); then
+                grep -m10 -- "-o awg1" <<< "$_casc_out" || echo "nat POSTROUTING: правила каскада (-o awg1) нет"
+            else
+                echo "nat POSTROUTING: ПРОВЕРИТЬ НЕ УДАЛОСЬ: $(head -1 <<< "$_casc_out")"
+            fi
+        else
+            echo "не настроен"
+        fi
+        echo ""
         echo "--- Kernel Params ---"
         sysctl net.ipv4.ip_forward net.ipv6.conf.all.disable_ipv6 2>/dev/null
         echo ""
@@ -2891,7 +3777,8 @@ create_diagnostic_report() {
         modinfo amneziawg 2>/dev/null || echo "N/A"
         echo ""
         echo "=== END ==="
-    } > "$rf" || log_error "Ошибка записи отчета."
+    } | _mask_report_secrets > "$rf" || die "Ошибка записи отчета: $rf"
+    umask "$_diag_umask"
     chmod 600 "$rf" || log_warn "Ошибка chmod отчета."
     log "Отчет: $rf"
 }
@@ -2934,6 +3821,11 @@ step_uninstall() {
     fi
     log "Остановка сервиса..."
     systemctl stop awg-quick@awg0 2>/dev/null
+    # Изоляционные DROP-правила (issue #178): PostDown конфига на диске мог
+    # уже не содержать -D DROP (прерванная переустановка on->off между шагами
+    # 6 и 7) - добираем stale-правила явно, как в шаге 7.
+    while iptables -D FORWARD -i awg0 -o awg0 -j DROP 2>/dev/null; do :; done
+    while ip6tables -D FORWARD -i awg0 -o awg0 -j DROP 2>/dev/null; do :; done
     systemctl disable awg-quick@awg0 2>/dev/null
     systemctl stop awg-web.service 2>/dev/null
     systemctl disable awg-web.service 2>/dev/null
@@ -3021,6 +3913,18 @@ step_uninstall() {
         log "Пропуск UFW/Fail2Ban (установка с --no-tweaks)."
     fi
     log "Удаление пакетов..."
+    # Снять hold с PPA-пакетов (ставился на пиновом пути H0) ДО удаления PPA:
+    # `apt-mark unhold` требует installed- или candidate-версию, а после удаления
+    # PPA (ниже) кандидат исчезает и apt-mark падает 'Can't select ... version',
+    # оставляя hold в dpkg-selection -> блокирует будущую переустановку. dpkg-
+    # fallback чистит selection напрямую, если PPA уже убран прошлым прогоном.
+    local _hp
+    for _hp in amneziawg amneziawg-dkms; do
+        apt-mark unhold "$_hp" >/dev/null 2>&1 || true
+        if dpkg --get-selections "$_hp" 2>/dev/null | grep -q '[[:space:]]hold$'; then
+            echo "$_hp deinstall" | dpkg --set-selections >/dev/null 2>&1 || true
+        fi
+    done
     if [[ "$saved_no_tweaks" -eq 0 ]]; then
         DEBIAN_FRONTEND=noninteractive apt-get purge -y amneziawg-dkms amneziawg-tools fail2ban qrencode ndppd 2>/dev/null || log_warn "Ошибка purge."
     else
@@ -3058,7 +3962,22 @@ step_uninstall() {
         fi
     fi
     log "Удаление DKMS..."
-    rm -rf /var/lib/dkms/amneziawg* || log_warn "Ошибка удаления DKMS."
+    # Корректно снять DKMS-регистрацию (для всех версий amneziawg/*) и убрать
+    # исходник в /usr/src, а не только состояние в /var/lib/dkms. Hold с PPA-
+    # пакетов снят выше (до удаления PPA). `dkms status`: 'amneziawg/1.0.0, <kern>...'.
+    if command -v dkms >/dev/null 2>&1; then
+        local _dv
+        while IFS= read -r _dv; do
+            [[ -n "$_dv" ]] || continue
+            if ! dkms remove -m amneziawg -v "$_dv" --all >/dev/null 2>&1; then
+                log_warn "dkms remove amneziawg/$_dv не удался - дочищаю файлы вручную."
+            fi
+        done < <(dkms status 2>/dev/null | awk -F'[,/ ]+' '/^amneziawg[,/]/{print $2}' | sort -u)
+    fi
+    rm -rf /var/lib/dkms/amneziawg* /usr/src/amneziawg-* || log_warn "Ошибка удаления DKMS."
+    # Подчистить возможно оставшийся собранный .ko (если dkms remove не отработал) + depmod.
+    find /lib/modules -name 'amneziawg.ko*' -path '*/updates/dkms/*' -delete 2>/dev/null || true
+    command -v depmod >/dev/null 2>&1 && depmod -a >/dev/null 2>&1 || true
     log "Восстановление sysctl..."
     # Только точные строки, которые писали legacy-версии нашего инсталлятора
     # (=1 для all/default/lo). Раньше удалялась ЛЮБАЯ строка с disable_ipv6 -
@@ -3108,6 +4027,7 @@ initialize_setup() {
     log "Лог файл: $LOG_FILE"
 
     check_os_version
+    check_container
     check_kernel_version
     check_free_space
 
@@ -3125,7 +4045,9 @@ initialize_setup() {
     ALLOWED_IPS=""
     AWG_ENDPOINT="${AWG_ENDPOINT:-}"
     AWG_MTU="${AWG_MTU:-1280}"
-    AWG_SERVER_NAME="${AWG_SERVER_NAME:-MyVPN}"
+    CLIENT_ISOLATION=""
+    CLIENT_ISOLATION_NET=""
+    AWG_SERVER_NAME=""
     AWG_IPV6_ENABLED=${AWG_IPV6_ENABLED:-0}
     AWG_IPV6_MODE="${AWG_IPV6_MODE:-legacy}"
     AWG_IPV6_MODE_REQUESTED="${AWG_IPV6_MODE_REQUESTED:-${AWG_IPV6_MODE}}"
@@ -3177,7 +4099,7 @@ initialize_setup() {
         ALLOWED_IPS=${ALLOWED_IPS:-""}
         AWG_ENDPOINT=${AWG_ENDPOINT:-""}
         AWG_MTU=${AWG_MTU:-1280}
-        AWG_SERVER_NAME=${AWG_SERVER_NAME:-MyVPN}
+        AWG_SERVER_NAME=${AWG_SERVER_NAME:-AWG Server}
         AWG_IPV6_ENABLED=${AWG_IPV6_ENABLED:-0}
         AWG_IPV6_MODE=$(normalize_ipv6_mode_installer "${AWG_IPV6_MODE:-legacy}" 2>/dev/null || echo "legacy")
         AWG_IPV6_MODE_REQUESTED=$(normalize_ipv6_mode_installer "${AWG_IPV6_MODE_REQUESTED:-${AWG_IPV6_MODE}}" 2>/dev/null || echo "${AWG_IPV6_MODE:-legacy}")
@@ -3215,6 +4137,22 @@ initialize_setup() {
         AWG_WIRESOCK_IP=${AWG_WIRESOCK_IP:-}
         AWG_WIRESOCK_IB=${AWG_WIRESOCK_IB:-}
         AWG_PRESET=${AWG_PRESET:-default}
+        # CLIENT_ISOLATION из конфига: строго 0|1. Иначе строка в
+        # арифметическом сравнении может незаметно отключить изоляцию.
+        case "${CLIENT_ISOLATION:-}" in
+            ""|0|1) : ;;
+            *)
+                log_warn "CLIENT_ISOLATION='$CLIENT_ISOLATION' в $CONFIG_FILE не валиден (допустимо 0|1) — включаю безопасный дефолт."
+                CLIENT_ISOLATION=1
+                ;;
+        esac
+        # CLIENT_ISOLATION_NET — внутренний ownership-маркер: ровно один
+        # канонический IPv4 CIDR, иначе сбрасываем его без изменения маршрутов.
+        if [[ -n "${CLIENT_ISOLATION_NET:-}" ]] \
+           && [[ "$(tunnel_network_cidr "$CLIENT_ISOLATION_NET" || true)" != "$CLIENT_ISOLATION_NET" ]]; then
+            log_warn "CLIENT_ISOLATION_NET='$CLIENT_ISOLATION_NET' в $CONFIG_FILE не валиден — сбрасываю."
+            CLIENT_ISOLATION_NET=""
+        fi
         log "Настройки из файла загружены."
     else
         log "Файл конфигурации $CONFIG_FILE не найден."
@@ -3230,6 +4168,19 @@ initialize_setup() {
     PREV_AWG_PORT="${PREV_AWG_PORT:-}"
     _cfg_awg_port=""
     if [[ "$config_exists" -eq 1 ]]; then _cfg_awg_port="$AWG_PORT"; fi
+
+    # Прежнее значение изоляции - для предупреждения о смене (issue #178).
+    # Legacy-конфиг без ключа = 1 (изолированно): иначе переход legacy -> --isolation=off не даёт предупреждения о regen.
+    _cfg_client_isolation=""
+    if [[ "$config_exists" -eq 1 ]]; then _cfg_client_isolation="${CLIENT_ISOLATION:-1}"; fi
+
+    # Прежнее имя сервера - для предупреждения о смене (D#180).
+    # Legacy-конфиг без ключа = 'AWG Server' (прежний хардкод).
+    _cfg_server_name=""
+    if [[ "$config_exists" -eq 1 ]]; then _cfg_server_name="${AWG_SERVER_NAME:-AWG Server}"; fi
+
+    # --mobile разворачивается в CLI_PRESET/CLI_PORT до их потребителей.
+    resolve_mobile_flag
 
     # Переопределение из CLI
     AWG_PORT=${CLI_PORT:-$AWG_PORT}
@@ -3282,6 +4233,10 @@ initialize_setup() {
         # из awgsetup_cfg.init - флаг молча не действовал (Issue #170). Пустой
         # список заставит configure_routing_mode пересчитать его под новый режим.
         ALLOWED_IPS=""
+        # Ownership умирает вместе со списком, который он описывал: иначе
+        # stale CLIENT_ISOLATION_NET может присвоить себе токен пользователя
+        # из свежего --route-custom (issue #178).
+        CLIENT_ISOLATION_NET=""
         if [[ "$CLI_ROUTING_MODE" -eq 3 ]]; then ALLOWED_IPS=$CLI_CUSTOM_ROUTES; fi
     fi
     if [[ -n "$CLI_ENDPOINT" ]]; then
@@ -3291,6 +4246,7 @@ initialize_setup() {
         AWG_ENDPOINT=$CLI_ENDPOINT
     fi
     if [[ "$CLI_NO_TWEAKS" -eq 1 ]]; then NO_TWEAKS=1; fi
+    if [[ "$CLI_KEEP_PACKAGES" -eq 1 ]]; then KEEP_PACKAGES=1; fi
 
     [[ -n "${AWG_WEB_BIND:-}" ]] || AWG_WEB_BIND="${AWG_TUNNEL_SUBNET%/*}"
 
@@ -3385,6 +4341,13 @@ initialize_setup() {
     fi
     update_web_public_url
 
+    if [[ -n "$KEEP_PACKAGES" && "$KEEP_PACKAGES" != "0" && "$KEEP_PACKAGES" != "1" ]]; then
+        log_warn "В $CONFIG_FILE у KEEP_PACKAGES недопустимое значение '$KEEP_PACKAGES' — пакеты сохраняю."
+        KEEP_PACKAGES=1
+    fi
+    configure_package_cleanup
+    guard_subnet_change_with_peers
+
     # Значения по умолчанию
     if [[ "$DISABLE_IPV6" == "default" ]]; then DISABLE_IPV6=1; fi
     configure_ipv6_tunnel
@@ -3408,6 +4371,12 @@ initialize_setup() {
     validate_server_name "$AWG_SERVER_NAME" || die "Некорректное имя сервера: пустое, слишком длинное или содержит перевод строки."
     confirm_install_choices
 
+    # Изоляция клиентов (issue #178): выбор + приведение AllowedIPs.
+    # Вызов до validate_cidr_list ниже - дописанная подсеть проходит ту же
+    # обязательную валидацию, что и остальной список.
+    configure_client_isolation
+    _apply_isolation_to_allowed_ips
+
     # Единая обязательная валидация AllowedIPs до сохранения конфига: CLI
     # --route-custom на первом запуске присваивал ALLOWED_IPS без проверки
     # (configure_routing_mode пропускался, т.к. режим уже был 3). Проверяем
@@ -3415,6 +4384,9 @@ initialize_setup() {
     if [[ -n "$ALLOWED_IPS" ]] && ! validate_cidr_list "$ALLOWED_IPS"; then
         die "Некорректный ALLOWED_IPS: '$ALLOWED_IPS'. Ожидается список x.x.x.x/y[,x.x.x.x/y]."
     fi
+
+    # Имя сервера для vpn:// URI (D#180): выбор источника + валидация.
+    configure_server_name
 
     # Проверка порта (пропускаем если AWG-сервис уже слушает этот порт)
     if ! systemctl is-active --quiet awg-quick@awg0 2>/dev/null; then
@@ -3481,7 +4453,10 @@ export AWG_TUNNEL_SUBNET='${AWG_TUNNEL_SUBNET}'
 export DISABLE_IPV6=${DISABLE_IPV6}
 export ALLOWED_IPS_MODE=${ALLOWED_IPS_MODE}
 export ALLOWED_IPS='${ALLOWED_IPS}'
+export CLIENT_ISOLATION=${CLIENT_ISOLATION:-1}
+export CLIENT_ISOLATION_NET='${CLIENT_ISOLATION_NET:-}'
 export AWG_ENDPOINT='${AWG_ENDPOINT}'
+export AWG_SERVER_NAME='${AWG_SERVER_NAME:-AWG Server}'
 export AWG_MTU=${AWG_MTU:-1280}
 export AWG_SERVER_NAME=${quoted_server_name}
 export AWG_IPV6_ENABLED=${AWG_IPV6_ENABLED}
@@ -3539,6 +4514,7 @@ export AWG_I4='${AWG_I4:-}'
 export AWG_I5='${AWG_I5:-}'
 export AWG_PRESET='${AWG_PRESET:-default}'
 export NO_TWEAKS=${NO_TWEAKS}
+export KEEP_PACKAGES=${KEEP_PACKAGES:-1}
 export NO_CPS=${NO_CPS}
 export AWG_APPLY_MODE='${AWG_APPLY_MODE:-syncconf}'
 export ALLOW_IPV6_TUNNEL=${ALLOW_IPV6_TUNNEL:-0}
@@ -3577,6 +4553,9 @@ EOF
     log "WireSock hints: ${AWG_WIRESOCK_HINTS:-off}"
     log "Имя сервера: ${AWG_SERVER_NAME}"
     log "Режим AllowedIPs: $ALLOWED_IPS_MODE"
+    log "Изоляция клиентов: $( [[ "${CLIENT_ISOLATION:-1}" -eq 1 ]] && echo включена || echo отключена )"
+
+    log "Имя сервера: ${AWG_SERVER_NAME}"
     # Смена режима маршрутизации - операция над клиентскими конфигами: новые
     # клиенты получат новый список, но у существующих regen сознательно
     # сохраняет AllowedIPs (индивидуальные настройки modify). Подсказываем
@@ -3585,12 +4564,26 @@ EOF
         log_warn "Режим маршрутизации изменён. Существующие клиентские конфиги сохраняют старые AllowedIPs."
         log_warn "Применить новый режим ко всем клиентам: sudo bash $MANAGE_SCRIPT_PATH regen --reset-routes"
     fi
+    # Смена изоляции - та же операция над клиентскими конфигами, что и смена
+    # режима маршрутизации: новые клиенты получат новый список, существующие -
+    # только через regen --reset-routes (issue #178).
+    if [[ "$config_exists" -eq 1 \
+          && "$_cfg_client_isolation" != "$CLIENT_ISOLATION" ]]; then
+        log_warn "Режим изоляции клиентов изменён. Существующие клиентские конфиги сохраняют старые AllowedIPs."
+        log_warn "Применить новый режим ко всем клиентам: sudo bash $MANAGE_SCRIPT_PATH regen --reset-routes"
+    fi
     # Смена порта: шаг 6 пропускает уже существующих клиентов, их Endpoint
     # остаётся со старым портом и они молча перестают подключаться. Подсказываем
     # явный перевыпуск - по аналогии с предупреждением о смене режима (#170).
     if [[ "$config_exists" -eq 1 && -n "$PREV_AWG_PORT" ]]; then
         log_warn "Порт изменён (${PREV_AWG_PORT} -> ${AWG_PORT}). Существующие клиентские конфиги сохраняют старый порт в Endpoint и потеряют связь."
         log_warn "Перевыпустить всех клиентов: sudo bash $MANAGE_SCRIPT_PATH regen"
+    fi
+    # Смена имени сервера (D#180): влияет только на vpn:// URI, существующие
+    # .vpnuri сохраняют старое имя до перевыпуска.
+    if [[ "$config_exists" -eq 1 && "$_cfg_server_name" != "$AWG_SERVER_NAME" ]]; then
+        log_warn "Имя сервера изменено ('${_cfg_server_name}' -> '${AWG_SERVER_NAME}'). Существующие vpn:// ссылки сохраняют старое имя."
+        log_warn "Перевыпустить с новым именем: sudo bash $MANAGE_SCRIPT_PATH regen"
     fi
 
     # Загрузка состояния
@@ -3619,6 +4612,7 @@ EOF
         || [[ -n "$CLI_ENDPOINT" ]] || [[ "$CLI_DISABLE_IPV6" != "default" ]] \
         || [[ "${CLI_ALLOW_IPV6_TUNNEL:-0}" -eq 1 ]] || [[ -n "${CLI_PRESET:-}" ]] \
         || [[ -n "${CLI_JC:-}" ]] || [[ -n "${CLI_JMIN:-}" ]] || [[ -n "${CLI_JMAX:-}" ]] \
+        || [[ "${CLI_ISOLATION:-default}" != "default" ]] \
         || [[ "${CLI_NO_CPS:-0}" -eq 1 ]]; }; then
         log_warn "Незавершённая установка (шаг $current_step) + CLI-параметры конфигурации: возврат к шагу 4, чтобы firewall и конфиги были перегенерированы с новыми значениями."
         current_step=4
@@ -3635,16 +4629,28 @@ step1_update_and_optimize() {
     update_state 1
     log "### ШАГ 1: Обновление, очистка и оптимизация системы ###"
 
-    mkdir -p /etc/apt/apt.conf.d || die "Не удалось создать /etc/apt/apt.conf.d."
+    # Устойчивость к dpkg-lock на первой загрузке сервера: unattended-upgrades
+    # и apt-daily нередко держат блокировку несколько минут (issue #150 - тогда
+    # apt full-upgrade падал сразу). DPkg::Lock::Timeout заставляет apt дождаться
+    # освобождения блокировки, а не завершаться с ошибкой.
+    mkdir -p /etc/apt/apt.conf.d
     printf 'DPkg::Lock::Timeout "300";\n' > /etc/apt/apt.conf.d/99-amneziawg-lock-timeout \
-        || die "Не удалось настроить ожидание dpkg lock."
+        || log_warn "Не удалось записать apt lock-timeout (митигация issue #150)."
 
     # Очистка ненужных компонентов (ДО обновления для экономии трафика/времени)
-    if [[ "$NO_TWEAKS" -eq 0 ]]; then
-        cleanup_system
-    else
+    if [[ "$NO_TWEAKS" -eq 1 ]]; then
         log "Пропуск очистки системы (--no-tweaks)."
+    elif [[ "$KEEP_PACKAGES" != "0" ]]; then
+        # Не строгий ноль - значит либо явный отказ, либо решение неизвестно (пустое или
+        # испорченное значение из отредактированного руками конфига). Необратимое удаление
+        # делаем только по записанному согласию, всё остальное трактуем как "не трогать".
+        log "Пропуск очистки системы: пакеты сохраняются."
+        [[ -z "$KEEP_PACKAGES" ]] \
+            && log_warn "Согласие на удаление системных пакетов не записано - ничего не удаляю."
+    else
+        cleanup_system
     fi
+
 
     log "Обновление списка пакетов..."
     apt_update_tolerant || die "Ошибка apt update."
@@ -3658,17 +4664,75 @@ step1_update_and_optimize() {
         DEBIAN_FRONTEND=noninteractive dpkg --configure -a || log_warn "dpkg --configure -a."
     fi
 
-    local lock_holder=""
-    log "Обновление системы..."
-    if ! DEBIAN_FRONTEND=noninteractive apt full-upgrade -y; then
-        lock_holder=$(fuser /var/lib/dpkg/lock-frontend 2>/dev/null | tr -s ' ' || true)
-        [[ -n "$lock_holder" ]] && log_warn "dpkg lock занят процессами:${lock_holder}."
-        log_warn "apt full-upgrade не прошёл; выполняю dpkg repair и один повтор."
-        DEBIAN_FRONTEND=noninteractive dpkg --configure -a || log_warn "dpkg repair завершился с ошибкой; apt retry определит итог."
-        DEBIAN_FRONTEND=noninteractive apt full-upgrade -y \
-            || die "Ошибка apt full-upgrade после retry. Проверьте: fuser /var/lib/dpkg/lock-frontend"
+    # Метапакеты, под которыми висят udev, initramfs-tools и сетевой стек,
+    # могли осиротеть: их роняет очистка выше, но точно так же они могут
+    # прийти осиротевшими с самим образом. Поэтому блок выполняется БЕЗУСЛОВНО,
+    # включая --no-tweaks и --keep-packages, когда очистки не было вовсе.
+    # Возвращаем таким пакетам признак manual. Само обновление ниже удалить
+    # их уже не может (по Issue #223 команда заменена: у apt-get upgrade
+    # такого права нет), но статус "больше не нужен" остаётся ловушкой на
+    # будущее: на него вправе опереться любая следующая операция apt. В том
+    # числе НАША - install_packages ниже зовёт apt install без --no-remove, -
+    # и любой autoremove, который пользователь запустит потом сам.
+    # Именно manual, а не hold: hold запретил бы обновление, а обновлять их как
+    # раз надо; manual лишь снимает статус "больше не нужен".
+    # ⚠️ Разметка ничего не гарантирует: manual-пакет apt тоже вправе снести
+    # ради разрешения зависимостей. Гарантией служит проверка
+    # _verify_boot_critical перед перезагрузкой.
+    #
+    # Блок стоит ПОСЛЕ ремонта dpkg выше, и это не косметика: снимок строится
+    # опросом dpkg. Заблокированная база отвечает нормально, а вот недоступная
+    # или повреждённая даёт пустой ответ на всё сразу, и тогда защита
+    # выключилась бы молча вместе с проверкой после обновления, то есть ровно
+    # на тех машинах, где дефект и срабатывает. Самопроверка ниже ловит и это.
+    _dpkg_usable || die "dpkg не отвечает, а без него не проверить, переживут ли обновление udev и initramfs-tools (Issue #223). Выполните: dpkg --configure -a; apt-get check - и запустите установщик снова."
+    # Самопроверка предиката. _dpkg_usable отвечает только за dpkg, а предикат
+    # опирается ещё и на awk: сломанный awk вернул бы пустой статус, то есть
+    # "отсутствует" сразу для всех, и защита выключилась бы молча.
+    _pkg_present dpkg || die "Проверить состояние пакетов не удалось (dpkg-query или awk работают не так, как ожидается). Без этого нельзя убедиться, что обновление не унесёт udev (Issue #223)."
+    local critical_before
+    critical_before="$(_boot_critical_snapshot)"
+    if [[ -n "$critical_before" ]]; then
+        log "Под защитой от удаления: $(printf '%s' "$critical_before" | tr '\n' ' ')"
+        # udev есть практически на любом сервере Ubuntu и Debian. Его
+        # отсутствие означает не "нечего защищать", а что машина, возможно, уже
+        # повреждена - например, прерванным прошлым запуском.
+        _pkg_installed_ok udev \
+            || log_warn "udev не установлен или не настроен. Для Ubuntu и Debian это ненормально: проверьте dpkg-query -W udev, сервер может не загрузиться."
+        # Без кавычек намеренно: список приходит именами через перевод строки,
+        # и разбиение на аргументы здесь и нужно.
+        apt-mark manual $critical_before >/dev/null 2>&1 \
+            || log_warn "Не удалось вернуть признак manual пакетам: $(printf '%s' "$critical_before" | tr '\n' ' ') - они останутся в статусе \"больше не нужен\", проверка перед перезагрузкой это поймает."
+    else
+        log_warn "Ни один пакет из критичного набора не найден установленным. Для Ubuntu и Debian это необычно; проверьте: dpkg-query -W udev"
     fi
+    log "Обновление системы..."
+    # Именно upgrade --with-new-pkgs, а не full-upgrade. Разница здесь не
+    # стилистическая: full-upgrade по определению вправе УДАЛЯТЬ установленные
+    # пакеты ради разрешения зависимостей, и в Issue #223 он этим правом
+    # воспользовался: унёс udev, после чего сервер перестал грузиться. У
+    # upgrade такого права нет вовсе: пакет, который нельзя обновить без
+    # удаления соседа, просто остаётся необновлённым.
+    # --with-new-pkgs сохраняет единственное, ради чего здесь был нужен
+    # full-upgrade: новое ядро приезжает пакетом с НОВЫМ именем
+    # (linux-image-6.8.0-NNN-generic), а обычный upgrade новые имена ставить
+    # отказывается.
+    # Размен осознанный: VPN-серверу нужно не то, чтобы systemd был
+    # непременно свежим, а то, чтобы машина загрузилась. Проверка
+    # перед перезагрузкой остаётся вторым рубежом.
+    if ! DEBIAN_FRONTEND=noninteractive apt-get upgrade -y --with-new-pkgs; then
+        local _lock_holder
+        _lock_holder="$(fuser /var/lib/dpkg/lock-frontend 2>/dev/null | tr -s ' ' || true)"
+        if [[ -n "$_lock_holder" ]]; then
+            log_warn "dpkg-lock занят процессами:${_lock_holder} (обычно first-boot unattended-upgrades)."
+        fi
+        log_warn "Обновление не прошло, чиню dpkg и повторяю..."
+        DEBIAN_FRONTEND=noninteractive dpkg --configure -a || true
+        DEBIAN_FRONTEND=noninteractive apt-get upgrade -y --with-new-pkgs || _die_upgrade_failed
+    fi
+    _warn_kept_back
     log "Система обновлена."
+
 
     install_packages curl wget gpg sudo ethtool
 
@@ -3683,6 +4747,10 @@ step1_update_and_optimize() {
         setup_minimal_sysctl
         setup_voice_udp_optimization
     fi
+
+    # Проверяем ПОСЛЕДНИМ действием шага: после этой строки не выполняется
+    # ничего, что могло бы удалить пакет.
+    _verify_boot_critical "$critical_before"
 
     log "Шаг 1 успешно завершен."
     request_reboot 2
@@ -3765,6 +4833,90 @@ _try_install_prebuilt_arm() {
     fi
 }
 
+# H0 (AWG 3.0, 31 jul 2026): на ядрах < 6.7 актуальный PPA-модуль = AmneziaWG 3.0,
+# и мы его туда сознательно не пускаем (почему именно - см. _kernel_supports_awg3).
+# Устанавливаем ПИНОВЫЙ последний 2.0-модуль (линия 1.0.x) из исходника через DKMS:
+#   1. git clone пинового тега --depth=1;
+#   2. СВЕРКА commit с AWG2_PIN_COMMIT (integrity: immutable-коммит надёжнее, чем
+#      SHA авто-tarball GitHub, который меняется при смене компрессии);
+#   3. upstream-механизм `make dkms-install` (кладёт в /usr/src/amneziawg-1.0.0);
+#   4. dkms add/build/install под текущее ядро;
+#   5. modprobe-проверка (собран != загружаем: Secure Boot может блокировать).
+# dkms.conf исходника несёт AUTOINSTALL=yes, поэтому наш helper amneziawg-ensure-
+# module (apt-hook + systemd) пересоберёт пиновый модуль при апгрейде ядра сам -
+# отдельный maintenance-код не нужен. Возврат: 0 успех, 1 провал (лог в ERROR).
+_install_pinned_awg2_module() {
+    local repo="https://github.com/amnezia-vpn/amneziawg-linux-kernel-module.git"
+    local kver work got_commit
+    local dkms_ver="1.0.0"   # WIREGUARD_VERSION в upstream Makefile (имя /usr/src/amneziawg-<ver>)
+    kver="$(uname -r)"
+
+    if ! command -v git >/dev/null 2>&1; then
+        log_error "git не установлен - невозможно получить пиновый исходник модуля."
+        return 1
+    fi
+
+    work="$(mktemp -d /tmp/awg2-pin-XXXXXX)" || { log_error "mktemp -d не удался."; return 1; }
+
+    log "Клонирование пинового исходника AmneziaWG 2.0 ($AWG2_PIN_TAG)..."
+    if ! git clone --depth=1 --branch "$AWG2_PIN_TAG" "$repo" "$work/src" >/dev/null 2>&1; then
+        log_error "Не удалось клонировать $repo (тег $AWG2_PIN_TAG). Проверьте доступ к github.com."
+        rm -rf "$work"; return 1
+    fi
+
+    got_commit="$(git -C "$work/src" rev-parse HEAD 2>/dev/null || echo "")"
+    if [[ "$got_commit" != "$AWG2_PIN_COMMIT" ]]; then
+        log_error "Пин-проверка не пройдена: тег $AWG2_PIN_TAG -> commit '${got_commit:-<пусто>}',"
+        log_error "ожидался $AWG2_PIN_COMMIT. Отказ (возможна подмена/перемещение тега)."
+        rm -rf "$work"; return 1
+    fi
+    log "Пин-коммит подтверждён: $got_commit"
+
+    # Разложить DKMS-исходник upstream-механизмом (Makefile лежит в src/ подпапке).
+    # Вывод make сохраняем в лог: реальную причину сбоя (окружение/coreutils) иначе
+    # не увидеть - в отличие от dkms build, тут make.log не создаётся.
+    local _mklog="/var/log/amneziawg-pin-dkms-install.log"
+    if ! make -C "$work/src/src" dkms-install PREFIX=/usr >"$_mklog" 2>&1; then
+        log_error "make dkms-install не удался. Подробности: $_mklog"
+        rm -rf "$work"; return 1
+    fi
+    rm -rf "$work"
+
+    if [[ ! -f "/usr/src/amneziawg-${dkms_ver}/dkms.conf" ]]; then
+        log_error "/usr/src/amneziawg-${dkms_ver}/dkms.conf не появился после dkms-install."
+        return 1
+    fi
+
+    # add идемпотентен: при повторном запуске уже добавлен -> не фатально.
+    dkms add -m amneziawg -v "$dkms_ver" >/dev/null 2>&1 || true
+    # Идемпотентность (установщик - возобновляемая машина состояний): dkms build на
+    # уже собранном ядре возвращает ошибку "already built" -> собираем ТОЛЬКО если
+    # для этого ядра сборки ещё нет. install --force ниже идемпотентен сам по себе.
+    if dkms status -m amneziawg -v "$dkms_ver" -k "$kver" 2>/dev/null | grep -qE ': (built|installed)'; then
+        log "Пиновый 2.0-модуль уже собран для ядра $kver - пропускаю dkms build."
+    else
+        log "Сборка пинового 2.0-модуля через DKMS (ядро $kver)..."
+        if ! dkms build -m amneziawg -v "$dkms_ver" -k "$kver" >/dev/null 2>&1; then
+            log_error "DKMS build пинового 2.0-модуля не удался. Смотрите /var/lib/dkms/amneziawg/${dkms_ver}/${kver}/*/log/make.log"
+            return 1
+        fi
+    fi
+    if ! dkms install -m amneziawg -v "$dkms_ver" -k "$kver" --force >/dev/null 2>&1; then
+        log_error "DKMS install пинового 2.0-модуля не удался."
+        return 1
+    fi
+
+    # Собран != загружаем: при включённом Secure Boot неподписанный модуль не грузится.
+    if ! modprobe amneziawg 2>/dev/null; then
+        log_error "Модуль собран, но modprobe amneziawg не загрузил его."
+        log_error "Вероятная причина - Secure Boot: неподписанный DKMS-модуль блокируется."
+        log_error "Отключите Secure Boot в BIOS/UEFI VPS либо зарегистрируйте MOK-ключ."
+        return 1
+    fi
+    log "Пиновый AmneziaWG 2.0-модуль собран и загружен (DKMS $dkms_ver, ядро $kver)."
+    return 0
+}
+
 # ==============================================================================
 # ШАГ 2: Установка AmneziaWG и зависимостей
 # ==============================================================================
@@ -3775,7 +4927,7 @@ step2_install_amnezia() {
     # Guard: убедиться что юзер действительно перезагрузился перед step 2.
     # Если boot_id совпадает с сохранённым в request_reboot 2 — reboot
     # не произошёл (например, юзер случайно запустил скрипт повторно).
-    # В этом случае apt full-upgrade из step 1 подложил новое ядро на диск,
+    # В этом случае обновление из step 1 могло подложить новое ядро на диск,
     # но работающее ядро всё ещё старое → DKMS соберёт модуль под старое,
     # после следующего reboot modprobe упадёт.
     local boot_id_file="$AWG_DIR/.boot_id_before_step2"
@@ -3991,16 +5143,79 @@ PPASRC
     # Пакеты AmneziaWG + qrencode + web/IPv6 helpers
     log "Установка пакетов AmneziaWG..."
 
+    # H0 (AWG 3.0, 31 jul 2026): путь пинового 2.0-модуля определяем ДО любой
+    # установки пакетов - hold обязан стоять раньше даже ARM-пути с предсобранным
+    # .deb, где install_packages ставит amneziawg-tools, чьи Recommends иначе
+    # подтянут 3.0-модуль в обход гейта. На ядрах < 6.7 PPA-модуль = AmneziaWG 3.0,
+    # его здесь не ставим (сознательно, см. _kernel_supports_awg3), а собираем
+    # пиновый 2.0 из исходника; из PPA берём только tools (version-aware, с 2.0
+    # работают - проверено).
+    local use_pinned_awg2=0
+    if ! _kernel_supports_awg3; then
+        use_pinned_awg2=1
+        log "Ядро $(uname -r) старее 6.7 - здесь ставим проверенный модуль AmneziaWG 2.0, а не 3.0 из PPA."
+        log "Активирован путь пинового AmneziaWG 2.0-модуля из исходника ($AWG2_PIN_TAG)."
+        # Re-entry: если прошлый прогон/стоковый установщик успел поставить (или
+        # оставить полу-настроенным) 3.0-пакет - убрать его и его исходник, иначе
+        # его failing postinst и владение /usr/src/amneziawg-* конфликтуют со сборкой.
+        if dpkg -l amneziawg-dkms 2>/dev/null | grep -qE '^(ii|iU|iF|iH|rc)'; then
+            log "Обнаружен ранее установленный amneziawg-dkms (AmneziaWG 3.0) - удаляю перед пиновой сборкой."
+            DEBIAN_FRONTEND=noninteractive apt-get purge -y amneziawg-dkms amneziawg >/dev/null 2>&1 \
+                || dpkg --purge --force-all amneziawg-dkms amneziawg >/dev/null 2>&1 \
+                || log_warn "Не удалось полностью удалить ранее установленный amneziawg-dkms - установка ниже может упасть."
+            command -v dkms >/dev/null 2>&1 && dkms remove -m amneziawg -v 1.0.0 --all >/dev/null 2>&1 || true
+            rm -rf /var/lib/dkms/amneziawg* /usr/src/amneziawg-* 2>/dev/null || true
+        fi
+        # ⚠️ Hold ДО любой установки: amneziawg-tools РЕКОМЕНДУЕТ amneziawg-dkms, apt
+        # по умолчанию ставит recommends -> без hold установка tools (в т.ч. на ARM-
+        # пути) притащила бы 3.0-dkms, и в системе оказались бы ДВА DKMS-дерева с
+        # одним именем модуля amneziawg - пиновое 2.0 и пакетное 3.0. Это защитный
+        # механизм, поэтому провал фатален (проверяем, что hold реально встал).
+        apt-mark hold amneziawg-dkms amneziawg >/dev/null 2>&1 || true
+        # Проверяем именно amneziawg-dkms - это несущий пакет: его РЕКОМЕНДУЕТ
+        # amneziawg-tools и он несёт 3.0-модуль. Метапакет amneziawg держать не
+        # обязательно (его Depends: amneziawg-dkms всё равно held), поэтому его
+        # отдельно не верифицируем.
+        if ! apt-mark showhold 2>/dev/null | grep -qx "amneziawg-dkms"; then
+            die "Не удалось зафиксировать amneziawg-dkms в hold. Без этого установка amneziawg-tools подтянет из PPA модуль AmneziaWG 3.0 в обход выбранного пути. Прервано (проверьте apt/dpkg lock)."
+        fi
+    else
+        # Ядро >= 6.7: нормальный путь ставит amneziawg-dkms из PPA. Снять возможный
+        # hold от прежнего пинового прогона (иначе apt install -y прервётся на held).
+        apt-mark unhold amneziawg-dkms amneziawg >/dev/null 2>&1 || true
+    fi
+
     # На ARM: сначала пробуем предсобранный .deb (не требует build-tools и headers).
     # Откат на DKMS если совпадения нет или скачивание не удалось.
+    # ⚠️ На ядре < 6.7 (use_pinned_awg2=1) предсобранный .deb использовать БЕЗОПАСНО:
+    # наши ARM-пребилты собираются из scripts/arm-module-version.txt, запиненного на
+    # тот же 2.0-тег (v1.0.20260725) и залоченного тестом, то есть это ЗАВЕДОМО 2.0-
+    # модуль, а не 3.0. ⚠️ Это ЕДИНСТВЕННАЯ гарантия, и её достаточно. Прежний второй
+    # довод - "3.0 под ядро < 6.7 всё равно не скомпилируется, значит 3.0-ассета для
+    # debian-bookworm-arm64 в релизе быть не может" - с 31 jul 2026 НЕВЕРЕН (upstream
+    # починил сборку, v3.0.20260731-04), опираться на него нельзя. При отсутствии
+    # совпадения _try_install_prebuilt_arm вернёт 1 и мы уйдём в проверяемую сборку
+    # из исходника ниже. hold, выставленный выше, здесь тоже в силе (не даёт tools
+    # подтянуть 3.0-dkms через Recommends).
     local arch
     arch="$(uname -m)"
     if [[ "$arch" == "aarch64" || "$arch" == "armv7l" ]]; then
         if _try_install_prebuilt_arm; then
             log "Модуль ядра установлен из предсобранного пакета. Установка утилит из PPA..."
+            # Предсобранный пакет не удовлетворяет Recommends пакета tools,
+            # поэтому независимо от версии ядра запрещаем apt поставить рядом
+            # второе DKMS-дерево с тем же именем модуля.
+            apt-mark hold amneziawg-dkms amneziawg >/dev/null 2>&1 || true
+            if ! apt-mark showhold 2>/dev/null | grep -qx "amneziawg-dkms"; then
+                die "Не удалось зафиксировать amneziawg-dkms в hold перед установкой amneziawg-tools. Проверьте apt/dpkg lock и повторите запуск."
+            fi
             install_packages "amneziawg-tools" "wireguard-tools" "qrencode" "python3" "python3-geoip2" "openssl"
+            if dpkg-query -W -f='${Status}' amneziawg-dkms 2>/dev/null | grep -q "ok installed"; then
+                log_warn "ВНИМАНИЕ: рядом с предсобранным модулем установлен amneziawg-dkms. Удалите лишний DKMS-пакет перед перезагрузкой."
+            fi
             installer_ipv6_effective_mode_is_ndp && install_packages "ndppd"
             log "Шаг 2 завершен (prebuilt ARM)."
+            _boot_critical_guard
             # request_reboot всегда завершает процесс (exit), сюда не вернёмся.
             request_reboot 3
         fi
@@ -4071,6 +5286,22 @@ PPASRC
         fi
     fi
     install_packages "${packages[@]}"
+
+    # H0: пиновый путь - собрать 2.0-модуль из исходника ВМЕСТО PPA-amneziawg-dkms.
+    # Headers текущего ядра уже установлены выше (в packages); hold выставлен ранее.
+    if [[ "$use_pinned_awg2" -eq 1 ]]; then
+        if ! _install_pinned_awg2_module; then
+            log_error "Не удалось установить пиновый AmneziaWG 2.0-модуль."
+            log_error "На ядрах старее 6.7 (у вас $(uname -r)) установщик берёт модуль не из"
+            log_error "PPA, а собирает из исходника, и этот шаг не прошёл. Конкретная причина -"
+            log_error "в строках выше; чаще всего это отсутствующие kernel headers, нехватка"
+            log_error "места, оборванная сеть или собранный, но не загружаемый модуль (Secure"
+            log_error "Boot). Запасной вариант: развернуть сервер на Ubuntu 24.04/25.10 или"
+            log_error "Debian 13, где модуль приходит пакетом из PPA. См. README/INSTALL_VPS."
+            die "Пиновый AmneziaWG 2.0-модуль не установлен."
+        fi
+        log "Пиновый AmneziaWG 2.0-модуль установлен; PPA-dkms в hold (защита от 3.0)."
+    fi
 
     # v5.12.0: мета-пакет linux-headers, чтобы apt автоматически подтягивал
     # заголовки при kernel upgrade. Без меты ставится только
@@ -4372,6 +5603,10 @@ AWG_SYSTEMD_UNIT_EOF
     else
         log "DKMS статус OK."
     fi
+
+    # Шаг 2 тоже ставит пакеты и тоже перезагружает машину, значит тот же
+    # рубеж нужен и здесь.
+    _boot_critical_guard
 
     log "Шаг 2 завершен."
     request_reboot 3
@@ -5543,6 +6778,17 @@ step7_start_service() {
     log "### ШАГ 7: Запуск сервиса и настройка безопасности ###"
 
     log "Включение и запуск awg-quick@awg0..."
+
+    # Переключение изоляции on->off: PostDown нового конфига DROP-правило не
+    # снимет (его там больше нет), а down-фаза restart работает уже с новым
+    # конфигом на диске. Убираем stale-правила явно, циклом - при повторных
+    # прерванных запусках их могло накопиться несколько (issue #178, паттерн
+    # отложенной уборки как у PREV_AWG_PORT в #175).
+    if [[ "${CLIENT_ISOLATION:-1}" -eq 0 ]]; then
+        while iptables -D FORWARD -i awg0 -o awg0 -j DROP 2>/dev/null; do :; done
+        while ip6tables -D FORWARD -i awg0 -o awg0 -j DROP 2>/dev/null; do :; done
+    fi
+
     if systemctl is-active --quiet awg-quick@awg0; then
         log "Сервис уже активен — перезапуск для применения конфигурации..."
         systemctl enable awg-quick@awg0 || log_warn "Не удалось enable awg-quick@awg0 — проверьте автозапуск вручную"
@@ -5550,6 +6796,10 @@ step7_start_service() {
     else
         systemctl enable --now awg-quick@awg0 || die "Ошибка enable --now."
     fi
+    # Интерфейс только что поднят - фиксируем набор device-параметров, чтобы
+    # управляющий скрипт с самого начала знал, что стоит на живом интерфейсе.
+    # Без этого первое же обнаружение снятия сравнивать было бы не с чем.
+    awg_record_device_params
     log "Сервис включен и запущен."
 
     if [[ "${AWG_WEB_ENABLED:-1}" -eq 1 ]]; then
@@ -6120,7 +7370,11 @@ step99_finish() {
 
     # Удаление файла состояния
     log "Удаление файла состояния установки..."
-    rm -f "$STATE_FILE" "${STATE_FILE}.lock" "$AWG_DIR/.boot_id_before_step2" || log_warn "Не удалось удалить $STATE_FILE"
+    # Снимок защищаемых пакетов тоже уходит: он нужен между шагами, а пережив
+    # установку, стал бы стареть. Устаревшее имя (пакет переименован сменой
+    # выпуска) останавливало бы следующую установку без внятной причины.
+    rm -f "$STATE_FILE" "${STATE_FILE}.lock" "$AWG_DIR/.boot_id_before_step2" \
+          "$BOOT_CRITICAL_SNAPSHOT_FILE" || log_warn "Не удалось удалить $STATE_FILE"
     log "Установка полностью завершена. Лог: $LOG_FILE"
     log "=============================================================================="
 }

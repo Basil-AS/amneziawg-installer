@@ -91,9 +91,8 @@ _client_allowed_ips() {
 
     run regenerate_client "alice"
     [ "$status" -eq 0 ]
-    # regenerate_client strips whitespace when preserving the old value
-    # (tr -d '[:space:]'), hence no space after the comma.
-    [ "$(_client_allowed_ips alice)" = "10.11.0.0/16,192.168.100.0/24" ]
+    # The list keeps its canonical ", " separator (D#38).
+    [ "$(_client_allowed_ips alice)" = "10.11.0.0/16, 192.168.100.0/24" ]
 }
 
 @test "issue #170: regen with AWG_REGEN_RESET_ROUTES=1 applies the global routing mode" {

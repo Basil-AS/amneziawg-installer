@@ -11,10 +11,10 @@
   <img src="docs/screenshots/web-panel-health.png" alt="Веб-панель AmneziaWG: Server Health с историей нагрузки" width="960">
 </p>
 
-<h1 align="center">Install AmneziaWG 2.0 VPN on Ubuntu and Debian VPS</h1>
+<h1 align="center">Install AmneziaWG 2.0 / 3.0 VPN on Ubuntu and Debian VPS</h1>
 
 <p align="center"><em>VPN за одну команду - работает там, где WireGuard блокируют. Любой VPS за $3, без знания Linux.</em></p>
-<p align="center"><em>One-command, self-hosted AmneziaWG 2.0 VPN for Ubuntu 24.04 / 25.10 / 26.04 and Debian 12 / 13. Kernel-native DKMS, no Docker, no web panel, runs on any cheap VPS.</em></p>
+<p align="center"><em>One-command, self-hosted AmneziaWG 2.0 / 3.0 VPN for Ubuntu 24.04 / 25.10 / 26.04 and Debian 12 / 13. Kernel-native DKMS, no Docker, no web panel, runs on any cheap VPS.</em></p>
 
 <p align="center">
   <a href="https://bivlked.github.io/amneziawg-installer/ru/"><img src="https://img.shields.io/badge/Website-bivlked.github.io-3ddc97" alt="Project website"></a>
@@ -28,7 +28,7 @@
   <img src="https://img.shields.io/badge/Fork_Delta-IPv6_|_P2P_|_Web-0aa" alt="Fork delta">
   <img src="https://img.shields.io/badge/AmneziaWG-2.0-blueviolet" alt="AWG 2.0">
   <a href="https://github.com/bivlked/amneziawg-installer/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="License"></a>
-  <a href="https://github.com/bivlked/amneziawg-installer/releases"><img src="https://img.shields.io/badge/Installer_Version-5.19.2-blue" alt="Version"></a>
+  <a href="https://github.com/bivlked/amneziawg-installer/releases"><img src="https://img.shields.io/badge/Installer_Version-5.28.1-blue" alt="Version"></a>
   <a href="https://github.com/bivlked/amneziawg-installer/actions/workflows/test.yml"><img src="https://github.com/bivlked/amneziawg-installer/actions/workflows/test.yml/badge.svg" alt="Tests"></a>
   <a href="https://github.com/bivlked/amneziawg-installer/stargazers"><img src="https://img.shields.io/github/stars/bivlked/amneziawg-installer?style=flat" alt="Stars"></a>
   <img src="https://img.shields.io/github/last-commit/bivlked/amneziawg-installer" alt="Last commit">
@@ -43,17 +43,17 @@
 ## 🚀 Быстрый старт
 
 ```bash
-wget -O install_amneziawg.sh https://raw.githubusercontent.com/bivlked/amneziawg-installer/v5.19.2/install_amneziawg.sh
+wget -O install_amneziawg.sh https://raw.githubusercontent.com/bivlked/amneziawg-installer/v5.28.1/install_amneziawg.sh
 chmod +x install_amneziawg.sh
 sudo bash ./install_amneziawg.sh
 ```
 
-> Что делает: ставит AmneziaWG 2.0 (модуль ядра через DKMS), настраивает firewall и форвардинг, создаёт первого клиента, печатает QR-код и `vpn://` ссылку для импорта в Amnezia Client. Добавить друга или устройство потом - одна команда `add`.
+> Что делает: ставит AmneziaWG (модуль ядра через DKMS, какую линию протокола вы получите - в разделе [AmneziaWG 3.x](#awg3)), настраивает firewall и форвардинг, создаёт первого клиента, печатает QR-код и `vpn://` ссылку для импорта в Amnezia Client. Добавить друга или устройство потом - одна команда `add`.
 > 3 команды. 2 перезагрузки по ходу. Около 20 минут до готового VPN. Для чистого Ubuntu/Debian VPS, не роутер и не shared-хостинг. [Подробнее →](#ustanovka)
 
-> 📘 Полный гайд по развёртыванию (EN): [Install AmneziaWG VPN server on Ubuntu/Debian VPS](INSTALL_VPS.md) - выбор VPS, ARM, troubleshooting, удаление.
+> 📘 Полный гайд по развёртыванию: [Установка сервера AmneziaWG на VPS](INSTALL_VPS.ru.md) - выбор VPS, ARM, troubleshooting, удаление. [English version](INSTALL_VPS.md).
 
-> 🔐 Целостность: скрипт качается по HTTPS с `raw.githubusercontent.com` (тег закреплён), вспомогательные скрипты (`awg_common`, `manage`) проверяются по закреплённым SHA256-хешам. Отдельные detached-подписи релизов пока не активны (запланированы) - статус и модель угроз в [SECURITY.md](SECURITY.md).
+> 🔐 Целостность: скрипт качается по HTTPS с `raw.githubusercontent.com` (тег закреплён), вспомогательные скрипты (`awg_common`, `manage`) проверяются по закреплённым SHA256-хешам. Релизы дополнительно подписываются detached-подписью minisign - как проверить, ниже в разделе [Проверка подписи](#proverka-podpisi); модель угроз в [SECURITY.md](SECURITY.md).
 
 <details>
 <summary><strong>Что установщик меняет на сервере (прозрачность)</strong></summary>
@@ -85,14 +85,15 @@ sudo bash ./install_amneziawg.sh --yes --route-all
 | Ваша ситуация | Что добавить |
 |---|---|
 | Обычный дешёвый VPS, просто нужен VPN | Ничего - команда выше уже всё делает |
-| Мобильный интернет, DPI режет (ТСПУ, Иран, школа или корпоратив) | При установке добавьте `--preset=mobile` ([проверенные операторы](#operatory)) |
-| ARM: Raspberry Pi, Oracle Ampere, Hetzner CAX | Та же команда - готовые ARM-модули ядра выберутся автоматически ([детали](INSTALL_VPS.md)) |
+| Мобильный интернет, DPI режет (ТСПУ, Иран, школа или корпоратив) | При установке добавьте `--mobile` - пресет обфускации + порт 443/udp разом ([проверенные операторы](#operatory)) |
+| ARM: Raspberry Pi, Oracle Ampere, Hetzner CAX | Та же команда - готовые ARM-модули ядра выберутся автоматически ([детали](INSTALL_VPS.ru.md)) |
 | Доступ другу или гостю на время | После установки: `manage_amneziawg.sh add guest --expires=7d` |
 
 ---
 
 <p align="center">
   <a href="#zachem">Зачем это нужно</a> •
+  <a href="#awg3">AmneziaWG 3.x</a> •
   <a href="#sravnenie">AWG vs WG</a> •
   <a href="#cli-vs-panel">CLI vs панели</a> •
   <a href="#similar-tools">Похожие инструменты</a> •
@@ -103,6 +104,7 @@ sudo bash ./install_amneziawg.sh --yes --route-all
   <a href="#trebovaniya">Требования</a> •
   <a href="#recomend-hosting">Хостинг</a> •
   <a href="#ustanovka">Установка</a> •
+  <a href="#proverka-podpisi">Проверка подписи</a> •
   <a href="#posle-ustanovki">После установки</a> •
   <a href="#upravlenie">Управление</a> •
   <a href="#dopolnitelno">Дополнительно</a> •
@@ -452,19 +454,41 @@ PSK, адреса peer-ов и параметры маршрутизации н�
 
 ---
 
+<a id="awg3"></a>
+## 🆕 AmneziaWG третьей версии уже ставится
+
+В конце июля 2026 вышла **AmneziaWG 3.0**, и PPA переключили на неё; 12 августа внутри той же линии вышла **3.1**, и PPA раздаёт уже её. На x86 с ядром 6.7 или новее установщик **уже ставит модуль третьей версии** - включать отдельно ничего не нужно, а конфиги, которые у вас уже розданы, продолжают работать без единой правки. Какой именно выпуск приедет вам, зависит от того, что лежит в PPA на день установки, поэтому ниже команда, которая отвечает точно.
+
+Посмотреть, что стоит именно у вас:
+
+```bash
+awg --version                        # версия утилит
+cat /sys/module/amneziawg/version    # версия загруженного модуля
+```
+
+Если модуль не загружен, вторая команда ничего не покажет - тогда версию файла на диске выдаст `modinfo amneziawg | grep ^version`. Подробнее о том, почему это разные вопросы, - в [ADVANCED.md](ADVANCED.md#awg3-adv).
+
+На ядрах старее 6.7 (Debian 12 с 6.1) и на ARM, где есть готовый пакет под ваше ядро, ставится проверенная 2.0: там третья версия обкатана меньше всего, и порог мы держим сознательно.
+
+Сами возможности 3.0 - шифрование заголовков, добавочный паддинг, настройка таймингов - в генерируемые конфиги ещё не попадают. Для них нужны клиентские приложения, а они вышли не на всех платформах. Подробный разбор (что меняется на проводе, какие параметры добавились, что обязано совпадать у сервера и клиента) - в [ADVANCED.md](ADVANCED.md#awg3-adv).
+
+---
+
 <a id="sravnenie"></a>
 ## ⚖️ AmneziaWG vs WireGuard
 
 | | WireGuard | AmneziaWG 2.0 |
 |---|---|---|
 | **Обнаружение DPI** | Детектируется по фиксированным размерам пакетов и magic bytes | Трудно зафингерпринтить - случайные заголовки, padding, имитация протоколов |
-| **Блокируется в** | Китай, Россия, Иран, ОАЭ, Туркменистан | Не известно о блокировках (по состоянию на апрель 2026) |
+| **Блокируется в** | Китай, Россия, Иран, ОАЭ, Туркменистан | По фиксированной сигнатуре блокировать нечего - её нет. Остаются блокировки по адресу и UDP-порту: может помочь смена порта или `--mobile` |
 | **Настройка сервера** | Вручную: ключи, iptables, sysctl, systemd | Одна команда, 20 минут, полностью автоматически |
 | **Безопасность** | Сами: UFW, Fail2Ban, sysctl | Автоматически: firewall + защита от брутфорса + тюнинг ядра |
 | **Управление клиентами** | Ручное редактирование конфигов, рестарт | `add`/`remove`/`list`/`stats` с hot-reload |
 | **Временный доступ** | Нет | `--expires=7d` с автоматическим удалением |
 | **Требования к серверу** | - | Те же - любой VPS за $3-5/мес, 1 ГБ RAM |
-| **Потеря скорости** | Базовая | Минимальная (<2% в типичных тестах) |
+| **Потеря скорости** | Базовая | Модуль ядра: шифрование и маскировка выполняются в пространстве ядра, без выхода в userspace |
+
+> Про скорость: на сервере с одним общим vCPU узким местом становится процессор - шифрование и маскировка выполняются на том же ядре. Диагностика: [FAQ в ADVANCED](ADVANCED.md#faq-advanced-adv).
 
 > Если WireGuard у вас работает и не блокируется - используйте его. Если блокируется или режется - AmneziaWG 2.0 является прямой заменой.
 
@@ -694,7 +718,7 @@ GET    /api/server/logs
 * Диагностический отчёт (`--diagnostic`) и полная деинсталляция (`--uninstall`)
 * Логирование всех действий в `/root/awg/`
 * Возобновление установки после перезагрузки - скрипт продолжит с нужного шага
-* Выбор порта, подсети, режима IPv6 и маршрутизации. Поддержка `--endpoint` для серверов за NAT
+* Выбор порта, подсети, режима IPv6, маршрутизации и изоляции клиентов (`--isolation=on|off`). Поддержка `--endpoint` для серверов за NAT
 </details>
 
 ---
@@ -702,7 +726,7 @@ GET    /api/server/logs
 <a id="operatory"></a>
 ## 📡 С какими операторами проверено
 
-Если VPN нестабилен через мобильный интернет, запускайте установку с `--preset=mobile`. Ниже - рабочие конфигурации по отчётам пользователей из issues и discussions (не гарантия: блокировки и параметры операторов меняются со временем):
+Установщик настраивает обфускацию AmneziaWG 2.0 под мобильные сети с DPI: `--mobile` включает мобильный пресет и порт 443/udp одним флагом. Если VPN нестабилен через мобильный интернет - переустановите с `--mobile`. Ниже - рабочие конфигурации по отчётам пользователей из issues и discussions (не гарантия: блокировки и параметры операторов меняются со временем):
 
 - **Yota** - Москва, `--preset=mobile`
 - **Tele2** - Москва (`--preset=mobile`); Красноярск (`--preset=mobile`; в майскую волну 2026 заработал `I1=<r 48>`)
@@ -782,7 +806,7 @@ GET    /api/server/logs
 <a id="ustanovka"></a>
 ## 🔧 Установка (Рекомендуемый способ)
 
-Этот метод установки гарантирует корректную работу интерактивных запросов и цветного вывода в вашем терминале.
+Установка AmneziaWG на Ubuntu или Debian сводится к трём командам: скачать скрипт, запустить с `sudo` и ответить на несколько вопросов. Этот метод гарантирует корректную работу интерактивных запросов и цветного вывода в вашем терминале.
 
 1.  **Подключитесь** к **чистому** серверу (Ubuntu 24.04 / Ubuntu 25.10 / Ubuntu 26.04 / Debian 12 / Debian 13) по SSH.
     > **Совет:** После создания сервера подождите 5-10 минут, чтобы завершились все фоновые процессы инициализации системы, прежде чем запускать установку.
@@ -816,6 +840,9 @@ GET    /api/server/logs
     * **Подсеть туннеля:** Внутренняя сеть VPN. Fresh install выбирает стабильную server-specific `/24`; для управляемой адресации используйте `--subnet`.
     * **Отключение IPv6:** Рекомендуется отключить (`Y`) для избежания утечек трафика.
     * **Режим маршрутизации:** Определяет, какой трафик пойдет через VPN. По умолчанию `2` (Список Amnezia+DNS) - рекомендуется для лучшей совместимости и обхода блокировок.
+    * **Изоляция клиентов:** Блокировать ли трафик между клиентами внутри VPN. По умолчанию включена (`Y`) - клиенты не видят друг друга; неинтерактивно: `--isolation=on|off`.
+
+    * **Имя сервера:** Под этим именем сервер появится в приложении Amnezia при импорте `vpn://`. По умолчанию `AWG Server`; неинтерактивно: `--server-name=ИМЯ`.
 
     Параметры AWG 2.0 (Jc, S1-S4, H1-H4, I1) генерируются **автоматически** - никаких действий не требуется.
 
@@ -845,6 +872,31 @@ Apply требует отдельный `--apply` и точный confirmation t
 Разные внутренние подсети устраняют конфликт маршрутов к VPN gateway, DNS и peer-адресам, но два одновременно активных full-tunnel профиля всё равно конкурируют за `0.0.0.0/0`. Используйте один активный full tunnel (active/standby) либо настройте непересекающиеся split routes/policy routing.
 
 ---
+
+<a id="proverka-podpisi"></a>
+## 🔏 Проверка подписи (необязательно)
+
+Релизы подписываются ключом, который лежит офлайн на машине автора и никогда не попадает в GitHub Actions. К подписанному релизу приложены и сами скрипты, и подписи, и публичный ключ, поэтому для проверки не нужно ходить в другое место.
+
+Подписи появились не с самого начала проекта: у релизов, выпущенных до включения этой схемы, файлов `.minisig` в ассетах нет, и проверять там нечего.
+
+```bash
+sudo apt install minisign          # Ubuntu/Debian
+
+TAG=vX.Y.Z                         # тег релиза, который вы скачали
+BASE="https://github.com/bivlked/amneziawg-installer/releases/download/$TAG"
+curl -LO "$BASE/install_amneziawg.sh"
+curl -LO "$BASE/install_amneziawg.sh.minisig"
+curl -LO "$BASE/KEYS.txt"
+
+minisign -V -p KEYS.txt -m install_amneziawg.sh -x install_amneziawg.sh.minisig
+```
+
+Ожидаемый ответ: `Signature and comment signature verified`, а строкой ниже `Trusted comment: amneziawg-installer <ваш тег> install_amneziawg.sh`.
+
+**Прочитайте эту строку, а не только первую.** Она называет тег и имя файла, поэтому подпись от другого релиза или от другого файла здесь не пройдёт. Без такой привязки подпись доказывала бы только то, что байты кто-то когда-то подписал.
+
+⚠️ Что эта проверка НЕ даёт. Если вы берёте и скрипт, и ключ из этого же репозитория за один заход, она защищает от подмены на пути до вас, но не от компрометации самого аккаунта: тот, кто способен подменить скрипт, подменит и ключ. Смысл появляется, когда ключ уже сохранён у вас с прошлого раза или взят из независимого источника. Отпечаток ключа: `3E598A1C01907E17`.
 
 <a id="posle-ustanovki"></a>
 ## 📦 После установки
@@ -927,7 +979,7 @@ sudo bash /root/awg/manage_amneziawg.sh <команда> [аргументы]
 
 | Команда   | Аргументы              | Описание                     | Перезапуск? |
 | :-------- | :--------------------- | :--------------------------- | :-----------: |
-| `regen`   | `[имя_клиента]`        | Переген. файлы (всех/одного) |       Нет     |
+| `regen`   | `[имя ...] [--reset-routes]` | Переген. файлы (всех/указанных) |       Нет     |
 | `modify`  | `<имя> <пар> <зн>`     | Изменить параметр клиента    |       Нет     |
 | `backup`  |                        | Создать резервную копию      |       Нет     |
 | `restore` | `[файл]`               | Восстановить из резервной копии |    Нет     |
@@ -946,6 +998,8 @@ sudo bash /root/awg/manage_amneziawg.sh <команда> [аргументы]
 | `restart` |                        | Перезапуск сервиса AmneziaWG   |       -       |
 
 > **💡 Примечание:** Команды `add` и `remove` автоматически применяют изменения через `awg syncconf` - перезапуск сервиса не требуется.
+
+> **🤖 Для скриптов и ботов:** с v5.21.0 почти все команды управления (от `add` до `repair-module`) понимают `--json` и отвечают одним JSON-объектом, даже если что-то пошло не так - вывод можно спокойно разбирать из своего скрипта или бота. `list --json` и `stats --json`, как и раньше, отдают простые массивы. Формат и строгий режим подтверждений `AWG_STRICT_CONFIRM=1` расписаны в [ADVANCED.md → JSON-интерфейс](ADVANCED.md#json-api-adv), а готовый Telegram-бот на этом интерфейсе уже есть - [awgram](#ekosistema).
 
 ### 📌 Краткая справка
 
@@ -999,6 +1053,8 @@ sudo bash /root/awg/manage_amneziawg.sh restart              # Перезапу�
 Планы развития и приоритеты - в **[docs/ROADMAP.md](docs/ROADMAP.md)**.
 
 Каскад из двух серверов с раздельным выходом российского и зарубежного трафика (split-tunnel) - в **[CASCADE.md](CASCADE.md)**.
+
+Выборочная маршрутизация российского сегмента через Cloudflare WARP по BGP-фиду, если сервер один - в **[WARP-RU.md](WARP-RU.md)**.
 
 ---
 
@@ -1107,6 +1163,8 @@ sudo bash /root/awg/manage_amneziawg.sh dns set-mode system
   chmod 700 /root/awg/manage_amneziawg.sh /root/awg/awg_common.sh
   </pre>
   Переустановка сервера не требуется.
+  <br><br>
+  С v5.21.0 пара скриптов защищена от рассинхрона: обновили manage, а awg_common забыли (или наоборот), и версии разошлись - скрипт остановится и покажет, какими командами докачать вторую половину, вместо странных ошибок посреди работы.
 </details>
 
 <details>
@@ -1155,8 +1213,17 @@ sudo bash /root/awg/manage_amneziawg.sh dns set-mode system
 </details>
 
 <details>
-  <summary><strong>В: Безопасно ли запускать скрипт повторно?</strong></summary>
-  <b>О:</b> Да. Повторная установка поверх уже работающего сервиса требует флага <code>--force</code> (или <code>AWG_FORCE_REINSTALL=1</code>) - без него скрипт сообщит, что AmneziaWG уже установлен, и ничего не тронет. С <code>--force</code> серверный конфиг пересоздаётся, но существующие клиенты автоматически восстанавливаются из бэкапа: дефолтные клиенты (<code>my_phone</code>, <code>my_laptop</code>) пересоздаются, остальные - сохраняются.
+  <summary><strong>В: Можно ли управлять сервером из своих скриптов или Telegram-бота?</strong></summary>
+  <b>О:</b> Да. С v5.21.0 команды управления принимают флаг <code>--json</code> и отвечают одним JSON-объектом даже при сбое - его спокойно разберёт любой скрипт (<code>list</code>/<code>stats</code> отдают JSON-массивы давно). Формат обещаю не ломать: новые поля могут появляться, существующие не переименовываются. Для запусков без человека есть <code>--yes</code>, а строгий режим <code>AWG_STRICT_CONFIRM=1</code> заставляет команды вроде <code>remove</code> отказаться, если <code>--yes</code> забыли, вместо молчаливого согласия. Разбор формата - в <a href="ADVANCED.md#json-api-adv">ADVANCED.md → JSON-интерфейс</a>. Живой пример - Telegram-бот <a href="https://github.com/ekuraev/awgram">awgram</a>, он работает ровно через этот интерфейс.
+</details>
+
+<details>
+  <summary><strong>В: Безопасно ли запускать скрипт повторно? Придётся ли перевыпускать конфиги клиентам?</strong></summary>
+  <b>О:</b> Да, безопасно, и перевыпускать не придётся. Повторная установка поверх уже работающего сервиса требует флага <code>--force</code> (или <code>AWG_FORCE_REINSTALL=1</code>) - без него скрипт сообщит, что AmneziaWG уже установлен, и ничего не тронет. С <code>--force</code> серверный конфиг пересоздаётся, но серверные ключи и параметры обфускации берутся существующие, а <code>[Peer]</code>-блоки переносятся из прежнего конфига. Клиенты сохраняются все, включая дефолтные <code>my_phone</code> и <code>my_laptop</code>: цикл создания пропускает тех, кто уже есть в конфиге. Выданные файлы и QR-коды остаются валидными.
+  <br><br>
+  Оговорка ровно одна: если передать <code>--preset</code>, <code>--jc</code>, <code>--jmin</code> или <code>--jmax</code>, весь набор <code>Jc</code>/<code>S</code>/<code>H</code>/<code>I1</code> сгенерируется заново - и вот тогда старые конфиги перестанут подключаться, их придётся перевыпустить через <code>regen</code> и раздать снова. При обычном обновлении эти флаги не указывайте.
+  <br><br>
+  И чаще всего <code>--force</code> не нужен вовсе: чтобы получить новые команды управления, достаточно обновить два скрипта на сервере (вопрос выше). Заново прогонять установщик стоит, только когда менялся он сам.
 </details>
 
 > Больше ответов и решений см. в **[ADVANCED.md](ADVANCED.md)**.
@@ -1199,7 +1266,7 @@ sudo bash /root/awg/manage_amneziawg.sh dns set-mode system
 | Проект | Описание |
 |--------|----------|
 | [Junker](https://spatiumstas.github.io/junker/) | Веб-генератор подписей AmneziaWG от @spatiumstas - для ручной настройки без установочного скрипта |
-| [AmneziaWG-Architect](https://vadim-khristenko.github.io/AmneziaWG-Architect/) | Веб-генератор CPS/мимикрии для AWG 2.0 от @Vadim-Khristenko ([GitHub](https://github.com/Vadim-Khristenko/AmneziaWG-Architect)) |
+| [Any-Tech-ARCHITECT](https://architect.vai-rice.space/) | Веб-генератор параметров обфускации от @Vadim-Khristenko - подбор и проверка значений с матрицей совместимости клиентов ([GitHub](https://github.com/Vadim-Khristenko/Any-Tech-ARCHITECT)) |
 
 ### Прошивки для роутеров
 
@@ -1214,6 +1281,7 @@ sudo bash /root/awg/manage_amneziawg.sh dns set-mode system
 |--------|-----------|----------|
 | [amneziawg-manager](https://github.com/rockysys/amneziawg-manager) | macOS | Нативный GUI, управляет сервером по SSH через штатный manage - без веб-панели и демонов |
 | [awgram](https://github.com/ekuraev/awgram) | Telegram | Бот на Rust: добавление/удаление клиентов, статистика, бэкап - через штатный manage |
+| [amneziawg-installer-tg-bot](https://github.com/blindtechnique/amneziawg-installer-tg-bot) | Telegram | Бот на Python, работает на самом сервере: клиенты кнопками, гостевой доступ со сроком, статистика, бэкап - через штатный manage |
 
 <a id="upominaniya"></a>
 <details>

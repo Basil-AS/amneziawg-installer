@@ -2,8 +2,8 @@
 # shellcheck disable=SC2016
 # v5.12.0 DKMS auto-repair regression tests.
 #
-# Epic MyAI-ae13 — guarantees the amneziawg kernel module is rebuilt and
-# loaded after a kernel upgrade, with three triggers:
+# The v5.12.0 auto-repair change guarantees the amneziawg kernel module is
+# rebuilt and loaded after a kernel upgrade, with three triggers:
 #   - reactive: manage add/remove/restart pre-call ensure_amneziawg_kernel_module
 #   - proactive: apt hook DPkg::Post-Invoke runs /usr/local/sbin/amneziawg-ensure-module --hook
 #   - boot-time: systemd unit amneziawg-ensure-module.service Before=awg-quick@awg0

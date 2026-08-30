@@ -140,10 +140,19 @@ _source_arm() {
     rm -f "$pin"
 }
 
-@test "C-ARM: shipped pin file defaults to HEAD (current behaviour preserved)" {
+@test "C-ARM: shipped pin file points at the 1.0.x line, not a floating HEAD" {
+    # Was "defaults to HEAD" until 2026-07-31. Upstream merged AmneziaWG 3.0 into
+    # its default branch, so HEAD stopped being an AWG 2.0 module and stopped
+    # compiling on kernel 6.1 (nla_put_uint), which broke debian-bookworm-arm64.
+    # The compile part was fixed upstream on 2026-07-31 (v3.0.20260731-04), but the
+    # first part still holds: HEAD is a 3.0 module, so the pin is what keeps the ARM
+    # prebuilts on 2.0.
+    # The expected value is spelled out on purpose: moving this pin decides which
+    # protocol version the ARM prebuilts implement, so it should be a deliberate
+    # edit that updates this test, not a silent one.
     run _arm_module_ref_shipped_value
     [ "$status" -eq 0 ]
-    [ "$output" = "HEAD" ]
+    [ "$output" = "v1.0.20260725" ]
 }
 
 _arm_module_ref_shipped_value() {

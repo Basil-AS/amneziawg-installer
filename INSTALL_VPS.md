@@ -28,7 +28,7 @@ Country matters mostly for latency and jurisdiction. ARM versus amd64 has no rea
 
 - **Ubuntu 24.04 LTS** is the best-tested platform. Default pick if you have no other preference.
 - **Ubuntu 25.10** (questing) and **Ubuntu 26.04** work since v5.13.0. The PPA codename remaps to `noble` automatically when the running codename PPA is unreachable (404 or network failure). Resilient against do-release-upgrade from 24.04.
-- **Debian 12** (bookworm) and **Debian 13** (trixie) are fully supported with codename mapping (focal and noble respectively).
+- **Debian 12** (bookworm) and **Debian 13** (trixie) are fully supported with codename mapping (focal and noble respectively). Note: upstream shipped AmneziaWG 3.0 in late July 2026. On kernels older than 6.7, which includes Debian 12 (kernel 6.1), the installer deliberately stays on AmneziaWG 2.0: it builds a pinned 2.0 module from source instead of taking 3.0 from the PPA, so the install keeps working (since v5.23.0); see [ADVANCED](ADVANCED.en.md#debian-support-adv) for the details.
 - Use a minimal install. The script assumes the box is single-purpose and will strip modemmanager, snapd, cloud-init leftovers and similar to free resources.
 - Avoid custom kernels (XanMod, Liquorix, Zen) on first install. DKMS compiles against the running kernel headers, but custom kernels can shift internal structs and trip a runtime panic. If you must, file a repro upstream rather than guessing.
 
@@ -43,16 +43,25 @@ sudo ufw allow <your-ssh-port>/tcp
 Then:
 
 ```bash
-wget -O install_amneziawg_en.sh https://raw.githubusercontent.com/bivlked/amneziawg-installer/v5.19.2/install_amneziawg_en.sh
+wget -O install_amneziawg_en.sh https://raw.githubusercontent.com/bivlked/amneziawg-installer/v5.28.1/install_amneziawg_en.sh
 chmod +x install_amneziawg_en.sh
 sudo bash ./install_amneziawg_en.sh
 ```
 
 The script walks through OS detection, base packages, PPA setup, kernel module install (DKMS or ARM prebuilt), UFW firewall, sysctl hardening, Fail2Ban, AmneziaWG service start, and default client config generation. Expect two reboots and 15 to 25 minutes of wall-clock time, mostly bound by `apt` and the kernel module build.
 
-The script is **idempotent and resume-safe**: after each reboot, run the same command again and it picks up from where it left off. State lives in `/root/awg/setup_state`.
+The script is **idempotent and resume-safe**: after each reboot, run the same command again and it picks up from where it left off. State lives in `/root/awg/setup_state`. Two reboots are part of the normal flow:
 
-For a non-interactive run pass `--yes` and the routing flag of your choice, e.g. `sudo bash ./install_amneziawg_en.sh --yes --route-amnezia`. Common flags: `--port=39743`, `--subnet=10.9.9.1/24`, `--disallow-ipv6`, `--allow-ipv6-tunnel` (dual-stack IPv6 inside the tunnel), `--preset=mobile`, `--endpoint=<public-IP>` (required when the server's public IP differs from its interface IP, typical on Oracle Cloud, GCP, or any NAT'd cloud setup). Full CLI: `--help` or [ADVANCED.en.md](ADVANCED.en.md#install-cli-adv).
+```mermaid
+flowchart LR
+    A["Steps 0-1<br/>params, system prep"] --> R1(("reboot"))
+    R1 --> B["Step 2<br/>kernel module"]
+    B --> R2(("reboot"))
+    R2 --> C["Steps 3-7<br/>firewall, configs, service"]
+    C --> D["VPN ready"]
+```
+
+For a non-interactive run pass `--yes` and the routing flag of your choice, e.g. `sudo bash ./install_amneziawg_en.sh --yes --route-amnezia`. Common flags: `--port=39743` (any port 1-65535), `--subnet=10.9.9.1/24`, `--disallow-ipv6`, `--allow-ipv6-tunnel` (dual-stack IPv6 inside the tunnel), `--mobile` (mobile obfuscation preset plus port 443/udp in one flag; an explicit `--port` wins), `--isolation=on|off` (client-to-client isolation, on by default), `--endpoint=<public-IP>` (required when the server's public IP differs from its interface IP, typical on Oracle Cloud, GCP, or any NAT'd cloud setup). Full CLI: `--help` or [ADVANCED.en.md](ADVANCED.en.md#install-cli-adv).
 
 ## First-time client setup
 
@@ -76,16 +85,29 @@ scp root@SERVER_IP:/root/awg/my_iphone.conf .
 
 Verify the handshake from the server side with `sudo awg show awg0` after the client connects. The `latest handshake` line should refresh every minute. If you need PresharedKey for Shadowrocket on iOS or macOS, add the `--psk` flag during `manage add`.
 
+You can drive the server from scripts too: since v5.21.0 the management commands take `--json` and reply with a single JSON object even when they fail, so a cron job or a bot can parse stdout without guesswork (the process exit code stays the source of truth). Add `--yes` for unattended runs, and set `AWG_STRICT_CONFIRM=1` if you want commands like `remove` to refuse when `--yes` is missing rather than quietly go ahead:
+
+```bash
+sudo bash /root/awg/manage_amneziawg.sh add phone --json --yes
+# {"command":"add","ok":true,"added":1,"failed":0,"applied":true,"results":[{"name":"phone","status":"created","conf":"/root/awg/phone.conf","qr":"/root/awg/phone.png","vpnuri":"/root/awg/phone.vpnuri","expires_at":null}]}
+```
+
+Per-command output formats and the compatibility promise: [ADVANCED.en.md JSON interface](ADVANCED.en.md#json-api-adv).
+
 ## Update flow
 
 Updating to a newer installer release on a server that already has a supported version running:
 
 ```bash
-wget -O install_amneziawg_en.sh https://raw.githubusercontent.com/bivlked/amneziawg-installer/vX.Y.Z/install_amneziawg_en.sh
+wget -O install_amneziawg_en.sh https://raw.githubusercontent.com/bivlked/amneziawg-installer/v5.28.1/install_amneziawg_en.sh
 sudo bash ./install_amneziawg_en.sh --force
 ```
 
-The `--force` flag (or `AWG_FORCE_REINSTALL=1`) is required when reinstalling over an already-running AmneziaWG service, so an accidental re-run on a healthy box does not destroy state. First-time installs do not need it. Server keys, peer list, and obfuscation parameters survive a reinstall.
+Set aside a few minutes for this. A reinstall walks the state machine from the top, so the box reboots twice, once after the system-update step and once after the kernel-module step, and you run the same command again after each reboot. Step 1 is replayed in full along the way: package cleanup, sysctl tuning, swap and BBR. The tunnel is down across those reboots, but nothing that clients hold is touched.
+
+The `--force` flag (or `AWG_FORCE_REINSTALL=1`) is required when reinstalling over an already-running AmneziaWG service, so an accidental re-run on a healthy box does not destroy state. First-time installs do not need it. Server keys, peer list, and obfuscation parameters survive a reinstall. Since v5.21.0 the script pair is protected against drift: update one half and forget the other, and the scripts stop with the exact commands to fetch the missing piece, instead of throwing strange errors halfway through.
+
+That is what keeps an update invisible to your users: config files and QR codes handed out earlier stay valid, and existing clients are preserved rather than recreated, the default `my_phone` and `my_laptop` included. One exception is worth remembering. Passing `--preset`, `--jc`, `--jmin` or `--jmax` regenerates the whole `Jc`/`S`/`H`/`I1` set, and every config issued before that stops connecting until you re-issue it with `sudo bash /root/awg/manage_amneziawg.sh regen` and hand it out again. Leave those flags off when you are only updating. And if all you want is the newer management commands, `--force` is not needed at all: replacing the two scripts on the server is enough, and the installer only has to be re-run when the installer itself changed.
 
 A normal `apt-get upgrade` will pull a new kernel from time to time. For DKMS-based installs (typical for amd64 and most ARM64 deployments without a prebuilt for the new kernel), `amneziawg-ensure-module` rebuilds the module transparently at the next boot. Check its log with `journalctl -u amneziawg-ensure-module.service -b` or read the rolling apt-hook log at `/var/log/amneziawg-ensure-module.log`. Manual recovery if all three safety nets miss: `sudo bash /root/awg/manage_amneziawg.sh repair-module` reinstalls headers, rebuilds DKMS, and restarts the service. ARM users running an ARM prebuilt should rerun the installer after a kernel upgrade so it picks a fresh prebuilt or falls back to DKMS.
 
@@ -101,7 +123,7 @@ The uninstall path is symmetric: it removes the AmneziaWG service, the kernel mo
 
 - **PPA 404 on Ubuntu 25.10 or 26.04.** Automatic fallback to noble since v5.13.0. If you are still on v5.12.x, upgrade the installer.
 - **DKMS build fails on stale kernel headers** (typical after `do-release-upgrade` 24.04 to 25.10). v5.13.0 detects stale headers (kernel version differs from the running kernel) and installs gcc-13 as a fallback compiler so DKMS autoinstall succeeds across the version mismatch. If DKMS still fails, `sudo bash /root/awg/manage_amneziawg.sh repair-module` forces a rebuild.
-- **Mobile carrier unstable or only connects on the third attempt.** Reinstall with `--preset=mobile`. Tested carriers (Russia): Yota (Moscow), Tele2 (Moscow), Tattelecom / Letai (Tatarstan), Beeline (default preset). Tele2 (Krasnoyarsk) and Megafon (regional networks) need `--preset=mobile` plus the I1 parameter removed. Full per-carrier table and the underlying Jc / Jmin / Jmax mechanics are in [ADVANCED.en.md FAQ](ADVANCED.en.md#faq-advanced-adv).
+- **Mobile carrier unstable or only connects on the third attempt.** Reinstall with `--mobile` - it enables the mobile obfuscation preset and moves the port to 443/udp in one flag (carriers often drop unfamiliar UDP ports; an explicit `--port` wins if you pass both). Tested carriers (Russia): Yota (Moscow), Tele2 (Moscow), Tattelecom / Letai (Tatarstan), Beeline (default preset). Tele2 (Krasnoyarsk) and Megafon (regional networks) additionally need the I1 parameter removed. Full per-carrier table and the underlying Jc / Jmin / Jmax mechanics are in [ADVANCED.en.md FAQ](ADVANCED.en.md#faq-advanced-adv).
 - **Handshake completes but no packets flow.** Almost always the AllowedIPs gotcha on a custom split-tunnel config. Cover the server subnet too, not just the destinations you want. See [ADVANCED.en.md AllowedIPs](ADVANCED.en.md#allowedips-adv).
 - **iPhone does not connect over cellular.** MTU issue. The installer sets `MTU = 1280` by default since v5.7.4; older configs need the line added manually. See [MTU and Mobile Clients](ADVANCED.en.md#mtu-mobile-adv).
 - **ARM prebuilt unavailable for your kernel.** The installer falls back to DKMS automatically since v5.12.1. If both fail, file an issue with `sudo bash ./install_amneziawg_en.sh --diagnostic` output.

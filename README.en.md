@@ -11,9 +11,9 @@
   <img src="docs/screenshots/web-panel-health.png" alt="AmneziaWG Web Panel Server Health with load history" width="960">
 </p>
 
-<h1 align="center">Install AmneziaWG 2.0 VPN on Ubuntu and Debian VPS</h1>
+<h1 align="center">Install AmneziaWG 2.0 / 3.0 VPN on Ubuntu and Debian VPS</h1>
 
-<p align="center"><em>One-command, self-hosted AmneziaWG 2.0 VPN for Ubuntu 24.04 / 25.10 / 26.04 and Debian 12 / 13. Kernel-native DKMS, no Docker, no web panel, runs on any cheap VPS.</em></p>
+<p align="center"><em>One-command, self-hosted AmneziaWG 2.0 / 3.0 VPN for Ubuntu 24.04 / 25.10 / 26.04 and Debian 12 / 13. Kernel-native DKMS, no Docker, no web panel, runs on any cheap VPS.</em></p>
 
 <p align="center">
   <a href="https://bivlked.github.io/amneziawg-installer/"><img src="https://img.shields.io/badge/Website-bivlked.github.io-3ddc97" alt="Project website"></a>
@@ -27,7 +27,7 @@
   <img src="https://img.shields.io/badge/Fork_Delta-IPv6_|_P2P_|_Web-0aa" alt="Fork delta">
   <img src="https://img.shields.io/badge/AmneziaWG-2.0-blueviolet" alt="AWG 2.0">
   <a href="https://github.com/bivlked/amneziawg-installer/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="License"></a>
-  <a href="https://github.com/bivlked/amneziawg-installer/releases"><img src="https://img.shields.io/badge/Installer_Version-5.19.2-blue" alt="Version"></a>
+  <a href="https://github.com/bivlked/amneziawg-installer/releases"><img src="https://img.shields.io/badge/Installer_Version-5.28.1-blue" alt="Version"></a>
   <a href="https://github.com/bivlked/amneziawg-installer/actions/workflows/test.yml"><img src="https://github.com/bivlked/amneziawg-installer/actions/workflows/test.yml/badge.svg" alt="Tests"></a>
   <a href="https://github.com/bivlked/amneziawg-installer/stargazers"><img src="https://img.shields.io/github/stars/bivlked/amneziawg-installer?style=flat" alt="Stars"></a>
   <img src="https://img.shields.io/github/last-commit/bivlked/amneziawg-installer" alt="Last commit">
@@ -42,17 +42,17 @@
 ## 🚀 Quick Start
 
 ```bash
-wget -O install_amneziawg_en.sh https://raw.githubusercontent.com/bivlked/amneziawg-installer/v5.19.2/install_amneziawg_en.sh
+wget -O install_amneziawg_en.sh https://raw.githubusercontent.com/bivlked/amneziawg-installer/v5.28.1/install_amneziawg_en.sh
 chmod +x install_amneziawg_en.sh
 sudo bash ./install_amneziawg_en.sh
 ```
 
-> What it does: installs AmneziaWG 2.0 (kernel module via DKMS), configures the firewall and forwarding, creates the first client, and prints a QR code plus a `vpn://` link for one-tap import into the Amnezia client. Adding a friend or a device later is a single `add` command.
+> What it does: installs AmneziaWG (kernel module via DKMS; which protocol line you end up with is covered in [AmneziaWG 3.x](#awg3)), configures the firewall and forwarding, creates the first client, and prints a QR code plus a `vpn://` link for one-tap import into the Amnezia client. Adding a friend or a device later is a single `add` command.
 > 3 commands. 2 reboots along the way. About 20 minutes to a working VPN. For a clean Ubuntu/Debian VPS, not a home router or shared hosting. [Details →](#installation)
 
 > 📘 Full deployment guide: [Install AmneziaWG VPN server on Ubuntu/Debian VPS](INSTALL_VPS.md) - covers VPS choice, ARM, troubleshooting, and uninstall.
 
-> 🔐 Integrity: the script is fetched over HTTPS from `raw.githubusercontent.com` (pinned tag), and the helper scripts (`awg_common`, `manage`) are verified against pinned SHA256 hashes. Detached release signatures are not active yet (planned) - status and threat model in [SECURITY.md](SECURITY.md).
+> 🔐 Integrity: the script is fetched over HTTPS from `raw.githubusercontent.com` (pinned tag), and the helper scripts (`awg_common`, `manage`) are verified against pinned SHA256 hashes. Releases additionally carry a detached minisign signature - how to check it is in [Verifying a release](#verifying-a-release) below; threat model in [SECURITY.md](SECURITY.md).
 
 <details>
 <summary><strong>What the installer changes on your server (transparency)</strong></summary>
@@ -84,7 +84,7 @@ All parameters are accepted automatically. Details: [ADVANCED.en.md#cli-params-a
 | Your situation | What to add |
 |---|---|
 | Plain cheap VPS, you just need a VPN | Nothing - the command above already does it |
-| Mobile data, DPI cuts the link (TSPU, Iran, school or office) | During install, add `--preset=mobile` ([tested carriers](#carriers)) |
+| Mobile data, DPI cuts the link (TSPU, Iran, school or office) | During install, add `--mobile` - the obfuscation preset plus port 443/udp in one go ([tested carriers](#carriers)) |
 | ARM: Raspberry Pi, Oracle Ampere, Hetzner CAX | Same command - ready-made ARM kernel modules are selected automatically ([details](INSTALL_VPS.md)) |
 | Time-limited access for a friend or guest | After install: `manage_amneziawg.sh add guest --expires=7d` |
 
@@ -92,6 +92,7 @@ All parameters are accepted automatically. Details: [ADVANCED.en.md#cli-params-a
 
 <p align="center">
   <a href="#why">Why this project</a> •
+  <a href="#awg3">AmneziaWG 3.x</a> •
   <a href="#comparison">AWG vs WG</a> •
   <a href="#cli-vs-panel">CLI vs panels</a> •
   <a href="#similar-tools">Similar tools</a> •
@@ -102,6 +103,7 @@ All parameters are accepted automatically. Details: [ADVANCED.en.md#cli-params-a
   <a href="#requirements">Requirements</a> •
   <a href="#hosting-recommendation">Hosting</a> •
   <a href="#installation">Installation</a> •
+  <a href="#verifying-a-release">Verifying a release</a> •
   <a href="#after-installation">After installation</a> •
   <a href="#client-management">Management</a> •
   <a href="#additional-information">More</a> •
@@ -448,19 +450,41 @@ Works on Ubuntu 24.04/25.10/26.04 and Debian 12/13. Any cheap VPS with 1 GB RAM 
 
 ---
 
+<a id="awg3"></a>
+## 🆕 The third AmneziaWG line ships already
+
+**AmneziaWG 3.0** was released in late July 2026 and the PPA now points at it; on 12 August **3.1** followed inside the same line, and that is what the PPA now carries. On x86 with kernel 6.7 or newer the installer **already gives you a third-line module** - there is nothing to switch on, and the configs you have already handed out keep working untouched. Which exact release you get depends on what sits in the PPA on the day you install, so the command below is the one that answers precisely.
+
+To see what you actually have:
+
+```bash
+awg --version                        # tools version
+cat /sys/module/amneziawg/version    # version of the loaded module
+```
+
+If the module is not loaded the second command prints nothing - then `modinfo amneziawg | grep ^version` reports the version of the file on disk. Why these are different questions is explained in [ADVANCED.en.md](ADVANCED.en.md#awg3-adv).
+
+Kernels older than 6.7 (Debian 12 on 6.1) and ARM hosts with a prebuilt package for their kernel still get the proven 2.0: that is where the 3.0 line has had the least mileage, and the threshold is deliberate.
+
+The 3.0 features themselves - header encryption, extra padding, timing knobs - are not in generated configs yet. They need client apps, and those have not landed on every platform. The detailed write-up (what changes on the wire, which parameters were added, what has to match between server and client) lives in [ADVANCED.en.md](ADVANCED.en.md#awg3-adv).
+
+---
+
 <a id="comparison"></a>
 ## ⚖️ AmneziaWG vs WireGuard
 
 | | WireGuard | AmneziaWG 2.0 |
 |---|---|---|
 | **DPI detection** | Fingerprinted by fixed packet sizes and magic bytes | Hard to fingerprint - randomized headers, padding, protocol mimicry |
-| **Blocked in** | China, Russia, Iran, UAE, Turkmenistan | No known blocks (as of April 2026) |
+| **Blocked in** | China, Russia, Iran, UAE, Turkmenistan | Nothing to block by fixed signature - there is none. Address and UDP port blocking remain: another port or `--mobile` can help |
 | **Server setup** | Manual: keys, iptables, sysctl, systemd | One command, 20 min, fully automatic |
 | **Hardening** | DIY: UFW, Fail2Ban, sysctl | Automatic: firewall + brute-force protection + kernel tuning |
 | **Client management** | Edit configs by hand, restart | `add`/`remove`/`list`/`stats` with hot-reload |
 | **Temporary access** | Not built-in | `--expires=7d` with auto-cleanup |
 | **Server requirements** | - | Same - any $3-5/mo VPS, 1 GB RAM |
-| **Speed overhead** | Baseline | Negligible (<2% in typical tests) |
+| **Speed overhead** | Baseline | Kernel module: encryption and obfuscation run in kernel space, no userspace round-trip |
+
+> On speed: on a server with a single shared vCPU the CPU becomes the bottleneck, because encryption and obfuscation run on that same core. Diagnostics: [FAQ in ADVANCED](ADVANCED.en.md#faq-advanced-adv).
 
 > If WireGuard works for you and isn't blocked - keep using it. If it's blocked or throttled - AmneziaWG 2.0 is the drop-in replacement.
 
@@ -601,7 +625,7 @@ Useful flags:
 * Diagnostic report (`--diagnostic`) and full uninstall (`--uninstall`)
 * All actions logged to `/root/awg/`
 * Resume after reboot - the script picks up from where it left off
-* Choice of port, subnet, IPv6 mode, and routing mode. `--endpoint` flag for servers behind NAT
+* Choice of port, subnet, IPv6 mode, routing mode, and client isolation (`--isolation=on|off`). `--endpoint` flag for servers behind NAT
 </details>
 
 ---
@@ -609,7 +633,7 @@ Useful flags:
 <a id="carriers"></a>
 ## 📡 Tested mobile carriers (Russia)
 
-If your VPN is unstable on mobile data, run the installer with `--preset=mobile`. Below - configurations reported by users in issues and discussions (not a guarantee: blocking and carrier parameters change over time):
+The installer tunes AmneziaWG 2.0 obfuscation for mobile networks with DPI: `--mobile` switches on the mobile preset and port 443/udp in a single flag. If your VPN is unstable on mobile data, reinstall with `--mobile`. The configurations below come from user reports in issues and discussions (no guarantee: blocking and carrier parameters change over time):
 
 - **Yota** - Moscow, `--preset=mobile`
 - **Tele2** - Moscow (`--preset=mobile`); Krasnoyarsk (`--preset=mobile`; the May 2026 wave needed `I1=<r 48>`)
@@ -689,7 +713,7 @@ This configuration is more than enough for comfortable AmneziaWG operation with 
 <a id="installation"></a>
 ## 🔧 Installation (Recommended Method)
 
-This installation method handles interactive prompts and colored output correctly in your terminal.
+Installing AmneziaWG on Ubuntu or Debian comes down to three commands: download the script, run it with `sudo`, and answer a few questions. This method handles interactive prompts and colored output correctly in your terminal.
 
 1.  **Connect** to a **clean** server (Ubuntu 24.04 / Ubuntu 25.10 / Ubuntu 26.04 / Debian 12 / Debian 13) via SSH.
     > **Tip:** After creating the server, wait 5-10 minutes for all background initialization processes to complete before starting the installation.
@@ -723,6 +747,9 @@ This installation method handles interactive prompts and colored output correctl
     * **Tunnel subnet:** Internal VPN network. A fresh install selects a stable server-specific `/24`; override it with `--subnet` for managed allocation.
     * **Disable IPv6:** Recommended (`Y`) to prevent traffic leaks.
     * **Routing mode:** Determines which traffic goes through the VPN. Default `2` (Amnezia List + DNS) - recommended for best compatibility and bypassing restrictions.
+    * **Client isolation:** Whether to block traffic between clients inside the VPN. Enabled (`Y`) by default - clients cannot see each other; non-interactive: `--isolation=on|off`.
+
+    * **Server name:** The server shows up under this name in the Amnezia app on `vpn://` import. Default `AWG Server`; non-interactive: `--server-name=NAME`.
 
     AWG 2.0 parameters (Jc, S1-S4, H1-H4, I1) are generated **automatically** - no action required.
 
@@ -752,6 +779,31 @@ Apply requires a separate `--apply` flag and the exact confirmation token. It cr
 Distinct internal subnets resolve routes to VPN gateways, DNS, and peers, but two concurrently active full-tunnel profiles still compete for `0.0.0.0/0`. Use one active full tunnel (active/standby) or configure disjoint split routes/policy routing.
 
 ---
+
+<a id="verifying-a-release"></a>
+## 🔏 Verifying a release (optional)
+
+Releases are signed with a key that lives offline on the maintainer's machine and never reaches GitHub Actions. On a signed release the scripts, the signatures and the public key are all attached, so verification needs nothing from a second place.
+
+Signing did not exist from the start: releases published before it was switched on carry no `.minisig` assets, and there is nothing to verify there.
+
+```bash
+sudo apt install minisign          # Ubuntu/Debian
+
+TAG=vX.Y.Z                         # the release you downloaded
+BASE="https://github.com/bivlked/amneziawg-installer/releases/download/$TAG"
+curl -LO "$BASE/install_amneziawg_en.sh"
+curl -LO "$BASE/install_amneziawg_en.sh.minisig"
+curl -LO "$BASE/KEYS.txt"
+
+minisign -V -p KEYS.txt -m install_amneziawg_en.sh -x install_amneziawg_en.sh.minisig
+```
+
+Expected: `Signature and comment signature verified`, and on the next line `Trusted comment: amneziawg-installer <your tag> install_amneziawg_en.sh`.
+
+**Read that second line, not just the first.** It names the tag and the filename, so a signature from another release or another file does not pass here. Without that binding a signature would only prove that somebody signed some bytes at some point.
+
+⚠️ What this does NOT give you. If you fetch the script and the key from this repository in the same session, it protects against tampering on the way to you, but not against a compromise of the account itself: whoever can replace the script can replace the key. It starts to mean something once the key is one you saved earlier or took from an independent source. Key fingerprint: `3E598A1C01907E17`.
 
 <a id="after-installation"></a>
 ## 📦 After installation
@@ -834,7 +886,7 @@ Full list: `... help` or [ADVANCED.en.md#manage-commands-adv](ADVANCED.en.md#man
 
 | Command   | Arguments              | Description                    | Restart? |
 | :-------- | :--------------------- | :----------------------------- | :------: |
-| `regen`   | `[client_name]`        | Regenerate files (all/one)     |    No     |
+| `regen`   | `[name ...] [--reset-routes]` | Regenerate files (all/listed) |    No     |
 | `modify`  | `<name> <param> <val>` | Modify a client parameter      |    No     |
 | `backup`  |                        | Create a backup                |    No     |
 | `restore` | `[file]`               | Restore from backup            |    No     |
@@ -853,6 +905,8 @@ Full list: `... help` or [ADVANCED.en.md#manage-commands-adv](ADVANCED.en.md#man
 | `restart` |                        | Restart AmneziaWG service      |    -      |
 
 > **💡 Note:** `add` and `remove` commands auto-apply changes via `awg syncconf` - no service restart needed.
+
+> **🤖 For scripts and bots:** since v5.21.0 nearly every management command (from `add` to `repair-module`) understands `--json` and replies with a single JSON object, even when something goes wrong - so your script or bot can parse the output without guesswork. `list --json` and `stats --json` still return plain arrays, as before. The format and the strict confirmation mode `AWG_STRICT_CONFIRM=1` are covered in [ADVANCED.en.md → JSON interface](ADVANCED.en.md#json-api-adv), and there is already a Telegram bot built on this interface - [awgram](#ecosystem).
 
 ### 📌 Quick Reference
 
@@ -906,6 +960,8 @@ For the changelog, see **[CHANGELOG.en.md](CHANGELOG.en.md)**.
 For the roadmap and priorities, see **[docs/ROADMAP.md](docs/ROADMAP.md)**.
 
 For a two-server cascade with a split exit for Russian and foreign traffic (split-tunnel), see **[CASCADE.en.md](CASCADE.en.md)**.
+
+For selectively routing the Russian segment through Cloudflare WARP via a BGP feed on a single server, see **[WARP-RU.en.md](WARP-RU.en.md)**.
 
 ---
 
@@ -1014,6 +1070,8 @@ Safety goals:
   chmod 700 /root/awg/manage_amneziawg.sh /root/awg/awg_common.sh
   </pre>
   Server reinstallation is not required.
+  <br><br>
+  Since v5.21.0 the script pair is protected against drift: if you update manage but forget awg_common (or the other way around) and the versions diverge, the script stops and shows the exact commands to fetch the other half, instead of throwing strange errors halfway through.
 </details>
 
 <details>
@@ -1062,8 +1120,17 @@ Safety goals:
 </details>
 
 <details>
-  <summary><strong>Q: Is it safe to re-run the installer?</strong></summary>
-  <b>A:</b> Yes. Re-running over an already working service requires the <code>--force</code> flag (or <code>AWG_FORCE_REINSTALL=1</code>) - without it the script reports that AmneziaWG is already installed and changes nothing. With <code>--force</code> the server config is recreated, but existing clients are automatically restored from backup: default clients (<code>my_phone</code>, <code>my_laptop</code>) are recreated; all others are preserved.
+  <summary><strong>Q: Can I manage the server from my own scripts or a Telegram bot?</strong></summary>
+  <b>A:</b> Yes. Since v5.21.0 the management commands take the <code>--json</code> flag and reply with a single JSON object even on failure, so the output is safe to parse from any script (<code>list</code>/<code>stats</code> have returned JSON arrays for a long time). I promise not to break the format: new fields may appear, existing ones keep their names and types. For unattended runs there is <code>--yes</code>, and the strict mode <code>AWG_STRICT_CONFIRM=1</code> makes commands like <code>remove</code> refuse when <code>--yes</code> is missing, instead of quietly going ahead. The format breakdown lives in <a href="ADVANCED.en.md#json-api-adv">ADVANCED.en.md → JSON interface</a>. For a real-world example, the <a href="https://github.com/ekuraev/awgram">awgram</a> Telegram bot runs on exactly this interface.
+</details>
+
+<details>
+  <summary><strong>Q: Is it safe to re-run the installer? Will clients need new configs?</strong></summary>
+  <b>A:</b> Yes, it is safe, and no re-issuing is needed. Re-running over an already working service requires the <code>--force</code> flag (or <code>AWG_FORCE_REINSTALL=1</code>) - without it the script reports that AmneziaWG is already installed and changes nothing. With <code>--force</code> the server config is written anew, but the server keys and the obfuscation parameters are taken from the existing setup, and the <code>[Peer]</code> blocks are carried over from the previous config. Every client is preserved, including the default <code>my_phone</code> and <code>my_laptop</code>: the creation loop skips the ones already present in the config. Config files and QR codes handed out earlier stay valid.
+  <br><br>
+  There is exactly one exception: passing <code>--preset</code>, <code>--jc</code>, <code>--jmin</code> or <code>--jmax</code> regenerates the whole <code>Jc</code>/<code>S</code>/<code>H</code>/<code>I1</code> set, and then the old configs do stop connecting - they have to be re-issued with <code>regen</code> and handed out again. Leave those flags off for a plain update.
+  <br><br>
+  Most of the time <code>--force</code> is not needed at all: to get the newer management commands it is enough to update the two scripts on the server (see the question above). Re-running the installer itself is only worth it when the installer changed.
 </details>
 
 > More answers and solutions in **[ADVANCED.en.md](ADVANCED.en.md)**.
@@ -1106,7 +1173,7 @@ Safety goals:
 | Project | Description |
 |---------|-------------|
 | [Junker](https://spatiumstas.github.io/junker/) | AmneziaWG signature generator by @spatiumstas - for manual setup without an installer |
-| [AmneziaWG-Architect](https://vadim-khristenko.github.io/AmneziaWG-Architect/) | CPS/mimicry generator UI for AWG 2.0 by @Vadim-Khristenko ([GitHub](https://github.com/Vadim-Khristenko/AmneziaWG-Architect)) |
+| [Any-Tech-ARCHITECT](https://architect.vai-rice.space/) | Obfuscation parameter generator by @Vadim-Khristenko - value selection and validation with a client compatibility matrix ([GitHub](https://github.com/Vadim-Khristenko/Any-Tech-ARCHITECT)) |
 
 ### Router Firmware
 
@@ -1121,6 +1188,7 @@ Safety goals:
 |---------|----------|-------------|
 | [amneziawg-manager](https://github.com/rockysys/amneziawg-manager) | macOS | Native GUI that drives the server over SSH via the bundled manage script - no web panel or daemons |
 | [awgram](https://github.com/ekuraev/awgram) | Telegram | Rust bot: add/remove clients, stats, backup - via the bundled manage script |
+| [amneziawg-installer-tg-bot](https://github.com/blindtechnique/amneziawg-installer-tg-bot) | Telegram | Python bot that runs on the server itself: clients by button, guest access with an expiry, stats, backup - via the bundled manage script |
 
 <a id="featured-in"></a>
 <details>
