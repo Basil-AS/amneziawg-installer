@@ -4342,7 +4342,9 @@ generate_runtime_awg_profile() {
             AWG_Jmax=$(( AWG_Jmin + $(awg_rand_range 20 80) ))
             AWG_S1=$(awg_rand_range 15 150)
             AWG_S2=$(awg_rand_range 15 150)
-            while [[ $((AWG_S1 + 56)) -eq $AWG_S2 ]]; do AWG_S2=$(awg_rand_range 15 150); done
+            if [[ $((AWG_S1 + 56)) -eq $AWG_S2 ]]; then
+                AWG_S2=$((AWG_S2 + 1)); (( AWG_S2 <= 150 )) || AWG_S2=15
+            fi
             AWG_S3=$(awg_rand_range 0 10)
             AWG_S4=$(awg_rand_range 0 10)
             ;;
@@ -4353,7 +4355,9 @@ generate_runtime_awg_profile() {
             AWG_Jmax=$(( AWG_Jmin + $(awg_rand_range 50 150) ))
             AWG_S1=$(awg_rand_range 15 150)
             AWG_S2=$(awg_rand_range 15 150)
-            while [[ $((AWG_S1 + 56)) -eq $AWG_S2 ]]; do AWG_S2=$(awg_rand_range 15 150); done
+            if [[ $((AWG_S1 + 56)) -eq $AWG_S2 ]]; then
+                AWG_S2=$((AWG_S2 + 1)); (( AWG_S2 <= 150 )) || AWG_S2=15
+            fi
             AWG_S3=$(awg_rand_range 8 55)
             AWG_S4=$(awg_rand_range 4 32)
             ;;

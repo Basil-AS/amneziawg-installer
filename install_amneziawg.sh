@@ -36,7 +36,7 @@ AWG_PROFILE_SCRIPT_PATH="$AWG_DIR/scripts/awg_profile.py"
 # используются первыми; remote download разрешён только с pinned SHA256 либо
 # при явном AWG_ALLOW_UNVERIFIED_DOWNLOAD=1 для разработки.
 declare -A AWG_ASSET_SHA256=(
-    ["awg_common.sh"]="0cbf40179c3b7050674d8a1adde94e1b8b826fbe1923cadfd5934849530142a6"
+    ["awg_common.sh"]="e76b962a19119a30918befe2dce368aa568af4b55b052693262fdb4a18f43e47"
     ["manage_amneziawg.sh"]="2f386dc61ad9578c3a88c44846f65d14d48da08233810695d53824bc3a892d0a"
     ["web/server.py"]="ded8e87bdeb70b8555c2e3887a4109c5971e1f73d8298c8ca5a72a94a283bbc8"
     ["web/index.html"]="7c07ed1d1991e08c0f9fc31e86ed8eb2bba5fa96387088f1f18918396cf7e662"
@@ -2332,9 +2332,10 @@ generate_awg_params() {
 
     # Критическое ограничение из kernel: S1+56 != S2
     # Предотвращает одинаковый размер init и response сообщений
-    while [[ $((AWG_S1 + 56)) -eq $AWG_S2 ]]; do
-        AWG_S2=$(rand_range 15 150)
-    done
+    if [[ $((AWG_S1 + 56)) -eq $AWG_S2 ]]; then
+        AWG_S2=$((AWG_S2 + 1))
+        (( AWG_S2 <= 150 )) || AWG_S2=15
+    fi
 
     # ⚠️ Нижние границы S3/S4 несовместимы с header protection из AmneziaWG 3.0.
     # Там nonce для ChaCha20 нигде не передаётся, а берётся из первых 12 байт
@@ -2360,9 +2361,10 @@ generate_awg_params() {
     #   init/cookie     -> S3 = S1 + 84  (недостижимо: минимум S1+84 = 99 при
     #                                     максимуме S3 = 55, цикл не нужен)
     # Перегенерируем именно S3, а не S2: S2 уже прошёл проверку на S1+56.
-    while [[ $((AWG_S2 + 28)) -eq $AWG_S3 ]]; do
-        AWG_S3=$(rand_range 8 55)
-    done
+    if [[ $((AWG_S2 + 28)) -eq $AWG_S3 ]]; then
+        AWG_S3=8
+        [[ $((AWG_S2 + 28)) -eq $AWG_S3 ]] && AWG_S3=9
+    fi
 
     AWG_S4=$(rand_range 4 27)
 
