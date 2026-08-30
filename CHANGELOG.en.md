@@ -12,6 +12,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [5.28.1-bas.10] - 2026-08-30
+
+### Added
+
+- Synced the installer and management surface with upstream 5.28.1 while preserving the fork's IPv6, P2P/DNAT, AdGuard Home, web-panel, Telegram and operator-preset features.
+- Added boot-critical package protection, safer package upgrade handling, signed release verification, structured JSON management output and additional client/server diagnostics.
+
+### Fixed
+
+- Hardened port, endpoint, config, restore and JSON handling against malformed or hostile hand-edited values.
+- Preserved IPv6 route/leak-block behavior, client isolation, server naming and regenerated client artifacts across upgrade and restore paths.
+
 ## [5.19.2-bas.9] - 2026-08-22
 
 ### Fixed
@@ -706,7 +718,7 @@ Run the latest `install_amneziawg.sh` with `--force` (if AmneziaWG is already ru
 
 - `test_v5130_ppa_noble_fallback.bats` (+33) — RU/EN structural greps on the pre-check block and suite-mismatch detection, parity counts, functional tests with mocked `curl` (404 → noble, timeout → noble, success → questing), LTS whitelist (noble/jammy/focal skip pre-check), suite mismatch deletes file on mismatch and preserves on match, corrupt `.sources` (missing `Suites:`) gets recreated, legacy `.sources` mismatch is removed, gcc-13 pre-install fires when stale headers are detected.
 - `test_v5130_force_guard.bats` (+19) — RU/EN structural greps on the `--force|-f` CLI flag, the `AWG_FORCE_REINSTALL=1` env bridge, the idempotency guard `[[ -f $SERVER_CONF_FILE ]] && systemctl is-active --quiet awg-quick@awg0`, the help-section mention of `-f, --force`, RU/EN parity by `FORCE_REINSTALL` occurrence count; functional matrix of 6 cases (clean install / configured+active+no-force / configured+inactive+no-force → repair flow / configured+active+--force / env bridge / strict `=1` env vs `yes`).
-- `test_v5130_bundled_fixes.bats` (+16) — rcgr: RU/EN log_msg routes WARN to stderr (structural + functional, INFO still on stdout); i31a: awk check on `/swapfile` correctly detects a valid entry, rejects commented lines, rejects partial-name matches (`/swapfile.bak`), handles indented lines and an empty fstab.
+- `test_v5130_bundled_fixes.bats` (+16) - warn-stderr: RU/EN log_msg routes WARN to stderr (structural + functional, INFO still on stdout); fstab-swap: awk check on `/swapfile` correctly detects a valid entry, rejects commented lines, rejects partial-name matches (`/swapfile.bak`), handles indented lines and an empty fstab.
 
 ### Compatibility
 
@@ -1654,7 +1666,8 @@ Major security and reliability update after several consecutive code audits. The
 - Diagnostic report (`--diagnostic`).
 - Full uninstall (`--uninstall`).
 
-[Unreleased]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.19.2-bas.3...HEAD
+[Unreleased]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.28.1-bas.10...HEAD
+[5.28.1-bas.10]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.19.2-bas.9...v5.28.1-bas.10
 [5.19.2-bas.3]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.19.2-bas.2...v5.19.2-bas.3
 [5.19.2-bas.2]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.19.2-bas.1...v5.19.2-bas.2
 [5.19.2-bas.1]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.19.2...v5.19.2-bas.1

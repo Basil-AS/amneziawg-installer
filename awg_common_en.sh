@@ -4,7 +4,7 @@
 # ==============================================================================
 # Common function library for AmneziaWG 2.0
 # Author: @bivlked
-# Version: 5.19.2-bas.9
+# Version: 5.28.1-bas.10
 # Date: 2026-05-13
 # Repository: https://github.com/bivlked/amneziawg-installer
 # ==============================================================================
@@ -20,6 +20,11 @@ CONFIG_FILE="${CONFIG_FILE:-$AWG_DIR/awgsetup_cfg.init}"
 SERVER_CONF_FILE="${SERVER_CONF_FILE:-/etc/amnezia/amneziawg/awg0.conf}"
 KEYS_DIR="${KEYS_DIR:-$AWG_DIR/keys}"
 AWG_HOSTS_FILE="${AWG_HOSTS_FILE:-/etc/hosts}"
+
+# Library version. The manage script verifies it after sourcing this file so a
+# partial update fails with a clear message instead of a later missing symbol.
+# shellcheck disable=SC2034
+AWG_COMMON_VERSION="5.28.1"
 
 # --- Автоочистка временных файлов ---
 # ВАЖНО: trap НЕ устанавливается здесь, чтобы не перезаписать trap вызывающего скрипта.
@@ -347,10 +352,10 @@ awg_ipv6_effective_mode_is_ndp() {
 }
 
 awg_server_name() {
-    local name="${AWG_SERVER_NAME:-MyVPN}"
+    local name="${AWG_SERVER_NAME:-AWG Server}"
     name="${name//$'\r'/ }"
     name="${name//$'\n'/ }"
-    [[ -n "${name//[[:space:]]/}" ]] || name="MyVPN"
+    [[ -n "${name//[[:space:]]/}" ]] || name="AWG Server"
     printf '%s' "$name"
 }
 
@@ -1547,7 +1552,10 @@ rand_range() {
     local random_val
     random_val=$(od -An -tu4 -N4 /dev/urandom 2>/dev/null | tr -d ' ')
     if [[ -z "$random_val" || ! "$random_val" =~ ^[0-9]+$ ]]; then
-        # Fallback: three $RANDOM (15 bits) with XOR overlap = full 31 bits.
+        # Fallback: three $RANDOM (15 bits each) with XOR overlap cover bits
+        # 0-30, i.e. the full [0, 2^31-1]. The previous variant
+        # (RANDOM<<15|RANDOM) gave only 30 bits - the upper half of the H
+        # range could never come up.
         random_val=$(( (RANDOM << 16) ^ (RANDOM << 8) ^ RANDOM ))
     fi
     echo $(( (random_val % range) + min ))
@@ -1624,6 +1632,51 @@ generate_awg_h_ranges() {
 # ==============================================================================
 # DKMS / Автовосстановление модуля ядра amneziawg
 # ==============================================================================
+
+# awg_module_version : version of the amneziawg module (empty string if it
+# cannot be determined). Asks the LOADED module first, the file second.
+#
+# ⚠️ Why not just modinfo: modinfo reads the metadata of the .ko that was
+# SELECTED on disk via modules.dep, not of the object running in the kernel.
+# Normally these are the same, which is why the divergence never surfaced. But
+# if a host ends up with TWO trees carrying a module of the same name - the
+# pinned 2.0 in extra/ and DKMS 3.0 in updates/dkms/ - modinfo reports whichever
+# won the search order, while a different one may be loaded (for instance the
+# previous one, before a reboot). Our own diagnostics would then name a version
+# that is not in the kernel.
+# /sys/module/amneziawg/version reflects exactly what is loaded, and it exists
+# in BOTH lines: MODULE_VERSION(WIREGUARD_VERSION) is declared in src/main.c in
+# the pinned 2.0 tag as well as in 3.0.
+# modinfo stays as the second path - it works when the module is not loaded.
+#
+# AWG_MODULE_VERSION_PATH is overridden by tests (bats) only: /sys cannot be
+# faked otherwise, and the priority "loaded beats file" is exactly what needs
+# verifying.
+awg_module_version() {
+    local ver="" sysfile="${AWG_MODULE_VERSION_PATH:-/sys/module/amneziawg/version}"
+    if [[ -r "$sysfile" ]]; then
+        # ⚠️ `|| true`, NOT `|| ver=""`: on a file without a trailing newline
+        # read returns 1 having ALREADY assigned what it read. Resetting to an
+        # empty string would wipe a correct value and silently fall to modinfo.
+        # ⚠️ And `2>/dev/null` comes BEFORE `<`, not after: redirections are
+        # applied left to right, so with the opposite order a file-open error
+        # still reaches the original stderr - verified, a raw `bash: ...` line
+        # appeared in the middle of `manage check` output.
+        IFS= read -r ver 2>/dev/null < "$sysfile" || true
+        ver="${ver//[[:space:]]/}"
+        # 🔴 The file was readable, so answer with what it gave, even if that
+        # is empty, and do NOT fall through to modinfo. Substituting the on-disk
+        # answer is exactly what this function exists to avoid: with two trees
+        # modinfo names a version that is not in the kernel, and diagnose would
+        # then declare a protocol line from it. An empty version is more honest
+        # than a wrong one - consumers print the line without a version.
+        printf '%s' "$ver"
+        return 0
+    fi
+    ver=$(modinfo amneziawg 2>/dev/null | awk '/^version:/{print $2; exit}')
+    printf '%s' "$ver"
+}
+
 #
 # После apt upgrade ядра DKMS-модуль должен пересобраться для нового kernel.
 # Если это не произошло (или модуль был отвязан), 4 функции ниже выполняют
@@ -2060,13 +2113,12 @@ safe_load_config() {
                 OS_ID|OS_VERSION|OS_CODENAME|AWG_PORT|AWG_TUNNEL_SUBNET|\
                 DISABLE_IPV6|ALLOWED_IPS_MODE|ALLOWED_IPS|AWG_ENDPOINT|AWG_MTU|\
                 AWG_Jc|AWG_Jmin|AWG_Jmax|AWG_S1|AWG_S2|AWG_S3|AWG_S4|\
-                AWG_H1|AWG_H2|AWG_H3|AWG_H4|AWG_I1|AWG_I2|AWG_I3|AWG_I4|AWG_I5|AWG_PRESET|NO_TWEAKS|AWG_APPLY_MODE|\
+                AWG_H1|AWG_H2|AWG_H3|AWG_H4|AWG_I1|AWG_I2|AWG_I3|AWG_I4|AWG_I5|AWG_PRESET|NO_TWEAKS|AWG_APPLY_MODE|PREV_AWG_PORT|CLIENT_ISOLATION|CLIENT_ISOLATION_NET|\
                 AWG_IPV6_ENABLED|AWG_IPV6_MODE|AWG_IPV6_MODE_REQUESTED|AWG_IPV6_MODE_EFFECTIVE|AWG_IPV6_MODE_REASON|AWG_IPV6_SUBNET|AWG_IPV6_NDP_PROXY|AWG_IPV6_LEAK_PROTECTION|\
                 AWG_P2P_ENABLED|AWG_P2P_BASE_PORT|AWG_P2P_PORTS_PER_CLIENT|AWG_FULLCONE_NAT|\
                 AWG_WEB_ENABLED|AWG_WEB_PORT|AWG_WEB_BIND|AWG_WEB_CERT_MODE|AWG_WEB_DOMAIN|AWG_WEB_CERT_FILE|AWG_WEB_KEY_FILE|AWG_WEB_CERT_PROVIDER|AWG_WEB_LE_EMAIL|AWG_WEB_PUBLIC_URL|AWG_WEB_CERT_FALLBACK|AWG_WEB_CERT_ATTEMPTED_MODE|AWG_WEB_CERT_FAILURE_REASON|AWG_WEB_CERT_FALLBACK_USED|\
                 AWG_DNS_MODE|AWG_CUSTOM_DNS|AWG_ADGUARD_ENABLED|AWG_ADGUARD_PORT|AWG_ADGUARD_DIR|\
-                AWG_WIRESOCK_HINTS|AWG_WIRESOCK_ID|AWG_WIRESOCK_IP|AWG_WIRESOCK_IB|\
-                AWG_SERVER_NAME)
+                AWG_WIRESOCK_HINTS|AWG_WIRESOCK_ID|AWG_WIRESOCK_IP|AWG_WIRESOCK_IB|AWG_SERVER_NAME)
                     export "$key=$value"
                     ;;
             esac
@@ -2216,6 +2268,83 @@ load_awg_params() {
     if [[ $missing -eq 1 ]]; then
         return 1
     fi
+    return 0
+}
+
+# Warn when awgsetup_cfg.init disagrees with the live awg0.conf (issue #196).
+#
+# After the install, awg0.conf is the only source of the obfuscation parameters,
+# and the init file is read for them only during the bootstrap of a first
+# install (see load_awg_params above). Editing AWG_* in the init file afterwards
+# has no effect on clients, and until this check it was ignored SILENTLY: the
+# file is named like the installation config, so someone edits it and gets no
+# hint that the answer lives elsewhere.
+#
+# The modification-time gate removes false positives on the supported path.
+# The recommended way to tune (edit [Interface] in awg0.conf, then regen) also
+# makes the two files disagree, but nothing rewrites the init file after the
+# install, so there it stays OLDER than the live config. We warn only when the
+# init file was touched LATER than awg0.conf, which is the "edited init, nothing
+# happened" case.
+#
+# Deliberately not hooked into load_awg_params: the installer calls that on
+# step 6, where the init file is necessarily newer than an awg0.conf that has
+# not been rewritten yet, and the warning would surface mid-install.
+_AWG_DRIFT_KEYS=(AWG_Jc AWG_Jmin AWG_Jmax AWG_S1 AWG_S2 AWG_S3 AWG_S4 \
+                 AWG_H1 AWG_H2 AWG_H3 AWG_H4 AWG_I1 AWG_I2 AWG_I3 AWG_I4 AWG_I5)
+
+# _awg_drift_dump <init|live> <file>: one line per key in the order of the array
+# above, so the dumps of the two sources compare line by line. Read in a subshell
+# to leave the caller's environment alone - the function can be called at any
+# point without the risk of clobbering already loaded parameters.
+_awg_drift_dump() {
+    local mode="$1" src="$2"
+    (
+        # Clear inherited values: otherwise a key missing from the source would
+        # look equal to whatever is already in the environment. If clearing
+        # fails (the variable is readonly in the calling environment) there is
+        # nothing to compare, so leave without the marker.
+        unset "${_AWG_DRIFT_KEYS[@]}" 2>/dev/null || exit 1
+        if [[ "$mode" == "init" ]]; then
+            safe_load_config "$src" >/dev/null 2>&1 || exit 1
+        else
+            load_awg_params_from_server_conf "$src" >/dev/null 2>&1 || exit 1
+        fi
+        # Success marker on the first line: mapfile does not expose the exit
+        # status of the producing process, so without it a parser failure is
+        # indistinguishable from a set of empty values.
+        printf 'ok\n'
+        local k
+        for k in "${_AWG_DRIFT_KEYS[@]}"; do
+            printf '%s\n' "${!k:-}"
+        done
+    )
+}
+
+warn_awg_init_drift() {
+    local init="${CONFIG_FILE:-}" live="${SERVER_CONF_FILE:-}"
+    [[ -n "$init" && -n "$live" ]] || return 0
+    [[ -f "$init" && -f "$live" ]] || return 0
+    # The init file is not newer than the live one, so any disagreement was
+    # created by editing awg0.conf itself, which is the supported path. Stay quiet.
+    [[ "$init" -nt "$live" ]] || return 0
+
+    local -a ivals lvals
+    mapfile -t ivals < <(_awg_drift_dump init "$init")
+    mapfile -t lvals < <(_awg_drift_dump live "$live")
+    # Without the marker the comparison is not trustworthy: one of the sources
+    # failed to parse. Stay quiet instead of declaring every key as differing -
+    # load_awg_params will name the real cause (an incomplete [Interface], say).
+    [[ "${ivals[0]:-}" == "ok" && "${lvals[0]:-}" == "ok" ]] || return 0
+
+    local drift="" i
+    for i in "${!_AWG_DRIFT_KEYS[@]}"; do
+        [[ "${ivals[i+1]:-}" == "${lvals[i+1]:-}" ]] || drift+="${_AWG_DRIFT_KEYS[i]#AWG_} "
+    done
+    [[ -n "$drift" ]] || return 0
+
+    log_warn "$init was modified later than $live, and their obfuscation parameters disagree: ${drift% }"
+    log_warn "The values from $live are the ones in effect - after the install it is the only source of these parameters. If you edited them in $init, the edit will not reach clients: change the [Interface] section in $live instead, then restart awg-quick@awg0 and regen the clients you need."
     return 0
 }
 
@@ -2414,8 +2543,12 @@ render_server_config() {
 
     # Сложные правила NAT/forward/P2P живут во внешних hook-скриптах.
     generate_firewall_scripts "$nic" || log_warn "Не удалось сгенерировать PostUp/PostDown hook-скрипты."
-    local postup="/bin/bash ${AWG_DIR}/postup.sh"
+    local postup="iptables -I FORWARD -i %i -j ACCEPT; /bin/bash ${AWG_DIR}/postup.sh"
     local postdown="/bin/bash ${AWG_DIR}/postdown.sh"
+    if [[ "${CLIENT_ISOLATION:-1}" -eq 1 ]]; then
+        postup="${postup}; while iptables -D FORWARD -i %i -o %i -j DROP 2>/dev/null; do :; done; iptables -I FORWARD -i %i -o %i -j DROP; while ip6tables -D FORWARD -i %i -o %i -j DROP 2>/dev/null; do :; done; ip6tables -I FORWARD -i %i -o %i -j DROP"
+        postdown="iptables -D FORWARD -i %i -o %i -j DROP 2>/dev/null || true; ip6tables -D FORWARD -i %i -o %i -j DROP 2>/dev/null || true; ${postdown}"
+    fi
 
     # Формируем конфиг через временный файл (атомарная запись)
     local tmpfile
@@ -2550,7 +2683,7 @@ render_client_config() {
     # MTU resolution order: server awg0.conf > AWG_MTU from awgsetup_cfg.init >
     # 1280 fallback. Server config is the source of truth for a running server -
     # the user could have hand-edited MTU in /etc/amnezia/amneziawg/awg0.conf
-    # and regen has to pick that up (MyAI-sdge, Discussion #38). Out-of-range
+    # and regen has to pick that up (Discussion #38). Out-of-range
     # values (outside 576..9100) at any stage roll back to 1280.
     local mtu
     mtu=$(_extract_mtu_from_server_conf) || mtu=""
@@ -2630,58 +2763,343 @@ EOF
 # AWG_SKIP_APPLY=1: пропустить apply (для batch-автоматизации)
 # AWG_APPLY_MODE=syncconf|restart: режим применения (конфиг или --apply-mode CLI)
 # flock на .awg_apply.lock: защита от параллельных вызовов
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+_awg_warn_multiline() {
+    local raw="$1" key="$2" name="$3" n
+    n=$(printf '%s\n' "$raw" | grep -c '[^[:space:]]') || n=0
+    (( n > 1 )) && log_warn "'${key}' of client '${name}' is given on ${n} lines - the values were joined into one."
+    return 0
+}
+
+awg_normalize_csv() {
+    local out="" item
+    local -a parts
+    IFS=',' read -r -a parts <<< "$1"
+    for item in "${parts[@]}"; do
+        item="${item//[[:space:]]/}"
+        [[ -z "$item" ]] && continue
+        out+="${out:+, }$item"
+    done
+    printf '%s' "$out"
+}
+
+_sanitize_port() {
+    local p="${1:-}"
+    # Surrounding whitespace is trimmed: 'AWG_PORT=39743 ' is an ordinary
+    # leftover of a hand edit and means the same port. Such a config used to
+    # fail the check for nothing.
+    p="${p#"${p%%[![:space:]]*}"}"
+    p="${p%"${p##*[![:space:]]}"}"
+    # {1,5} rules out 64-bit arithmetic overflow: a long digit string would
+    # quietly land inside the valid range. 10# rules out octal reading of
+    # values with a leading zero (0070 would otherwise be 56).
+    if [[ "$p" =~ ^[0-9]{1,5}$ ]] && (( 10#$p >= 1 && 10#$p <= 65535 )); then
+        printf '%s' "$((10#$p))"
+    else
+        printf '0'
+    fi
+}
+
+awg_ssh_client_addr() {
+    local from_tty="" from_env="" mytty
+    mytty=$(ps -o tty= -p $$ 2>/dev/null | tr -d '[:space:]')
+    if [[ -n "$mytty" && "$mytty" != "?" ]]; then
+        from_tty=$(who 2>/dev/null | awk -v t="$mytty" '
+            $2 == t && match($0, /\(([^)]+)\)/) {
+                print substr($0, RSTART + 1, RLENGTH - 2); exit
+            }')
+    fi
+    [[ -n "${SSH_CONNECTION:-}" ]] && from_env="${SSH_CONNECTION%% *}"
+    # ⚠️ Data keyed on OUR tty wins over the inherited variable.
+    # SSH_CONNECTION comes from the environment, and in a reattached tmux/screen
+    # session it can point at the PREVIOUS connection - we would then produce a
+    # confidently wrong verdict. utmp keyed on our own tty describes the current
+    # one. But if the tty path yielded something that is not an address (with
+    # UseDNS yes it will be a hostname), take the variable: a usable address
+    # beats an honest "unknown".
+    if _valid_ipv4 "$from_tty" 2>/dev/null; then
+        printf '%s' "$from_tty"
+    elif _valid_ipv4 "$from_env" 2>/dev/null; then
+        printf '%s' "$from_env"
+    elif [[ -n "$from_tty" ]]; then
+        printf '%s' "$from_tty"
+    else
+        printf '%s' "$from_env"
+    fi
+}
+
+_awg_tunnel_subnet() {
+    local out=""
+    out=$(ip -4 -o addr show awg0 2>/dev/null \
+        | awk '{ for (i = 1; i <= NF; i++) if ($i == "inet") { print $(i + 1); exit } }')
+    if [[ -z "$out" && -r "$SERVER_CONF_FILE" ]]; then
+        out=$(awk '
+            /^[[:space:]]*#/ { next }
+            /^[[:space:]]*\[/ { inif = (tolower($0) ~ /^[[:space:]]*\[interface\]/) ? 1 : 0; next }
+            inif && tolower($0) ~ /^[[:space:]]*address[[:space:]]*=/ {
+                sub(/^[^=]*=[[:space:]]*/, "")
+                n = split($0, parts, ",")
+                for (i = 1; i <= n; i++) {
+                    gsub(/[[:space:]]/, "", parts[i])
+                    if (parts[i] ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+\/[0-9]+$/) { print parts[i]; exit }
+                }
+            }' "$SERVER_CONF_FILE")
+    fi
+    [[ -z "$out" && -n "${AWG_TUNNEL_SUBNET:-}" ]] && out="$AWG_TUNNEL_SUBNET"
+    printf '%s' "$out"
+}
+
+awg_session_via_tunnel() {
+    local addr="${1:-}" subnet net_int bcast_int addr_int
+    [[ -n "$addr" ]] || addr="$(awg_ssh_client_addr)"
+    [[ -n "$addr" ]] || return 2
+    [[ "$addr" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]] || return 2
+    subnet="$(_awg_tunnel_subnet)"
+    [[ -n "$subnet" ]] || return 2
+    # 🔴 A /31 or /32 prefix carries no host range, so it cannot answer our
+    # question: any address other than the server one lands "outside the
+    # subnet", and we would confidently tell someone sitting in the tunnel
+    # that access is unaffected. Our generator writes /16../30, but the live
+    # interface path inherits WHATEVER prefix is there, and /32 in
+    # [Interface] is common WireGuard practice. Answer "unknown" (verified).
+    [[ "${subnet##*/}" =~ ^[0-9]+$ ]] || return 2
+    (( 10#${subnet##*/} <= 30 )) || return 2
+    read -r net_int bcast_int < <(_cidr_bounds "$subnet" 2>/dev/null) || return 2
+    [[ -n "$net_int" && -n "$bcast_int" ]] || return 2
+    addr_int="$(_ipv4_to_int "$addr" 2>/dev/null)" || return 2
+    [[ -n "$addr_int" ]] || return 2
+    (( addr_int >= net_int && addr_int <= bcast_int )) && return 0
+    return 1
+}
+
+awg_warn_interface_disruption() {
+    local rc addr subnet
+    log_warn "The awg0 interface will be restarted - every client connection drops for a few seconds."
+    # Ask for the address ONCE and pass it into the check: two independent
+    # calls could give a verdict about one address and text about another.
+    addr="$(awg_ssh_client_addr)"
+    # The subnet is resolved ONCE and BEFORE the verdict as well: an earlier
+    # revision asked for it a second time afterwards, so the printed subnet
+    # could differ from the one the verdict was based on.
+    subnet="$(_awg_tunnel_subnet)"
+    # rc is taken with `|| rc=$?` rather than `cmd; rc=$?`: under set -e the
+    # latter aborts the function on a non-zero status, cutting the warning off
+    # halfway. The repository does contain an embedded script with set -euo
+    # pipefail, so this is not hypothetical.
+    rc=0
+    awg_session_via_tunnel "$addr" || rc=$?
+    case "$rc" in
+        0)
+            log_warn "WARNING: it looks like you are connected to this server THROUGH this very VPN."
+            log_warn "  Your session address $addr belongs to the tunnel subnet ${subnet},"
+            log_warn "  so the current connection will drop after the restart."
+            log_warn "  If access does not come back on its own, use the console or VNC in your"
+            log_warn "  provider's panel: it works independently of the VPN."
+            ;;
+        1)
+            log_debug "Session is not going through the tunnel (address $addr) - server access is unaffected."
+            ;;
+        *)
+            log_warn "  If you are connected to this server THROUGH this VPN, you will lose access."
+            log_warn "  The fallback for that case is the console or VNC in your provider's panel."
+            ;;
+    esac
+}
+
+_awg_device_param_names() {
+    printf '%s\n' Jc Jmin Jmax S1 S2 S3 S4 H1 H2 H3 H4 I1 I2 I3 I4 I5 \
+        ContentPaddingAddition HeaderProtectionKey MaxHandshakeAttempts \
+        KeepaliveTimeout RejectAfterTime RekeyAfterTime RekeyTimeout
+}
+
+_awg_device_params_fingerprint() {
+    local conf="${1:-$SERVER_CONF_FILE}" known
+    [[ -r "$conf" ]] || return 1
+    known="$(_awg_device_param_names | tr '\n' '|')"
+    known="${known%|}"
+    awk -v known="$known" '
+        BEGIN { n = split(known, k, "|"); for (i = 1; i <= n; i++) low[tolower(k[i])] = k[i] }
+        /^[[:space:]]*#/ { next }
+        /^[[:space:]]*\[/ { inif = (tolower($0) ~ /^[[:space:]]*\[interface\]/) ? 1 : 0; next }
+        inif && /=/ {
+            name = $1
+            sub(/[[:space:]]*=.*$/, "", name)
+            gsub(/[[:space:]]/, "", name)
+            if (tolower(name) in low) print low[tolower(name)]
+        }
+    ' "$conf" | sort -u | tr '\n' ' ' | sed 's/[[:space:]]*$//'
+}
+
+_awg_save_device_params() {
+    local state="$1" fp="$2" tmp="${1}.tmp"
+    if ! printf '%s\n' "$fp" > "$tmp" 2>/dev/null; then
+        rm -f "$tmp" 2>/dev/null
+        log_warn "Failed to write the interface parameter snapshot ($state) - check free space and permissions."
+        return 0
+    fi
+    chmod 600 "$tmp" 2>/dev/null || true
+    if ! mv -f "$tmp" "$state" 2>/dev/null; then
+        rm -f "$tmp" 2>/dev/null
+        log_warn "Failed to replace the interface parameter snapshot ($state) - check free space and permissions."
+    fi
+    return 0
+}
+
+awg_record_device_params() {
+    local state="${AWG_DIR}/.awg_device_params" fp
+    [[ -r "$SERVER_CONF_FILE" ]] || return 0
+    fp="$(_awg_device_params_fingerprint "$SERVER_CONF_FILE" 2>/dev/null)" || return 0
+    [[ -n "$fp" ]] || return 0
+    _awg_save_device_params "$state" "$fp"
+}
+
 apply_config() {
-    # Пропуск apply (AWG_SKIP_APPLY=1 manage add/remove ...)
+    # Skip apply (AWG_SKIP_APPLY=1 manage add/remove ...)
     if [[ "${AWG_SKIP_APPLY:-0}" == "1" ]]; then
-        log_debug "apply_config пропущен (AWG_SKIP_APPLY=1)."
+        log_debug "apply_config skipped (AWG_SKIP_APPLY=1)."
         return 0
     fi
 
-    # Межпроцессная блокировка apply_config
+    # Inter-process lock for apply_config
     local apply_lockfile="${AWG_DIR}/.awg_apply.lock"
     local apply_fd
     exec {apply_fd}>"$apply_lockfile"
     if ! flock -x -w 120 "$apply_fd"; then
-        log_warn "Не удалось получить блокировку apply_config."
+        log_warn "Failed to acquire apply_config lock."
         exec {apply_fd}>&-
         return 1
     fi
 
     local rc=0
 
+    # 🔴 syncconf DOES NOT CLEAR AWG device parameters. Verified on module
+    # 3.0.20260731-04: Jc/S4/H1/I1/ContentPaddingAddition/RekeyAfterTime that had
+    # been set stayed on the live interface after applying a config without them.
+    # The WireGuard semantics ("setconf = the complete picture") does not hold for
+    # AWG parameters, it is additive. So the operation "remove a parameter from
+    # awg0.conf and apply" would silently not work: the file changes, the
+    # interface does not, and nothing catches that divergence. A parameter can
+    # only be cleared by recreating the interface, i.e. by restarting the service.
+    #
+    # We compare the SET OF NAMES against what was applied last time, not against
+    # the live interface: `awg showconf` prints neutral values too (S4 = 0,
+    # H1 = 1), so comparing with it would produce false positives on every apply.
+    # Values are not compared at all - syncconf applies those correctly, the
+    # problem is exactly removal.
+    # No state (first install, lost file) - stay quiet: there is nothing to
+    # compare against, and guessing at a warning is worse than not warning.
+    local params_state="${AWG_DIR}/.awg_device_params"
+    local now_fp="" prev_fp="" removed=""
+    if [[ -r "$SERVER_CONF_FILE" ]]; then
+        # The path is passed explicitly even though it is also the default:
+        # otherwise shellcheck 0.9 (the version CI installs) rightly raises
+        # SC2120 about a parameter nobody ever passes.
+        now_fp="$(_awg_device_params_fingerprint "$SERVER_CONF_FILE" 2>/dev/null)" || now_fp=""
+        [[ -r "$params_state" ]] && IFS= read -r prev_fp 2>/dev/null < "$params_state"
+        # ⚠️ An empty set against a non-empty previous one is NOT treated as
+        # "everything was removed". Our generator always writes Jc/S/H, so
+        # emptiness means a partially read or currently rewritten file rather
+        # than a real cleanup. Stay quiet: a false alarm costs more here than a
+        # missed one.
+        if [[ -n "$prev_fp" && -n "$now_fp" ]]; then
+            local _p
+            for _p in $prev_fp; do
+                [[ " $now_fp " == *" $_p "* ]] || removed+="${removed:+, }$_p"
+            done
+        fi
+    fi
+
     if [[ "${AWG_APPLY_MODE:-syncconf}" == "restart" ]]; then
-        log "Перезапуск сервиса (apply-mode=restart)..."
+        # An explicit restart mode drops client connections, SSH through the
+        # tunnel included, so warn exactly as manage restart does.
+        awg_warn_interface_disruption
+        log "Restarting service (apply-mode=restart)..."
         systemctl restart awg-quick@awg0 2>/dev/null; rc=$?
-        [[ $rc -ne 0 ]] && log_warn "Ошибка перезапуска."
-        if [[ $rc -eq 0 ]]; then
+        if [[ $rc -ne 0 ]]; then
+            log_warn "Service restart error."
+        else
+            awg_record_device_params
             ipv6_ndp_refresh_after_config_apply || rc=$?
         fi
         exec {apply_fd}>&-
         return $rc
     fi
 
+    # 🔴 A detected removal is NOT restarted for you - it is reported.
+    # The first revision of this change restarted the service automatically, and
+    # that was WORSE than the trap it closed: a restart drops EVERY client
+    # connection, and the state can fall behind through no fault of the user.
+    # Example: someone drops the line and applies it with `manage restart` - the
+    # interface is already recreated and the parameter already cleared, but the
+    # snapshot still holds the old set, so the next ordinary `add` would see the
+    # "removal" a second time and cut everyone off again. A false warning costs
+    # a log line; a false restart costs everyone's connection. So we speak, and
+    # the human decides.
+    # ⚠️ The snapshot is NOT updated here. It is updated only AFTER a successful
+    # apply, below. An earlier revision updated it right away, and that silenced
+    # the warning forever whenever the apply then failed: the state had already
+    # "caught up" with the file while nothing had changed on the live interface.
+    if [[ -n "$removed" ]]; then
+        log_warn "Removed from the [Interface] section: ${removed}."
+        log_warn "  syncconf does NOT clear such parameters - they stay on the live interface."
+        log_warn "  To make the removal take effect the interface has to be recreated:"
+        log_warn "    systemctl restart awg-quick@awg0"
+        log_warn "  That drops every client connection for a few seconds, which is why we do"
+        log_warn "  not do it for you. If you have already restarted the service by hand, this"
+        log_warn "  warning can be ignored: after a successful apply the snapshot is"
+        log_warn "  refreshed and this line will not appear on later runs."
+    fi
+
     local strip_out
     strip_out=$(timeout 10 awg-quick strip awg0 2>/dev/null) || {
-        log_warn "awg-quick strip не удался или timeout, использую полный перезапуск."
+        log_warn "awg-quick strip failed or timed out, falling back to full restart."
+        # This restart is NOT expected: the person ran a routine add/remove.
+        # It drops every client, so warn here too, not only in explicit mode.
+        awg_warn_interface_disruption
         systemctl restart awg-quick@awg0 2>/dev/null; rc=$?
-        [[ $rc -ne 0 ]] && log_warn "Ошибка перезапуска."
-        if [[ $rc -eq 0 ]]; then
+        if [[ $rc -ne 0 ]]; then
+            log_warn "Service restart error."
+        else
+            awg_record_device_params
             ipv6_ndp_refresh_after_config_apply || rc=$?
         fi
         exec {apply_fd}>&-
         return $rc
     }
     echo "$strip_out" | timeout 10 awg syncconf awg0 /dev/stdin 2>/dev/null || {
-        log_warn "awg syncconf не удался или timeout, использую полный перезапуск."
+        log_warn "awg syncconf failed or timed out, falling back to full restart."
+        # As above: an unplanned restart cuts off everyone, including an SSH
+        # session through the tunnel - that has to be said before, not after.
+        awg_warn_interface_disruption
         systemctl restart awg-quick@awg0 2>/dev/null; rc=$?
-        [[ $rc -ne 0 ]] && log_warn "Ошибка перезапуска."
-        if [[ $rc -eq 0 ]]; then
+        if [[ $rc -ne 0 ]]; then
+            log_warn "Service restart error."
+        else
+            awg_record_device_params
             ipv6_ndp_refresh_after_config_apply || rc=$?
         fi
         exec {apply_fd}>&-
         return $rc
     }
-    log_debug "Конфигурация применена (syncconf)."
+    log_debug "Config applied (syncconf)."
+    awg_record_device_params
     ipv6_ndp_refresh_after_config_apply || rc=$?
     exec {apply_fd}>&-
     return $rc
@@ -3185,17 +3603,17 @@ generate_vpn_uri() {
     local uri_file="$AWG_DIR/${name}.vpnuri"
 
     if [[ ! -f "$conf_file" ]]; then
-        log_error "Конфиг клиента '$name' не найден: $conf_file"
+        log_error "Client config '$name' not found: $conf_file"
         return 1
     fi
 
     if ! command -v perl &>/dev/null; then
-        log_warn "perl не найден, vpn:// URI не создан для '$name'."
+        log_warn "perl not found, vpn:// URI not created for '$name'."
         return 1
     fi
 
     if ! perl -MCompress::Zlib -MMIME::Base64 -e '1' 2>/dev/null; then
-        log_warn "Perl модули Compress::Zlib/MIME::Base64 не найдены, vpn:// URI не создан."
+        log_warn "Perl modules Compress::Zlib/MIME::Base64 not found, vpn:// URI not created."
         return 1
     fi
 
@@ -3235,12 +3653,13 @@ generate_vpn_uri() {
     client_ipv6="${client_ipv6:-}"
     _ensure_server_public_key || return 1
     server_pubkey=$(cat "$AWG_DIR/server_public.key" 2>/dev/null) || return 1
-    # PresharedKey — опциональный. awk вместо grep чтобы пустой результат
-    # не считался ошибкой (grep -P без match → rc=1, нам это здесь не нужно).
-    # Дополнительно срезаем CR (CRLF от Windows-редакторов) и хвостовые
-    # пробелы — иначе они улетят в JSON psk_key и сломают handshake так же,
-    # как полное отсутствие поля. Без psk_key в inner JSON AmneziaVPN импорт
-    # vpn:// теряет PSK и handshake падает (issue #67, fix v5.11.4).
+    # PresharedKey is optional. awk instead of grep so an empty result is not
+    # treated as failure (grep -P without a match → rc=1, not what we want here).
+    # Also strip a trailing CR (CRLF from Windows editors) and trailing spaces
+    # — leaking them into the JSON psk_key would break the handshake just as
+    # cleanly as the missing field. Without psk_key in inner JSON AmneziaVPN
+    # import via vpn:// loses the PSK and the handshake fails (issue #67,
+    # fix v5.11.4).
     client_psk=$(awk '/^[[:space:]]*PresharedKey[[:space:]]*=/{sub(/^[[:space:]]*PresharedKey[[:space:]]*=[[:space:]]*/, ""); sub(/\r$/, ""); sub(/[ \t]+$/, ""); print; exit}' "$conf_file" 2>/dev/null)
     local raw_endpoint
     raw_endpoint=$(grep -oP 'Endpoint\s*=\s*\K\S+' "$conf_file") || return 1
@@ -3252,9 +3671,18 @@ generate_vpn_uri() {
         # IPv4/hostname: addr:port
         endpoint="${raw_endpoint%:*}"
     fi
-    # tr -d ' \r' — спирает пробелы И CR (на CRLF-конфигах '.+' жадно
-    # затягивает \r в значение, что ломает JSON.allowed_ips).
-    allowed_ips=$(grep -oP 'AllowedIPs\s*=\s*\K.+' "$conf_file" | tr -d ' \r') || allowed_ips="0.0.0.0/0"
+    # tr -d ' \r' - strips spaces AND CR (on CRLF configs '.+' greedily
+    # captures \r into the value, which breaks JSON.allowed_ips).
+    #
+    # v5.27.1: do NOT touch. The value goes into the allowed_ips JSON array via
+    # split(/,/), so spaces here are harmful - they would end up inside the
+    # array elements. This path does not damage the spaces in the client
+    # .conf: the embedded config is inlined from the file as it is.
+    allowed_ips=$(grep -oP 'AllowedIPs\s*=\s*\K.+' "$conf_file" | paste -sd, - | tr -d ' \r')
+    # Test for EMPTINESS, not for the exit status: the `||` did not fire even
+    # on a valueless "AllowedIPs = " line, because grep matched the space and
+    # exited zero, and a pipeline with paste makes the status useless anyway.
+    [[ -n "$allowed_ips" ]] || { log_warn "AllowedIPs could not be read from '$conf_file' - the link will carry a full tunnel."; allowed_ips="0.0.0.0/0"; }
 
     # MTU/PersistentKeepalive/DNS from .conf - these can be changed via manage modify.
     # On vpn:// import the Amnezia client uses the structured inner-JSON fields
@@ -3264,7 +3692,7 @@ generate_vpn_uri() {
     local mtu keepalive dns_line dns1 dns2
     mtu=$(grep -oP '^MTU\s*=\s*\K[0-9]+' "$conf_file" | head -n1); mtu="${mtu:-1280}"
     keepalive=$(grep -oP '^PersistentKeepalive\s*=\s*\K[0-9]+' "$conf_file" | head -n1); keepalive="${keepalive:-33}"
-    dns_line=$(grep -oP '^DNS\s*=\s*\K.+' "$conf_file" | head -n1 | tr -d ' \r')
+    dns_line=$(grep -oP '^DNS\s*=\s*\K.+' "$conf_file" | paste -sd, - | tr -d ' \r')
     dns1="${dns_line%%,*}"; dns1="${dns1:-1.1.1.1}"
     if [[ "$dns_line" == *,* ]]; then dns2="${dns_line#*,}"; dns2="${dns2%%,*}"; else dns2="$dns1"; fi
 
@@ -3277,7 +3705,11 @@ generate_vpn_uri() {
     vpn_uri=$(AWG_URI_CPK="$client_privkey" AWG_URI_PSK="$client_psk" AWG_URI_SPK="$server_pubkey" \
       perl -MCompress::Zlib -MMIME::Base64 -e '
         my ($conf_path, $h1,$h2,$h3,$h4, $jc,$jmin,$jmax,
-            $s1,$s2,$s3,$s4, $i1,$i2,$i3,$i4,$i5, $port, $ep, $cip, $cpk, $spk, $aips, $psk) = @ARGV;
+            $s1,$s2,$s3,$s4, $i1,$i2,$i3,$i4,$i5, $port, $ep, $cip, $cipv6, $aips,
+            $mtu, $keepalive, $dns1, $dns2, $srvname) = @ARGV;
+        my $cpk = $ENV{AWG_URI_CPK} // "";
+        my $psk = $ENV{AWG_URI_PSK} // "";
+        my $spk = $ENV{AWG_URI_SPK} // "";
 
         open my $fh, "<", $conf_path or die;
         local $/; my $raw = <$fh>; close $fh;
@@ -3323,7 +3755,9 @@ generate_vpn_uri() {
         $outer .= qq("port":"$port","protocol_version":"2",);
         $outer .= qq("transport_proto":"udp"\},"container":"amnezia-awg"\}],);
         $outer .= qq("defaultContainer":"amnezia-awg",);
-        $outer .= qq("description":"AWG Server",);
+        my $esrv = je($srvname);
+        $outer .= qq("name":"$esrv","defaultName":"$esrv",);
+        $outer .= qq("description":"$esrv",);
         my $ed1 = je($dns1); my $ed2 = je($dns2);
         $outer .= qq("dns1":"$ed1","dns2":"$ed2",);
         $outer .= qq("hostName":"$ep"});
@@ -3338,28 +3772,31 @@ generate_vpn_uri() {
         "$AWG_H1" "$AWG_H2" "$AWG_H3" "$AWG_H4" \
         "$AWG_Jc" "$AWG_Jmin" "$AWG_Jmax" \
         "$AWG_S1" "$AWG_S2" "$AWG_S3" "$AWG_S4" \
-        "${AWG_I1:-}" "${AWG_I2:-}" "${AWG_I3:-}" "${AWG_I4:-}" "${AWG_I5:-}" "$AWG_PORT" "$endpoint" \
-        "$client_ip" "$client_privkey" "$server_pubkey" "$allowed_ips" "$client_psk" 2>"$perl_err"
+        "$AWG_I1" "${AWG_I2:-}" "${AWG_I3:-}" "${AWG_I4:-}" "${AWG_I5:-}" "$AWG_PORT" "$endpoint" \
+        "$client_ip" "$client_ipv6" "$allowed_ips" \
+        "$mtu" "$keepalive" "$dns1" "$dns2" "${AWG_SERVER_NAME:-AWG Server}" 2>"$perl_err"
     )
 
     if [[ -z "$vpn_uri" ]]; then
-        log_warn "Ошибка генерации vpn:// URI для '$name'."
+        log_warn "Failed to generate vpn:// URI for '$name'."
         [[ -s "$perl_err" ]] && log_warn "Perl: $(cat "$perl_err")"
         rm -f "$perl_err"
         return 1
     fi
     rm -f "$perl_err"
 
+    # Write via tmp + atomic mv (like .conf/.png) so an interrupted write never
+    # leaves an empty/truncated .vpnuri on top of a working one.
     local _uri_tmp
-    _uri_tmp=$(awg_mktemp "$AWG_DIR") || { log_error "Failed to create vpn:// URI temp file for '$name'"; return 1; }
-    printf '%s\n' "$vpn_uri" > "$_uri_tmp" || { rm -f "$_uri_tmp"; return 1; }
+    _uri_tmp=$(awg_mktemp "$AWG_DIR") || { log_error "mktemp error for vpn:// URI '$name'"; return 1; }
+    printf '%s\n' "$vpn_uri" > "$_uri_tmp" || { rm -f "$_uri_tmp"; log_error "Error writing vpn:// URI for '$name'"; return 1; }
     chmod 600 "$_uri_tmp"
     if ! mv -f "$_uri_tmp" "$uri_file"; then
         rm -f "$_uri_tmp"
-        log_error "Failed to save vpn:// URI for '$name'"
+        log_error "Error saving vpn:// URI for '$name'"
         return 1
     fi
-    log_debug "vpn:// URI для '$name' создан: $uri_file"
+    log_debug "vpn:// URI for '$name' created: $uri_file"
     return 0
 }
 
@@ -3528,8 +3965,17 @@ generate_client() {
         return 1
     fi
 
-    # Конфиг клиента
-    render_client_config "$name" "$client_ip" "$client_privkey" "$server_pubkey" "$endpoint" "${AWG_PORT}" "$client_ipv6" || {
+    local _cport
+    _cport=$(_sanitize_port "${AWG_PORT:-}")
+    if [[ "$_cport" == "0" ]]; then
+        log_error "AWG_PORT is invalid ('${AWG_PORT:-}') — the client config for '$name' was not created."
+        _rollback_client_artifacts "$name"
+        exec {lock_fd}>&-
+        return 1
+    fi
+
+    # Client config
+    render_client_config "$name" "$client_ip" "$client_privkey" "$server_pubkey" "$endpoint" "$_cport" "$client_ipv6" || {
         log_error "Откат: удаление ключей '$name'"
         rm -f "$KEYS_DIR/${name}.private" "$KEYS_DIR/${name}.public"
         exec {lock_fd}>&-
@@ -3690,12 +4136,24 @@ refresh_client_config() {
     # Сохраняем пользовательские настройки из текущего .conf (modify)
     local current_dns="1.1.1.1" current_keepalive="25" current_allowed_ips="${ALLOWED_IPS:-0.0.0.0/0}"
     if [[ -f "$AWG_DIR/${name}.conf" ]]; then
-        local _v
-        _v=$(sed -n 's/^DNS[ \t]*=[ \t]*//p' "$AWG_DIR/${name}.conf" | tr -d '[:space:]')
+        local _v _raw
+        # tr -d '[:space:]' stripped the spaces after commas here, so regen
+        # wrote the collapsed list into .conf (D#38). Normalise, do not strip.
+        #
+        # The lines are JOINED rather than taking the first one: wg allows DNS
+        # and AllowedIPs to repeat, and the values add up. The old `tr` glued
+        # them into a plainly invalid CIDR and awg-quick refused to bring the
+        # interface up LOUDLY; taking the first line would instead hand the user
+        # a valid config with part of the networks silently gone.
+        _raw=$(sed -n 's/^DNS[ \t]*=[ \t]*//p' "$AWG_DIR/${name}.conf")
+        _awg_warn_multiline "$_raw" "DNS" "$name"
+        _v=$(awg_normalize_csv "$(printf '%s' "$_raw" | paste -sd, -)")
         [[ -n "$_v" ]] && current_dns="$_v"
         _v=$(sed -n 's/^PersistentKeepalive[ \t]*=[ \t]*//p' "$AWG_DIR/${name}.conf" | tr -d '[:space:]')
         [[ -n "$_v" ]] && current_keepalive="$_v"
-        _v=$(sed -n '/^\[Peer\]/,$ s/^AllowedIPs[ \t]*=[ \t]*//p' "$AWG_DIR/${name}.conf" | tr -d '[:space:]')
+        _raw=$(sed -n '/^\[Peer\]/,$ s/^AllowedIPs[ \t]*=[ \t]*//p' "$AWG_DIR/${name}.conf")
+        _awg_warn_multiline "$_raw" "AllowedIPs" "$name"
+        _v=$(awg_normalize_csv "$(printf '%s' "$_raw" | paste -sd, -)")
         [[ -n "$_v" ]] && current_allowed_ips="$_v"
         # v5.11.1: preserve PresharedKey через regen — если у клиента
         # был PSK (создан с manage add --psk), regen без этого сохранения
@@ -3734,8 +4192,16 @@ refresh_client_config() {
         current_allowed_ips="${current_allowed_ips},::/0"
     fi
 
-    # Перегенерация конфига
-    render_client_config "$name" "$client_ip" "$client_privkey" "$server_pubkey" "$endpoint" "${AWG_PORT}" "$client_ipv6" || {
+    # Regenerate the client config
+    local _cport
+    _cport=$(_sanitize_port "${AWG_PORT:-}")
+    if [[ "$_cport" == "0" ]]; then
+        log_error "AWG_PORT is invalid ('${AWG_PORT:-}') — '$name' was not refreshed."
+        exec {lock_fd}>&-
+        unset CLIENT_PSK
+        return 1
+    fi
+    render_client_config "$name" "$client_ip" "$client_privkey" "$server_pubkey" "$endpoint" "$_cport" "$client_ipv6" || {
         exec {lock_fd}>&-
         unset CLIENT_PSK
         return 1
@@ -4158,12 +4624,16 @@ regenerate_client() {
 
     local current_dns="1.1.1.1" current_keepalive="25" current_allowed_ips="${ALLOWED_IPS:-0.0.0.0/0}"
     local old_psk="" new_psk="" new_i1="${AWG_I1:-}"
-    local _v
-    _v=$(sed -n 's/^DNS[ \t]*=[ \t]*//p' "$AWG_DIR/${name}.conf" | tr -d '[:space:]')
+    local _v _raw
+    _raw=$(sed -n 's/^DNS[ \t]*=[ \t]*//p' "$AWG_DIR/${name}.conf")
+    _awg_warn_multiline "$_raw" "DNS" "$name"
+    _v=$(awg_normalize_csv "$(printf '%s' "$_raw" | paste -sd, -)")
     [[ -n "$_v" ]] && current_dns="$_v"
     _v=$(sed -n 's/^PersistentKeepalive[ \t]*=[ \t]*//p' "$AWG_DIR/${name}.conf" | tr -d '[:space:]')
     [[ -n "$_v" ]] && current_keepalive="$_v"
-    _v=$(sed -n '/^\[Peer\]/,$ s/^AllowedIPs[ \t]*=[ \t]*//p' "$AWG_DIR/${name}.conf" | tr -d '[:space:]')
+    _raw=$(sed -n '/^\[Peer\]/,$ s/^AllowedIPs[ \t]*=[ \t]*//p' "$AWG_DIR/${name}.conf")
+    _awg_warn_multiline "$_raw" "AllowedIPs" "$name"
+    _v=$(awg_normalize_csv "$(printf '%s' "$_raw" | paste -sd, -)")
     [[ -n "$_v" ]] && current_allowed_ips="$_v"
     old_psk=$(sed -n '/^\[Peer\]/,$ s/^PresharedKey[ \t]*=[ \t]*//p' "$AWG_DIR/${name}.conf" | tr -d '[:space:]')
     if [[ -z "$old_psk" ]]; then
@@ -4239,7 +4709,17 @@ regenerate_client() {
 
     local _old_i1="${AWG_I1:-}"
     AWG_I1="$new_i1"
-    if ! render_client_config "$name" "$client_ip" "$client_privkey" "$server_pubkey" "$endpoint" "${AWG_PORT}" "$client_ipv6"; then
+    local _cport
+    _cport=$(_sanitize_port "${AWG_PORT:-}")
+    if [[ "$_cport" == "0" ]]; then
+        log_error "AWG_PORT is invalid ('${AWG_PORT:-}') — '$name' was not regenerated."
+        AWG_I1="$_old_i1"
+        restore_regenerate_backup "$server_bak" "$client_bak" "$priv_bak" "$pub_bak" "$name"
+        exec {lock_fd}>&-
+        unset CLIENT_PSK
+        return 1
+    fi
+    if ! render_client_config "$name" "$client_ip" "$client_privkey" "$server_pubkey" "$endpoint" "$_cport" "$client_ipv6"; then
         AWG_I1="$_old_i1"
         restore_regenerate_backup "$server_bak" "$client_bak" "$priv_bak" "$pub_bak" "$name"
         exec {lock_fd}>&-
@@ -4264,7 +4744,7 @@ regenerate_client() {
     # --reset-routes keeps the route set rendered from awgsetup_cfg.init,
     # including an explicit IPv6 leak-block sink on split-tunnel profiles.
     if [[ "${AWG_REGEN_RESET_ROUTES:-0}" != "1" ]] &&
-       ! sed -i "s|^AllowedIPs = .*|AllowedIPs = ${_aip}|" "$_client_conf"; then
+       ! sed -i "s/^AllowedIPs = .*/AllowedIPs = ${_aip}/" "$_client_conf"; then
         log_error "Ошибка обновления AllowedIPs в $_client_conf"
         AWG_I1="$_old_i1"
         restore_regenerate_backup "$server_bak" "$client_bak" "$priv_bak" "$pub_bak" "$name"

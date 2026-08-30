@@ -33,7 +33,7 @@ mock_ip() {
     export -f ip
 }
 
-@test "v5.19.0 hy3g: probe path wins when ip route get returns a dev" {
+@test "v5.19.0 nic-fallback: probe path wins when ip route get returns a dev" {
     mock_ip
     export MOCK_PROBE="1.1.1.1 via 10.0.0.1 dev eth0 src 10.0.0.5 uid 0"
     export MOCK_DEF4="default via 10.0.0.1 dev eth9"
@@ -42,7 +42,7 @@ mock_ip() {
     [ "$output" = "eth0" ]
 }
 
-@test "v5.19.0 hy3g: falls back to default IPv4 route when probe is empty" {
+@test "v5.19.0 nic-fallback: falls back to default IPv4 route when probe is empty" {
     mock_ip
     export MOCK_PROBE=""
     export MOCK_DEF4="default via 192.168.1.1 dev ens3 proto dhcp"
@@ -51,7 +51,7 @@ mock_ip() {
     [ "$output" = "ens3" ]
 }
 
-@test "v5.19.0 hy3g: falls back to first global-IPv4 UP interface when no default route" {
+@test "v5.19.0 nic-fallback: falls back to first global-IPv4 UP interface when no default route" {
     mock_ip
     export MOCK_PROBE=""
     export MOCK_DEF4=""
@@ -61,7 +61,7 @@ mock_ip() {
     [ "$output" = "enp1s0" ]
 }
 
-@test "v5.19.0 hy3g: strips @peer suffix from addr fallback ifname" {
+@test "v5.19.0 nic-fallback: strips @peer suffix from addr fallback ifname" {
     mock_ip
     export MOCK_PROBE=""
     export MOCK_DEF4=""
@@ -94,7 +94,7 @@ mock_ip() {
     [ "$output" = "eth0" ]
 }
 
-@test "v5.19.0 hy3g: falls back to default IPv6 route on IPv6-only egress" {
+@test "v5.19.0 nic-fallback: falls back to default IPv6 route on IPv6-only egress" {
     mock_ip
     export MOCK_PROBE=""
     export MOCK_DEF4=""
@@ -105,7 +105,7 @@ mock_ip() {
     [ "$output" = "eth0" ]
 }
 
-@test "v5.19.0 hy3g: valid AWG_MAIN_NIC override wins over auto-detection" {
+@test "v5.19.0 nic-fallback: valid AWG_MAIN_NIC override wins over auto-detection" {
     mock_ip
     export MOCK_PROBE="1.1.1.1 dev eth0"
     export MOCK_LINKS="eth0 eth1"
@@ -115,7 +115,7 @@ mock_ip() {
     [ "$output" = "eth1" ]
 }
 
-@test "v5.19.0 hy3g: override with shell metacharacters is rejected (falls through)" {
+@test "v5.19.0 nic-fallback: override with shell metacharacters is rejected (falls through)" {
     mock_ip
     export MOCK_PROBE="1.1.1.1 dev eth0"
     # The metachar name IS a known link in the mock, so only the safety regex
@@ -127,7 +127,7 @@ mock_ip() {
     [ "$output" = "eth0" ]
 }
 
-@test "v5.19.0 hy3g: non-existent override is rejected (falls through)" {
+@test "v5.19.0 nic-fallback: non-existent override is rejected (falls through)" {
     mock_ip
     export MOCK_PROBE=""
     export MOCK_DEF4="default via 10.0.0.1 dev eth0"
@@ -138,7 +138,7 @@ mock_ip() {
     [ "$output" = "eth0" ]
 }
 
-@test "v5.19.0 hy3g: returns non-zero and empty when nothing detectable" {
+@test "v5.19.0 nic-fallback: returns non-zero and empty when nothing detectable" {
     mock_ip
     export MOCK_PROBE=""
     export MOCK_DEF4=""

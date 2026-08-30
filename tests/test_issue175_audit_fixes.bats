@@ -116,7 +116,7 @@ setup_file() { skip "Upstream command-surface assertions target a pre-fork runti
 
 @test "issue #175/2 reboot: RU/EN safe_load_config whitelists PREV_AWG_PORT in all four copies" {
     for f in awg_common.sh awg_common_en.sh install_amneziawg.sh install_amneziawg_en.sh; do
-        run grep -c '|PREV_AWG_PORT)' "$BATS_TEST_DIRNAME/../$f"
+        run grep -c '|PREV_AWG_PORT' "$BATS_TEST_DIRNAME/../$f"
         [ "$status" -eq 0 ]
         [ "$output" -ge 1 ]
     done
@@ -299,7 +299,9 @@ _run_ensure_module() {
     for f in manage_amneziawg.sh manage_amneziawg_en.sh; do
         # The 'already exists' skip must set _cmd_rc=1 before continue,
         # matching remove/regen exit-code semantics for no-op names.
-        block=$(grep -A6 'grep -qxF "#_Name = ${_cname}" "$SERVER_CONF_FILE"; then' "$BATS_TEST_DIRNAME/../$f" | head -8)
+        # Window widened v5.21.0: the JSON results line sits between
+        # _cmd_rc=1 and continue, pushing continue past the old -A6.
+        block=$(grep -A8 'grep -qxF "#_Name = ${_cname}" "$SERVER_CONF_FILE"; then' "$BATS_TEST_DIRNAME/../$f" | head -10)
         [[ "$block" == *'_cmd_rc=1'* ]]
         [[ "$block" == *'continue'* ]]
     done

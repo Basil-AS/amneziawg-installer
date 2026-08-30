@@ -12,6 +12,12 @@
 # Использование:
 #   bash scripts/check-docs-consistency.sh
 #
+# ⚠️ ДОБАВЛЯЕШЬ СЮДА НОВУЮ ПРОВЕРКУ - ПОДВИНЬ СЧЁТ В ДВУХ ТЕСТАХ.
+# tests/test_v5153_docs_check.bats и tests/test_v5153_docs_check_slug.bats
+# ассертят точную строку сводки вида "N passed, 0 failed". Любая добавленная
+# проверка роняет оба файла, и связь эта ниоткуда не видна: сам скрипт про них
+# не знает, а падение выглядит немотивированным.
+#
 # Проверки:
 #   1. Внутренние markdown-ссылки (#anchor) резолвятся в этом же файле.
 #   2. CHANGELOG: у каждого version-heading есть reference-link; набор версий
@@ -24,6 +30,8 @@
 #      нет захардкоженного test-count baseline).
 #   6. Pinned raw-URL теги в README/ADVANCED/INSTALL_VPS == SCRIPT_VERSION
 #      (CHANGELOG исключён - там теги исторические).
+#  6b. Форма пина: все raw-URL теги имеют вид vX.Y.Z числами. Отдельная проверка
+#      потому, что регулярка #6 нечисловой пин не видит ВООБЩЕ (см. её комментарий).
 #   7. ADVANCED: устаревшие IPv6 split-tunnel формулировки не вернулись
 #      (present-tense "не поддерживается / implies full-tunnel"; past-tense
 #      историческая заметка разрешена).
@@ -246,7 +254,7 @@ if [[ "$stale_fail" -eq 0 ]]; then _ok "SECURITY/CONTRIBUTING не протух�
 # ru.zone (raw .../vX.Y.Z/cascade/ru.zone). Пин на тег = иммутабельный снимок, а не
 # подвижный main; проверка не даёт ему протухнуть на новом релизе (бампать каждый релиз).
 url_fail=0
-URL_DOCS=(README.md README.en.md ADVANCED.md ADVANCED.en.md INSTALL_VPS.md CASCADE.md CASCADE.en.md)
+URL_DOCS=(README.md README.en.md ADVANCED.md ADVANCED.en.md INSTALL_VPS.md INSTALL_VPS.ru.md CASCADE.md CASCADE.en.md WARP-RU.md WARP-RU.en.md)
 for f in "${URL_DOCS[@]}"; do
     [[ -f "$f" ]] || continue
     while IFS= read -r tag; do
@@ -258,6 +266,32 @@ for f in "${URL_DOCS[@]}"; do
     done < <(grep -oP 'raw\.githubusercontent\.com/bivlked/amneziawg-installer/v\K[0-9]+\.[0-9]+\.[0-9]+' "$f")
 done
 if [[ "$url_fail" -eq 0 ]]; then _ok "pinned raw-URL теги == SCRIPT_VERSION ($script_ver)"; else _bad "pinned raw-URL теги рассинхронизированы"; fi
+
+# --- 6b. Форма пина: все raw-URL теги обязаны быть vX.Y.Z числами ---
+# Проверка 6 выше сравнивает НАЙДЕННЫЕ ЧИСЛОВЫЕ теги со SCRIPT_VERSION, и это
+# её единственная задача. Но её регулярка требует три группы цифр, поэтому
+# нечисловой пин в выборку не попадает ВООБЩЕ и проверка остаётся зелёной.
+# Замер 25 aug 2026: из пяти форм (v5.27.1, vX.Y.Z, v5.27, vLATEST, main) она
+# видела ОДНУ. Опаснее всего v5.27 - правдоподобная опечатка из двух групп,
+# выглядит настоящим тегом и молча ведёт в никуда.
+# Живой случай: INSTALL_VPS.md отдавал команду обновления с буквальным vX.Y.Z
+# внутри блока кода; docs/RELEASE_PROCESS.md шаг 3 прямо пишет, что пользователи
+# копируют такие однострочники дословно.
+# Здесь берём ВСЕ вхождения (`[^/]+`, вместе с ведущим v) и требуем форму.
+# ⚠️ URL_DOCS намеренно переиспользуется как есть: выборка та же, менять её
+# незачем, и её вид - якорь публикационного пакета русского INSTALL_VPS.
+form_fail=0
+for f in "${URL_DOCS[@]}"; do
+    [[ -f "$f" ]] || continue
+    while IFS= read -r pin; do
+        [[ -z "$pin" ]] && continue
+        if [[ ! "$pin" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "  $f: пин '$pin' не имеет формы vX.Y.Z (плейсхолдер, ветка или усечённый тег)" >&2
+            form_fail=1
+        fi
+    done < <(grep -oP 'raw\.githubusercontent\.com/bivlked/amneziawg-installer/\K[^/]+' "$f")
+done
+if [[ "$form_fail" -eq 0 ]]; then _ok "форма пинов raw-URL (все vX.Y.Z числами)"; else _bad "нечисловые пины в raw-URL"; fi
 
 # --- 7. ADVANCED: устаревшие IPv6 split-tunnel формулировки не вернулись ---
 # После переписывания IPv6-раздела (v5.15.1 split-tunnel + dual-stack корректно
