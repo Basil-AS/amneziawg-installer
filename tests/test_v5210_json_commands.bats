@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# shellcheck disable=SC2154 # bats populates $stderr for --separate-stderr runs
 # Phase 3 (v5.21.0): --json envelopes for add/remove/regen.
 #
 # Behavioral: runs the real manage scripts end-to-end in a mock environment
