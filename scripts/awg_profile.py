@@ -57,9 +57,11 @@ def _header_key(value: object) -> str:
 def validate(profile: dict[str, object], version: str = "3.1") -> dict[str, object]:
     if version not in VERSIONS:
         raise ValueError("unsupported protocol version")
-    required = ("jc", "jmin", "jmax", "s1", "s2", "s3", "s4", "h1", "h2", "h3", "h4")
+    required = ["jc", "jmin", "jmax", "s1", "s2", "h1", "h2", "h3", "h4"]
+    if version != "1.5":
+        required.extend(("s3", "s4"))
     missing = [field for field in required if field not in profile]
-    if version == "3.1" and "headerProtectionKey" not in profile:
+    if version in ("3.0", "3.1") and "headerProtectionKey" not in profile:
         missing.append("headerProtectionKey")
     if missing:
         raise ValueError("missing required profile fields: " + ", ".join(missing))
@@ -70,11 +72,11 @@ def validate(profile: dict[str, object], version: str = "3.1") -> dict[str, obje
     result["jmax"] = _integer(profile["jmax"], "jmax")
     if result["jmin"] > result["jmax"]:
         raise ValueError("jmin exceeds jmax")
-    for field in ("s1", "s2", "s3", "s4"):
+    for field in ("s1", "s2") + (("s3", "s4") if version != "1.5" else ()):
         result[field] = _integer(profile[field], field, UINT16_MAX)
-        if version == "3.1" and (field != "s4" and result[field] < 12 or field == "s4" and result[field] != 12):
-            raise ValueError(f"{field} must be at least 12 for AWG 3.1" if field != "s4" else "s4 must be exactly 12 for AWG 3.1")
-    if version == "3.1":
+        if version in ("3.0", "3.1") and result[field] < 12:
+            raise ValueError(f"{field} must be at least 12 for AWG {version} header protection")
+    if version in ("3.0", "3.1"):
         packet_lengths = (148 + result["s1"], 92 + result["s2"],
                           64 + result["s3"], 32 + result["s4"])
         if len(set(packet_lengths)) != len(packet_lengths):
@@ -113,28 +115,35 @@ def validate(profile: dict[str, object], version: str = "3.1") -> dict[str, obje
 
 def generate(version: str, seed: int | None = None) -> dict[str, object]:
     rng = random.SystemRandom() if seed is None else random.Random(seed)
-    if version == "3.1":
+    if version in ("3.0", "3.1"):
         s1, s2, s3 = _generate_s_values(rng)
         # Keep every endpoint <= INT32_MAX for standalone Windows clients.
         h_ranges = ("268435456-368435455", "536870912-636870911",
                      "1073741824-1173741823", "1610612736-1710612735")
+    elif version == "1.5":
+        s1, s2 = (rng.randrange(15, 151), rng.randrange(15, 151))
+        s3 = s4 = None
+        h_ranges = ("1", "2", "3", "4")
     else:
         s1, s2, s3 = (rng.randrange(12, 151), rng.randrange(12, 151), rng.randrange(12, 65))
         h_ranges = ("1000-1999", "3000-3999", "5000-5999", "7000-7999")
     profile: dict[str, object] = {
         "jc": rng.randrange(4, 7), "jmin": 10, "jmax": 50,
-        "s1": s1, "s2": s2, "s3": s3, "s4": 12,
+        "s1": s1, "s2": s2,
         "h1": h_ranges[0], "h2": h_ranges[1],
         "h3": h_ranges[2], "h4": h_ranges[3],
     }
-    if version == "3.1":
+    if version != "1.5":
+        profile.update({"s3": s3, "s4": 12})
+    if version in ("3.0", "3.1"):
         profile.update({
             "headerProtectionKey": base64.b64encode(os.urandom(32)).decode("ascii"),
             "contentPaddingAddition": "10-100", "rekeyAfterTime": "100-120",
             "rekeyTimeout": "3-7", "rejectAfterTime": "150-180",
             "keepaliveTimeout": "25-35", "maxHandshakeAttempts": "15-20",
-            "randomTrailers": False, "disableCookies": False,
         })
+        if version == "3.1":
+            profile.update({"randomTrailers": False, "disableCookies": False})
     return validate(profile, version)
 
 

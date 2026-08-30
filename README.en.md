@@ -13,7 +13,7 @@ Supported systems are Ubuntu 24.04, 25.10 and 26.04, plus Debian 12 and Debian 1
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Basil-AS/amneziawg-installer/main/install_amneziawg_en.sh -o install_amneziawg_en.sh
 sudo bash install_amneziawg_en.sh
-sudo bash ./install_amneziawg.sh --yes --route-all --server-name="my-vpn"
+sudo bash ./install_amneziawg_en.sh --yes --route-all --server-name="my-vpn"
 ```
 
 Use `install_amneziawg.sh` for the Russian interface.
