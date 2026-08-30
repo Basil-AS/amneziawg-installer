@@ -20,6 +20,15 @@ CONFIG_FILE="${CONFIG_FILE:-$AWG_DIR/awgsetup_cfg.init}"
 SERVER_CONF_FILE="${SERVER_CONF_FILE:-/etc/amnezia/amneziawg/awg0.conf}"
 KEYS_DIR="${KEYS_DIR:-$AWG_DIR/keys}"
 AWG_HOSTS_FILE="${AWG_HOSTS_FILE:-/etc/hosts}"
+AWG_PROFILE_SCRIPT_PATH="${AWG_PROFILE_SCRIPT_PATH:-$AWG_DIR/scripts/awg_profile.py}"
+
+_awg31_render_extra_fields() {
+    [[ "${AWG_PROTOCOL_VERSION:-2.0}" == "3.1" ]] || return 0
+    [[ -x "$AWG_PROFILE_SCRIPT_PATH" ]] || { log_error "AWG 3.1 profile renderer is missing."; return 1; }
+    [[ -f "$AWG_DIR/awg31-profile.json" ]] || { log_error "AWG 3.1 profile is missing."; return 1; }
+    python3 "$AWG_PROFILE_SCRIPT_PATH" render --input "$AWG_DIR/awg31-profile.json" \
+        | grep -E '^(ContentPaddingAddition|HeaderProtectionKey|MaxHandshakeAttempts|KeepaliveTimeout|RejectAfterTime|RekeyAfterTime|RekeyTimeout|RandomTrailers|DisableCookies) = '
+}
 
 # Версия библиотеки. manage-скрипт сверяет её со своей по MAJOR.MINOR после
 # source и падает с понятной ошибкой, если awg_common.sh и manage разъехались
@@ -2288,7 +2297,7 @@ safe_load_config() {
                 OS_ID|OS_VERSION|OS_CODENAME|AWG_PORT|AWG_TUNNEL_SUBNET|\
                 DISABLE_IPV6|ALLOWED_IPS_MODE|ALLOWED_IPS|AWG_ENDPOINT|AWG_MTU|\
                 AWG_Jc|AWG_Jmin|AWG_Jmax|AWG_S1|AWG_S2|AWG_S3|AWG_S4|\
-                AWG_H1|AWG_H2|AWG_H3|AWG_H4|AWG_I1|AWG_I2|AWG_I3|AWG_I4|AWG_I5|AWG_PRESET|NO_TWEAKS|AWG_APPLY_MODE|PREV_AWG_PORT|CLIENT_ISOLATION|CLIENT_ISOLATION_NET|\
+                AWG_H1|AWG_H2|AWG_H3|AWG_H4|AWG_I1|AWG_I2|AWG_I3|AWG_I4|AWG_I5|AWG_PRESET|AWG_PROTOCOL_VERSION|NO_TWEAKS|AWG_APPLY_MODE|PREV_AWG_PORT|CLIENT_ISOLATION|CLIENT_ISOLATION_NET|\
                 AWG_IPV6_ENABLED|AWG_IPV6_MODE|AWG_IPV6_MODE_REQUESTED|AWG_IPV6_MODE_EFFECTIVE|AWG_IPV6_MODE_REASON|AWG_IPV6_SUBNET|AWG_IPV6_NDP_PROXY|AWG_IPV6_LEAK_PROTECTION|\
                 AWG_P2P_ENABLED|AWG_P2P_BASE_PORT|AWG_P2P_PORTS_PER_CLIENT|AWG_FULLCONE_NAT|\
                 AWG_WEB_ENABLED|AWG_WEB_PORT|AWG_WEB_BIND|AWG_WEB_CERT_MODE|AWG_WEB_DOMAIN|AWG_WEB_CERT_FILE|AWG_WEB_KEY_FILE|AWG_WEB_CERT_PROVIDER|AWG_WEB_LE_EMAIL|AWG_WEB_PUBLIC_URL|AWG_WEB_CERT_FALLBACK|AWG_WEB_CERT_ATTEMPTED_MODE|AWG_WEB_CERT_FAILURE_REASON|AWG_WEB_CERT_FALLBACK_USED|\
@@ -2773,6 +2782,10 @@ H3 = ${AWG_H3}
 H4 = ${AWG_H4}
 EOF
 
+    if [[ "${AWG_PROTOCOL_VERSION:-2.0}" == "3.1" ]]; then
+        _awg31_render_extra_fields >> "$tmpfile" || { rm -f "$tmpfile"; return 1; }
+    fi
+
     # I1-I5 are optional; I2-I5 may be supplied manually by the administrator.
     [[ -n "${AWG_I1:-}" ]] && echo "I1 = ${AWG_I1}" >> "$tmpfile"
     [[ -n "${AWG_I2:-}" ]] && echo "I2 = ${AWG_I2}" >> "$tmpfile"
@@ -2972,6 +2985,10 @@ H2 = ${AWG_H2}
 H3 = ${AWG_H3}
 H4 = ${AWG_H4}
 EOF
+
+    if [[ "${AWG_PROTOCOL_VERSION:-2.0}" == "3.1" ]]; then
+        _awg31_render_extra_fields >> "$tmpfile" || { rm -f "$tmpfile"; return 1; }
+    fi
 
     [[ -n "${AWG_I1:-}" ]] && echo "I1 = ${AWG_I1}" >> "$tmpfile"
     [[ -n "${AWG_I2:-}" ]] && echo "I2 = ${AWG_I2}" >> "$tmpfile"
