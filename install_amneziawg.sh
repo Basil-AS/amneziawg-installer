@@ -36,9 +36,9 @@ AWG_PROFILE_SCRIPT_PATH="$AWG_DIR/scripts/awg_profile.py"
 # используются первыми; remote download разрешён только с pinned SHA256 либо
 # при явном AWG_ALLOW_UNVERIFIED_DOWNLOAD=1 для разработки.
 declare -A AWG_ASSET_SHA256=(
-    ["awg_common.sh"]="6bdf5d04cef1e17750cc0d3c1e9919bb9decbbf272bdc224d04f53549a373288"
-    ["manage_amneziawg.sh"]="6f32c7912d4120457908e420f1779ffea7913053ccda5403391d3bd5f5732d08"
-    ["web/server.py"]="2415b0abe9b3ca34717139bb5c3d9315e03cb27b55e3afd31475726ea129756d"
+    ["awg_common.sh"]="617648622c34d155d631413b4b84388e3f5ffd8e563667833e59f22b71cdcde6"
+    ["manage_amneziawg.sh"]="cc7f78e3a8646f112fbafb16fecbeccf8881d3b48a175c789b419a16f8cbe60e"
+    ["web/server.py"]="656cc0e0d63e4c002db7b0fe4afe0cc0df19a396a4fea9c02b8193c41f099b22"
     ["web/index.html"]="7c07ed1d1991e08c0f9fc31e86ed8eb2bba5fa96387088f1f18918396cf7e662"
     ["web/app.js"]="c006c7cb91046707a5838a2c294f6a2de54e98d6e601651641c71976b7297bc9"
     ["web/awg_i1.js"]="c97a6ac6c4e4bd7ab24c37c45f451e364414f276441f8da1c0805d26013aaa03"
@@ -50,7 +50,7 @@ declare -A AWG_ASSET_SHA256=(
     ["scripts/gen_vpn_uri.py"]="4b6e9be27b4f27fd01a8b9c689fbfa83d85da919ae4e3314d6952de4deb18235"
     ["scripts/update-installed.sh"]="de611d33ccbeaafd79eb2ef59eab1c7827f54f1ee943159f5f5d14b9ecf3e481"
     ["scripts/migrate-tunnel-subnet.sh"]="a8b40101e8f02627c10d2bb769802bf860fdf41dd2bc8ac38a180e953329c3bb"
-    ["scripts/awg_profile.py"]="5364ca9fcedeb20b3b49082e76bbe2a25d0a4da5467d64b8f3eea9ee88791495"
+    ["scripts/awg_profile.py"]="0a9db782c9880d84bd6493652246aa2fc8aeaf1c4350e67a7ab2ef4f863e39e3"
     ["scripts/probe-awg31.sh"]="67867c7acfd2569b31a7266feac942d0f16b6f580f61e4f377be70cfed9036bf"
 )
 
@@ -414,8 +414,11 @@ show_help() {
                         ENV: AWG_FORCE_REINSTALL=1 эквивалентен флагу)
   --no-tweaks           Пропустить hardening/оптимизацию (без UFW, Fail2Ban, sysctl tweaks)
   --disable-ufw         Не включать UFW; firewall/NAT ответственность внешняя/ручная
-  --preset=ТИП          Набор параметров обфускации: default, mobile
-                        mobile: Jc=3, узкий Jmax — для мобильных операторов (Tele2, Yota, Megafon)
+  --preset=ТИП          Набор параметров обфускации: balanced, mobile, stealth, compatibility
+                        balanced: универсальный профиль (синоним default)
+                        mobile: консервативный профиль для LTE/5G и CGNAT
+                        stealth: более широкий junk/padding для нестабильной фильтрации
+                        compatibility: минимально изменчивый профиль для старых клиентов
   --jc=N               Задать Jc вручную (1-128, поверх preset)
   --jmin=N             Задать Jmin вручную (0-1280, поверх preset)
   --jmax=N             Задать Jmax вручную (0-1280, поверх preset, должно быть >= Jmin)
@@ -1644,13 +1647,17 @@ prompt_awg_preset() {
     local preset_choice
     echo ""
     echo "Выберите preset параметров AWG:"
-    echo "  1) default — универсальный"
-    echo "  2) mobile — для мобильных сетей, Tele2/Yota/Megafon/LTE/5G"
+    echo "  1) balanced - универсальный"
+    echo "  2) mobile - для мобильных сетей, Tele2/Yota/Megafon/LTE/5G"
+    echo "  3) stealth - широкий диапазон junk/padding"
+    echo "  4) compatibility - консервативный профиль для совместимости"
     read -rp "Ваш выбор [1]: " preset_choice < /dev/tty
     case "${preset_choice:-1}" in
-        1) AWG_PRESET="default" ;;
+        1) AWG_PRESET="balanced" ;;
         2) AWG_PRESET="mobile" ;;
-        *) log_warn "Неизвестный preset '$preset_choice', выбран default."; AWG_PRESET="default" ;;
+        3) AWG_PRESET="stealth" ;;
+        4) AWG_PRESET="compatibility" ;;
+        *) log_warn "Неизвестный preset '$preset_choice', выбран balanced."; AWG_PRESET="balanced" ;;
     esac
 }
 
@@ -2282,13 +2289,13 @@ generate_cps_i1() {
 }
 
 # Генерация всех AWG 2.0 параметров
-# Поддерживает --preset=default|mobile и точечные --jc/--jmin/--jmax overrides
+# Поддерживает --preset=balanced|mobile|stealth|compatibility и точечные overrides
 generate_awg_params() {
     local preset="${CLI_PRESET:-${AWG_PRESET:-default}}"
     log "Генерация параметров AWG 2.0 (preset: $preset)..."
 
     case "$preset" in
-        default)
+        default|balanced)
             # Jc 3-6: компромисс между обфускацией и совместимостью с мобильными (Discussion #38)
             AWG_Jc=$(rand_range 3 6)
             AWG_Jmin=$(rand_range 40 89)
@@ -2303,8 +2310,20 @@ generate_awg_params() {
             AWG_Jmax=$(( AWG_Jmin + $(rand_range 20 80) ))
             log "  Preset 'mobile': Jc=3, узкий Jmax для мобильных сетей"
             ;;
+        stealth)
+            AWG_Jc=$(rand_range 3 8)
+            AWG_Jmin=$(rand_range 64 160)
+            AWG_Jmax=$(( AWG_Jmin + $(rand_range 160 420) ))
+            log "  Preset 'stealth': расширенный junk/padding для сложной фильтрации"
+            ;;
+        compatibility)
+            AWG_Jc=$(rand_range 3 5)
+            AWG_Jmin=$(rand_range 20 64)
+            AWG_Jmax=$(( AWG_Jmin + $(rand_range 20 80) ))
+            log "  Preset 'compatibility': консервативный junk/padding"
+            ;;
         *)
-            die "Неизвестный preset: '$preset'. Допустимые: default, mobile"
+            die "Неизвестный preset: '$preset'. Допустимые: balanced, mobile, stealth, compatibility"
             ;;
     esac
 

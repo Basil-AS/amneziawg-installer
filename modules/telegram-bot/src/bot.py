@@ -394,7 +394,7 @@ class PanelManager:
             body = json.dumps({"confirm": "DELETE ALL NETTEST REPORTS"}).encode()
         elif action == "rotate-profile":
             preset = str((extra or {}).get("preset", "default")).lower()
-            if preset not in {"default", "mobile"}:
+            if preset not in {"default", "balanced", "mobile", "stealth", "compatibility"}:
                 return {"error": "unsupported AWG preset", "panel": panel.label}
             endpoint_info = ("POST", "/api/server/rotate-profile")
             body = json.dumps({"confirm": "ROTATE", "preset": preset}).encode()
@@ -1423,13 +1423,13 @@ def handle_navigation(telegram: Telegram, store: Store, panels: PanelManager, ch
             render_navigation(telegram, store, chat_id, f"<b>🔄 AdGuard фильтры обновлены · {html.escape(server)}</b>\n{format_panel_payload(payload, 'adguard-filters')}", maintenance_keyboard(), "admin:adguard-filter-refresh", callback_message_id=callback_message_id)
             return True
         if action == "rotate-profile" and server in {"finland", "germany"}:
-            render_navigation(telegram, store, chat_id, f"<b>♻️ Ротация AWG-профиля · {html.escape(server)}</b>\nЭто изменит параметры сервера и потребует повторной выдачи клиентских конфигов. Выберите preset:", [[{"text": "🧩 Default", "callback_data": f"admin:rotate-profile-confirm:{server}:default"}, {"text": "📱 Mobile", "callback_data": f"admin:rotate-profile-confirm:{server}:mobile"}], [{"text": "Отмена", "callback_data": "admin:maintenance"}]], "admin:rotate-profile", callback_message_id=callback_message_id)
+            render_navigation(telegram, store, chat_id, f"<b>♻️ Ротация AWG-профиля · {html.escape(server)}</b>\nЭто изменит параметры сервера и потребует повторной выдачи клиентских конфигов. Выберите preset:", [[{"text": "🧩 Balanced", "callback_data": f"admin:rotate-profile-confirm:{server}:balanced"}, {"text": "📱 Mobile", "callback_data": f"admin:rotate-profile-confirm:{server}:mobile"}], [{"text": "🕵️ Stealth", "callback_data": f"admin:rotate-profile-confirm:{server}:stealth"}, {"text": "🧱 Compatibility", "callback_data": f"admin:rotate-profile-confirm:{server}:compatibility"}], [{"text": "Отмена", "callback_data": "admin:maintenance"}]], "admin:rotate-profile", callback_message_id=callback_message_id)
             return True
-        if action == "rotate-profile-confirm" and server in {"finland", "germany"} and len(parts) > 3 and parts[3].lower() in {"default", "mobile"}:
+        if action == "rotate-profile-confirm" and server in {"finland", "germany"} and len(parts) > 3 and parts[3].lower() in {"default", "balanced", "mobile", "stealth", "compatibility"}:
             preset = parts[3].lower()
             render_navigation(telegram, store, chat_id, f"<b>⚠️ Подтвердите ротацию профиля</b>\nСервер: <code>{html.escape(server)}</code>\nPreset: <code>{preset}</code>\nСтарые конфиги клиентов перестанут соответствовать серверу.", [[{"text": "✅ Ротировать сейчас", "callback_data": f"admin:rotate-profile-apply:{server}:{preset}"}], [{"text": "Отмена", "callback_data": f"admin:rotate-profile:{server}"}]], "admin:rotate-profile-confirm", callback_message_id=callback_message_id)
             return True
-        if action == "rotate-profile-apply" and server in {"finland", "germany"} and len(parts) > 3 and parts[3].lower() in {"default", "mobile"}:
+        if action == "rotate-profile-apply" and server in {"finland", "germany"} and len(parts) > 3 and parts[3].lower() in {"default", "balanced", "mobile", "stealth", "compatibility"}:
             preset = parts[3].lower()
             result = format_panel_payload(panels.request(server, "rotate-profile", PANEL_TOKEN, extra={"preset": preset}) or {}, "info")
             render_navigation(telegram, store, chat_id, f"<b>♻️ AWG-профиль ротирован</b>\n{result}\nОбновите клиентские конфиги через «Мои устройства»." , maintenance_keyboard(), "admin:rotate-profile-done", callback_message_id=callback_message_id)

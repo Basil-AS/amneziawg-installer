@@ -2673,10 +2673,17 @@ def assess_amnezia_params(awg):
     if preset == "mobile":
         notes_mobile.append("mobile preset selected")
         notes_home.append("mobile preset is stable for home networks but may reduce peak throughput")
-    elif preset == "default":
-        notes_mobile.append("default preset can work, but mobile networks often prefer conservative parameters")
-        notes_home.append("default preset is suitable for stable home networks")
+    elif preset in {"balanced", "default"}:
+        label = "balanced" if preset == "balanced" else "default"
+        notes_mobile.append(f"{label} preset can work, but mobile networks often prefer conservative parameters")
+        notes_home.append(f"{label} preset is suitable for stable home networks")
         mobile_status = "warn"
+    elif preset == "stealth":
+        notes_mobile.append("stealth preset selected; monitor battery use and packet loss on mobile paths")
+        notes_home.append("stealth preset selected")
+    elif preset == "compatibility":
+        notes_mobile.append("compatibility preset selected")
+        notes_home.append("compatibility preset prioritizes older-client support")
     else:
         notes_mobile.append("preset is unknown; check generated client profile if stalls persist")
         notes_home.append("preset is unknown; check generated client profile if stalls persist")
@@ -5524,7 +5531,7 @@ def validate_i1(value: str) -> str:
 
 
 def require_rotate_preset(value):
-    if value not in {"default", "mobile"}:
+    if value not in {"default", "balanced", "mobile", "stealth", "compatibility"}:
         raise ValueError("invalid preset")
     return value
 

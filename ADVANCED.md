@@ -659,8 +659,9 @@ PersistentKeepalive = 33
   --route-custom=СЕТИ   Режим: Только указанные сети
   --endpoint=IP         Указать внешний IP (для серверов за NAT)
   --ssh-port=ПОРТ       SSH-порт для правила UFW (автодетект; список через запятую)
-  --preset=ТИП          Набор параметров обфускации: default, mobile
-                        mobile: Jc=3, узкий Jmax — для мобильных операторов (Tele2, Yota, Мегафон)
+  --preset=ТИП          Набор параметров обфускации: balanced, mobile, stealth, compatibility
+                        balanced: универсальный; mobile: LTE/5G и CGNAT;
+                        stealth: расширенный junk/padding; compatibility: старые клиенты
   --jc=N                Задать Jc вручную (1-128, поверх preset)
   --jmin=N              Задать Jmin вручную (0-1280, поверх preset)
   --jmax=N              Задать Jmax вручную (0-1280, поверх preset, ≥ Jmin)

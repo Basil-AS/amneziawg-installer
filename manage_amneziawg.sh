@@ -2524,7 +2524,7 @@ usage() {
     echo "  set-name \"ИМЯ\"       Сменить имя сервера и перегенерировать клиентов"
     echo "  server set-endpoint <host> [panel-domain]"
     echo "                        Установить доменный endpoint и URL панели без ротации ключей"
-    echo "  server rotate-profile --preset mobile|default"
+    echo "  server rotate-profile --preset mobile|default|balanced|stealth|compatibility"
     echo "                        Ротировать H/S/J/I1 AWG profile и перегенерировать клиентов"
     echo "  rotate-awg            Алиас для server rotate-profile"
     echo "  refresh-server-config Алиас для server rotate-profile"
@@ -2945,8 +2945,8 @@ case $COMMAND in
 
     rotate-profile)
         case "${ROTATE_PRESET:-default}" in
-            mobile|default) ;;
-            *) die "Неверный --preset. Допустимо: mobile или default" ;;
+            mobile|default|balanced|stealth|compatibility) ;;
+            *) die "Неверный --preset. Допустимо: balanced, mobile, stealth или compatibility" ;;
         esac
         if ! confirm_action "ротировать AWG profile" "и перегенерировать все клиентские конфиги"; then exit 1; fi
         if [[ "${AWG_SKIP_APPLY:-0}" != "1" ]]; then

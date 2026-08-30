@@ -65,6 +65,26 @@ setup() {
     [ "$status" -eq 0 ]
 }
 
+@test "named profiles are deterministic and keep H ranges disjoint" {
+    for profile in mobile balanced stealth compatibility; do
+        run "$PYTHON_BIN" "$SCRIPT" generate --version 3.1 --profile "$profile" --seed 123
+        [ "$status" -eq 0 ]
+        generated="$output"
+        run "$PYTHON_BIN" -c 'import json,sys; p=json.loads(sys.argv[1]); assert p["profile"] == sys.argv[2]; r=[tuple(map(int,p[k].split("-"))) for k in ("h1","h2","h3","h4")]; assert all(a[1] < b[0] or b[1] < a[0] for i,a in enumerate(r) for b in r[i+1:]); assert max(x[1] for x in r) <= 2147483647' "$generated" "$profile"
+        [ "$status" -eq 0 ]
+        run "$PYTHON_BIN" "$SCRIPT" generate --version 3.1 --profile "$profile" --seed 123
+        [ "$status" -eq 0 ]
+        [ "$output" = "$generated" ]
+    done
+}
+
+@test "compatibility profile keeps AWG 1.5 legacy fields" {
+    run "$PYTHON_BIN" "$SCRIPT" generate --version 1.5 --profile compatibility --seed 123
+    [ "$status" -eq 0 ]
+    run "$PYTHON_BIN" -c 'import json,sys; p=json.loads(sys.argv[1]); assert p["profile"] == "compatibility"; assert all(p[k].isdigit() for k in ("h1","h2","h3","h4")); assert "s3" not in p and "s4" not in p' "$output"
+    [ "$status" -eq 0 ]
+}
+
 @test "render includes HeaderProtectionKey for AWG 3.1" {
     run "$PYTHON_BIN" "$SCRIPT" generate --seed 7
     printf '%s' "$output" > "$BATS_TEST_TMPDIR/profile.json"
