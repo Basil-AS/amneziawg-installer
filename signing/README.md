@@ -19,13 +19,13 @@ bytes.
 
 ## Producing them for a release
 
-The next prepared release is `v5.28.1-bas.11`. Run these commands from the
+The next prepared release is `v5.29.0`. Run these commands from the
 release commit, using the existing private key that matches the public key in
 `KEYS.txt`. Never copy the private key into the repository, a GitHub secret, or
 this chat.
 
 ```bash
-TAG=v5.28.1-bas.11                             # the tag about to be pushed
+TAG=v5.29.0                                    # the tag about to be pushed
 KEY=~/.minisign/amneziawg-installer.key
 mkdir -p signing
 while IFS= read -r f; do
@@ -44,8 +44,8 @@ After verification, commit the six files under `signing/` in a PR, let CI
 finish, merge the PR, and only then create and push the matching tag:
 
 ```bash
-git tag -a v5.28.1-bas.11 -m "AmneziaWG installer v5.28.1-bas.11"
-git push origin v5.28.1-bas.11
+git tag -a v5.29.0 -m "AmneziaWG installer v5.29.0"
+git push origin v5.29.0
 ```
 
 The tag starts the release workflow. It verifies the signatures before the
