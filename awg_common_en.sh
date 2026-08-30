@@ -3742,6 +3742,24 @@ generate_vpn_uri() {
     dns1="${dns_line%%,*}"; dns1="${dns1:-1.1.1.1}"
     if [[ "$dns_line" == *,* ]]; then dns2="${dns_line#*,}"; dns2="${dns2%%,*}"; else dns2="$dns1"; fi
 
+    local protocol_version="${AWG_PROTOCOL_VERSION:-2.0}" awg31_content_padding=""
+    local awg31_header_key="" awg31_max_handshake="" awg31_keepalive_timeout=""
+    local awg31_reject_after="" awg31_rekey_after="" awg31_rekey_timeout=""
+    local awg31_random_trailers="" awg31_disable_cookies=""
+    if [[ "$protocol_version" == "3.1" ]]; then
+        python3 "$AWG_PROFILE_SCRIPT_PATH" validate --version 3.1 --input "$AWG_DIR/awg31-profile.json" >/dev/null || return 1
+        awg31_content_padding=$(grep -oP '^ContentPaddingAddition\s*=\s*\K\S+' "$conf_file" | head -n1)
+        awg31_header_key=$(grep -oP '^HeaderProtectionKey\s*=\s*\K\S+' "$conf_file" | head -n1)
+        awg31_max_handshake=$(grep -oP '^MaxHandshakeAttempts\s*=\s*\K\S+' "$conf_file" | head -n1)
+        awg31_keepalive_timeout=$(grep -oP '^KeepaliveTimeout\s*=\s*\K\S+' "$conf_file" | head -n1)
+        awg31_reject_after=$(grep -oP '^RejectAfterTime\s*=\s*\K\S+' "$conf_file" | head -n1)
+        awg31_rekey_after=$(grep -oP '^RekeyAfterTime\s*=\s*\K\S+' "$conf_file" | head -n1)
+        awg31_rekey_timeout=$(grep -oP '^RekeyTimeout\s*=\s*\K\S+' "$conf_file" | head -n1)
+        awg31_random_trailers=$(grep -oP '^RandomTrailers\s*=\s*\K\S+' "$conf_file" | head -n1)
+        awg31_disable_cookies=$(grep -oP '^DisableCookies\s*=\s*\K\S+' "$conf_file" | head -n1)
+        [[ -n "$awg31_content_padding" && -n "$awg31_header_key" ]] || return 1
+    fi
+
     local vpn_uri perl_err
     perl_err=$(awg_mktemp "$AWG_DIR") || { log_warn "mktemp failed - vpn:// URI not created for '$name'."; return 1; }
     # Secrets (client privkey, PSK) are passed to perl via env, NOT via argv:
@@ -3752,7 +3770,9 @@ generate_vpn_uri() {
       perl -MCompress::Zlib -MMIME::Base64 -e '
         my ($conf_path, $h1,$h2,$h3,$h4, $jc,$jmin,$jmax,
             $s1,$s2,$s3,$s4, $i1,$i2,$i3,$i4,$i5, $port, $ep, $cip, $cipv6, $aips,
-            $mtu, $keepalive, $dns1, $dns2, $srvname) = @ARGV;
+            $mtu, $keepalive, $dns1, $dns2, $srvname, $protocol_version,
+            $cpadding, $hpk, $max_handshake, $keepalive_timeout, $reject_after,
+            $rekey_after, $rekey_timeout, $random_trailers, $disable_cookies) = @ARGV;
         my $cpk = $ENV{AWG_URI_CPK} // "";
         my $psk = $ENV{AWG_URI_PSK} // "";
         my $spk = $ENV{AWG_URI_SPK} // "";
@@ -3772,6 +3792,13 @@ generate_vpn_uri() {
         $inner .= qq("H1":"$h1","H2":"$h2","H3":"$h3","H4":"$h4",);
         $inner .= qq("Jc":"$jc","Jmin":"$jmin","Jmax":"$jmax",);
         $inner .= qq("S1":"$s1","S2":"$s2","S3":"$s3","S4":"$s4",);
+        if ($protocol_version eq "3.1") {
+            $inner .= qq("ContentPaddingAddition":"$cpadding","HeaderProtectionKey":"$hpk",);
+            $inner .= qq("MaxHandshakeAttempts":"$max_handshake","KeepaliveTimeout":"$keepalive_timeout",);
+            $inner .= qq("RejectAfterTime":"$reject_after","RekeyAfterTime":"$rekey_after",);
+            $inner .= qq("RekeyTimeout":"$rekey_timeout","RandomTrailers":"$random_trailers",);
+            $inner .= qq("DisableCookies":"$disable_cookies",);
+        }
         if ($i1 ne "" || $i2 ne "" || $i3 ne "" || $i4 ne "" || $i5 ne "") {
             my $ei1 = je($i1); my $ei2 = je($i2); my $ei3 = je($i3);
             my $ei4 = je($i4); my $ei5 = je($i5);
@@ -3798,7 +3825,7 @@ generate_vpn_uri() {
         my $outer = "{";
         $outer .= qq("containers":[{"awg":{"isThirdPartyConfig":true,);
         $outer .= qq("last_config":"$einner",);
-        $outer .= qq("port":"$port","protocol_version":"2",);
+        $outer .= qq("port":"$port","protocol_version":"$protocol_version",);
         $outer .= qq("transport_proto":"udp"\},"container":"amnezia-awg"\}],);
         $outer .= qq("defaultContainer":"amnezia-awg",);
         my $esrv = je($srvname);
@@ -3820,7 +3847,9 @@ generate_vpn_uri() {
         "$AWG_S1" "$AWG_S2" "$AWG_S3" "$AWG_S4" \
         "$AWG_I1" "${AWG_I2:-}" "${AWG_I3:-}" "${AWG_I4:-}" "${AWG_I5:-}" "$AWG_PORT" "$endpoint" \
         "$client_ip" "$client_ipv6" "$allowed_ips" \
-        "$mtu" "$keepalive" "$dns1" "$dns2" "${AWG_SERVER_NAME:-AWG Server}" 2>"$perl_err"
+        "$mtu" "$keepalive" "$dns1" "$dns2" "${AWG_SERVER_NAME:-AWG Server}" "$protocol_version" \
+        "$awg31_content_padding" "$awg31_header_key" "$awg31_max_handshake" "$awg31_keepalive_timeout" \
+        "$awg31_reject_after" "$awg31_rekey_after" "$awg31_rekey_timeout" "$awg31_random_trailers" "$awg31_disable_cookies" 2>"$perl_err"
     )
 
     if [[ -z "$vpn_uri" ]]; then
