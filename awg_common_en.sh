@@ -2789,15 +2789,15 @@ _awg_warn_multiline() {
 }
 
 awg_normalize_csv() {
-    local out="" item
+    local normalized="" item
     local -a parts
     IFS=',' read -r -a parts <<< "$1"
     for item in "${parts[@]}"; do
         item="${item//[[:space:]]/}"
         [[ -z "$item" ]] && continue
-        out+="${out:+, }$item"
+        normalized+="${normalized:+, }$item"
     done
-    printf '%s' "$out"
+    printf '%s' "$normalized"
 }
 
 _sanitize_port() {
@@ -2846,11 +2846,11 @@ awg_ssh_client_addr() {
 }
 
 _awg_tunnel_subnet() {
-    local out=""
-    out=$(ip -4 -o addr show awg0 2>/dev/null \
+    local subnet_value=""
+    subnet_value=$(ip -4 -o addr show awg0 2>/dev/null \
         | awk '{ for (i = 1; i <= NF; i++) if ($i == "inet") { print $(i + 1); exit } }')
-    if [[ -z "$out" && -r "$SERVER_CONF_FILE" ]]; then
-        out=$(awk '
+    if [[ -z "$subnet_value" && -r "$SERVER_CONF_FILE" ]]; then
+        subnet_value=$(awk '
             /^[[:space:]]*#/ { next }
             /^[[:space:]]*\[/ { inif = (tolower($0) ~ /^[[:space:]]*\[interface\]/) ? 1 : 0; next }
             inif && tolower($0) ~ /^[[:space:]]*address[[:space:]]*=/ {
@@ -2862,8 +2862,8 @@ _awg_tunnel_subnet() {
                 }
             }' "$SERVER_CONF_FILE")
     fi
-    [[ -z "$out" && -n "${AWG_TUNNEL_SUBNET:-}" ]] && out="$AWG_TUNNEL_SUBNET"
-    printf '%s' "$out"
+    [[ -z "$subnet_value" && -n "${AWG_TUNNEL_SUBNET:-}" ]] && subnet_value="$AWG_TUNNEL_SUBNET"
+    printf '%s' "$subnet_value"
 }
 
 awg_session_via_tunnel() {

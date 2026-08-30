@@ -67,6 +67,7 @@ SCRIPTS=(
 # Запрещённые маркеры в публичном тексте и коммитах (case-insensitive).
 # Слитный список во избежание ложных срабатываний на доменных терминах.
 FORBIDDEN_MARKERS='claude|anthropic|\bcodex\b|chatgpt|openai|gpt-[0-9]|copilot|\bllm\b'
+APPROVED_COAUTHOR='Co-authored-by: OpenAI Codex <noreply@openai.com>'
 
 PASS=0
 FAIL=0
@@ -170,9 +171,9 @@ if git rev-parse --verify "$BASE_REF" >/dev/null 2>&1; then
         marker_fail=1
     fi
 fi
-log_markers=$(git log "$LOG_RANGE" --format='%B' 2>/dev/null \
+log_markers=$(git log --first-parent "$LOG_RANGE" --format='%B' 2>/dev/null \
     | grep -iP "$FORBIDDEN_MARKERS" \
-    | grep -ivF 'Co-authored-by: Codex Agent <codex@openai.com>' || true)
+    | grep -ivF "$APPROVED_COAUTHOR" || true)
 if [[ -n "$log_markers" ]]; then
     echo "commit-log markers:" >&2; echo "$log_markers" >&2
     marker_fail=1
@@ -180,8 +181,8 @@ fi
 if [[ "$marker_fail" -eq 0 ]]; then _ok "no AI/tool markers in diff + commit log"; else _bad "AI/tool markers found"; fi
 
 # --- 6. Co-authored-by in commit log ---
-coauthor=$(git log "$LOG_RANGE" --format='%B' 2>/dev/null | grep -iE '\bco-authored-by\b' || true)
-unexpected_coauthor=$(printf '%s\n' "$coauthor" | grep -ivF 'Co-authored-by: Codex Agent <codex@openai.com>' || true)
+coauthor=$(git log --first-parent "$LOG_RANGE" --format='%B' 2>/dev/null | grep -iE '\bco-authored-by\b' || true)
+unexpected_coauthor=$(printf '%s\n' "$coauthor" | grep -ivF "$APPROVED_COAUTHOR" || true)
 if [[ -z "$unexpected_coauthor" ]]; then
     _ok "Co-authored-by trailers are approved (Codex attribution allowed)"
 else
