@@ -30,12 +30,13 @@ AWG_REPO="${AWG_REPO:-Basil-AS/amneziawg-installer}"
 AWG_BRANCH="${AWG_BRANCH:-main}"
 COMMON_SCRIPT_PATH="$AWG_DIR/awg_common.sh"
 MANAGE_SCRIPT_PATH="$AWG_DIR/manage_amneziawg.sh"
+AWG_PROFILE_SCRIPT_PATH="$AWG_DIR/scripts/awg_profile.py"
 
 # SHA256 manifest для remote bootstrap assets. Local files рядом с installer
 # используются первыми; remote download разрешён только с pinned SHA256 либо
 # при явном AWG_ALLOW_UNVERIFIED_DOWNLOAD=1 для разработки.
 declare -A AWG_ASSET_SHA256=(
-    ["awg_common.sh"]="e00458ac5be13840bc36dfbbaf14447d936de769693b81ecd194dba41c02aa38"
+    ["awg_common.sh"]="e76b962a19119a30918befe2dce368aa568af4b55b052693262fdb4a18f43e47"
     ["manage_amneziawg.sh"]="2f386dc61ad9578c3a88c44846f65d14d48da08233810695d53824bc3a892d0a"
     ["web/server.py"]="ded8e87bdeb70b8555c2e3887a4109c5971e1f73d8298c8ca5a72a94a283bbc8"
     ["web/index.html"]="7c07ed1d1991e08c0f9fc31e86ed8eb2bba5fa96387088f1f18918396cf7e662"
@@ -48,6 +49,8 @@ declare -A AWG_ASSET_SHA256=(
     ["scripts/update_geoip_dbs.py"]="7ca3db88709a7ba8aed79b57c1f7aba834a80c57cacd513604ef2a68582513e3"
     ["scripts/update-installed.sh"]="f9857a9b4ccd43b3741b2140c7676a935cab261ea87c2d4f9895ae6658e81318"
     ["scripts/migrate-tunnel-subnet.sh"]="a8b40101e8f02627c10d2bb769802bf860fdf41dd2bc8ac38a180e953329c3bb"
+    ["scripts/awg_profile.py"]="f7ad9a667d3d6f07df76501c9dae08bd05eb88116f7bc3c4db22f845eaf0d1ca"
+    ["scripts/probe-awg31.sh"]="67867c7acfd2569b31a7266feac942d0f16b6f580f61e4f377be70cfed9036bf"
 )
 
 # Проверенный AWG 2.0 для ядер, где третья линия пока не используется.
@@ -68,7 +71,7 @@ CLI_ENABLE_ADGUARD=0; CLI_DISABLE_ADGUARD=0; CLI_ADGUARD_PORT=""; CLI_DNS_MODE="
 CLI_ENABLE_GEOIP_AUTO_UPDATE=0
 CLI_WIRESOCK_HINTS=""; CLI_WIRESOCK_ID=""; CLI_WIRESOCK_IP=""; CLI_WIRESOCK_IB=""
 CLI_SERVER_NAME=""
-CLI_PRESET=""; CLI_JC=""; CLI_JMIN=""; CLI_JMAX=""
+CLI_PRESET=""; CLI_JC=""; CLI_JMIN=""; CLI_JMAX=""; CLI_AWG_VERSION=""
 
 [[ -n "${AWG_SERVER_NAME+x}" ]] && ENV_AWG_SERVER_NAME_SET=1 || ENV_AWG_SERVER_NAME_SET=0
 [[ -n "${AWG_ENDPOINT+x}" ]] && ENV_AWG_ENDPOINT_SET=1 || ENV_AWG_ENDPOINT_SET=0
@@ -175,10 +178,13 @@ while [[ $# -gt 0 ]]; do
         --jc=*)          CLI_JC="${1#*=}" ;;
         --jmin=*)        CLI_JMIN="${1#*=}" ;;
         --jmax=*)        CLI_JMAX="${1#*=}" ;;
+        --awg-version=*) CLI_AWG_VERSION="${1#*=}" ;;
         *) echo "Неизвестный аргумент: $1" >&2; HELP=1; HELP_EXIT_RC=1 ;;
     esac
     shift
 done
+
+AWG_PROTOCOL_VERSION="${AWG_PROTOCOL_VERSION:-${CLI_AWG_VERSION:-3.1}}"
 
 # ==============================================================================
 # Функции логирования
@@ -569,6 +575,10 @@ check_os_version() {
 }
 
 check_kernel_version() {
+    [[ "${AWG_PROTOCOL_VERSION:-3.1}" == "3.1" ]] && {
+        log "AWG 3.1: kernel release checks disabled; capability probe is authoritative."
+        return 0
+    }
     # Модуль AmneziaWG 2.0 собирается через DKMS против ядра хоста. На ядрах
     # старше 5.15 (Ubuntu < 22.04, напр. 5.4 на 20.04) сборка обычно падает уже
     # на шаге 2 - невнятным package-failure. Предупреждаем ЯВНО и рано, до
@@ -2322,9 +2332,10 @@ generate_awg_params() {
 
     # Критическое ограничение из kernel: S1+56 != S2
     # Предотвращает одинаковый размер init и response сообщений
-    while [[ $((AWG_S1 + 56)) -eq $AWG_S2 ]]; do
-        AWG_S2=$(rand_range 15 150)
-    done
+    if [[ $((AWG_S1 + 56)) -eq $AWG_S2 ]]; then
+        AWG_S2=$((AWG_S2 + 1))
+        (( AWG_S2 <= 150 )) || AWG_S2=15
+    fi
 
     # ⚠️ Нижние границы S3/S4 несовместимы с header protection из AmneziaWG 3.0.
     # Там nonce для ChaCha20 нигде не передаётся, а берётся из первых 12 байт
@@ -2350,9 +2361,10 @@ generate_awg_params() {
     #   init/cookie     -> S3 = S1 + 84  (недостижимо: минимум S1+84 = 99 при
     #                                     максимуме S3 = 55, цикл не нужен)
     # Перегенерируем именно S3, а не S2: S2 уже прошёл проверку на S1+56.
-    while [[ $((AWG_S2 + 28)) -eq $AWG_S3 ]]; do
-        AWG_S3=$(rand_range 8 55)
-    done
+    if [[ $((AWG_S2 + 28)) -eq $AWG_S3 ]]; then
+        AWG_S3=8
+        [[ $((AWG_S2 + 28)) -eq $AWG_S3 ]] && AWG_S3=9
+    fi
 
     AWG_S4=$(rand_range 4 27)
 
@@ -4085,6 +4097,7 @@ initialize_setup() {
     AWG_WIRESOCK_IP="${AWG_WIRESOCK_IP:-}"
     AWG_WIRESOCK_IB="${AWG_WIRESOCK_IB:-}"
     AWG_PRESET="${AWG_PRESET:-default}"
+    AWG_PROTOCOL_VERSION="${AWG_PROTOCOL_VERSION:-${CLI_AWG_VERSION:-3.1}}"
 
     # Загрузка конфига
     if [[ -f "$CONFIG_FILE" ]]; then
@@ -4215,6 +4228,11 @@ initialize_setup() {
     [[ -n "$CLI_WIRESOCK_IB" ]] && AWG_WIRESOCK_IB="$CLI_WIRESOCK_IB"
     [[ -n "$CLI_SERVER_NAME" ]] && AWG_SERVER_NAME="$CLI_SERVER_NAME"
     [[ -n "$CLI_PRESET" ]] && AWG_PRESET="$CLI_PRESET"
+    [[ -n "$CLI_AWG_VERSION" ]] && AWG_PROTOCOL_VERSION="$CLI_AWG_VERSION"
+    case "$AWG_PROTOCOL_VERSION" in
+        1.5|2.0|3.0|3.1) ;;
+        *) die "Некорректный --awg-version=$AWG_PROTOCOL_VERSION (ожидается 1.5, 2.0, 3.0 или 3.1)." ;;
+    esac
     if [[ -n "$CLI_DNS_MODE" ]]; then AWG_DNS_MODE="$CLI_DNS_MODE"; fi
     if [[ "$CLI_ENABLE_ADGUARD" -eq 1 ]]; then
         AWG_ADGUARD_ENABLED=1
@@ -4513,6 +4531,7 @@ export AWG_I3='${AWG_I3:-}'
 export AWG_I4='${AWG_I4:-}'
 export AWG_I5='${AWG_I5:-}'
 export AWG_PRESET='${AWG_PRESET:-default}'
+export AWG_PROTOCOL_VERSION='${AWG_PROTOCOL_VERSION:-3.1}'
 export NO_TWEAKS=${NO_TWEAKS}
 export KEEP_PACKAGES=${KEEP_PACKAGES:-1}
 export NO_CPS=${NO_CPS}
@@ -5151,7 +5170,7 @@ PPASRC
     # пиновый 2.0 из исходника; из PPA берём только tools (version-aware, с 2.0
     # работают - проверено).
     local use_pinned_awg2=0
-    if ! _kernel_supports_awg3; then
+    if [[ "${AWG_PROTOCOL_VERSION:-3.1}" != "3.1" && "${AWG_PROTOCOL_VERSION:-3.1}" != "3.0" ]] && ! _kernel_supports_awg3; then
         use_pinned_awg2=1
         log "Ядро $(uname -r) старее 6.7 - здесь ставим проверенный модуль AmneziaWG 2.0, а не 3.0 из PPA."
         log "Активирован путь пинового AmneziaWG 2.0-модуля из исходника ($AWG2_PIN_TAG)."
@@ -5778,6 +5797,8 @@ step5_download_scripts() {
     _deploy_asset "scripts/update_geoip_dbs.py" "$AWG_DIR/scripts/update_geoip_dbs.py" 755
     _deploy_asset "scripts/update-installed.sh" "$AWG_DIR/update-installed.sh" 700
     _deploy_asset "scripts/migrate-tunnel-subnet.sh" "$AWG_DIR/migrate-tunnel-subnet.sh" 700
+    _deploy_asset "scripts/awg_profile.py" "$AWG_PROFILE_SCRIPT_PATH" 700
+    _deploy_asset "scripts/probe-awg31.sh" "$AWG_DIR/scripts/probe-awg31.sh" 700
 
     log "Шаг 5 завершен."
     update_state 6
@@ -6678,6 +6699,24 @@ step6_generate_configs() {
 
     # Создаём директорию для ключей
     mkdir -p "$KEYS_DIR" || die "Ошибка создания $KEYS_DIR"
+
+    if [[ "${AWG_PROTOCOL_VERSION:-3.1}" == "3.1" ]]; then
+        [[ -x "$AWG_DIR/scripts/probe-awg31.sh" ]] || die "AWG 3.1 capability probe не найден."
+        "$AWG_DIR/scripts/probe-awg31.sh" || die "Установленный awg не подтвердил AWG 3.1 через setconf + read-back. Конфиги не изменены."
+        if [[ ! -f "$AWG_DIR/awg31-profile.json" ]]; then
+            local profile_tmp
+            profile_tmp=$(mktemp "$AWG_DIR/awg31-profile.json.XXXXXX") || die "Не удалось создать AWG 3.1 profile."
+            if ! python3 "$AWG_PROFILE_SCRIPT_PATH" generate --version 3.1 > "$profile_tmp"; then
+                rm -f "$profile_tmp"; die "Не удалось сгенерировать AWG 3.1 profile."
+            fi
+            chmod 600 "$profile_tmp" && mv -f "$profile_tmp" "$AWG_DIR/awg31-profile.json" \
+                || { rm -f "$profile_tmp"; die "Не удалось сохранить AWG 3.1 profile."; }
+        else
+            python3 "$AWG_PROFILE_SCRIPT_PATH" validate --version 3.1 --input "$AWG_DIR/awg31-profile.json" >/dev/null \
+                || die "Существующий AWG 3.1 profile не прошёл валидацию."
+        fi
+        chmod 600 "$AWG_DIR/awg31-profile.json"
+    fi
 
     if [[ "$FORCE_REINSTALL" -ne 1 && "$CLI_UPGRADE_IPV6" -ne 1 ]] && configs_ready_for_step6_resume; then
         log "Конфиги AWG и дефолтные клиенты уже созданы; resume step 6 продолжит web/cert deploy без пересоздания клиентов."

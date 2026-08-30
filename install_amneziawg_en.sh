@@ -30,12 +30,13 @@ AWG_REPO="${AWG_REPO:-Basil-AS/amneziawg-installer}"
 AWG_BRANCH="${AWG_BRANCH:-main}"
 COMMON_SCRIPT_PATH="$AWG_DIR/awg_common.sh"
 MANAGE_SCRIPT_PATH="$AWG_DIR/manage_amneziawg.sh"
+AWG_PROFILE_SCRIPT_PATH="$AWG_DIR/scripts/awg_profile.py"
 
 # SHA256 manifest for remote bootstrap assets. Local files next to the installer
 # are used first; remote download is allowed only with pinned SHA256 or explicit
 # AWG_ALLOW_UNVERIFIED_DOWNLOAD=1 for development.
 declare -A AWG_ASSET_SHA256=(
-    ["awg_common_en.sh"]="6b507999883814eaac108b514baccf4762665eb1a99697bef44b567c1f3ef1fc"
+    ["awg_common_en.sh"]="a55b2ec518e55257883b56c2c76a11155c867337956466978848a4975db52fd6"
     ["manage_amneziawg_en.sh"]="96a53e4584e5704eac1ee78bc8b5a1f7344d1b894645860e95fd37319c609135"
     ["web/server.py"]="ded8e87bdeb70b8555c2e3887a4109c5971e1f73d8298c8ca5a72a94a283bbc8"
     ["web/index.html"]="7c07ed1d1991e08c0f9fc31e86ed8eb2bba5fa96387088f1f18918396cf7e662"
@@ -48,6 +49,8 @@ declare -A AWG_ASSET_SHA256=(
     ["scripts/update_geoip_dbs.py"]="7ca3db88709a7ba8aed79b57c1f7aba834a80c57cacd513604ef2a68582513e3"
     ["scripts/update-installed.sh"]="f9857a9b4ccd43b3741b2140c7676a935cab261ea87c2d4f9895ae6658e81318"
     ["scripts/migrate-tunnel-subnet.sh"]="a8b40101e8f02627c10d2bb769802bf860fdf41dd2bc8ac38a180e953329c3bb"
+    ["scripts/awg_profile.py"]="f7ad9a667d3d6f07df76501c9dae08bd05eb88116f7bc3c4db22f845eaf0d1ca"
+    ["scripts/probe-awg31.sh"]="67867c7acfd2569b31a7266feac942d0f16b6f580f61e4f377be70cfed9036bf"
 )
 
 # Verified AWG 2.0 fallback for kernels where the third line is not selected.
@@ -68,7 +71,7 @@ CLI_ENABLE_ADGUARD=0; CLI_DISABLE_ADGUARD=0; CLI_ADGUARD_PORT=""; CLI_DNS_MODE="
 CLI_ENABLE_GEOIP_AUTO_UPDATE=0
 CLI_WIRESOCK_HINTS=""; CLI_WIRESOCK_ID=""; CLI_WIRESOCK_IP=""; CLI_WIRESOCK_IB=""
 CLI_SERVER_NAME=""
-CLI_PRESET=""; CLI_JC=""; CLI_JMIN=""; CLI_JMAX=""
+CLI_PRESET=""; CLI_JC=""; CLI_JMIN=""; CLI_JMAX=""; CLI_AWG_VERSION=""
 
 [[ -n "${AWG_SERVER_NAME+x}" ]] && ENV_AWG_SERVER_NAME_SET=1 || ENV_AWG_SERVER_NAME_SET=0
 [[ -n "${AWG_ENDPOINT+x}" ]] && ENV_AWG_ENDPOINT_SET=1 || ENV_AWG_ENDPOINT_SET=0
@@ -175,10 +178,13 @@ while [[ $# -gt 0 ]]; do
         --jc=*)          CLI_JC="${1#*=}" ;;
         --jmin=*)        CLI_JMIN="${1#*=}" ;;
         --jmax=*)        CLI_JMAX="${1#*=}" ;;
+        --awg-version=*) CLI_AWG_VERSION="${1#*=}" ;;
         *) echo "Unknown argument: $1" >&2; HELP=1; HELP_EXIT_RC=1 ;;
     esac
     shift
 done
+
+AWG_PROTOCOL_VERSION="${AWG_PROTOCOL_VERSION:-${CLI_AWG_VERSION:-3.1}}"
 
 # ==============================================================================
 # Logging functions
@@ -574,6 +580,10 @@ check_os_version() {
 }
 
 check_kernel_version() {
+    [[ "${AWG_PROTOCOL_VERSION:-3.1}" == "3.1" ]] && {
+        log "AWG 3.1: kernel release checks disabled; capability probe is authoritative."
+        return 0
+    }
     # The AmneziaWG 2.0 module is built via DKMS against the host kernel. On
     # kernels older than 5.15 (Ubuntu < 22.04, e.g. 5.4 on 20.04) the build
     # usually fails at step 2 with an opaque package-failure. Warn EXPLICITLY and
@@ -2336,9 +2346,10 @@ generate_awg_params() {
 
     # Critical kernel constraint: S1+56 != S2
     # Prevents init and response messages from having the same size
-    while [[ $((AWG_S1 + 56)) -eq $AWG_S2 ]]; do
-        AWG_S2=$(rand_range 15 150)
-    done
+    if [[ $((AWG_S1 + 56)) -eq $AWG_S2 ]]; then
+        AWG_S2=$((AWG_S2 + 1))
+        (( AWG_S2 <= 150 )) || AWG_S2=15
+    fi
 
     # ⚠️ The lower bounds of S3/S4 are incompatible with AmneziaWG 3.0 header
     # protection. There the ChaCha20 nonce is never transmitted: it is taken from
@@ -2365,9 +2376,10 @@ generate_awg_params() {
     #   init/cookie     -> S3 = S1 + 84  (unreachable: the minimum S1+84 is 99
     #                                     while S3 tops out at 55, no loop needed)
     # We regenerate S3 rather than S2, since S2 already passed the S1+56 check.
-    while [[ $((AWG_S2 + 28)) -eq $AWG_S3 ]]; do
-        AWG_S3=$(rand_range 8 55)
-    done
+    if [[ $((AWG_S2 + 28)) -eq $AWG_S3 ]]; then
+        AWG_S3=8
+        [[ $((AWG_S2 + 28)) -eq $AWG_S3 ]] && AWG_S3=9
+    fi
 
     AWG_S4=$(rand_range 4 27)
 
@@ -4121,6 +4133,7 @@ initialize_setup() {
     AWG_WIRESOCK_IP="${AWG_WIRESOCK_IP:-}"
     AWG_WIRESOCK_IB="${AWG_WIRESOCK_IB:-}"
     AWG_PRESET="${AWG_PRESET:-default}"
+    AWG_PROTOCOL_VERSION="${AWG_PROTOCOL_VERSION:-${CLI_AWG_VERSION:-3.1}}"
 
     # Load config
     if [[ -f "$CONFIG_FILE" ]]; then
@@ -4252,6 +4265,11 @@ initialize_setup() {
     [[ -n "$CLI_WIRESOCK_IB" ]] && AWG_WIRESOCK_IB="$CLI_WIRESOCK_IB"
     [[ -n "$CLI_SERVER_NAME" ]] && AWG_SERVER_NAME="$CLI_SERVER_NAME"
     [[ -n "$CLI_PRESET" ]] && AWG_PRESET="$CLI_PRESET"
+    [[ -n "$CLI_AWG_VERSION" ]] && AWG_PROTOCOL_VERSION="$CLI_AWG_VERSION"
+    case "$AWG_PROTOCOL_VERSION" in
+        1.5|2.0|3.0|3.1) ;;
+        *) die "Invalid --awg-version=$AWG_PROTOCOL_VERSION (expected 1.5, 2.0, 3.0 or 3.1)." ;;
+    esac
     if [[ -n "$CLI_DNS_MODE" ]]; then AWG_DNS_MODE="$CLI_DNS_MODE"; fi
     if [[ "$CLI_ENABLE_ADGUARD" -eq 1 ]]; then
         AWG_ADGUARD_ENABLED=1
@@ -4551,6 +4569,7 @@ export AWG_I3='${AWG_I3:-}'
 export AWG_I4='${AWG_I4:-}'
 export AWG_I5='${AWG_I5:-}'
 export AWG_PRESET='${AWG_PRESET:-default}'
+export AWG_PROTOCOL_VERSION='${AWG_PROTOCOL_VERSION:-3.1}'
 export NO_TWEAKS=${NO_TWEAKS}
 export KEEP_PACKAGES=${KEEP_PACKAGES:-1}
 export NO_CPS=${NO_CPS}
@@ -5203,7 +5222,7 @@ PPASRC
     # build the pinned 2.0 from source instead; only tools come from the PPA
     # (version-aware, they do work with 2.0 - verified).
     local use_pinned_awg2=0
-    if ! _kernel_supports_awg3; then
+    if [[ "${AWG_PROTOCOL_VERSION:-3.1}" != "3.1" && "${AWG_PROTOCOL_VERSION:-3.1}" != "3.0" ]] && ! _kernel_supports_awg3; then
         use_pinned_awg2=1
         log "Kernel $(uname -r) is older than 6.7 - installing the tested AmneziaWG 2.0 module here, not 3.0 from the PPA."
         log "Activated the pinned AmneziaWG 2.0 module path from source ($AWG2_PIN_TAG)."
@@ -5834,6 +5853,8 @@ step5_download_scripts() {
     _deploy_asset "scripts/update_geoip_dbs.py" "$AWG_DIR/scripts/update_geoip_dbs.py" 755
     _deploy_asset "scripts/update-installed.sh" "$AWG_DIR/update-installed.sh" 700
     _deploy_asset "scripts/migrate-tunnel-subnet.sh" "$AWG_DIR/migrate-tunnel-subnet.sh" 700
+    _deploy_asset "scripts/awg_profile.py" "$AWG_PROFILE_SCRIPT_PATH" 700
+    _deploy_asset "scripts/probe-awg31.sh" "$AWG_DIR/scripts/probe-awg31.sh" 700
 
     log "Step 5 completed."
     update_state 6
@@ -6735,6 +6756,24 @@ step6_generate_configs() {
 
     # Create key directory
     mkdir -p "$KEYS_DIR" || die "Error creating $KEYS_DIR"
+
+    if [[ "${AWG_PROTOCOL_VERSION:-3.1}" == "3.1" ]]; then
+        [[ -x "$AWG_DIR/scripts/probe-awg31.sh" ]] || die "AWG 3.1 capability probe not found."
+        "$AWG_DIR/scripts/probe-awg31.sh" || die "Installed awg did not confirm AWG 3.1 via setconf + read-back. Configs were not changed."
+        if [[ ! -f "$AWG_DIR/awg31-profile.json" ]]; then
+            local profile_tmp
+            profile_tmp=$(mktemp "$AWG_DIR/awg31-profile.json.XXXXXX") || die "Could not create AWG 3.1 profile."
+            if ! python3 "$AWG_PROFILE_SCRIPT_PATH" generate --version 3.1 > "$profile_tmp"; then
+                rm -f "$profile_tmp"; die "Could not generate AWG 3.1 profile."
+            fi
+            chmod 600 "$profile_tmp" && mv -f "$profile_tmp" "$AWG_DIR/awg31-profile.json" \
+                || { rm -f "$profile_tmp"; die "Could not save AWG 3.1 profile."; }
+        else
+            python3 "$AWG_PROFILE_SCRIPT_PATH" validate --version 3.1 --input "$AWG_DIR/awg31-profile.json" >/dev/null \
+                || die "Existing AWG 3.1 profile failed validation."
+        fi
+        chmod 600 "$AWG_DIR/awg31-profile.json"
+    fi
 
     if [[ "$FORCE_REINSTALL" -ne 1 && "$CLI_UPGRADE_IPV6" -ne 1 ]] && configs_ready_for_step6_resume; then
         log "AWG configs and default clients already exist; resume step 6 will continue web/cert deploy without recreating clients."
