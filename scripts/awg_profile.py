@@ -115,8 +115,9 @@ def generate(version: str, seed: int | None = None) -> dict[str, object]:
     rng = random.SystemRandom() if seed is None else random.Random(seed)
     if version == "3.1":
         s1, s2, s3 = _generate_s_values(rng)
-        h_ranges = ("536870912-636870911", "1073741824-1173741823",
-                     "1610612736-1710612735", "2147483648-2247483647")
+        # Keep every endpoint <= INT32_MAX for standalone Windows clients.
+        h_ranges = ("268435456-368435455", "536870912-636870911",
+                     "1073741824-1173741823", "1610612736-1710612735")
     else:
         s1, s2, s3 = (rng.randrange(12, 151), rng.randrange(12, 151), rng.randrange(12, 65))
         h_ranges = ("1000-1999", "3000-3999", "5000-5999", "7000-7999")

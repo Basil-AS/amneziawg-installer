@@ -44,7 +44,7 @@ setup() {
 @test "AWG 3.1 generation uses safe S bounds and unique packet lengths" {
     run "$PYTHON_BIN" "$SCRIPT" generate --seed 11
     [ "$status" -eq 0 ]
-    run "$PYTHON_BIN" -c 'import json,sys; p=json.loads(sys.argv[1]); s=[p["s1"],p["s2"],p["s3"],p["s4"]]; assert s[0] >= 12 and s[1] >= 12 and s[2] >= 12 and s[3] == 12; assert len({148+s[0],92+s[1],64+s[2],32+s[3]}) == 4' "$output"
+    run "$PYTHON_BIN" -c 'import json,sys; p=json.loads(sys.argv[1]); s=[p["s1"],p["s2"],p["s3"],p["s4"]]; assert s[0] >= 12 and s[1] >= 12 and s[2] >= 12 and s[3] == 12; assert len({148+s[0],92+s[1],64+s[2],32+s[3]}) == 4; assert max(int(x.split("-")[-1]) for x in [p["h1"],p["h2"],p["h3"],p["h4"]]) <= 2147483647' "$output"
     [ "$status" -eq 0 ]
 }
 
