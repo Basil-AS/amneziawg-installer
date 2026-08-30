@@ -6,7 +6,7 @@ import argparse
 import base64
 import json
 import os
-import secrets
+import random
 import sys
 from pathlib import Path
 
@@ -72,8 +72,13 @@ def validate(profile: dict[str, object], version: str = "3.1") -> dict[str, obje
         raise ValueError("jmin exceeds jmax")
     for field in ("s1", "s2", "s3", "s4"):
         result[field] = _integer(profile[field], field, UINT16_MAX)
-        if version == "3.1" and result[field] < 8:
-            raise ValueError(f"{field} must be at least 8 for AWG 3.1")
+        if version == "3.1" and (field != "s4" and result[field] < 12 or field == "s4" and result[field] != 12):
+            raise ValueError(f"{field} must be at least 12 for AWG 3.1" if field != "s4" else "s4 must be exactly 12 for AWG 3.1")
+    if version == "3.1":
+        packet_lengths = (148 + result["s1"], 92 + result["s2"],
+                          64 + result["s3"], 32 + result["s4"])
+        if len(set(packet_lengths)) != len(packet_lengths):
+            raise ValueError("AWG 3.1 padded handshake lengths must be unique")
 
     ranges: dict[str, tuple[int, int]] = {}
     for field in ("h1", "h2", "h3", "h4"):
@@ -107,12 +112,19 @@ def validate(profile: dict[str, object], version: str = "3.1") -> dict[str, obje
 
 
 def generate(version: str, seed: int | None = None) -> dict[str, object]:
-    rng = secrets.SystemRandom(seed)
+    rng = random.SystemRandom() if seed is None else random.Random(seed)
+    if version == "3.1":
+        s1, s2, s3 = _generate_s_values(rng)
+        h_ranges = ("536870912-636870911", "1073741824-1173741823",
+                     "1610612736-1710612735", "2147483648-2247483647")
+    else:
+        s1, s2, s3 = (rng.randrange(12, 151), rng.randrange(12, 151), rng.randrange(12, 65))
+        h_ranges = ("1000-1999", "3000-3999", "5000-5999", "7000-7999")
     profile: dict[str, object] = {
         "jc": rng.randrange(4, 7), "jmin": 10, "jmax": 50,
-        "s1": rng.randrange(12, 151), "s2": rng.randrange(12, 151),
-        "s3": rng.randrange(12, 65), "s4": 12,
-        "h1": "1000-1999", "h2": "3000-3999", "h3": "5000-5999", "h4": "7000-7999",
+        "s1": s1, "s2": s2, "s3": s3, "s4": 12,
+        "h1": h_ranges[0], "h2": h_ranges[1],
+        "h3": h_ranges[2], "h4": h_ranges[3],
     }
     if version == "3.1":
         profile.update({
@@ -123,6 +135,16 @@ def generate(version: str, seed: int | None = None) -> dict[str, object]:
             "randomTrailers": False, "disableCookies": False,
         })
     return validate(profile, version)
+
+
+def _generate_s_values(rng: random.Random) -> tuple[int, int, int]:
+    """Choose 3.1 S values whose resulting handshake lengths cannot collide."""
+    for _ in range(128):
+        values = (rng.randrange(12, 150), rng.randrange(12, 150), rng.randrange(12, 64))
+        lengths = (148 + values[0], 92 + values[1], 64 + values[2], 44)
+        if len(set(lengths)) == len(lengths):
+            return values
+    raise RuntimeError("unable to generate unique AWG 3.1 padding lengths")
 
 
 def render(profile: dict[str, object]) -> str:

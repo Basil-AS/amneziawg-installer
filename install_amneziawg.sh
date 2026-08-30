@@ -49,7 +49,7 @@ declare -A AWG_ASSET_SHA256=(
     ["scripts/update_geoip_dbs.py"]="7ca3db88709a7ba8aed79b57c1f7aba834a80c57cacd513604ef2a68582513e3"
     ["scripts/update-installed.sh"]="f9857a9b4ccd43b3741b2140c7676a935cab261ea87c2d4f9895ae6658e81318"
     ["scripts/migrate-tunnel-subnet.sh"]="a8b40101e8f02627c10d2bb769802bf860fdf41dd2bc8ac38a180e953329c3bb"
-    ["scripts/awg_profile.py"]="f7ad9a667d3d6f07df76501c9dae08bd05eb88116f7bc3c4db22f845eaf0d1ca"
+    ["scripts/awg_profile.py"]="408456d75258d51a8cb2b1e64e84ca8aef4977f1dd466221175794d6e448795d"
     ["scripts/probe-awg31.sh"]="67867c7acfd2569b31a7266feac942d0f16b6f580f61e4f377be70cfed9036bf"
 )
 
