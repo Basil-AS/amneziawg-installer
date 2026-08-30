@@ -79,6 +79,8 @@ Pressing Enter at the Web Panel access step keeps the safe VPN-only URL on the s
 
 When no domain is configured, the panel uses a self-signed certificate and safe VPN-only access.
 
+When using a reverse proxy, set `client_header_timeout` and `client_body_timeout` with enough margin for slow mobile clients. To explicitly allow the PPA fallback, use `AWG_ALLOW_PPA_CODENAME_FALLBACK=1` or `--allow-ppa-codename-fallback`.
+
 Manage an installation with:
 
 ```bash

@@ -73,9 +73,11 @@ sudo /root/awg/manage_amneziawg.sh add my_iphone --psk
 ```
 </details>
 
-Нажатие Enter на шаге доступа к Web Panel оставляет безопасный VPN-only URL на шлюзе выбранной подсети. Итоговый URL для port `443` пишется без `:443`; свой домен + Let’s Encrypt работает best-effort из-за общих rate limits Let’s Encrypt, а TCP/80 должен быть открыт во внешнем firewall/security group. Для IP-домена установщик может использовать `sslip.io`.
+Нажатие Enter на шаге доступа к Web Panel оставляет безопасный VPN-only URL на шлюзе выбранной подсети. Итоговый URL для port `443` пишется без `:443`; свой домен + Let’s Encrypt работает best-effort из-за общих rate limits Let’s Encrypt, а TCP/80 открыт во внешнем firewall/security group. Для IP-домена установщик может использовать `sslip.io`.
 
 Если домен не настроен, панель использует self-signed сертификат и безопасный VPN-only доступ.
+
+При reverse proxy задайте `client_header_timeout` и `client_body_timeout` с запасом для медленных мобильных клиентов. Для явного fallback PPA используйте `AWG_ALLOW_PPA_CODENAME_FALLBACK=1` или `--allow-ppa-codename-fallback`.
 
 Управление установленным сервером:
 
