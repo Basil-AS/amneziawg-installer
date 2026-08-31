@@ -116,7 +116,7 @@ So the ordering is now: create the release as a **draft**, verify the signatures
 
 Two consequences worth stating plainly, because they change the maintainer's routine:
 
-- **Signing is now mandatory for every release.** Without `signing/*.minisig` in the tagged commit, `release.yml` fails and nothing is published. `preflight-check.sh` performs the same verification locally, so the normal place to discover a missing signature is before the tag, not after.
+- **Signing is retained but currently optional in this fork.** Set `REQUIRE_RELEASE_SIGNATURES=true` in the release workflow environment to restore the upstream gate. The signing scripts, public key and detached signatures remain available for maintainers who want to enable it later.
 - **A failed run is resumable.** The workflow distinguishes absent / draft / published: a leftover draft means "resume", so re-running after a network hiccup finishes the job instead of skipping it as already done.
 
 ## User-side verification

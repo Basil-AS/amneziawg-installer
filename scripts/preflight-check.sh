@@ -243,10 +243,16 @@ fi
 rm -f /tmp/preflight-docs.$$
 
 # --- 10. Release signatures ---
-# Signatures are produced offline and committed under signing/ before the tag.
-# release.yml refuses to publish without them, so the point of checking here is
-# to fail on the maintainer's machine, where the commit can still be amended,
-# rather than after the tag is already pushed.
+# The signing implementation is retained, but this fork does not require the
+# inherited upstream private key for normal releases. Set
+# REQUIRE_RELEASE_SIGNATURES=true to turn this gate back on.
+if [[ "${REQUIRE_RELEASE_SIGNATURES:-false}" != "true" ]]; then
+    _warn "release signature gate disabled (set REQUIRE_RELEASE_SIGNATURES=true to enable)"
+else
+# When enabled, signatures are produced offline and committed under signing/
+# before the tag. The point of checking here is to fail on the maintainer's
+# machine, where the commit can still be amended, rather than after the tag is
+# already pushed.
 #
 # Absent signatures are a WARNING, not a failure: preflight also runs on
 # ordinary branches where no release is being prepared. Present-but-wrong is a
@@ -254,7 +260,7 @@ rm -f /tmp/preflight-docs.$$
 sig_count=$(find signing -name '*.minisig' 2>/dev/null | grep -c . || true)
 sig_expected=$(bash "$SCRIPT_DIR/signed-file-list.sh" | grep -c . || true)
 if [[ "$sig_count" -eq 0 ]]; then
-    _warn "no release signatures staged (fine outside a release; required before a tag)"
+    _warn "no release signatures staged"
 elif [[ "$sig_count" -ne "$sig_expected" ]]; then
     _bad "release signatures: $sig_count file(s) under signing/, expected $sig_expected"
 elif ! command -v minisign >/dev/null 2>&1; then
@@ -280,6 +286,7 @@ else
         _bad "release signatures (run: bash scripts/verify-signatures.sh v${ref_ver})"
     fi
     rm -f /tmp/preflight-sig.$$
+fi
 fi
 
 # --- Summary ---
