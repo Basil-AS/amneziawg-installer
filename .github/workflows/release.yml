@@ -11,6 +11,11 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# Keep Minisign available without making the inherited upstream private key a
+# prerequisite for this fork's releases. Set to 'true' to restore the gate.
+env:
+  REQUIRE_RELEASE_SIGNATURES: 'false'
+
 jobs:
   # Gate: a tag must clear the full pre-tag checklist before anything is
   # published. A fresh install verifies the helper-script SHA pins over the
@@ -74,14 +79,11 @@ jobs:
             echo "state=published" >> "$GITHUB_OUTPUT"
           fi
 
-      # Signatures are produced offline on the maintainer's machine and
-      # committed under signing/ before the tag; the private key never reaches
-      # Actions. This step only VERIFIES them, and it runs before the release
-      # exists so a missing or wrong signature stops the publication rather than
-      # leaving a half-published release behind. preflight-check.sh runs the
-      # same check locally, so this should never be the first place it fails.
+      # Optional upstream Minisign gate. Keep the verification step and all
+      # signing assets available, but do not require the inherited private key
+      # for this fork's ordinary GitHub Releases.
       - name: Verify release signatures
-        if: steps.check.outputs.state != 'published'
+        if: steps.check.outputs.state != 'published' && env.REQUIRE_RELEASE_SIGNATURES == 'true'
         run: |
           set -euo pipefail
           sudo apt-get update -qq

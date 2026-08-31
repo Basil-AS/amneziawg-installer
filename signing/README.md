@@ -48,9 +48,10 @@ git tag -a v5.29.0 -m "AmneziaWG installer v5.29.0"
 git push origin v5.29.0
 ```
 
-The tag starts the release workflow. It verifies the signatures before the
-GitHub Release is created and uploads the signed safe-update bundle only after
-the preflight checks pass.
+The tag starts the release workflow. This fork keeps signature verification
+available but does not require it for ordinary GitHub Releases because the
+upstream private key is not available here. Set `REQUIRE_RELEASE_SIGNATURES=true`
+in the workflow environment to restore the verification gate.
 
 The `-t` trusted comment is not decoration. A signature proves that some bytes
 were signed, not that they were signed *for this release*: an old file with its
