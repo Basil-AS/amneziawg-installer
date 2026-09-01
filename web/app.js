@@ -1117,7 +1117,7 @@ function renderServerInfo() {
       ["Public IPv6", shortValue(info.public_ipv6)],
       ["V" + "P" + "N IPv4", shortValue(info["vp" + "n_ipv4"])],
       ["V" + "P" + "N IPv6", shortValue(info["vp" + "n_ipv6"], "IPv6 disabled")],
-      ["AWG protocol", `v${shortValue(info.protocol_version, "2.0")} · ${shortValue(info.protocol_profile, "unknown")}`],
+      ["AWG protocol", `v${shortValue(info.protocol_version, "3.1")} · ${shortValue(info.protocol_profile, "unknown")}`],
     ];
     if (resolverVal) rows.push(["D" + "NS / Resolver", resolverVal]);
     addressHost.innerHTML = rows.map(([label, value]) => `
@@ -4392,6 +4392,20 @@ function rotateProfileModal() {
               <span class="block text-xs text-[var(--muted)]">Balanced general-purpose profile for stable networks.</span>
             </span>
           </label>
+          <label class="flex cursor-pointer gap-3 rounded-md border border-[var(--line)] bg-[var(--soft)] p-3">
+            <input type="radio" name="rotatePreset" value="stealth" class="mt-1 accent-[var(--accent)]">
+            <span>
+              <span class="block text-sm font-semibold">Stealth</span>
+              <span class="block text-xs text-[var(--muted)]">Broader traffic-shape variation for hostile or filtered paths.</span>
+            </span>
+          </label>
+          <label class="flex cursor-pointer gap-3 rounded-md border border-[var(--line)] bg-[var(--soft)] p-3">
+            <input type="radio" name="rotatePreset" value="compatibility" class="mt-1 accent-[var(--accent)]">
+            <span>
+              <span class="block text-sm font-semibold">Compatibility</span>
+              <span class="block text-xs text-[var(--muted)]">Conservative values for older clients and restrictive implementations.</span>
+            </span>
+          </label>
         </fieldset>
         <p class="mt-3 rounded-md border border-amber-500/50 bg-amber-500/10 p-3 text-xs text-[var(--text)]">This does not rotate keys, IPs, port rules, RBAC, expiry, or traffic history.</p>
         <label class="mt-3 flex cursor-pointer items-start gap-2 text-xs text-[var(--text)]">
@@ -4432,7 +4446,7 @@ function rotateProfileModal() {
     confirmButton.onclick = () => {
       if (confirmButton.disabled) return;
       const preset = dialog.querySelector("input[name='rotatePreset']:checked")?.value;
-      finish(["mobile", "default"].includes(preset) ? preset : null);
+      finish(["mobile", "default", "balanced", "stealth", "compatibility"].includes(preset) ? preset : null);
     };
     dialog.addEventListener("close", () => {
       dialog.remove();

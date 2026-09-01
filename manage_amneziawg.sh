@@ -2817,7 +2817,7 @@ case $COMMAND in
 
     profile-validate)
         safe_load_config "$CONFIG_FILE" >/dev/null 2>&1 || true
-        if [[ "${AWG_PROTOCOL_VERSION:-2.0}" != "3.1" ]]; then
+        if [[ "${AWG_PROTOCOL_VERSION:-3.1}" != "3.1" ]]; then
             echo "Проверка профиля нужна только для AWG 3.1."
         elif awg_profile_status | grep -q '^profile=valid$'; then
             echo "AWG 3.1 profile: valid"
