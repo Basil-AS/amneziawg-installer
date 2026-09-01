@@ -109,6 +109,9 @@ sudo /root/awg/manage_amneziawg_en.sh --help
 
 ## Screenshots
 
+The screenshots below are illustrative and contain demonstration data; after
+installation, the panel displays live values from the deployed server.
+
 ![Web panel dashboard](docs/screenshots/web-panel-dashboard.png)
 
 ![Service health](docs/screenshots/web-panel-health.png)
