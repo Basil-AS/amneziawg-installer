@@ -175,6 +175,11 @@ _write_pin() {
     return 0
 }
 
+_read_pin() {
+    local installer="$1" pin_name="$2"
+    awk -F '"' -v key="$pin_name" '$2 == key { print $4; exit }' "$REPO_ROOT/$installer"
+}
+
 rc=0
 mismatched=()
 worktree_notice_shown=0
