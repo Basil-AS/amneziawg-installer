@@ -12,6 +12,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [5.29.0-bas.1] - 2026-09-01
+
+### Added
+
+- Surgically ported independent upstream improvements to diagnostics, marker scanning and release hygiene while preserving the fork's AWG 3.1, IPv6/P2P/DNAT, Web Panel and Telegram surfaces.
+- Applied the fork's `-bas.1` suffix to the upstream-compatible version line.
+
 ## [5.29.0] - 2026-08-30
 
 ### Added
@@ -1689,7 +1696,8 @@ Major security and reliability update after several consecutive code audits. The
 - Diagnostic report (`--diagnostic`).
 - Full uninstall (`--uninstall`).
 
-[Unreleased]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.29.0...HEAD
+[Unreleased]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.29.0-bas.1...HEAD
+[5.29.0-bas.1]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.29.0...v5.29.0-bas.1
 [5.29.0]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.28.1-bas.11...v5.29.0
 [5.28.1-bas.11]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.28.1-bas.10...v5.28.1-bas.11
 [5.28.1-bas.10]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.19.2-bas.9...v5.28.1-bas.10

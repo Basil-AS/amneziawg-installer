@@ -64,11 +64,8 @@ SCRIPTS=(
     awg_common_en.sh
 )
 
-# Запрещённые маркеры в публичном тексте и коммитах (case-insensitive).
-# Слитный список во избежание ложных срабатываний на доменных терминах.
-FORBIDDEN_MARKERS='claude|anthropic|\bcodex\b|chatgpt|openai|gpt-[0-9]|copilot|\bllm\b|myai-[a-z0-9]{4}'
+# Запрещённые маркеры проверяются единым scripts/check-markers.sh.
 APPROVED_COAUTHOR='Co-authored-by: OpenAI Codex <noreply@openai.com>'
-
 PASS=0
 FAIL=0
 WARN=0
@@ -140,7 +137,7 @@ else
 fi
 
 # --- 4. newly added em/en-dash in diff ---
-# Политика проекта (CLAUDE.md): новый текст - только hyphen-minus; legacy
+# Политика проекта: новый текст - только hyphen-minus; legacy
 # em/en-dash в существующих строках сохраняется без mass-purge, а point-edit
 # легаси-строки НЕ обязывает переписывать тире на этой строке. Поэтому ловим
 # ТОЛЬКО реально добавленные тире. word-diff=porcelain помечает префиксом '+'
@@ -158,28 +155,21 @@ else
     _bad "newly added em/en-dash in diff ${BASE_REF}...HEAD"
 fi
 
-# --- 5. AI/tool-mention in diff + commit log ---
-marker_fail=0
-if git rev-parse --verify "$BASE_REF" >/dev/null 2>&1; then
-    # Исключаем файлы, которые ОПРЕДЕЛЯЮТ список маркеров: у них имена
-    # маркеров стоят как паттерн поиска, а не как нарушение. Без этого
-    # проверка находит сама себя и обязательный предмержевый прогон
-    # падает на ветке, которая ничего не нарушила.
-    diff_markers=$(git diff "${BASE_REF}...HEAD" -- . ':(exclude)scripts/preflight-check.sh' ':(exclude).github/workflows/commit-hygiene.yml' | grep -nP '^\+' | grep -iP "$FORBIDDEN_MARKERS" || true)
-    if [[ -n "$diff_markers" ]]; then
-        echo "diff markers:" >&2; echo "$diff_markers" >&2
-        marker_fail=1
-    fi
+# --- 5. forbidden markers in commits and added lines ---
+# Делегировано в scripts/check-markers.sh: одна реализация, один список.
+# Прежде список был скопирован сюда и в pull-request workflow, копии разошлись
+# (в одной не хватало фразы, которая была в другой), и заметить это было нечем:
+# расходился как раз тот механизм, который должен был ловить.
+# Там же исправлено главное: сканируются НЕ только сообщения коммитов, но и
+# ДОБАВЛЕННЫЕ СТРОКИ, а исключение сделано по СТРОКЕ с тегом, а не по файлу
+# целиком - файловое прятало в этих двух файлах обычную прозу.
+marker_out=""
+if marker_out="$(bash "$REPO_ROOT/scripts/check-markers.sh" "$BASE_REF" HEAD 2>&1)"; then
+    _ok "no forbidden markers in commits or added lines"
+else
+    echo "$marker_out" >&2
+    _bad "forbidden markers found (scripts/check-markers.sh)"
 fi
-log_markers=$(git log --first-parent "$LOG_RANGE" --format='%B' 2>/dev/null \
-    | grep -iP "$FORBIDDEN_MARKERS" \
-    | grep -ivF "$APPROVED_COAUTHOR" || true)
-if [[ -n "$log_markers" ]]; then
-    echo "commit-log markers:" >&2; echo "$log_markers" >&2
-    marker_fail=1
-fi
-if [[ "$marker_fail" -eq 0 ]]; then _ok "no AI/tool markers in diff + commit log"; else _bad "AI/tool markers found"; fi
-
 # --- 6. Co-authored-by in commit log ---
 coauthor=$(git log --first-parent "$LOG_RANGE" --format='%B' 2>/dev/null | grep -iE '\bco-authored-by\b' || true)
 unexpected_coauthor=$(printf '%s\n' "$coauthor" | grep -ivF "$APPROVED_COAUTHOR" || true)

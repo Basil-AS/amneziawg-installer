@@ -12,6 +12,13 @@
 
 ## [Unreleased]
 
+## [5.29.0-bas.1] - 2026-09-01
+
+### Добавлено
+
+- Хирургически перенесены независимые upstream-улучшения диагностики, marker-scan и release hygiene с сохранением fork-функций, AWG 3.1 и IPv6/P2P/DNAT/Web Panel/Telegram поверхностей.
+- Версия форка получила постфикс `-bas.1` по принятой схеме совместимой нумерации upstream.
+
 ## [5.29.0] - 2026-08-30
 
 ### Добавлено
@@ -1696,7 +1703,8 @@ Hardening-фиксы надёжности и безопасности по ре�
 - Диагностический отчет (`--diagnostic`).
 - Полная деинсталляция (`--uninstall`).
 
-[Unreleased]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.29.0...HEAD
+[Unreleased]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.29.0-bas.1...HEAD
+[5.29.0-bas.1]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.29.0...v5.29.0-bas.1
 [5.29.0]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.28.1-bas.11...v5.29.0
 [5.28.1-bas.11]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.28.1-bas.10...v5.28.1-bas.11
 [5.28.1-bas.10]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.19.2-bas.9...v5.28.1-bas.10
