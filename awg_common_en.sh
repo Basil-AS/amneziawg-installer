@@ -4,7 +4,7 @@
 # ==============================================================================
 # Common function library for AmneziaWG 2.0
 # Author: @bivlked
-# Version: 5.29.0-bas.6
+# Version: 5.29.0-bas.7
 # Date: 2026-08-30
 # Repository: https://github.com/bivlked/amneziawg-installer
 # ==============================================================================
@@ -96,7 +96,7 @@ awg_profile_status() {
 # Library version. The manage script verifies it after sourcing this file so a
 # partial update fails with a clear message instead of a later missing symbol.
 # shellcheck disable=SC2034
-AWG_COMMON_VERSION="5.29.0-bas.5"
+AWG_COMMON_VERSION="5.29.0-bas.7"
 
 # --- Автоочистка временных файлов ---
 # ВАЖНО: trap НЕ устанавливается здесь, чтобы не перезаписать trap вызывающего скрипта.
