@@ -107,6 +107,9 @@ sudo /root/awg/manage_amneziawg.sh --help
 
 ## Скриншоты
 
+Ниже приведены иллюстративные снимки интерфейса с демонстрационными данными;
+после установки панель показывает реальные значения конкретного сервера.
+
 ![Дашборд веб-панели](docs/screenshots/web-panel-dashboard.png)
 
 ![Состояние сервиса](docs/screenshots/web-panel-health.png)
