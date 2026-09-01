@@ -12,6 +12,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [5.29.0-bas.4] - 2026-09-01
+
 ### Fixed
 
 - The AWG 3.1 generator now enables bilateral `RandomTrailers` while keeping `DisableCookies` off by default to preserve handshake-flood protection.
@@ -1708,7 +1710,8 @@ Major security and reliability update after several consecutive code audits. The
 - Diagnostic report (`--diagnostic`).
 - Full uninstall (`--uninstall`).
 
-[Unreleased]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.29.0-bas.3...HEAD
+[Unreleased]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.29.0-bas.4...HEAD
+[5.29.0-bas.4]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.29.0-bas.3...v5.29.0-bas.4
 [5.29.0-bas.3]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.29.0-bas.1...v5.29.0-bas.3
 [5.29.0-bas.1]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.29.0...v5.29.0-bas.1
 [5.29.0]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.28.1-bas.11...v5.29.0
