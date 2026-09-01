@@ -124,7 +124,7 @@ _pinned_sha() {
         *) asset= ;;
     esac
     if [ -n "$asset" ]; then
-        awk -F '"' -v key="$asset" '$1 ~ "\\[" key "\\]" { print $2; exit }' "$ROOT/$1"
+        awk -F '"' -v key="$asset" '$2 == key { print $4; exit }' "$ROOT/$1"
         return 0
     fi
     if [ "$hits" != "1" ]; then
