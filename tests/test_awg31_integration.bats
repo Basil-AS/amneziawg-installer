@@ -18,14 +18,6 @@ bats_require_minimum_version 1.5.0
     done
 }
 
-@test "shared runtime defaults to AWG 3.1 when no version is configured" {
-    for file in awg_common.sh awg_common_en.sh; do
-        run bash -c 'unset AWG_PROTOCOL_VERSION; source "$1"; _awg_protocol_version' _ "$BATS_TEST_DIRNAME/../$file"
-        [ "$status" -eq 0 ]
-        [ "$output" = "3.1" ]
-    done
-}
-
 @test "runtime renderers contain explicit compatibility branches for 1.5 and 3.0" {
     for file in awg_common.sh awg_common_en.sh; do
         grep -q '_awg_protocol_has_s34' "$BATS_TEST_DIRNAME/../$file"

@@ -1117,7 +1117,7 @@ function renderServerInfo() {
       ["Public IPv6", shortValue(info.public_ipv6)],
       ["V" + "P" + "N IPv4", shortValue(info["vp" + "n_ipv4"])],
       ["V" + "P" + "N IPv6", shortValue(info["vp" + "n_ipv6"], "IPv6 disabled")],
-      ["AWG protocol", `v${shortValue(info.protocol_version, "3.1")} · ${shortValue(info.protocol_profile, "unknown")}`],
+      ["AWG protocol", `v${shortValue(info.protocol_version, "2.0")} · ${shortValue(info.protocol_profile, "unknown")}`],
     ];
     if (resolverVal) rows.push(["D" + "NS / Resolver", resolverVal]);
     addressHost.innerHTML = rows.map(([label, value]) => `

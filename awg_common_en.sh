@@ -21,7 +21,6 @@ SERVER_CONF_FILE="${SERVER_CONF_FILE:-/etc/amnezia/amneziawg/awg0.conf}"
 KEYS_DIR="${KEYS_DIR:-$AWG_DIR/keys}"
 AWG_HOSTS_FILE="${AWG_HOSTS_FILE:-/etc/hosts}"
 AWG_PROFILE_SCRIPT_PATH="${AWG_PROFILE_SCRIPT_PATH:-$AWG_DIR/scripts/awg_profile.py}"
-AWG_PROTOCOL_VERSION="${AWG_PROTOCOL_VERSION:-3.1}"
 
 _awg_protocol_version() {
     case "${AWG_PROTOCOL_VERSION:-2.0}" in

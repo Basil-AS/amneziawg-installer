@@ -58,7 +58,7 @@ def render(conf_path: Path) -> str:
     port = os.environ.get("AWG_PORT", "")
     if not port.isdigit():
         raise ValueError("AWG_PORT must be numeric")
-    protocol = os.environ.get("AWG_PROTOCOL_VERSION", "3.1")
+    protocol = os.environ.get("AWG_PROTOCOL_VERSION", "2.0")
     if protocol not in {"1.5", "2.0", "3.0", "3.1"}:
         raise ValueError("unsupported AWG protocol version")
 
