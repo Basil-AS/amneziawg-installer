@@ -1930,29 +1930,29 @@ awg_module_version() {
 # AWG_MODULE_SRCVERSION_PATH переопределяется только тестами: подменить /sys
 # иначе нельзя, а проверить надо именно чтение загруженного модуля.
 awg_module_build_id() {
-    local src="" pkg="" out=""
+    local build_src="" build_pkg="" build_out=""
     local sysfile="${AWG_MODULE_SRCVERSION_PATH:-/sys/module/amneziawg/srcversion}"
     if [[ -r "$sysfile" ]]; then
         # `|| true` по той же причине, что и в awg_module_version: на файле без
         # завершающего перевода строки read возвращает 1, УЖЕ присвоив прочитанное.
-        IFS= read -r src 2>/dev/null < "$sysfile" || true
-        src="${src//[[:space:]]/}"
+        IFS= read -r build_src 2>/dev/null < "$sysfile" || true
+        build_src="${build_src//[[:space:]]/}"
     fi
     # Только ПЕРВАЯ строка: при нескольких совпадениях склейка дала бы
     # правдоподобную, но несуществующую версию, а это хуже отказа.
-    pkg=$(dpkg-query -W -f='${Version}\n' amneziawg-dkms 2>/dev/null | head -n 1 || true)
-    pkg="${pkg//[[:space:]]/}"
+    build_pkg=$(dpkg-query -W -f='${Version}\n' amneziawg-dkms 2>/dev/null | head -n 1 || true)
+    build_pkg="${build_pkg//[[:space:]]/}"
     # 🔴 Две части НАЗВАНЫ ПО-РАЗНОМУ намеренно: это разные вещи, и они
     # расходятся штатно. Пакет можно обновить, а модуль в памяти останется
     # прежним до перезагрузки или modprobe - ровно это наблюдалось на стенде
     # 30 aug 2026. Слить их в один «признак сборки» значило бы выдать версию
     # пакета за версию загруженного кода.
-    [[ -n "$src" ]] && out="srcversion загруженного $src"
-    if [[ -n "$pkg" ]]; then
-        [[ -n "$out" ]] && out="$out; "
-        out="${out}установлен пакет $pkg"
+    [[ -n "$build_src" ]] && build_out="srcversion загруженного $build_src"
+    if [[ -n "$build_pkg" ]]; then
+        [[ -n "$build_out" ]] && build_out="$build_out; "
+        build_out="${build_out}установлен пакет $build_pkg"
     fi
-    printf '%s' "$out"
+    printf '%s' "$build_out"
 }
 
 #

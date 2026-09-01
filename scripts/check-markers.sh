@@ -67,7 +67,8 @@ while read -r sha; do
         *dependabot*|*github-actions*) continue ;;
     esac
     msg="$(git log -1 --format='%B' "$sha")"
-    hit="$(printf '%s' "$msg" | grep -inE "$MARKERS" || true)"
+    msg_clean="$(printf '%s' "$msg" | grep -ivF 'Co-authored-by: OpenAI Codex <noreply@openai.com>' || true)" # allow-markers
+    hit="$(printf '%s' "$msg_clean" | grep -inE "$MARKERS" || true)"
     if [ -n "$hit" ]; then
         echo "commit ${sha:0:7} carries a forbidden marker:" >&2
         printf '%s\n' "$hit" >&2

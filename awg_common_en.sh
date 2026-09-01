@@ -1766,29 +1766,29 @@ awg_module_version() {
 # replaced otherwise, and what has to be verified is the read of the loaded
 # module.
 awg_module_build_id() {
-    local src="" pkg="" out=""
+    local build_src="" build_pkg="" build_out=""
     local sysfile="${AWG_MODULE_SRCVERSION_PATH:-/sys/module/amneziawg/srcversion}"
     if [[ -r "$sysfile" ]]; then
         # `|| true` for the same reason as in awg_module_version: on a file with
         # no trailing newline read returns 1 having ALREADY assigned the value.
-        IFS= read -r src 2>/dev/null < "$sysfile" || true
-        src="${src//[[:space:]]/}"
+        IFS= read -r build_src 2>/dev/null < "$sysfile" || true
+        build_src="${build_src//[[:space:]]/}"
     fi
     # FIRST line only: on several matches concatenation would produce a
     # plausible but non-existent version, and that is worse than no answer.
-    pkg=$(dpkg-query -W -f='${Version}\n' amneziawg-dkms 2>/dev/null | head -n 1 || true)
-    pkg="${pkg//[[:space:]]/}"
+    build_pkg=$(dpkg-query -W -f='${Version}\n' amneziawg-dkms 2>/dev/null | head -n 1 || true)
+    build_pkg="${build_pkg//[[:space:]]/}"
     # 🔴 The two parts are LABELLED DIFFERENTLY on purpose: they are different
     # things and they diverge routinely. The package can be upgraded while the
     # module in memory stays the old one until a reboot or modprobe - exactly
     # what was observed on the bench on 30 aug 2026. Merging them into one
     # "build id" would pass the package version off as the loaded code.
-    [[ -n "$src" ]] && out="loaded srcversion $src"
-    if [[ -n "$pkg" ]]; then
-        [[ -n "$out" ]] && out="$out; "
-        out="${out}installed package $pkg"
+    [[ -n "$build_src" ]] && build_out="loaded srcversion $build_src"
+    if [[ -n "$build_pkg" ]]; then
+        [[ -n "$build_out" ]] && build_out="$build_out; "
+        build_out="${build_out}installed package $build_pkg"
     fi
-    printf '%s' "$out"
+    printf '%s' "$build_out"
 }
 
 #
