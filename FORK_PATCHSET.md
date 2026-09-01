@@ -7,7 +7,7 @@ The fork tree is ancestry-synchronized with upstream (`0` commits behind) while
 retaining the documented BAS runtime delta; this file is the fork-delta map for
 future sync work.
 
-Fork releases use `<upstream-sync>-bas.<revision>`. Current fork version is `5.29.0-bas.3`; `bas.N` increments for fork-only releases and resets to `bas.1` when the upstream sync marker changes. This sync marker now corresponds to the complete upstream `v5.29.0` history plus the fork delta.
+Fork releases use `<upstream-sync>-bas.<revision>`. Current fork version is `5.29.0-bas.5`; `bas.N` increments for fork-only releases and resets to `bas.1` when the upstream sync marker changes. This sync marker now corresponds to the complete upstream `v5.29.0` history plus the fork delta.
 
 ## Runtime Fork Delta
 
@@ -36,8 +36,8 @@ Fork releases use `<upstream-sync>-bas.<revision>`. Current fork version is `5.2
 ## Residual tree delta against upstream v5.29.0
 
 At the synchronized heads (`origin/main` and `upstream/main`), a direct tree
-comparison reports 130 differing paths: 80 modified and 50 deleted on the fork
-side. These are not unreviewed upstream drift:
+comparison reports 215 differing paths: 112 added, 101 modified, and 2 deleted
+on the fork side. These are not unreviewed upstream drift:
 
 - `web/**` and its tests are fork-only HTTPS/RBAC/AdGuard/GeoIP functionality;
   upstream does not provide an equivalent runtime, so replacing it would remove
