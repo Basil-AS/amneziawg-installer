@@ -29,7 +29,7 @@ EN_MANAGE="${BATS_TEST_DIRNAME}/../manage_amneziawg_en.sh"
 
 # Executable lines of the kernel-module stanza of diagnose_server.
 _diag_module_code() {
-    awk '/^[[:space:]]*if lsmod .*amneziawg/{seen=1} seen {print} /ok=\$\(\(ok\+1\)\)/{exit}' "$1" \
+    awk '/^diagnose_server\(\)/{in_diag=1} in_diag && /^[[:space:]]*if lsmod .*amneziawg/{in_mod=1} in_mod {print} in_mod && /ok=\$\(\(ok\+1\)\)/{exit}' "$1" \
         | grep -vE '^[[:space:]]*#'
 }
 
