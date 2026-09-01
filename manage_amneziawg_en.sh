@@ -243,6 +243,13 @@ if [[ "$COMMAND" == "client" ]]; then
             PARAM="${ARGS[1]:-}"
             VALUE="${ARGS[2]:-}"
             ;;
+        set-ip-family|family)
+            COMMAND="set-ip-family"
+            ARGS=("${ARGS[@]:1}")
+            CLIENT_NAME="${ARGS[0]:-}"
+            PARAM="${ARGS[1]:-}"
+            VALUE="${ARGS[2]:-}"
+            ;;
         *)
             echo "Unknown client command: ${ARGS[0]:-}" >&2
             COMMAND="help"
@@ -2746,6 +2753,11 @@ case $COMMAND in
     toggle)
         [[ -z "$CLIENT_NAME" ]] && die "Client name not specified."
         toggle_client "$CLIENT_NAME" || _cmd_rc=1
+        ;;
+
+    set-ip-family)
+        [[ -z "$CLIENT_NAME" || -z "$PARAM" || -z "$VALUE" ]] && die "Usage: client set-ip-family <name> <ipv4|ipv6> <on|off>"
+        set_client_ip_family "$CLIENT_NAME" "$PARAM" "$VALUE" || _cmd_rc=1
         ;;
 
     list)

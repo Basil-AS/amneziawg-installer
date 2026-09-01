@@ -3593,6 +3593,8 @@ add_peer_to_server() {
 
 [Peer]
 #_Name = ${name}
+#_IPv4 = on
+#_IPv4Address = ${client_ip}/32
 PublicKey = ${pubkey}
 EOF
     # PresharedKey — опционально, пишется если передан через CLIENT_PSK env.
@@ -3604,6 +3606,7 @@ EOF
         echo "#_P2PPorts_Disabled = ${p2p_ports}" >> "$tmpfile"
     fi
     if [[ -n "$client_ipv6" ]]; then
+        printf '%s\n' "#_IPv6 = on" "#_IPv6Address = ${client_ipv6}/128" >> "$tmpfile"
         echo "AllowedIPs = ${client_ip}/32, ${client_ipv6}/128" >> "$tmpfile"
     else
         echo "AllowedIPs = ${client_ip}/32" >> "$tmpfile"
@@ -3622,6 +3625,70 @@ EOF
 }
 
 # Удаление [Peer] из серверного конфига по имени (с блокировкой)
+# set_client_ip_family <name> <ipv4|ipv6> <on|off>
+set_client_ip_family() {
+    local name="$1" family="$2" state="$3"
+    [[ "$name" =~ ^[A-Za-z0-9_-]+$ && "$family" =~ ^(ipv4|ipv6)$ && "$state" =~ ^(on|off)$ ]] || { log_error "Invalid family permission arguments"; return 1; }
+    [[ -f "$SERVER_CONF_FILE" && -f "$AWG_DIR/${name}.conf" ]] || { log_error "Client '$name' files not found"; return 1; }
+    local lockfile="${AWG_DIR}/.awg_config.lock" lock_fd
+    exec {lock_fd}>"$lockfile"; flock -x -w 30 "$lock_fd" || { exec {lock_fd}>&-; log_error "Could not lock AWG configuration"; return 1; }
+    local backup_server="${SERVER_CONF_FILE}.bak-family-$(date +%s)" backup_client="$AWG_DIR/${name}.conf.bak-family-$(date +%s)"
+    cp -- "$SERVER_CONF_FILE" "$backup_server" && cp -- "$AWG_DIR/${name}.conf" "$backup_client" || { rm -f -- "$backup_server" "$backup_client"; exec {lock_fd}>&-; return 1; }
+    if ! AWG_FAMILY_NAME="$name" AWG_FAMILY="$family" AWG_FAMILY_STATE="$state" AWG_FAMILY_SERVER="$SERVER_CONF_FILE" AWG_FAMILY_CLIENT="$AWG_DIR/${name}.conf" python3 - <<'PY'
+import os, re, tempfile
+from pathlib import Path
+name, family, state = os.environ["AWG_FAMILY_NAME"], os.environ["AWG_FAMILY"], os.environ["AWG_FAMILY_STATE"]
+server, client = Path(os.environ["AWG_FAMILY_SERVER"]), Path(os.environ["AWG_FAMILY_CLIENT"])
+def toks(value): return [x for x in re.split(r"[\s,]+", value.strip()) if x]
+lines = server.read_text(encoding="utf-8").splitlines(); starts = [i for i, x in enumerate(lines) if x in ("[Peer]", "# [Peer]")]
+target = next((i for i in starts if f"#_Name = {name}" in lines[i:i + 80]), None)
+if target is None: raise ValueError("client peer not found")
+end = next((i for i in starts if i > target), len(lines)); block = lines[target:end]
+addresses, states = {"ipv4": None, "ipv6": None}, {"ipv4": None, "ipv6": None}; ai = None
+for i, line in enumerate(block):
+    m = re.match(r"^#_(IPv4|IPv6)\s*=\s*(on|off)$", line)
+    if m: states[m.group(1).lower()] = m.group(2)
+    m = re.match(r"^#_(IPv4|IPv6)Address\s*=\s*(\S+)$", line)
+    if m: addresses[m.group(1).lower()] = m.group(2)
+    m = re.match(r"^\s*#?\s*AllowedIPs\s*=\s*(.*)$", line)
+    if m:
+        ai = i
+        for x in toks(m.group(1)):
+            if re.fullmatch(r"\d+\.\d+\.\d+\.\d+/32", x): addresses["ipv4"] = addresses["ipv4"] or x
+            if re.fullmatch(r"[0-9A-Fa-f:]+/128", x): addresses["ipv6"] = addresses["ipv6"] or x
+for f in states: states[f] = states[f] or ("on" if addresses[f] else "off")
+states[family] = state
+if states["ipv4"] == states["ipv6"] == "off": raise ValueError("both IP families cannot be disabled")
+if any(states[f] == "on" and not addresses[f] for f in states): raise ValueError("enabled family address is missing")
+if ai is None: raise ValueError("peer AllowedIPs is missing")
+active = [addresses[f] for f in ("ipv4", "ipv6") if states[f] == "on"]
+block[ai] = "AllowedIPs = " + ", ".join(active)
+block = [x for x in block if not re.match(r"^#_(IPv4|IPv6)(Address)?\s*=", x)]
+pos = next(i for i, x in enumerate(block) if x == f"#_Name = {name}") + 1
+block[pos:pos] = [f"#_IPv4 = {states['ipv4']}", f"#_IPv4Address = {addresses['ipv4'] or ''}", f"#_IPv6 = {states['ipv6']}", f"#_IPv6Address = {addresses['ipv6'] or ''}"]
+lines[target:end] = block
+client_lines = client.read_text(encoding="utf-8").splitlines(); ci = next((i for i, x in enumerate(client_lines) if re.match(r"^\s*Address\s*=", x)), None)
+if ci is None: raise ValueError("client Address is missing")
+current = [x for x in toks(client_lines[ci].split("=", 1)[1]) if not (family == "ipv4" and x.endswith("/32")) and not (family == "ipv6" and x.endswith("/128"))]
+if state == "on": current.append(addresses[family])
+if not current: raise ValueError("both IP families cannot be disabled")
+client_lines[ci] = "Address = " + ", ".join(sorted(set(current), key=lambda x: 0 if x.endswith("/32") else 1))
+for path, data in ((server, "\n".join(lines) + "\n"), (client, "\n".join(client_lines) + "\n")):
+    fd, tmp = tempfile.mkstemp(prefix=f".{path.name}.family.", dir=str(path.parent), text=True)
+    with os.fdopen(fd, "w", encoding="utf-8") as out: out.write(data)
+    os.chmod(tmp, 0o600); os.replace(tmp, path)
+PY
+    then
+        cp -- "$backup_server" "$SERVER_CONF_FILE"; cp -- "$backup_client" "$AWG_DIR/${name}.conf"; rm -f -- "$backup_server" "$backup_client"; exec {lock_fd}>&-; log_error "Family permission update failed"; return 1
+    fi
+    if [[ "${AWG_SKIP_APPLY:-0}" != "1" ]] && ! apply_config; then
+        cp -- "$backup_server" "$SERVER_CONF_FILE"; cp -- "$backup_client" "$AWG_DIR/${name}.conf"; rm -f -- "$backup_server" "$backup_client"; exec {lock_fd}>&-; log_error "Family permission apply failed"; return 1
+    fi
+    rm -f -- "$backup_server" "$backup_client"; exec {lock_fd}>&-
+    log "Client '$name' $family permission: $state"
+    return 0
+}
+
 # remove_peer_from_server <name>
 remove_peer_from_server() {
     local name="$1"
