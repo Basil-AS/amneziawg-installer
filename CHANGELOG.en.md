@@ -12,6 +12,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- The AWG 3.1 generator now enables bilateral `RandomTrailers` while keeping `DisableCookies` off by default to preserve handshake-flood protection.
+
 ## [5.29.0-bas.3] - 2026-09-01
 
 ### Added

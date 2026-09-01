@@ -65,6 +65,18 @@ setup() {
     [ "$status" -eq 0 ]
 }
 
+@test "AWG 3.1 generated profiles enable bilateral random trailers but keep cookies" {
+    run "$PYTHON_BIN" "$SCRIPT" generate --seed 19
+    [ "$status" -eq 0 ]
+    run "$PYTHON_BIN" -c 'import json,sys; p=json.loads(sys.argv[1]); assert p["randomTrailers"] is True; assert p["disableCookies"] is False' "$output"
+    [ "$status" -eq 0 ]
+    printf '%s' "$output" > "$BATS_TEST_TMPDIR/profile.json"
+    run "$PYTHON_BIN" "$SCRIPT" render --input "$BATS_TEST_TMPDIR/profile.json"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *$'RandomTrailers = true'* ]]
+    [[ "$output" == *$'DisableCookies = false'* ]]
+}
+
 @test "named profiles are deterministic and keep H ranges disjoint" {
     for profile in mobile balanced stealth compatibility; do
         run "$PYTHON_BIN" "$SCRIPT" generate --version 3.1 --profile "$profile" --seed 123
