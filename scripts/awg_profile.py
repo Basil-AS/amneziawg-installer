@@ -196,7 +196,11 @@ def generate(version: str, seed: int | None = None, profile: str = "balanced") -
             "maxHandshakeAttempts": "15-20",
         })
         if version == "3.1":
-            profile.update({"randomTrailers": False, "disableCookies": False})
+            # Random trailers are part of the bilateral 3.1 profile: both
+            # peers receive the same setting through the canonical renderer.
+            # Keep cookies enabled for the default profile because disabling
+            # them removes WireGuard's handshake-flood protection.
+            profile.update({"randomTrailers": True, "disableCookies": False})
     return validate(profile, version)
 
 
