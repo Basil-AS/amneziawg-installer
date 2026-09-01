@@ -3909,7 +3909,9 @@ set_client_ip_family() {
     exec {lock_fd}>"$lockfile"
     flock -x -w 30 "$lock_fd" || { log_error "Could not lock AWG configuration"; exec {lock_fd}>&-; return 1; }
 
-    local backup_server="${SERVER_CONF_FILE}.bak-family-$(date +%s)" backup_client="$AWG_DIR/${name}.conf.bak-family-$(date +%s)"
+    local backup_server backup_client
+    backup_server="${SERVER_CONF_FILE}.bak-family-$(date +%s)"
+    backup_client="$AWG_DIR/${name}.conf.bak-family-$(date +%s)"
     cp -- "$SERVER_CONF_FILE" "$backup_server" && cp -- "$AWG_DIR/${name}.conf" "$backup_client" || {
         rm -f -- "$backup_server" "$backup_client"; exec {lock_fd}>&-; log_error "Could not create family-permission backup"; return 1;
     }

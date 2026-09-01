@@ -3632,7 +3632,9 @@ set_client_ip_family() {
     [[ -f "$SERVER_CONF_FILE" && -f "$AWG_DIR/${name}.conf" ]] || { log_error "Client '$name' files not found"; return 1; }
     local lockfile="${AWG_DIR}/.awg_config.lock" lock_fd
     exec {lock_fd}>"$lockfile"; flock -x -w 30 "$lock_fd" || { exec {lock_fd}>&-; log_error "Could not lock AWG configuration"; return 1; }
-    local backup_server="${SERVER_CONF_FILE}.bak-family-$(date +%s)" backup_client="$AWG_DIR/${name}.conf.bak-family-$(date +%s)"
+    local backup_server backup_client
+    backup_server="${SERVER_CONF_FILE}.bak-family-$(date +%s)"
+    backup_client="$AWG_DIR/${name}.conf.bak-family-$(date +%s)"
     cp -- "$SERVER_CONF_FILE" "$backup_server" && cp -- "$AWG_DIR/${name}.conf" "$backup_client" || { rm -f -- "$backup_server" "$backup_client"; exec {lock_fd}>&-; return 1; }
     if ! AWG_FAMILY_NAME="$name" AWG_FAMILY="$family" AWG_FAMILY_STATE="$state" AWG_FAMILY_SERVER="$SERVER_CONF_FILE" AWG_FAMILY_CLIENT="$AWG_DIR/${name}.conf" python3 - <<'PY'
 import os, re, tempfile
