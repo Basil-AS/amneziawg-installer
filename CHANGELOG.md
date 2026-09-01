@@ -1717,7 +1717,8 @@ Hardening-фиксы надёжности и безопасности по ре�
 - Диагностический отчет (`--diagnostic`).
 - Полная деинсталляция (`--uninstall`).
 
-[Unreleased]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.29.0-bas.3...HEAD
+[Unreleased]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.29.0-bas.4...HEAD
+[5.29.0-bas.4]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.29.0-bas.3...v5.29.0-bas.4
 [5.29.0-bas.3]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.29.0-bas.1...v5.29.0-bas.3
 [5.29.0-bas.1]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.29.0...v5.29.0-bas.1
 [5.29.0]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.28.1-bas.11...v5.29.0
