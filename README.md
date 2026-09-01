@@ -1,10 +1,10 @@
 # AmneziaWG Installer
 
-![Version](https://img.shields.io/badge/Installer_Version-5.29.0--bas.1-blue)
+![Version](https://img.shields.io/badge/Installer_Version-5.29.0--bas.2-blue)
 
 Установщик и набор инструментов для развёртывания AmneziaWG-сервера на Ubuntu и Debian. Проект создаёт серверный туннель, клиентские конфигурации, QR-коды и VPN URI, а также поддерживает IPv6, split/full-tunnel, изоляцию клиентов, P2P/DNAT, AdGuard Home, веб-панель и Telegram-бот.
 
-Это форк [`bivlked/amneziawg-installer`](https://github.com/bivlked/amneziawg-installer). Форк сохраняет совместимость исходного проекта и добавляет исправления безопасности, сетевые режимы, операторские пресеты, domain-first endpoint, WireSock hints и интеграцию с профилями AmneziaWG 3.1.
+Это форк [`bivlked/amneziawg-installer`](https://github.com/bivlked/amneziawg-installer). Форк сохраняет совместимость исходного проекта и добавляет исправления безопасности, сетевые режимы, операторские пресеты, domain-first endpoint, WireSock hints, опциональный WireSock-derived UDP proxy и интеграцию с профилями AmneziaWG 3.1.
 
 ## Быстрая установка
 
@@ -23,6 +23,17 @@ sudo bash ./install_amneziawg.sh --yes --route-all --server-name="my-vpn"
 sudo bash ./install_amneziawg.sh --preset=mobile
 sudo bash ./install_amneziawg.sh --awg-version=3.1
 ```
+
+Опциональный слой имитации протокола WireSock устанавливается отдельно и не
+включается обычной установкой:
+
+```bash
+sudo bash ./amneziawg-proxy.sh
+```
+
+Он помещает AWG за loopback и может имитировать QUIC, DNS, STUN или SIP.
+Изменение топологии перезапускает `awg-quick`, поэтому перед включением
+сохраните текущий конфиг и убедитесь, что запасной SSH-доступ доступен.
 
 Установщик проверяет ОС, архитектуру, сеть и свободное место, скачивает SHA256-проверенные файлы и сохраняет состояние установки для безопасного resume. Для AWG 3.1 он сначала проверяет фактическую возможность модуля применить конфиг на временном интерфейсе и прочитать его обратно через `awg show`. При провале проверок новые конфиги не записываются.
 
@@ -67,6 +78,8 @@ sudo bash ./install_amneziawg.sh --awg-version=3.1
 - DNS-маршруты, изоляция клиентов, P2P и DNAT;
 - AdGuard Home, веб-панель и Telegram-бот;
 - WireSock compatibility hints, операторские пресеты и domain-first endpoint.
+- Опциональный `amneziawg-proxy` для protocol imitation и ответов на probes;
+  он не активируется автоматически и требует отдельной настройки.
 
 Для IPv6 доступны режимы `auto` | Автовыбор, routed через отдельный routed IPv6 prefix, а также NDP proxy, NAT66 и leak-block. В режиме routed используется отдельный routed IPv6 prefix; при NDP учитывается текущая публичная `/64` на `eth0`/внешнем интерфейсе.
 

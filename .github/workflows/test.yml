@@ -54,3 +54,8 @@ jobs:
             echo "Installer SHA manifest is stale. Run: bash scripts/update-installer-sha-manifest.sh" >&2
             exit 1
           }
+
+      - name: Test optional WireSock-derived proxy
+        run: |
+          cargo test --locked --manifest-path amneziawg-proxy/Cargo.toml
+          bash tests/test-proxy-scripts.sh

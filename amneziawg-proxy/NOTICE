@@ -1,0 +1,10 @@
+This directory contains the WireSock-derived `amneziawg-proxy` component.
+
+The component was ported from:
+https://github.com/wiresock/amneziawg-install
+
+Upstream copyright:
+Copyright (c) 2024 Markus Varckin
+
+The upstream component is distributed under the MIT License. The repository
+root LICENSE and this notice must be retained with redistributed copies.
