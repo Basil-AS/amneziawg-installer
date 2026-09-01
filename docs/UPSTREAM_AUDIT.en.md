@@ -7,7 +7,7 @@ the two projects have identical product goals.
 The original audit point was `origin/main`=`d6d3234` and
 `upstream/main`=`c9ce1c7`: the fork was 373 commits ahead and 5 commits
 behind. Those five upstream commits were reviewed individually. A fresh
-comparison on 2026-09-01 reports `origin/main...upstream/main = 424 0`; no
+comparison on 2026-09-01 reports `origin/main...upstream/main = 426 0`; no
 upstream commits remain unmerged.
 
 | Upstream commit | Area | Decision | Reason |

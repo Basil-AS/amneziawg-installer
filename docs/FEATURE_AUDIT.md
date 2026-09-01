@@ -8,7 +8,7 @@ part of the worktree.
 
 At the current sync point, `upstream/main` is `c9ce1c7` and the fork has a common
 ancestor at that commit. `git rev-list --left-right --count origin/main...upstream/main`
-reports `424 0`: all upstream history is connected, while the fork retains its
+reports `426 0`: all upstream history is connected, while the fork retains its
 documented product delta.
 
 The five upstream commits immediately preceding the sync were reviewed in
