@@ -105,7 +105,7 @@ Co-authored-by: Someone <someone@example.invalid>"
     [[ "$output" == *"co-author trailer"* ]]
 }
 
-@test "markers: the required Codex trailer is accepted" {
+@test "markers: the required Codex trailer is accepted" { # allow-markers
     local codex_trailer
     # allow-markers: construct the approved trailer without storing it literally.
     codex_trailer="$(printf 'Co-authored-by: Open%s %s <noreply@open%s.com>' 'AI' 'Co' 'ai' | sed 's/Co$/Codex/')" # allow-markers
