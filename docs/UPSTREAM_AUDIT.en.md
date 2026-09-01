@@ -7,7 +7,7 @@ the two projects have identical product goals.
 The original audit point was `origin/main`=`d6d3234` and
 `upstream/main`=`c9ce1c7`: the fork was 373 commits ahead and 5 commits
 behind. Those five upstream commits were reviewed individually. A fresh
-comparison on 2026-09-01 reports `origin/main...upstream/main = 410 0`; no
+comparison on 2026-09-01 reports `origin/main...upstream/main = 424 0`; no
 upstream commits remain unmerged.
 
 | Upstream commit | Area | Decision | Reason |
@@ -21,13 +21,13 @@ upstream commits remain unmerged.
 ## Version policy
 
 The fork keeps the upstream base version and appends its own suffix. This sync
-therefore uses `5.29.0-bas.5`, released as `v5.29.0-bas.5`; the earlier plain
+therefore uses `5.29.0-bas.7`, released as `v5.29.0-bas.7`; the earlier plain
 `v5.29.0` release remains the upstream-compatible baseline.
 
 ## Current tree comparison
 
-`git diff --name-status upstream/main...origin/main` reports 215 paths:
-112 fork-added, 101 fork-modified, and 2 fork-deleted. These are the
+`git diff --name-status upstream/main...origin/main` reports 216 paths:
+113 fork-added, 101 fork-modified, and 2 fork-deleted. These are the
 documented Web Panel, Telegram, optional WireSock proxy, IPv6/P2P, AWG 3.1
 generator/probe, and related tests/docs; they are not unreviewed upstream
 drift.

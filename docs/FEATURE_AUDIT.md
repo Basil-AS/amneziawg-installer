@@ -8,7 +8,7 @@ part of the worktree.
 
 At the current sync point, `upstream/main` is `c9ce1c7` and the fork has a common
 ancestor at that commit. `git rev-list --left-right --count origin/main...upstream/main`
-reports `410 0`: all upstream history is connected, while the fork retains its
+reports `424 0`: all upstream history is connected, while the fork retains its
 documented product delta.
 
 The five upstream commits immediately preceding the sync were reviewed in
@@ -58,13 +58,15 @@ against this fork are:
 
 The first two and diagnostics are already represented by the fork's typed
 `vpn://` renderer, AWG profile validator and Web Panel tests. The independent
-per-client IP-family permission model is not silently copied: implementing it
-requires a separate firewall/state-machine design so it cannot weaken the
-fork's existing IPv6 leak-block, P2P/DNAT or client-isolation guarantees.
+per-client IP-family permission model is implemented by `set_client_ip_family`,
+the Web Panel API and administrator UI. It updates server `AllowedIPs` and
+client `Address` atomically, preserves family metadata, rejects disabling the
+final family, and has rollback coverage for IPv6 leak-block, P2P/DNAT and
+client-isolation invariants.
 
 ## Release policy
 
-The current proxy-enabled release is `5.29.0-bas.5`, retaining the
+The current proxy-enabled release is `5.29.0-bas.7`, retaining the
 upstream base number and incrementing only the fork suffix. All changes must
 land through a pull request with the repository's required attribution policy
 and a green full test suite.
