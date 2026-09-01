@@ -34,7 +34,7 @@ run_compat() {
 
 @test "guard: both libraries declare AWG_COMMON_VERSION" {
     for f in awg_common.sh awg_common_en.sh; do
-        run grep -Ec '^AWG_COMMON_VERSION="[0-9]+\.[0-9]+\.[0-9]+"' "$BATS_TEST_DIRNAME/../$f"
+        run grep -Ec '^AWG_COMMON_VERSION="[0-9]+\.[0-9]+\.[0-9]+(-[[:alnum:].-]+)?"' "$BATS_TEST_DIRNAME/../$f"
         [ "$status" -eq 0 ]
         [ "$output" -eq 1 ]
     done

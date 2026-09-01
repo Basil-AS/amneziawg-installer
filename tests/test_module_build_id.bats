@@ -29,7 +29,8 @@ EN_MANAGE="${BATS_TEST_DIRNAME}/../manage_amneziawg_en.sh"
 
 # Executable lines of the kernel-module stanza of diagnose_server.
 _diag_module_code() {
-    awk '/# 1\. Kernel module/,/# 2\. Service active/' "$1" | grep -vE '^[[:space:]]*#'
+    awk '/^[[:space:]]*if lsmod .*amneziawg/{seen=1} seen {print} /ok=\$\(\(ok\+1\)\)/{exit}' "$1" \
+        | grep -vE '^[[:space:]]*#'
 }
 
 # awg_module_build_id from a given library, with /sys and dpkg-query both under
