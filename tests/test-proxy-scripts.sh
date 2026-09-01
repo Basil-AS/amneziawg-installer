@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC1090,SC2034
 # Unit tests for amneziawg-proxy install/uninstall helper functions.
 #
 # Tests helper functions by sourcing the real install/uninstall scripts in
