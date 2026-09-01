@@ -12,6 +12,10 @@
 
 ## [Unreleased]
 
+## [5.29.0-bas.6] - 2026-09-01
+
+- Добавлены независимые права клиента на IPv4/IPv6 с сохранением адресов, атомарным откатом и управлением из Web Panel.
+
 ## [5.29.0-bas.5] - 2026-09-01
 
 ### Исправлено
@@ -1723,7 +1727,8 @@ Hardening-фиксы надёжности и безопасности по ре�
 - Диагностический отчет (`--diagnostic`).
 - Полная деинсталляция (`--uninstall`).
 
-[Unreleased]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.29.0-bas.5...HEAD
+[Unreleased]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.29.0-bas.6...HEAD
+[5.29.0-bas.6]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.29.0-bas.5...v5.29.0-bas.6
 [5.29.0-bas.5]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.29.0-bas.4...v5.29.0-bas.5
 [5.29.0-bas.4]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.29.0-bas.3...v5.29.0-bas.4
 [5.29.0-bas.3]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.29.0-bas.1...v5.29.0-bas.3

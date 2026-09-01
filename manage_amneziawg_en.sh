@@ -9,14 +9,14 @@ fi
 # ==============================================================================
 # AmneziaWG 2.0 peer management script
 # Author: @bivlked
-# Version: 5.29.0-bas.5
+# Version: 5.29.0-bas.6
 # Date: 2026-08-30
 # Repository: https://github.com/bivlked/amneziawg-installer
 # ==============================================================================
 
 # --- Safe mode and Constants ---
 # shellcheck disable=SC2034
-SCRIPT_VERSION="5.29.0-bas.5"
+SCRIPT_VERSION="5.29.0-bas.6"
 set -o pipefail
 AWG_DIR="/root/awg"
 SERVER_CONF_FILE="/etc/amnezia/amneziawg/awg0.conf"
@@ -238,6 +238,13 @@ if [[ "$COMMAND" == "client" ]]; then
     case "${ARGS[0]:-}" in
         regen|regenerate)
             COMMAND="regen"
+            ARGS=("${ARGS[@]:1}")
+            CLIENT_NAME="${ARGS[0]:-}"
+            PARAM="${ARGS[1]:-}"
+            VALUE="${ARGS[2]:-}"
+            ;;
+        set-ip-family|family)
+            COMMAND="set-ip-family"
             ARGS=("${ARGS[@]:1}")
             CLIENT_NAME="${ARGS[0]:-}"
             PARAM="${ARGS[1]:-}"
@@ -2746,6 +2753,11 @@ case $COMMAND in
     toggle)
         [[ -z "$CLIENT_NAME" ]] && die "Client name not specified."
         toggle_client "$CLIENT_NAME" || _cmd_rc=1
+        ;;
+
+    set-ip-family)
+        [[ -z "$CLIENT_NAME" || -z "$PARAM" || -z "$VALUE" ]] && die "Usage: client set-ip-family <name> <ipv4|ipv6> <on|off>"
+        set_client_ip_family "$CLIENT_NAME" "$PARAM" "$VALUE" || _cmd_rc=1
         ;;
 
     list)

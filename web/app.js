@@ -3080,6 +3080,10 @@ function renderClients() {
       ? '<div class="border-t border-[var(--line)]"></div>' + renderMenuItem("delete-owned", "trash", "Delete my config", "text-[var(--danger)]")
       : "";
     const adminDeleteItem = isAdmin ? renderMenuItem("delete", "trash", "Delete client", "text-[var(--danger)]") : "";
+    const familyItem = isAdmin ? `
+      <div class="border-t border-[var(--line)]"></div>
+      <button type="button" data-action="toggle-ipv4" class="client-menu-item"><span>IPv4 ${client.ipv4_enabled === false ? "off" : "on"}</span></button>
+      <button type="button" data-action="toggle-ipv6" class="client-menu-item"><span>IPv6 ${client.ipv6_enabled === false ? "off" : "on"}</span></button>` : "";
     return `
       <article class="client-card bg-[var(--panel)] border-b border-[var(--line)] p-4 relative last:border-b-0" data-name="${esc(key)}" data-search="${esc(search)}">
         <div id="chart-${esc(key)}" class="client-card-chart-bg"></div>
@@ -3130,6 +3134,7 @@ function renderClients() {
               <button type="button" data-action="regenerate-config" class="client-menu-item text-amber-700">${icon("refresh")}<span>Regenerate</span></button>
               ${renderMenuItem("toggle", "power", client.disabled ? "Enable client" : "Disable client")}
               ${renderMenuItem("toggle-ports", "shield", "Port details / toggle", shieldClass)}
+              ${familyItem}
               ${adminDeleteItem}
               ${removeAccessItem}
               ${deleteOwnedItem}
@@ -3349,6 +3354,17 @@ async function clientAction(name, action) {
     if (action === "toggle-ports") {
       await api(`/api/clients/${encodeURIComponent(name)}/ports/toggle`, {method: "POST", body: "{}"});
       showToast("Ports toggled");
+      return loadClients();
+    }
+    if (action === "toggle-ipv4" || action === "toggle-ipv6") {
+      const client = latestClients.find(item => item.name === name || item.id === name);
+      const family = action === "toggle-ipv4" ? "ipv4" : "ipv6";
+      const enabled = client?.[`${family}_enabled`] === false;
+      await api(`/api/clients/${encodeURIComponent(name)}/ip-family`, {
+        method: "POST",
+        body: JSON.stringify({family, enabled}),
+      });
+      showToast(`${family.toUpperCase()} ${enabled ? "enabled" : "disabled"}`);
       return loadClients();
     }
     if (action === "delete" || action === "remove-access" || action === "delete-owned") {

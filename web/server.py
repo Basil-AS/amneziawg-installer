@@ -5363,12 +5363,17 @@ def parse_peers():
                 "public_key": "",
                 "ipv4": "",
                 "ipv6": "",
+                "ipv4_enabled": None,
+                "ipv6_enabled": None,
                 "p2p_ports": [],
                 "p2p_enabled": True,
                 "disabled": line == "# [Peer]",
             }
         elif cur is not None and line.startswith("#_Name = "):
             cur["name"] = line.split("=", 1)[1].strip()
+        elif cur is not None and re.match(r"^#_(IPv4|IPv6)\s*=\s*(on|off)$", line):
+            family, state = re.match(r"^#_(IPv4|IPv6)\s*=\s*(on|off)$", line).groups()
+            cur[f"{family.lower()}_enabled"] = state == "on"
         elif cur is not None and re.match(r"^#_P2PPorts(_Disabled)?\s*=", line):
             value = line.split("=", 1)[1] if "=" in line else ""
             cur["p2p_ports"] = [int(x) for x in re.findall(r"\d+", value)]
@@ -5391,6 +5396,12 @@ def parse_peers():
     for peer in peers:
         if not peer.get("name"):
             continue
+        # Old peers have no explicit family markers; infer their state from
+        # AllowedIPs so the panel remains backward-compatible.
+        if peer["ipv4_enabled"] is None:
+            peer["ipv4_enabled"] = bool(peer.get("ipv4"))
+        if peer["ipv6_enabled"] is None:
+            peer["ipv6_enabled"] = bool(peer.get("ipv6"))
         config_name = peer["name"]
         display_name = metadata.get(config_name, {}).get("display_name") or config_name
         peer["id"] = config_name
@@ -7896,6 +7907,22 @@ class Handler(SimpleHTTPRequestHandler):
                 import_link = re.match(r"^/api/clients/([^/]+)/(import-link|access-link)$", u.path)
                 if import_link:
                     self.create_import_link(auth, unquote(import_link.group(1)), body)
+                    return
+                family_toggle = re.match(r"^/api/clients/([^/]+)/ip-family$", u.path)
+                if family_toggle:
+                    if not self.require_super(auth):
+                        return
+                    name = safe_name(unquote(family_toggle.group(1)))
+                    family = str(body.get("family") or "").lower()
+                    enabled = body.get("enabled")
+                    if family not in {"ipv4", "ipv6"} or not isinstance(enabled, bool):
+                        self.send_json({"error": "family must be ipv4/ipv6 and enabled must be boolean"}, 400)
+                        return
+                    if not any(peer.get("name") == name for peer in parse_peers()):
+                        self.send_json({"error": "client not found"}, 404)
+                        return
+                    p = run_manage("client", "set-ip-family", name, family, "on" if enabled else "off", timeout=60)
+                    self.send_json({"ok": p.returncode == 0, "stdout": p.stdout, "stderr": p.stderr}, 200 if p.returncode == 0 else 400)
                     return
                 m = re.match(r"^/api/clients/([^/]+)/(p2p|ports|toggle)$", u.path)
                 p2p_toggle = re.match(r"^/api/clients/([^/]+)/(p2p|ports)/toggle$", u.path)

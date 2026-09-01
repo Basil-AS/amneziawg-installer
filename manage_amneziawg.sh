@@ -9,14 +9,14 @@ fi
 # ==============================================================================
 # Скрипт для управления пользователями (пирами) AmneziaWG 2.0
 # Автор: @bivlked
-# Версия: 5.29.0-bas.5
+# Версия: 5.29.0-bas.6
 # Дата: 2026-08-30
 # Репозиторий: https://github.com/bivlked/amneziawg-installer
 # ==============================================================================
 
 # --- Безопасный режим и Константы ---
 # shellcheck disable=SC2034
-SCRIPT_VERSION="5.29.0-bas.5"
+SCRIPT_VERSION="5.29.0-bas.6"
 set -o pipefail
 AWG_DIR="/root/awg"
 SERVER_CONF_FILE="/etc/amnezia/amneziawg/awg0.conf"
@@ -236,6 +236,13 @@ if [[ "$COMMAND" == "client" ]]; then
     case "${ARGS[0]:-}" in
         regen|regenerate)
             COMMAND="regen"
+            ARGS=("${ARGS[@]:1}")
+            CLIENT_NAME="${ARGS[0]:-}"
+            PARAM="${ARGS[1]:-}"
+            VALUE="${ARGS[2]:-}"
+            ;;
+        set-ip-family|family)
+            COMMAND="set-ip-family"
             ARGS=("${ARGS[@]:1}")
             CLIENT_NAME="${ARGS[0]:-}"
             PARAM="${ARGS[1]:-}"
@@ -2807,6 +2814,11 @@ case $COMMAND in
     toggle)
         [[ -z "$CLIENT_NAME" ]] && die "Не указано имя клиента."
         toggle_client "$CLIENT_NAME" || _cmd_rc=1
+        ;;
+
+    set-ip-family)
+        [[ -z "$CLIENT_NAME" || -z "$PARAM" || -z "$VALUE" ]] && die "Использование: client set-ip-family <имя> <ipv4|ipv6> <on|off>"
+        set_client_ip_family "$CLIENT_NAME" "$PARAM" "$VALUE" || _cmd_rc=1
         ;;
 
     list)
