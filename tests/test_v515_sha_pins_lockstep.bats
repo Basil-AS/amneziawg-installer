@@ -124,7 +124,7 @@ _pinned_sha() {
         *) asset= ;;
     esac
     if [ -n "$asset" ]; then
-        grep -oP '^\s*\["'"$asset"'"\]="\K[0-9a-f]{64}' "$ROOT/$1" | head -n1
+        awk -F '"' -v key="$asset" '$2 == key { print $4; exit }' "$ROOT/$1"
         return 0
     fi
     if [ "$hits" != "1" ]; then

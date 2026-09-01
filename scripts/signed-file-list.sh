@@ -11,6 +11,7 @@ set -euo pipefail
 cat <<'EOF'
 install_amneziawg.sh
 install_amneziawg_en.sh
+amneziawg-proxy.sh
 manage_amneziawg.sh
 manage_amneziawg_en.sh
 awg_common.sh

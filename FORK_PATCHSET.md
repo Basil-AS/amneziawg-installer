@@ -2,12 +2,12 @@
 
 This repository is a fork of `bivlked/amneziawg-installer`.
 
-Current upstream sync marker is `5.19.2` (`upstream/main` short hash `134553d`).
+Current upstream sync marker is `5.29.0` (`upstream/main` short hash `c9ce1c7`).
 The fork tree is ancestry-synchronized with upstream (`0` commits behind) while
 retaining the documented BAS runtime delta; this file is the fork-delta map for
 future sync work.
 
-Fork releases use `<upstream-sync>-bas.<revision>`. Current fork version is `5.19.2-bas.1`; `bas.N` increments for fork-only releases and resets to `bas.1` when the upstream sync marker changes. This sync marker now corresponds to the complete upstream `v5.19.2` history plus the fork delta.
+Fork releases use `<upstream-sync>-bas.<revision>`. Current fork version is `5.29.0-bas.2`; `bas.N` increments for fork-only releases and resets to `bas.1` when the upstream sync marker changes. This sync marker now corresponds to the complete upstream `v5.29.0` history plus the fork delta.
 
 ## Runtime Fork Delta
 
@@ -19,6 +19,7 @@ Fork releases use `<upstream-sync>-bas.<revision>`. Current fork version is `5.1
 - P2P ports and DNAT support with generated firewall hooks: `postup.sh`, `postdown.sh`, `p2p_rules.sh`.
 - Client metadata comments for names, IPv6, P2P ports, expiry, WireSock hints, and `vpn://` URI/QR integration.
 - Safe voice/calls UDP optimization: MTU, `PersistentKeepalive = 25`, conntrack UDP timeout tuning, and read-only `voice-check` / `udp-check`.
+- Optional WireSock-derived `amneziawg-proxy`: Rust UDP relay with QUIC/DNS/STUN/SIP protocol imitation, probe-response rate limiting, AWG padding transformation, and loopback rebinding. It is opt-in and never required by the normal installer.
 - Single-file bootstrap with pinned SHA manifest for runtime assets, including `awg_common*.sh`, `manage_amneziawg*.sh`, and `web/**`.
 - `INSTALL_SUMMARY.txt` access/secrets block with strict permissions and backup behavior.
 
@@ -32,7 +33,7 @@ Fork releases use `<upstream-sync>-bas.<revision>`. Current fork version is `5.1
 - `5.14.3`: `cleanup_system` network safety: no cleanup autoremove, network package holds, default route check and recovery.
 - `5.14.5`: `detect_ssh_ports` and UFW SSH lockout guard, adapted to keep fork Web/AdGuard firewall rules. The fork also includes the current `SSH_CONNECTION` server port as a safety source when available.
 
-## Residual tree delta against upstream v5.19.2
+## Residual tree delta against upstream v5.29.0
 
 At the synchronized heads (`origin/main` and `upstream/main`), a direct tree
 comparison reports 130 differing paths: 80 modified and 50 deleted on the fork

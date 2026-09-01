@@ -1,10 +1,10 @@
 # AmneziaWG Installer
 
-![Version](https://img.shields.io/badge/Installer_Version-5.29.0--bas.1-blue)
+![Version](https://img.shields.io/badge/Installer_Version-5.29.0--bas.2-blue)
 
 An installer and administration toolkit for deploying AmneziaWG servers on Ubuntu and Debian. It creates the tunnel, client profiles, QR codes and VPN URIs, with IPv6, split/full-tunnel routing, client isolation, P2P/DNAT, AdGuard Home, a web panel and a Telegram bot.
 
-This project is a fork of [`bivlked/amneziawg-installer`](https://github.com/bivlked/amneziawg-installer). It keeps the upstream compatibility surface and adds security fixes, network modes, operator presets, domain-first endpoints, WireSock hints and AmneziaWG 3.1 profile integration.
+This project is a fork of [`bivlked/amneziawg-installer`](https://github.com/bivlked/amneziawg-installer). It keeps the upstream compatibility surface and adds security fixes, network modes, operator presets, domain-first endpoints, WireSock hints, an optional WireSock-derived UDP proxy, and AmneziaWG 3.1 profile integration.
 
 ## Quick installation
 
@@ -25,6 +25,17 @@ sudo bash ./install_amneziawg.sh --yes --route-all --server-name="my-vpn"
 sudo bash ./install_amneziawg_en.sh --preset=mobile
 sudo bash ./install_amneziawg_en.sh --awg-version=3.1
 ```
+
+The WireSock-derived protocol-imitation layer is optional and is not enabled by
+the normal installer:
+
+```bash
+sudo bash ./amneziawg-proxy.sh
+```
+
+It places AWG behind loopback and can imitate QUIC, DNS, STUN, or SIP. Rebinding
+the topology restarts `awg-quick`; save the current config and keep a fallback
+SSH path before enabling it.
 
 The installer checks the OS, architecture, network and free space, downloads SHA256-pinned assets and persists installation state for safe resume. For AWG 3.1 it first probes the module on a temporary interface, applies a configuration and reads it back with `awg show`. If the probe fails, new configurations are not written.
 
@@ -69,6 +80,8 @@ Keep `PersistentKeepalive = 25`, use a short-TTL domain when the VPS address cha
 - DNS routes, client isolation, P2P and DNAT;
 - AdGuard Home, web panel and Telegram bot;
 - WireSock compatibility hints, operator presets and domain-first endpoints.
+- Optional `amneziawg-proxy` for protocol imitation and probe responses; it is
+  never activated automatically and requires separate configuration.
 
 IPv6 offers `auto` | Auto-select, a separate routed IPv6 prefix, NDP proxy, NAT66 and leak-block mode. Routed mode uses a separate routed IPv6 prefix; NDP mode accounts for the current public `/64` on `eth0`/the external interface.
 
