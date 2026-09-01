@@ -572,7 +572,9 @@ AllowedIPs = 10.9.9.2/32
 </details>
 
 <details>
-<summary><strong>Minimal awg0.conf for AWG 2.0 (for manual setup)</strong></summary>
+<summary><strong>Minimal awg0.conf for AWG 2.0 (legacy, for manual setup)</strong></summary>
+
+> **Important for AWG 3.1:** this example intentionally shows a legacy 2.0 configuration. For a new installation use `install_amneziawg_en.sh --awg-version=3.1`: the profile is generated and accepted only after the capability probe/read-back. Do not manually carry the S3/S4 values from this example into a 3.1 profile.
 
 If you are setting up the server without my installer (for example, `amneziawg-go` in LXC), the minimum valid `awg0.conf` for AWG 2.0 looks like this — all 11 obfuscation parameters are required; `manage_amneziawg.sh add/regen` will abort if any one of them is missing:
 
