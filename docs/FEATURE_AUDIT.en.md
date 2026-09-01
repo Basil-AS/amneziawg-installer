@@ -60,6 +60,6 @@ weaken existing IPv6 leak-block, P2P/DNAT or client-isolation guarantees.
 
 ## Release policy
 
-The next release is `5.29.0-bas.2`, retaining the upstream base number and
+The next release is `5.29.0-bas.3`, retaining the upstream base number and
 incrementing only the fork suffix. All changes must land through a pull request
 with the repository's required attribution policy and a green full test suite.

@@ -12,12 +12,13 @@
 
 ## [Unreleased]
 
-## [5.29.0-bas.2] - 2026-09-01
+## [5.29.0-bas.3] - 2026-09-01
 
 ### Добавлено
 
 - Добавлен опциональный WireSock-derived UDP proxy с имитацией QUIC, DNS, STUN и SIP, rate-limit ответов на probes и loopback-топологией AWG → proxy.
 - Rust-компонент поставляется в исходниках проекта и не включается автоматически.
+- Исправлены portable-проверки SHA-манифеста и EN-пина в release preflight.
 
 ## [5.29.0-bas.1] - 2026-09-01
 
@@ -1710,8 +1711,8 @@ Hardening-фиксы надёжности и безопасности по ре�
 - Диагностический отчет (`--diagnostic`).
 - Полная деинсталляция (`--uninstall`).
 
-[Unreleased]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.29.0-bas.2...HEAD
-[5.29.0-bas.2]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.29.0-bas.1...v5.29.0-bas.2
+[Unreleased]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.29.0-bas.3...HEAD
+[5.29.0-bas.3]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.29.0-bas.1...v5.29.0-bas.3
 [5.29.0-bas.1]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.29.0...v5.29.0-bas.1
 [5.29.0]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.28.1-bas.11...v5.29.0
 [5.28.1-bas.11]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.28.1-bas.10...v5.28.1-bas.11
