@@ -12,6 +12,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [5.29.0-bas.7] - 2026-09-01
+
+- Fixed `AWG_COMMON_VERSION` synchronization between the library, installer, and management script.
+
 ## [5.29.0-bas.6] - 2026-09-01
 
 - Added independent per-client IPv4/IPv6 permissions with address preservation, atomic rollback, and Web Panel controls.
@@ -1720,7 +1724,8 @@ Major security and reliability update after several consecutive code audits. The
 - Diagnostic report (`--diagnostic`).
 - Full uninstall (`--uninstall`).
 
-[Unreleased]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.29.0-bas.6...HEAD
+[Unreleased]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.29.0-bas.7...HEAD
+[5.29.0-bas.7]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.29.0-bas.6...v5.29.0-bas.7
 [5.29.0-bas.6]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.29.0-bas.5...v5.29.0-bas.6
 [5.29.0-bas.5]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.29.0-bas.4...v5.29.0-bas.5
 [5.29.0-bas.4]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.29.0-bas.3...v5.29.0-bas.4
