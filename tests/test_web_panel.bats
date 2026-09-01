@@ -2150,6 +2150,8 @@ PY
     grep -qF 'rotateProfileModal' "$root/web/app.js"
     grep -qF 'name="rotatePreset" value="mobile" checked' "$root/web/app.js"
     grep -qF 'name="rotatePreset" value="default"' "$root/web/app.js"
+    grep -qF 'name="rotatePreset" value="stealth"' "$root/web/app.js"
+    grep -qF 'name="rotatePreset" value="compatibility"' "$root/web/app.js"
     grep -qF 'Refresh system parameters and regenerate all client profiles' "$root/web/app.js"
     grep -qF 'Rotate profile' "$root/web/app.js"
     grep -qF 'Regenerate profile for' "$root/web/app.js"
