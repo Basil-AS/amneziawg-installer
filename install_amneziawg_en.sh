@@ -16,7 +16,7 @@ fi
 
 # --- Safe mode and Constants ---
 set -o pipefail
-SCRIPT_VERSION="5.29.0-bas.5"
+SCRIPT_VERSION="5.29.0-bas.6"
 
 AWG_DIR="/root/awg"
 INSTALLER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)"
@@ -37,7 +37,7 @@ AWG_PROFILE_SCRIPT_PATH="$AWG_DIR/scripts/awg_profile.py"
 # AWG_ALLOW_UNVERIFIED_DOWNLOAD=1 for development.
 declare -A AWG_ASSET_SHA256=(
     ["awg_common_en.sh"]="0663b582beea3a6016d8d89f2d0fad36e91e8b252fc69f8ce7bf004167ef8a6d"
-    ["manage_amneziawg_en.sh"]="0e619143bbb44e592673b28d13e1e35a446133cf69f93e0b33c78b3d8dcfa4b7"
+    ["manage_amneziawg_en.sh"]="d6ddbea890f1a3be6f1d2f5b85d7f4a192ec1ef78c834a0a468b0570fc8ec83f"
     ["web/server.py"]="2ed05a206297341e13e869903e9a0a86cc9742e9116ebee89525e7024d6b3306"
     ["web/index.html"]="7c07ed1d1991e08c0f9fc31e86ed8eb2bba5fa96387088f1f18918396cf7e662"
     ["web/app.js"]="5a9f15e50fc30a833b9080e92ae865911df6ca0cddc7da380ffaae3a1e2f26b3"
