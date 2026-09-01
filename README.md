@@ -1,6 +1,6 @@
 # AmneziaWG Installer
 
-![Version](https://img.shields.io/badge/Installer_Version-5.29.0--bas.2-blue)
+![Version](https://img.shields.io/badge/Installer_Version-5.29.0--bas.7-blue)
 
 Установщик и набор инструментов для развёртывания AmneziaWG-сервера на Ubuntu и Debian. Проект создаёт серверный туннель, клиентские конфигурации, QR-коды и VPN URI, а также поддерживает IPv6, split/full-tunnel, изоляцию клиентов, P2P/DNAT, AdGuard Home, веб-панель и Telegram-бот.
 
