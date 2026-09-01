@@ -24,7 +24,7 @@ path = Path(sys.argv[1])
 key = re.escape(sys.argv[2])
 value = sys.argv[3]
 text = path.read_text(encoding="utf-8")
-pattern = rf'(\["{key}"\]=")(?:[0-9a-fA-F]{{64}}|RELEASE_PLACEHOLDER)(")'
+    pattern = rf'(?m)^(\s*\["{key}"\]=")(?:[0-9a-fA-F]{{64}}|RELEASE_PLACEHOLDER)(")\s*$'
 new, count = re.subn(pattern, rf"\g<1>{value}\2", text)
 if count != 1:
     raise SystemExit(f"manifest key not found or duplicated: {sys.argv[2]} in {path}")
