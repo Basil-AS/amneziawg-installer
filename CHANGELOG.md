@@ -12,6 +12,12 @@
 
 ## [Unreleased]
 
+## [5.29.0-bas.5] - 2026-09-01
+
+### Исправлено
+
+- Синхронизированы версии установщика, management-скриптов и общих runtime-библиотек; неуспешный immutable-тег `.4` не переиспользуется.
+
 ## [5.29.0-bas.4] - 2026-09-01
 
 ### Исправлено
@@ -1717,7 +1723,8 @@ Hardening-фиксы надёжности и безопасности по ре�
 - Диагностический отчет (`--diagnostic`).
 - Полная деинсталляция (`--uninstall`).
 
-[Unreleased]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.29.0-bas.4...HEAD
+[Unreleased]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.29.0-bas.5...HEAD
+[5.29.0-bas.5]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.29.0-bas.4...v5.29.0-bas.5
 [5.29.0-bas.4]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.29.0-bas.3...v5.29.0-bas.4
 [5.29.0-bas.3]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.29.0-bas.1...v5.29.0-bas.3
 [5.29.0-bas.1]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.29.0...v5.29.0-bas.1
