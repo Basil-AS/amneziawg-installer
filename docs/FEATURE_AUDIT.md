@@ -6,9 +6,9 @@ part of the worktree.
 
 ## Upstream
 
-At the sync point, `upstream/main` was `c9ce1c7` and the fork had a common
+At the current sync point, `upstream/main` is `c9ce1c7` and the fork has a common
 ancestor at that commit. `git rev-list --left-right --count origin/main...upstream/main`
-reports `383 0`: all upstream history is connected, while the fork retains its
+reports `410 0`: all upstream history is connected, while the fork retains its
 documented product delta.
 
 The five upstream commits immediately preceding the sync were reviewed in
@@ -64,7 +64,7 @@ fork's existing IPv6 leak-block, P2P/DNAT or client-isolation guarantees.
 
 ## Release policy
 
-The next release for the proxy integration is `5.29.0-bas.3`, retaining the
+The current proxy-enabled release is `5.29.0-bas.5`, retaining the
 upstream base number and incrementing only the fork suffix. All changes must
 land through a pull request with the repository's required attribution policy
 and a green full test suite.
