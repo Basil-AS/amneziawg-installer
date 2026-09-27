@@ -3489,7 +3489,7 @@ def utc_now_iso():
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 
-def set_client_metadata(config_name, display_name, auth=None, network_profile=None, dpi_profile=None):
+def set_client_metadata(config_name, display_name, auth=None, network_profile=None, dpi_profile=None, preset=None):
     config_name = safe_name(config_name)
     display_name = safe_name(display_name)
     data = load_client_metadata()
@@ -3501,6 +3501,8 @@ def set_client_metadata(config_name, display_name, auth=None, network_profile=No
         record["network_profile"] = network_profile
     if dpi_profile:
         record["dpi_profile"] = dpi_profile
+    if preset:
+        record["preset"] = preset
     if auth is not None:
         record["created_by_fp"] = auth_fingerprint(auth)
         record["created_by_role"] = auth.get("role", "")
@@ -5613,6 +5615,7 @@ def parse_peers():
         peer["display_name"] = display_name
         peer["network_profile"] = meta.get("network_profile", "mobile")
         peer["dpi_profile"] = meta.get("dpi_profile", "")
+        peer["preset"] = meta.get("preset", "default")
         rows.append(peer)
     return rows
 
@@ -6940,6 +6943,7 @@ def bot_snapshot_payload(auth):
             "tx": safe_int(row.get("tx")) or 0,
             "p2p_ports": peer.get("p2p_ports", []),
             "disabled": bool(peer.get("disabled")),
+            "preset": peer.get("preset", "default"),
         })
     return {
         "ok": True,
@@ -8234,8 +8238,28 @@ class Handler(SimpleHTTPRequestHandler):
                     elif legacy_profile == "mobile":
                         run_manage("modify", name, "MTU", "1280")
 
+                    preset = str(body.get("preset") or body.get("client_preset") or "default").strip().lower()
+                    valid_presets = {"mobile", "home", "router", "wiresock", "macos", "ios", "android", "openwrt", "linux", "windows", "default"}
+                    conf_path = AWG_DIR / f"{name}.conf"
+                    if conf_path.is_file():
+                        raw_text = conf_path.read_text(encoding="utf-8", errors="replace")
+                        host = split_host(self.headers.get("Host", ""))
+                        if preset in valid_presets and preset != "default":
+                            tuned = tune_config_preset(raw_text, preset, host)
+                            conf_path.write_text(tuned, encoding="utf-8")
+                        else:
+                            if not has_v6:
+                                lines = raw_text.splitlines()
+                                lines = [re.sub(r",\s*(::/0|::/1,\s*8000::/1)", "", l) for l in lines]
+                                conf_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+                        try:
+                            png_path = AWG_DIR / f"{name}.png"
+                            subprocess.run(["qrencode", "-t", "png", "-o", str(png_path)], input=conf_path.read_bytes(), timeout=10, check=False)
+                        except Exception:
+                            pass
+
                     effective_net_profile = "home_lan" if (split_lan or legacy_profile == "home_lan") else ("home" if (dpi_profile == "classic" or legacy_profile == "home") else "mobile")
-                    set_client_metadata(name, display_name, auth, network_profile=effective_net_profile, dpi_profile=dpi_profile)
+                    set_client_metadata(name, display_name, auth, network_profile=effective_net_profile, dpi_profile=dpi_profile, preset=preset)
                     assigned_to_current_token = False
                     if collision:
                         audit_log(

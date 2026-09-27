@@ -3343,6 +3343,7 @@ async function addClient() {
   const result = await clientNameModal();
   if (!result) return;
   const name = typeof result === "string" ? result : result.name;
+  const preset = typeof result === "object" ? (result.preset || "default") : "default";
   const dpi_profile = typeof result === "object" ? (result.dpi_profile || "quic_stealth") : "quic_stealth";
   const split_lan = typeof result === "object" ? (result.split_lan !== false) : true;
   const use_psk = typeof result === "object" ? !!result.use_psk : false;
@@ -3374,6 +3375,7 @@ async function addClient() {
       method: "POST",
       body: JSON.stringify({
         name,
+        preset,
         dpi_profile,
         split_lan,
         use_psk,
@@ -3399,7 +3401,10 @@ async function clientAction(name, action) {
     if (action === "copy-config") return copyConfig(name);
     if (action === "copy-uri") return copyUri(name);
     if (action === "copy-access-link") return copyAccessLink(name);
-    if (action === "regenerate-config") return regenerateConfig(name);
+    if (action === "regenerate-config") {
+      const client = latestClients.find(item => item.name === name || item.id === name);
+      return regenerateConfig(name, client?.preset || "default");
+    }
     if (action === "toggle") {
       await api(`/api/clients/${encodeURIComponent(name)}/toggle`, {method: "POST", body: "{}"});
       showToast("Client toggled");
@@ -3731,18 +3736,18 @@ async function showConfig(name, initialPreset = "default") {
     <div class="grid gap-3">
       <div class="flex flex-wrap items-center justify-between gap-2 border-b border-[var(--line)] pb-2">
         <div class="flex flex-wrap gap-1" id="configPresetTabs">
-          <button data-preset="default" class="px-2.5 py-1 text-xs rounded-md font-medium bg-[var(--soft)] hover:bg-[var(--line)]">Default (1280)</button>
-          <button data-preset="macos" class="px-2.5 py-1 text-xs rounded-md font-medium bg-[var(--soft)] hover:bg-[var(--line)]">🍏 macOS</button>
-          <button data-preset="ios" class="px-2.5 py-1 text-xs rounded-md font-medium bg-[var(--soft)] hover:bg-[var(--line)]">📱 iOS</button>
-          <button data-preset="android" class="px-2.5 py-1 text-xs rounded-md font-medium bg-[var(--soft)] hover:bg-[var(--line)]">🤖 Android</button>
-          <button data-preset="wiresock" class="px-2.5 py-1 text-xs rounded-md font-medium bg-[var(--soft)] hover:bg-[var(--line)]">🪟 WireSock</button>
-          <button data-preset="openwrt" class="px-2.5 py-1 text-xs rounded-md font-medium bg-[var(--soft)] hover:bg-[var(--line)]">🌐 OpenWrt</button>
-          <button data-preset="linux" class="px-2.5 py-1 text-xs rounded-md font-medium bg-[var(--soft)] hover:bg-[var(--line)]">🐧 Linux</button>
+          <button type="button" data-preset="default" class="px-2.5 py-1 text-xs rounded-md font-medium bg-[var(--soft)] hover:bg-[var(--line)]">Default (1280)</button>
+          <button type="button" data-preset="macos" class="px-2.5 py-1 text-xs rounded-md font-medium bg-[var(--soft)] hover:bg-[var(--line)]">🍏 macOS</button>
+          <button type="button" data-preset="ios" class="px-2.5 py-1 text-xs rounded-md font-medium bg-[var(--soft)] hover:bg-[var(--line)]">📱 iOS</button>
+          <button type="button" data-preset="android" class="px-2.5 py-1 text-xs rounded-md font-medium bg-[var(--soft)] hover:bg-[var(--line)]">🤖 Android</button>
+          <button type="button" data-preset="wiresock" class="px-2.5 py-1 text-xs rounded-md font-medium bg-[var(--soft)] hover:bg-[var(--line)]">🪟 WireSock</button>
+          <button type="button" data-preset="openwrt" class="px-2.5 py-1 text-xs rounded-md font-medium bg-[var(--soft)] hover:bg-[var(--line)]">🌐 OpenWrt</button>
+          <button type="button" data-preset="linux" class="px-2.5 py-1 text-xs rounded-md font-medium bg-[var(--soft)] hover:bg-[var(--line)]">🐧 Linux</button>
         </div>
         <div class="flex flex-wrap gap-2">
-          <button id="downloadConfigFromModal" class="${buttonClasses()}">${icon("download")}<span>Download</span></button>
-          <button id="copyConfigFromModal" class="${buttonClasses()}">${icon("copy")}<span>Copy</span></button>
-          <button id="regenerateConfigFromModal" class="${buttonClasses("border-amber-600/40 text-amber-700 hover:bg-amber-500/10")}">${icon("refresh")}<span>Regenerate</span></button>
+          <button type="button" id="downloadConfigFromModal" class="${buttonClasses()}">${icon("download")}<span>Download</span></button>
+          <button type="button" id="copyConfigFromModal" class="${buttonClasses()}">${icon("copy")}<span>Copy</span></button>
+          <button type="button" id="regenerateConfigFromModal" class="${buttonClasses("border-amber-600/40 text-amber-700 hover:bg-amber-500/10")}">${icon("refresh")}<span>Regenerate</span></button>
         </div>
       </div>
       <pre id="configPreBlock" class="max-h-[65vh] overflow-auto whitespace-pre-wrap break-words rounded-md bg-[var(--soft)] p-3 text-xs font-mono">${esc(currentText)}</pre>
@@ -3799,41 +3804,10 @@ async function copyConfig(name) {
   showToast("Copied");
 }
 
-async function showQr(name, initialPreset = "default") {
-  let activePreset = (initialPreset || "default").toLowerCase();
-  const qrUrlFor = (p) => `/api/clients/${encodeURIComponent(name)}/qr` + (p !== "default" ? `?preset=${encodeURIComponent(p)}&t=${Date.now()}` : `?t=${Date.now()}`);
-
-  showModal(name, `
-    <div class="grid gap-3">
-      <div class="flex flex-wrap items-center justify-between gap-2 border-b border-[var(--line)] pb-2">
-        <div class="flex flex-wrap gap-1" id="qrPresetTabs">
-          <button data-preset="default" class="px-2 py-0.5 text-xs rounded-md font-medium bg-[var(--accent)] text-white">Default</button>
-          <button data-preset="ios" class="px-2 py-0.5 text-xs rounded-md font-medium bg-[var(--soft)] hover:bg-[var(--line)]">📱 iOS</button>
-          <button data-preset="android" class="px-2 py-0.5 text-xs rounded-md font-medium bg-[var(--soft)] hover:bg-[var(--line)]">🤖 Android</button>
-          <button data-preset="macos" class="px-2 py-0.5 text-xs rounded-md font-medium bg-[var(--soft)] hover:bg-[var(--line)]">🍏 macOS</button>
-          <button data-preset="wiresock" class="px-2 py-0.5 text-xs rounded-md font-medium bg-[var(--soft)] hover:bg-[var(--line)]">🪟 WireSock</button>
-        </div>
-      </div>
-      <img id="qrModalImage" class="mx-auto max-h-[65vh] max-w-full rounded-md bg-white p-2" alt="QR" src="${qrUrlFor(activePreset)}">
-    </div>
-  `);
-
-  const updateQrUI = (preset) => {
-    activePreset = preset;
-    const img = document.querySelector("#qrModalImage");
-    if (img) img.src = qrUrlFor(activePreset);
-    document.querySelectorAll("#qrPresetTabs button").forEach(b => {
-      b.className = b.dataset.preset === activePreset
-        ? "px-2 py-0.5 text-xs rounded-md font-medium bg-[var(--accent)] text-white"
-        : "px-2 py-0.5 text-xs rounded-md font-medium bg-[var(--soft)] hover:bg-[var(--line)]";
-    });
-  };
-
-  updateQrUI(activePreset);
-
-  document.querySelectorAll("#qrPresetTabs button").forEach(btn => {
-    btn.onclick = () => updateQrUI(btn.dataset.preset);
-  });
+async function showQr(name) {
+  const blob = await api(`/api/clients/${encodeURIComponent(name)}/qr`);
+  const url = URL.createObjectURL(blob);
+  showModal(name, `<img class="mx-auto max-h-[70vh] max-w-full rounded-md bg-white p-2" alt="QR" src="${url}">`);
 }
 
 async function showUri(name) {
@@ -4797,6 +4771,40 @@ function clientNameModal() {
         <p id="clientNameHint" class="mt-2 hidden text-xs text-[var(--danger)]">${esc(CLIENT_NAME_HINT_RU)} / ${esc(CLIENT_NAME_HINT_EN)}</p>
 
         <div class="mt-4">
+          <label class="block text-xs font-semibold uppercase text-[var(--muted)] mb-2">Целевая платформа / Пресет клиента</label>
+          <div class="grid grid-cols-2 sm:grid-cols-3 gap-2 text-xs" id="clientPresetGrid">
+            <label class="flex items-center gap-2 p-2 rounded-md border border-[var(--line)] bg-[var(--soft)] cursor-pointer hover:border-[var(--accent)]">
+              <input type="radio" name="clientPreset" value="macos" class="accent-[var(--accent)]">
+              <span>🍏 macOS</span>
+            </label>
+            <label class="flex items-center gap-2 p-2 rounded-md border border-[var(--line)] bg-[var(--soft)] cursor-pointer hover:border-[var(--accent)]">
+              <input type="radio" name="clientPreset" value="ios" class="accent-[var(--accent)]">
+              <span>📱 iOS</span>
+            </label>
+            <label class="flex items-center gap-2 p-2 rounded-md border border-[var(--line)] bg-[var(--soft)] cursor-pointer hover:border-[var(--accent)]">
+              <input type="radio" name="clientPreset" value="android" class="accent-[var(--accent)]">
+              <span>🤖 Android</span>
+            </label>
+            <label class="flex items-center gap-2 p-2 rounded-md border border-[var(--line)] bg-[var(--soft)] cursor-pointer hover:border-[var(--accent)]">
+              <input type="radio" name="clientPreset" value="wiresock" class="accent-[var(--accent)]">
+              <span>🪟 WireSock</span>
+            </label>
+            <label class="flex items-center gap-2 p-2 rounded-md border border-[var(--line)] bg-[var(--soft)] cursor-pointer hover:border-[var(--accent)]">
+              <input type="radio" name="clientPreset" value="openwrt" class="accent-[var(--accent)]">
+              <span>🌐 OpenWrt</span>
+            </label>
+            <label class="flex items-center gap-2 p-2 rounded-md border border-[var(--line)] bg-[var(--soft)] cursor-pointer hover:border-[var(--accent)]">
+              <input type="radio" name="clientPreset" value="linux" class="accent-[var(--accent)]">
+              <span>🐧 Linux</span>
+            </label>
+            <label class="flex items-center gap-2 p-2 rounded-md border border-[var(--line)] bg-[var(--soft)] cursor-pointer hover:border-[var(--accent)] col-span-2 sm:col-span-3">
+              <input type="radio" name="clientPreset" value="default" checked class="accent-[var(--accent)]">
+              <span>⚡ Default (Универсальный MTU 1280)</span>
+            </label>
+          </div>
+        </div>
+
+        <div class="mt-4">
           <label class="block text-xs font-semibold uppercase text-[var(--muted)] mb-2">Профиль защиты от блокировок (DPI)</label>
           <div class="grid gap-2 text-xs">
             <label class="flex items-start gap-2.5 p-2.5 rounded-md border border-[var(--line)] bg-[var(--soft)] cursor-pointer hover:border-[var(--accent)]">
@@ -4905,6 +4913,7 @@ function clientNameModal() {
     });
     dialog.addEventListener("close", () => {
       const value = dialog.returnValue === "ok" ? input.value.trim() : null;
+      const preset = dialog.querySelector("input[name='clientPreset']:checked")?.value || "default";
       const dpiProfile = dialog.querySelector("input[name='clientDpiProfile']:checked")?.value || "quic_stealth";
       const splitLan = !!dialog.querySelector("#clientSplitLan")?.checked;
       const usePsk = !!dialog.querySelector("#clientUsePsk")?.checked;
@@ -4917,7 +4926,7 @@ function clientNameModal() {
         }
       }
       dialog.remove();
-      resolve(value ? {name: value, dpi_profile: dpiProfile, split_lan: splitLan, use_psk: usePsk, mimicry_sni} : null);
+      resolve(value ? {name: value, preset, dpi_profile: dpiProfile, split_lan: splitLan, use_psk: usePsk, mimicry_sni} : null);
     }, {once: true});
     dialog.showModal();
     input.focus();
