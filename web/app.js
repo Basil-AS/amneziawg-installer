@@ -3559,23 +3559,37 @@ async function rotateProfile() {
 function tuneConfigForPreset(rawText, preset, domain) {
   let lines = rawText.split("\n");
   const hostDomain = domain || window.location.hostname || "example.com";
+  const p = (preset || "").toLowerCase();
 
-  if (preset === "mobile") {
+  lines = lines.map(line => {
+    if (/^AllowedIPs\s*=/i.test(line.trim())) {
+      return line.replace(/,\s*(::\/0|::\/1,\s*8000::\/1)/g, "");
+    }
+    return line;
+  });
+
+  if (p === "mobile" || p === "ios" || p === "android") {
     lines = lines.map(line => {
       if (/^MTU\s*=/i.test(line.trim())) return "MTU = 1280";
       if (/^PersistentKeepalive\s*=/i.test(line.trim())) return "PersistentKeepalive = 25";
       return line;
     });
-  } else if (preset === "home") {
+  } else if (p === "macos") {
     lines = lines.map(line => {
       if (/^MTU\s*=/i.test(line.trim())) return "MTU = 1280";
-      if (/^PersistentKeepalive\s*=/i.test(line.trim())) return "PersistentKeepalive = 35";
+      if (/^PersistentKeepalive\s*=/i.test(line.trim())) return "PersistentKeepalive = 25";
       return line;
     });
-  } else if (preset === "router") {
+  } else if (p === "home" || p === "linux") {
     lines = lines.map(line => {
       if (/^MTU\s*=/i.test(line.trim())) return "MTU = 1280";
-      if (/^PersistentKeepalive\s*=/i.test(line.trim())) return "PersistentKeepalive = 30";
+      if (/^PersistentKeepalive\s*=/i.test(line.trim())) return "PersistentKeepalive = 25";
+      return line;
+    });
+  } else if (p === "router" || p === "openwrt") {
+    lines = lines.map(line => {
+      if (/^MTU\s*=/i.test(line.trim())) return "MTU = 1280";
+      if (/^PersistentKeepalive\s*=/i.test(line.trim())) return "PersistentKeepalive = 25";
       const m = line.trim().match(/^(H[1-4]\s*=\s*)(\d+)(?:-(\d+))?/i);
       if (m) {
         let v1 = Math.min(parseInt(m[2], 10), 2147483647);
@@ -3588,7 +3602,7 @@ function tuneConfigForPreset(rawText, preset, domain) {
       }
       return line;
     });
-  } else if (preset === "wiresock") {
+  } else if (p === "wiresock" || p === "windows") {
     lines = lines.filter(line => !/^I[1-5]\s*=/i.test(line.trim()));
     lines = lines.map(line => {
       if (/^MTU\s*=/i.test(line.trim())) return "MTU = 1280";
@@ -3624,10 +3638,12 @@ async function showConfig(name) {
       <div class="flex flex-wrap items-center justify-between gap-2 border-b border-[var(--line)] pb-2">
         <div class="flex flex-wrap gap-1" id="configPresetTabs">
           <button data-preset="default" class="px-2.5 py-1 text-xs rounded-md font-medium bg-[var(--accent)] text-white">Default (1280)</button>
-          <button data-preset="mobile" class="px-2.5 py-1 text-xs rounded-md font-medium bg-[var(--soft)] hover:bg-[var(--line)]">📱 Mobile</button>
-          <button data-preset="home" class="px-2.5 py-1 text-xs rounded-md font-medium bg-[var(--soft)] hover:bg-[var(--line)]">💻 Home PC</button>
-          <button data-preset="router" class="px-2.5 py-1 text-xs rounded-md font-medium bg-[var(--soft)] hover:bg-[var(--line)]">🌐 Router</button>
+          <button data-preset="macos" class="px-2.5 py-1 text-xs rounded-md font-medium bg-[var(--soft)] hover:bg-[var(--line)]">🍏 macOS</button>
+          <button data-preset="ios" class="px-2.5 py-1 text-xs rounded-md font-medium bg-[var(--soft)] hover:bg-[var(--line)]">📱 iOS</button>
+          <button data-preset="android" class="px-2.5 py-1 text-xs rounded-md font-medium bg-[var(--soft)] hover:bg-[var(--line)]">🤖 Android</button>
           <button data-preset="wiresock" class="px-2.5 py-1 text-xs rounded-md font-medium bg-[var(--soft)] hover:bg-[var(--line)]">🪟 WireSock</button>
+          <button data-preset="openwrt" class="px-2.5 py-1 text-xs rounded-md font-medium bg-[var(--soft)] hover:bg-[var(--line)]">🌐 OpenWrt</button>
+          <button data-preset="linux" class="px-2.5 py-1 text-xs rounded-md font-medium bg-[var(--soft)] hover:bg-[var(--line)]">🐧 Linux</button>
         </div>
         <div class="flex flex-wrap gap-2">
           <button id="downloadConfigFromModal" class="${buttonClasses()}">${icon("download")}<span>Download</span></button>

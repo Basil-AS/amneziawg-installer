@@ -7021,7 +7021,13 @@ def tune_config_preset(text, preset, host_domain=None):
         return text
     lines = text.splitlines()
     domain = host_domain or get_server_domain()
-    if preset == "mobile":
+    cfg = parse_config()
+    has_v6 = str(cfg.get("AWG_IPV6_ENABLED") or "").strip() == "1"
+    if not has_v6:
+        lines = [re.sub(r",\s*(::/0|::/1,\s*8000::/1)", "", l) for l in lines]
+
+    p = preset.lower()
+    if p in ("mobile", "ios"):
         out = []
         for line in lines:
             if re.match(r"^MTU\s*=", line, re.IGNORECASE):
@@ -7031,23 +7037,43 @@ def tune_config_preset(text, preset, host_domain=None):
             else:
                 out.append(line)
         return "\n".join(out) + "\n"
-    elif preset == "home":
+    elif p in ("macos", "amneziavpn-macos"):
         out = []
         for line in lines:
             if re.match(r"^MTU\s*=", line, re.IGNORECASE):
                 out.append("MTU = 1280")
             elif re.match(r"^PersistentKeepalive\s*=", line, re.IGNORECASE):
-                out.append("PersistentKeepalive = 35")
+                out.append("PersistentKeepalive = 25")
             else:
                 out.append(line)
         return "\n".join(out) + "\n"
-    elif preset == "router":
+    elif p in ("android", "wgtunnel"):
         out = []
         for line in lines:
             if re.match(r"^MTU\s*=", line, re.IGNORECASE):
                 out.append("MTU = 1280")
             elif re.match(r"^PersistentKeepalive\s*=", line, re.IGNORECASE):
-                out.append("PersistentKeepalive = 30")
+                out.append("PersistentKeepalive = 25")
+            else:
+                out.append(line)
+        return "\n".join(out) + "\n"
+    elif p in ("home", "linux"):
+        out = []
+        for line in lines:
+            if re.match(r"^MTU\s*=", line, re.IGNORECASE):
+                out.append("MTU = 1280")
+            elif re.match(r"^PersistentKeepalive\s*=", line, re.IGNORECASE):
+                out.append("PersistentKeepalive = 25")
+            else:
+                out.append(line)
+        return "\n".join(out) + "\n"
+    elif p in ("router", "openwrt"):
+        out = []
+        for line in lines:
+            if re.match(r"^MTU\s*=", line, re.IGNORECASE):
+                out.append("MTU = 1280")
+            elif re.match(r"^PersistentKeepalive\s*=", line, re.IGNORECASE):
+                out.append("PersistentKeepalive = 25")
             else:
                 m = re.match(r"^(H[1-4]\s*=\s*)(\d+)(?:-(\d+))?", line, re.IGNORECASE)
                 if m:
@@ -7062,7 +7088,7 @@ def tune_config_preset(text, preset, host_domain=None):
                 else:
                     out.append(line)
         return "\n".join(out) + "\n"
-    elif preset == "wiresock":
+    elif p in ("wiresock", "windows"):
         out = []
         for line in lines:
             if re.match(r"^I[1-5]\s*=", line.strip(), re.IGNORECASE):
@@ -7921,7 +7947,8 @@ class Handler(SimpleHTTPRequestHandler):
                 return
             query = parse_qs(u.query)
             preset = str((query.get("preset") or [""])[0]).lower()
-            self.send_config_download(name, preset=preset if preset in {"mobile", "home", "router", "wiresock"} else None)
+            valid_presets = {"mobile", "home", "router", "wiresock", "macos", "ios", "android", "openwrt", "linux", "windows"}
+            self.send_config_download(name, preset=preset if preset in valid_presets else None)
             return
 
         m = re.match(r"^/api/clients/([^/]+)/(config|qr|vpnuri|uri|p2p|ports)$", u.path)
@@ -7934,7 +7961,8 @@ class Handler(SimpleHTTPRequestHandler):
         if kind == "config":
             query = parse_qs(u.query)
             preset = str((query.get("preset") or [""])[0]).lower()
-            if preset in {"mobile", "home", "router", "wiresock"}:
+            valid_presets = {"mobile", "home", "router", "wiresock", "macos", "ios", "android", "openwrt", "linux", "windows"}
+            if preset in valid_presets:
                 text = (AWG_DIR / f"{name}.conf").read_text(encoding="utf-8", errors="replace")
                 host = split_host(self.headers.get("Host", ""))
                 text = tune_config_preset(text, preset, host)
