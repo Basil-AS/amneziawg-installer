@@ -3335,8 +3335,17 @@ async function addClient() {
   if (!result) return;
   const name = typeof result === "string" ? result : result.name;
   const network_profile = typeof result === "object" ? result.network_profile : "mobile";
+  let i1 = "";
   try {
-    await api("/api/clients", {method: "POST", body: JSON.stringify({name, network_profile})});
+    if (typeof window.generateI1 === "function" && typeof window.pickI1Sni === "function" && window.crypto?.subtle) {
+      const sni = window.pickI1Sni();
+      i1 = await window.generateI1(sni, 0);
+    }
+  } catch (err) {
+    console.warn("Could not generate I1 in browser:", err);
+  }
+  try {
+    await api("/api/clients", {method: "POST", body: JSON.stringify({name, network_profile, i1})});
     showToast("Client added");
     await loadClients();
     if (statusState.role === "super") await loadTokens();

@@ -2548,6 +2548,10 @@ load_awg_params() {
         log_debug "$SERVER_CONF_FILE не существует — использую AWG params из $CONFIG_FILE (bootstrap)"
     fi
 
+    if [[ -n "${AWG_I1_OVERRIDE:-}" ]]; then
+        export AWG_I1="$AWG_I1_OVERRIDE"
+    fi
+
     # 3. Проверка обязательных параметров выбранной версии
     local missing=0
     local param

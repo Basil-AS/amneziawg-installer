@@ -7925,7 +7925,13 @@ class Handler(SimpleHTTPRequestHandler):
                 args = []
                 if body.get("expires"):
                     args.append(f"--expires={require_expires(body['expires'])}")
-                p = run_manage(*args, "add", name)
+                extra_env = {}
+                if "i1" in body and body["i1"]:
+                    try:
+                        extra_env["AWG_I1_OVERRIDE"] = validate_i1(body["i1"])
+                    except Exception:
+                        pass
+                p = run_manage(*args, "add", name, extra_env=extra_env)
                 if p.returncode == 0:
                     profile = str(body.get("network_profile") or "mobile").strip().lower()
                     if profile in ("home", "home_lan"):

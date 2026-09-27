@@ -1,6 +1,7 @@
 "use strict";
 
 const I1_SNI_CANDIDATES = [
+  "s1.charles.men",
   "mail.ru",
   "vk.com",
   "ozon.ru",
@@ -251,7 +252,7 @@ function buildRealisticClientHello(sni) {
         extLength
     ], 4);
 
-    const view = new DataView(payload);
+    const view = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
     view.setUint32(0, payload.byteLength - 4, false);
     view.setUint8(0, 0x01);
 
