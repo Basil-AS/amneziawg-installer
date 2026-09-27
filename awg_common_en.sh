@@ -3349,7 +3349,7 @@ sync_clients_hosts() {
     body=$(awg_mktemp) || return 0
 
     awk '
-    function dns_alias(src, out) {
+    function dns_label(src, out) {
         out=tolower(src)
         gsub(/[^a-z0-9-]/, "-", out)
         gsub(/-+/, "-", out)
@@ -3360,13 +3360,14 @@ sync_clients_hosts() {
             out=substr(out, 1, 63)
             sub(/-+$/, "", out)
         }
-        return out ".awg"
+        return out
     }
     function emit() {
         if (name != "" && ipv4 != "") {
-            alias=dns_alias(name)
-            print ipv4 " " name " " alias
-            if (ipv6 != "") print ipv6 " " name " " alias
+            label=dns_label(name)
+            alias=label ".awg"
+            print ipv4 " " label " " alias
+            if (ipv6 != "") print ipv6 " " label " " alias
         }
     }
     /^\[Peer\]/ { emit(); name=""; ipv4=""; ipv6=""; in_peer=1; next }
