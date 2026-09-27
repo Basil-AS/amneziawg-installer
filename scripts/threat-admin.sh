@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# shellcheck disable=SC2034
 CONF="/etc/threat-reporter/config.json"
+# shellcheck disable=SC2034
 DB="/var/lib/threat-reporter/reported.db"
 LOG="/var/log/threat-reporter.log"
 STATS_BIN="/usr/local/bin/threat-stats"

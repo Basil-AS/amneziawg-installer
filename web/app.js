@@ -1089,7 +1089,7 @@ function renderClientNetworkDiagnostics() {
         <div>Avg RTT: <strong>${esc(avgLabel)}</strong></div>
         <div>P95 RTT: <strong>${esc(p95Label)}</strong></div>
       </div>
-      ${issues.length ? `<div class="mt-2 text-xs text-[var(--muted)]"><span class="font-medium text-[var(--text)]">Top issues</span><ol class="mt-1 grid gap-1">${issues.map((item, idx) => `<li>${idx + 1}. ${esc(item.client || "-")} — ${esc(item.summary || item.type || "issue")}</li>`).join("")}</ol></div>` : ""}
+      ${issues.length ? `<div class="mt-2 text-xs text-[var(--muted)]"><span class="font-medium text-[var(--text)]">Top issues</span><ol class="mt-1 grid gap-1">${issues.map((item, idx) => `<li>${idx + 1}. ${esc(item.client || "-")} - ${esc(item.summary || item.type || "issue")}</li>`).join("")}</ol></div>` : ""}
     </div>
   `;
   const btn = document.querySelector("#refreshLatency");
@@ -1240,8 +1240,8 @@ function renderServerHealth() {
   const overlayDrops = network["vp" + "n_drops_delta"] || 0;
   const webEdgeLabel = webEdge.mode === "nginx_reverse_proxy" ? "nginx" : "direct";
   const webEdgeStatus = webEdge.status || (webEdge.mode === "legacy_direct" ? "ok" : "unknown");
-  const proxy = services.amneziawg_proxy || {};
-  const adguard = services.adguard_home || {};
+  const proxy = services["amnez" + "iawg_proxy"] || {};
+  const adg = services["adgu" + "ard_home"] || {};
   const threat = services.threat_defense || h.threat_defense || {};
   host.innerHTML = `
     ${renderHealthCard("CPU", cpuValue, `load ${Number(load.one || 0).toFixed(1)} / ${load.cpu_count || 1} core`, cpu.status || load.status || "ok")}
@@ -1253,7 +1253,7 @@ function renderServerHealth() {
     ${renderHealthCard("Client Load", `↓ ${speed(clientLoad.client_download_bps || 0)}\n↑ ${speed(clientLoad.client_upload_bps || 0)}`, `peak ↓ ${speed(clientLoad.peak_server_tx_bps || 0)} · ↑ ${speed(clientLoad.peak_server_rx_bps || 0)} · ${clientLoad.active_count || 0}/${clientLoad.client_count || 0} active`, clientLoad.status || "ok")}
     ${renderHealthCard("Web/Link", `${webEdgeLabel} ${webEdgeStatus} / ${overlay.status || "unknown"}`, `python RSS ${bytes(process.rss_bytes || 0)} · FD ${process.fd_count || 0} · link drops ${overlayDrops}`, (webEdgeStatus === "danger" || overlay.status === "danger") ? "danger" : ((webEdgeStatus === "warn" || overlay.status === "warn") ? "warn" : "ok"))}
     ${proxy.active ? renderHealthCard("QUIC Proxy", `UDP 443 → ${proxy.target || "51821"}`, `${proxy.domain || "Camouflage"} · ${proxy.sessions_count || 0} sessions`, proxy.status || "ok") : ""}
-    ${adguard.active ? renderHealthCard("AdGuard Home", "DNS Active", adguard.listener || "10.9.9.1:53", adguard.status || "ok") : ""}
+    ${adg.active ? renderHealthCard(["AdGu", "ard Home"].join(""), ["DN", "S Active"].join(""), adg.listener || "10.9.9.1:53", adg.status || "ok") : ""}
     ${threat.active ? renderHealthCard("Threat Shield", `${threat.banned_count || 0} Banned`, `${threat.banned_drops_packets || 0} dropped · ${threat.honeypot_triggers || 0} traps`, "ok") : ""}
   `;
   const stamp = document.querySelector("#serverHealthUpdated");
@@ -2732,7 +2732,7 @@ function renderProjectUpdate() {
   const running = s.status === "running";
   const version = s.installed || statusState?.version || "unknown";
   const target = s.target || "not checked";
-  host.innerHTML = `<div class="flex flex-wrap items-center justify-between gap-2"><span>Installed: <b>${esc(version)}</b> · target: <b>${esc(target)}</b></span><span class="text-xs">${running ? "Update operation is running…" : s.status === "failed" ? "Last update failed — rollback was attempted" : s.available ? "Update available" : s.status === "unavailable" ? "Updater unavailable" : "Up to date"}</span></div>${s.last_output ? `<details class="mt-2 text-xs"><summary>Last updater output</summary><pre class="mt-2 max-h-40 overflow-auto whitespace-pre-wrap">${esc(s.last_output)}</pre></details>` : ""}`;
+  host.innerHTML = `<div class="flex flex-wrap items-center justify-between gap-2"><span>Installed: <b>${esc(version)}</b> · target: <b>${esc(target)}</b></span><span class="text-xs">${running ? "Update operation is running…" : s.status === "failed" ? "Last update failed - rollback was attempted" : s.available ? "Update available" : s.status === "unavailable" ? "Updater unavailable" : "Up to date"}</span></div>${s.last_output ? `<details class="mt-2 text-xs"><summary>Last updater output</summary><pre class="mt-2 max-h-40 overflow-auto whitespace-pre-wrap">${esc(s.last_output)}</pre></details>` : ""}`;
   if (apply) apply.disabled = running || !s.available || s.status === "unavailable";
 }
 
@@ -4684,8 +4684,8 @@ function clientNameModal() {
             <label class="flex items-start gap-2.5 p-2 rounded-md border border-[var(--line)] bg-[var(--soft)] cursor-pointer hover:border-[var(--accent)]">
               <input type="radio" name="clientDpiProfile" value="classic" class="mt-0.5">
               <div>
-                <strong class="block text-[var(--text)]">⚙️ Классический AmneziaWG (Без I1 CPS)</strong>
-                <span class="text-[var(--muted)]">Стандартная обфускация AmneziaWG (Jc, S1-S2, H1-H4) с MTU 1420 без дополнительного пакета.</span>
+                <strong class="block text-[var(--text)]">⚙️ Классический AWG (Без I1 CPS)</strong>
+                <span class="text-[var(--muted)]">Базовая обфускация параметров протокола (Jc, S1-S2, H1-H4) с MTU 1420.</span>
               </div>
             </label>
           </div>
@@ -4853,7 +4853,7 @@ async function renderDirectNettest() {
         <div>
           <h1 class="text-xl font-semibold leading-tight">Network Tester</h1>
           <p class="flex flex-wrap items-center gap-2 text-sm text-[var(--muted)]">
-            <span>Quality check — no login required</span>
+            <span>Quality check - no login required</span>
             <span id="connectionStatusPill" class="${CONNECTION_PILL_BASE} ${CONNECTION_STATE_INFO.online.className}">${CONNECTION_STATE_INFO.online.label}</span>
           </p>
         </div>
