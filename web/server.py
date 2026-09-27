@@ -497,11 +497,27 @@ def host_is_ip(value):
         return False
 
 
+def get_server_domain(default="vk.com"):
+    """Dynamically determine the configured server domain from AWG config or environment."""
+    try:
+        cfg = parse_config()
+        endpoint = cfg.get("AWG_ENDPOINT") or cfg.get("AWG_ENDPOINT_DOMAIN") or cfg.get("AWG_WEB_DOMAIN") or ""
+        host, _ = split_endpoint(endpoint)
+        if host and not host_is_ip(host):
+            return host
+        web_domain = cfg.get("AWG_WEB_DOMAIN") or ""
+        if web_domain and not host_is_ip(web_domain):
+            return web_domain
+    except Exception:
+        pass
+    return default
+
+
 def web_access_required_hosts(extra_host=""):
     """Return the only hosts accepted by the panel access policy.
 
     The public VPN endpoint is deliberately not part of this list.  It may be
-    a stale literal address, a transport-only name such as s1/s2.charles.men,
+    a stale literal address, a transport-only name such as s1/s2.example.com,
     or a generated sslip.io name.  The panel has its own explicit domain; the
     VPN gateway and loopback names are the only additional local hosts.
     """
@@ -1436,6 +1452,7 @@ def get_amneziawg_proxy_info():
     sessions_path = Path("/var/lib/amneziawg-proxy/sessions.json")
     if not sessions_path.exists():
         return {"status": "not_configured", "active": False}
+    domain = get_server_domain()
     try:
         data = json.loads(sessions_path.read_text(encoding="utf-8"))
         sessions = data.get("sessions", [])
@@ -1446,7 +1463,7 @@ def get_amneziawg_proxy_info():
             "listen": str(data.get("proxy_listen_addr", "0.0.0.0:443")),
             "protocol": str(data.get("imitate_protocol", "quic")).upper(),
             "target": str(data.get("target_addr", "127.0.0.1:51821")),
-            "domain": "s1.charles.men",
+            "domain": domain,
             "sessions_count": len(sessions) if isinstance(sessions, list) else 0,
         }
     except Exception:
@@ -1457,7 +1474,7 @@ def get_amneziawg_proxy_info():
             "listen": "0.0.0.0:443",
             "protocol": "QUIC",
             "target": "127.0.0.1:51821",
-            "domain": "s1.charles.men",
+            "domain": domain,
             "sessions_count": 0,
         }
 
@@ -3440,7 +3457,7 @@ def utc_now_iso():
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 
-def set_client_metadata(config_name, display_name, auth=None, network_profile=None):
+def set_client_metadata(config_name, display_name, auth=None, network_profile=None, dpi_profile=None):
     config_name = safe_name(config_name)
     display_name = safe_name(display_name)
     data = load_client_metadata()
@@ -3450,6 +3467,8 @@ def set_client_metadata(config_name, display_name, auth=None, network_profile=No
     record["display_name"] = display_name
     if network_profile:
         record["network_profile"] = network_profile
+    if dpi_profile:
+        record["dpi_profile"] = dpi_profile
     if auth is not None:
         record["created_by_fp"] = auth_fingerprint(auth)
         record["created_by_role"] = auth.get("role", "")
@@ -3467,6 +3486,7 @@ def remove_client_metadata(config_name):
     data = load_client_metadata()
     if data.get("clients", {}).pop(config_name, None) is not None:
         write_client_metadata(data)
+    clear_client_endpoint_history(config_name)
 
 
 def rollback_created_client(config_name):
@@ -5111,11 +5131,15 @@ def update_traffic_history(rows):
             write_traffic_history(data)
 
 
-def latest_client_endpoint_snapshot(history_rows):
+def latest_client_endpoint_snapshot(history_rows, current_fp=""):
     if not isinstance(history_rows, list):
         return {}
     for row in reversed(history_rows):
         if isinstance(row, dict):
+            if current_fp:
+                row_fp = row.get("public_key_fp")
+                if row_fp and row_fp != current_fp:
+                    continue
             return row
     return {}
 
@@ -5553,6 +5577,7 @@ def parse_peers():
         peer["config_name"] = config_name
         peer["display_name"] = display_name
         peer["network_profile"] = meta.get("network_profile", "mobile")
+        peer["dpi_profile"] = meta.get("dpi_profile", "")
         rows.append(peer)
     return rows
 
@@ -5720,12 +5745,13 @@ def _hkdf_expand_label(secret: bytes, label: str, context: bytes, length: int) -
     return hkdf.derive(secret)
 
 
-def _build_quic_client_hello(sni: str) -> bytes:
+def _build_quic_client_hello(sni: str = None) -> bytes:
     random_bytes = secrets.token_bytes(32)
     cipher_suites = b"\x00\x06\x13\x01\x13\x02\x13\x03"
     compression = b"\x01\x00"
 
-    clean_sni = (sni or "s1.charles.men").strip().encode("ascii", errors="ignore")[:253]
+    target_sni = (sni or "").strip() or get_server_domain()
+    clean_sni = target_sni.encode("ascii", errors="ignore")[:253]
     sni_entry = b"\x00" + struct.pack(">H", len(clean_sni)) + clean_sni
     ext_sni = b"\x00\x00" + struct.pack(">H", len(sni_entry) + 2) + struct.pack(">H", len(sni_entry)) + sni_entry
     ext_versions = b"\x00\x2b\x00\x03\x02\x03\x04"
@@ -5746,11 +5772,12 @@ def generate_random_i1(length: int = 64) -> str:
     return f"<b 0x{secrets.token_hex(length)}>"
 
 
-def generate_quic_i1(sni: str = "s1.charles.men", pad_to: int = 700) -> str:
+def generate_quic_i1(sni: str = None, pad_to: int = 700) -> str:
     """Generate an authentic RFC 9000 QUIC Initial packet with TLS 1.3 ClientHello."""
     if not HAVE_CRYPTOGRAPHY:
         return generate_random_i1(64)
-    ch = _build_quic_client_hello(sni)
+    target_sni = (sni or "").strip() or get_server_domain()
+    ch = _build_quic_client_hello(target_sni)
     crypto_frame = b"\x06" + _quic_varint(0) + _quic_varint(len(ch)) + ch
 
     if len(crypto_frame) < pad_to:
@@ -5994,6 +6021,18 @@ def write_client_endpoint_history(data):
     os.chmod(tmp, 0o600)
     os.replace(tmp, CLIENT_ENDPOINT_HISTORY_FILE)
     os.chmod(CLIENT_ENDPOINT_HISTORY_FILE, 0o600)
+
+
+def clear_client_endpoint_history(name):
+    config_name = safe_name(name)
+    if not config_name:
+        return
+    with CLIENT_ENDPOINT_HISTORY_LOCK:
+        data = load_client_endpoint_history()
+        clients = data.get("clients", {})
+        if config_name in clients:
+            clients.pop(config_name, None)
+            write_client_endpoint_history(data)
 
 
 def endpoint_geo_snapshot(endpoint_ip):
@@ -6945,7 +6984,7 @@ def tune_config_preset(text, preset, host_domain=None):
     if not preset or preset == "default":
         return text
     lines = text.splitlines()
-    domain = host_domain or "s1.charles.men"
+    domain = host_domain or get_server_domain()
     if preset == "mobile":
         out = []
         for line in lines:
@@ -7698,7 +7737,7 @@ class Handler(SimpleHTTPRequestHandler):
             return
         if u.path == "/api/tools/generate-i1":
             query = parse_qs(u.query)
-            sni = (query.get("sni") or ["s1.charles.men"])[0].strip()
+            sni = (query.get("sni") or [""])[0].strip() or get_server_domain()
             mode = (query.get("mode") or ["quic"])[0].strip().lower()
             if mode == "random":
                 res = generate_random_i1(64)
@@ -7736,7 +7775,8 @@ class Handler(SimpleHTTPRequestHandler):
             for peer in visible:
                 item = dict(peer)
                 row_stats = stats.get(peer["name"], {})
-                endpoint_snapshot = latest_client_endpoint_snapshot(history_clients.get(peer["name"], []))
+                current_fp = public_key_fingerprint(peer.get("public_key", ""))
+                endpoint_snapshot = latest_client_endpoint_snapshot(history_clients.get(peer["name"], []), current_fp=current_fp)
                 item["id"] = peer["name"]
                 item["config_name"] = peer["name"]
                 item["display_name"] = peer.get("display_name") or peer["name"]
@@ -7760,20 +7800,28 @@ class Handler(SimpleHTTPRequestHandler):
                 item["traffic_30d"] = client_traffic_30d(peer["name"], history)
                 item["traffic_total"] = client_traffic_total(peer["name"], history)
                 item["traffic"] = client_traffic_api(item["traffic_total"], item["traffic_30d"])
-                item["latestHandshakeAt"] = row_stats.get(
-                    "latestHandshakeAt",
-                    row_stats.get("last_handshake", endpoint_snapshot.get("latest_handshake", 0)),
-                )
+                is_disabled = bool(peer.get("disabled"))
+                live_handshake = safe_int(row_stats.get("latestHandshakeAt") or row_stats.get("last_handshake")) or 0
+                if live_handshake > 0:
+                    item["latestHandshakeAt"] = live_handshake
+                elif is_disabled and endpoint_snapshot:
+                    item["latestHandshakeAt"] = safe_int(endpoint_snapshot.get("latest_handshake")) or 0
+                else:
+                    item["latestHandshakeAt"] = 0
+
                 endpoint = row_stats.get("endpoint", "")
-                if endpoint in {"", "-", "(none)", "none"} and endpoint_snapshot:
-                    endpoint_ip = endpoint_snapshot.get("endpoint_ip", "")
-                    endpoint_port = endpoint_snapshot.get("endpoint_port", "")
-                    endpoint = f"{endpoint_ip}:{endpoint_port}" if endpoint_ip and endpoint_port else endpoint_ip
+                if endpoint in {"", "-", "(none)", "none"}:
+                    if is_disabled and endpoint_snapshot and item["latestHandshakeAt"] > 0:
+                        endpoint_ip = endpoint_snapshot.get("endpoint_ip", "")
+                        endpoint_port = endpoint_snapshot.get("endpoint_port", "")
+                        endpoint = f"{endpoint_ip}:{endpoint_port}" if endpoint_ip and endpoint_port else endpoint_ip
+                    else:
+                        endpoint = ""
                 item["endpoint"] = "" if endpoint in {"", "-", "(none)", "none"} else endpoint
                 endpoint_ip, endpoint_port = split_endpoint(item["endpoint"])
                 item["endpoint_ip"] = endpoint_ip
                 item["endpoint_port"] = endpoint_port
-                item["public_key_fp"] = public_key_fingerprint(peer.get("public_key", ""))
+                item["public_key_fp"] = current_fp
                 item["shared_profile"] = shared_profile_detection(history_clients.get(peer["name"], []))
                 if endpoint_ip:
                     item["endpoint_info"] = lookup_endpoint_ip_info(endpoint_ip, allow_refresh=endpoint_lookup_budget > 0)
@@ -8037,7 +8085,7 @@ class Handler(SimpleHTTPRequestHandler):
                 return
             body = self.json_body()
             if u.path == "/api/tools/generate-i1":
-                sni = str(body.get("sni") or "s1.charles.men").strip()
+                sni = str(body.get("sni") or "").strip() or get_server_domain()
                 mode = str(body.get("mode") or "quic").strip().lower()
                 if mode == "random":
                     res = generate_random_i1(64)
@@ -8050,35 +8098,50 @@ class Handler(SimpleHTTPRequestHandler):
             if u.path == "/api/clients":
                 display_name = safe_name(body.get("name", ""))
                 name, collision = unique_client_config_name(display_name)
+                clear_client_endpoint_history(name)
                 args = []
                 if body.get("expires"):
                     args.append(f"--expires={require_expires(body['expires'])}")
+                if body.get("use_psk"):
+                    args.append("--psk")
+                dpi_profile = str(body.get("dpi_profile") or "").strip().lower()
                 extra_env = {}
                 if "i1" in body and body["i1"]:
                     try:
                         extra_env["AWG_I1_OVERRIDE"] = validate_i1(body["i1"])
                     except Exception:
                         pass
-                elif body.get("mimicry_mode") == "quic" or body.get("mimicry_sni"):
-                    sni = str(body.get("mimicry_sni") or "s1.charles.men").strip()
+                elif dpi_profile in ("quic_stealth", "quic_speed") or body.get("mimicry_mode") == "quic" or body.get("mimicry_sni"):
+                    sni = str(body.get("mimicry_sni") or body.get("sni") or "").strip() or get_server_domain()
                     try:
                         extra_env["AWG_I1_OVERRIDE"] = generate_quic_i1(sni)
                     except Exception:
                         pass
-                elif body.get("mimicry_mode") == "random":
+                elif dpi_profile == "random_noise" or body.get("mimicry_mode") == "random":
                     extra_env["AWG_I1_OVERRIDE"] = generate_random_i1(64)
                 p = run_manage(*args, "add", name, extra_env=extra_env)
                 if p.returncode == 0:
-                    profile = str(body.get("network_profile") or "").strip().lower()
-                    if "network_profile" in body:
-                        if profile in ("home", "home_lan"):
-                            run_manage("modify", name, "MTU", "1420")
-                        else:
-                            run_manage("modify", name, "MTU", "1280")
-                        if profile == "home_lan":
-                            run_manage("modify", name, "AllowedIPs", "0.0.0.0/1, 128.0.0.0/1, ::/1, 8000::/1")
+                    split_lan = body.get("split_lan")
+                    legacy_profile = str(body.get("network_profile") or "").strip().lower()
+                    if split_lan is True or legacy_profile == "home_lan":
+                        run_manage("modify", name, "AllowedIPs", "0.0.0.0/1, 128.0.0.0/1, ::/1, 8000::/1")
+                    elif split_lan is False:
+                        run_manage("modify", name, "AllowedIPs", "0.0.0.0/0, ::/0")
 
-                    set_client_metadata(name, display_name, auth, network_profile=profile)
+                    if dpi_profile == "quic_speed":
+                        run_manage("modify", name, "MTU", "1360")
+                        run_manage("modify", name, "PersistentKeepalive", "35")
+                    elif dpi_profile == "classic":
+                        run_manage("modify", name, "MTU", "1420")
+                    elif dpi_profile in ("quic_stealth", "random_noise"):
+                        run_manage("modify", name, "MTU", "1280")
+                    elif legacy_profile in ("home", "home_lan"):
+                        run_manage("modify", name, "MTU", "1420")
+                    elif legacy_profile == "mobile":
+                        run_manage("modify", name, "MTU", "1280")
+
+                    effective_net_profile = "home_lan" if (split_lan or legacy_profile == "home_lan") else ("home" if (dpi_profile == "classic" or legacy_profile == "home") else "mobile")
+                    set_client_metadata(name, display_name, auth, network_profile=effective_net_profile, dpi_profile=dpi_profile)
                     assigned_to_current_token = False
                     if collision:
                         audit_log(

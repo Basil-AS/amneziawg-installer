@@ -1251,7 +1251,7 @@ function renderServerHealth() {
     ${renderHealthCard("Network", `${network.drops_delta || 0} drops`, `${network.wan_iface || "wan"} / ${overlayIface} · errors ${network.errors_delta || 0}`, network.status || "unknown")}
     ${renderHealthCard("Client Load", `↓ ${speed(clientLoad.client_download_bps || 0)}\n↑ ${speed(clientLoad.client_upload_bps || 0)}`, `peak ↓ ${speed(clientLoad.peak_server_tx_bps || 0)} · ↑ ${speed(clientLoad.peak_server_rx_bps || 0)} · ${clientLoad.active_count || 0}/${clientLoad.client_count || 0} active`, network.status || "unknown")}
     ${renderHealthCard("Web/Link", `${webEdgeLabel} ${webEdgeStatus} / ${overlay.status || "unknown"}`, `python RSS ${bytes(process.rss_bytes || 0)} · FD ${process.fd_count || 0} · link drops ${overlayDrops}`, h.status || "unknown")}
-    ${proxy.active ? renderHealthCard("QUIC Proxy", `UDP 443 → ${proxy.target || "51821"}`, `${proxy.domain || "s1.charles.men"} · ${proxy.sessions_count || 0} sessions`, proxy.status || "ok") : ""}
+    ${proxy.active ? renderHealthCard("QUIC Proxy", `UDP 443 → ${proxy.target || "51821"}`, `${proxy.domain || "Camouflage"} · ${proxy.sessions_count || 0} sessions`, proxy.status || "ok") : ""}
     ${adguard.active ? renderHealthCard("AdGuard Home", "DNS Active", adguard.listener || "10.9.9.1:53", adguard.status || "ok") : ""}
     ${threat.active ? renderHealthCard("Threat Shield", `${threat.banned_count || 0} Banned`, `${threat.banned_drops_packets || 0} dropped · ${threat.honeypot_triggers || 0} traps`, "ok") : ""}
   `;
@@ -3334,13 +3334,27 @@ async function addClient() {
   const result = await clientNameModal();
   if (!result) return;
   const name = typeof result === "string" ? result : result.name;
-  const network_profile = typeof result === "object" ? (result.network_profile || "mobile") : "mobile";
-  const mimicry_mode = typeof result === "object" ? (result.mimicry_mode || "quic") : "quic";
-  const mimicry_sni = typeof result === "object" ? (result.mimicry_sni || "s1.charles.men") : "s1.charles.men";
+  const dpi_profile = typeof result === "object" ? (result.dpi_profile || "quic_stealth") : "quic_stealth";
+  const split_lan = typeof result === "object" ? (result.split_lan !== false) : true;
+  const use_psk = typeof result === "object" ? !!result.use_psk : false;
+
+  const defaultSni = (typeof window !== "undefined" && window.SERVER_CAMOUFLAGE_DOMAIN)
+    || serverInfoState?.endpoint_host
+    || serverInfoState?.server_domain
+    || (window.location.hostname !== "localhost" && !window.location.hostname.match(/^\d+\.\d+\.\d+\.\d+$/) ? window.location.hostname : "")
+    || "vk.com";
+  const mimicry_sni = typeof result === "object" ? (result.mimicry_sni || defaultSni) : defaultSni;
 
   let i1 = "";
+  let mimicry_mode = "none";
+  if (dpi_profile === "quic_stealth" || dpi_profile === "quic_speed") {
+    mimicry_mode = "quic";
+  } else if (dpi_profile === "random_noise") {
+    mimicry_mode = "random";
+  }
+
   try {
-    if (typeof window.generateI1 === "function") {
+    if (typeof window.generateI1 === "function" && mimicry_mode !== "none") {
       i1 = await window.generateI1(mimicry_mode, mimicry_sni);
     }
   } catch (err) {
@@ -3351,7 +3365,9 @@ async function addClient() {
       method: "POST",
       body: JSON.stringify({
         name,
-        network_profile,
+        dpi_profile,
+        split_lan,
+        use_psk,
         mimicry_mode,
         mimicry_sni,
         i1
@@ -3533,7 +3549,7 @@ async function rotateProfile() {
 
 function tuneConfigForPreset(rawText, preset, domain) {
   let lines = rawText.split("\n");
-  const hostDomain = domain || window.location.hostname || "s1.charles.men";
+  const hostDomain = domain || window.location.hostname || "example.com";
 
   if (preset === "mobile") {
     lines = lines.map(line => {
@@ -4602,69 +4618,39 @@ function rotateProfileModal() {
 function clientNameModal() {
   return new Promise(resolve => {
     const dialog = document.createElement("dialog");
-    dialog.className = "w-[min(520px,calc(100vw-32px))] rounded-lg border border-[var(--line)] bg-[var(--panel)] p-0 text-[var(--text)] shadow-xl backdrop:bg-black/55";
-    const defaultPresets = [
-      { value: "s1.charles.men", label: "s1.charles.men (Наш сервер камуфляжа — Рекомендуется)" },
-      { value: "ya.ru", label: "ya.ru (Яндекс Портал)" },
-      { value: "yandex.ru", label: "yandex.ru (Яндекс Сервисы)" },
-      { value: "vk.com", label: "vk.com (ВКонтакте)" },
-      { value: "vk.ru", label: "vk.ru (VK Портал)" },
-      { value: "mail.ru", label: "mail.ru (Почта Mail.ru)" },
-      { value: "ozon.ru", label: "ozon.ru (Маркетплейс Ozon)" },
-      { value: "wildberries.ru", label: "wildberries.ru (Маркетплейс Wildberries)" },
-      { value: "gosuslugi.ru", label: "gosuslugi.ru (Портал Госуслуг РФ)" },
-      { value: "rutube.ru", label: "rutube.ru (Видеохостинг Rutube)" },
-      { value: "cloudflare.com", label: "cloudflare.com (Cloudflare Global CDN)" },
-      { value: "custom", label: "Пользовательский домен (ввести вручную)..." }
-    ];
-    const presets = (window.I1_SNI_PRESETS || defaultPresets);
+    dialog.className = "w-[min(540px,calc(100vw-32px))] rounded-lg border border-[var(--line)] bg-[var(--panel)] p-0 text-[var(--text)] shadow-xl backdrop:bg-black/55";
+    const serverDomain = (typeof window !== "undefined" && window.SERVER_CAMOUFLAGE_DOMAIN)
+      || serverInfoState?.endpoint_host
+      || serverInfoState?.server_domain
+      || (window.location.hostname !== "localhost" && !window.location.hostname.match(/^\d+\.\d+\.\d+\.\d+$/) ? window.location.hostname : "")
+      || "";
+    const presets = typeof window.getCamouflagePresets === "function"
+      ? window.getCamouflagePresets(serverDomain)
+      : (window.I1_SNI_PRESETS || []);
+    const defaultSni = presets[0]?.value || "vk.com";
     const presetOptions = presets.map(p => `<option value="${esc(p.value)}">${esc(p.label)}</option>`).join("");
 
     dialog.innerHTML = `
       <form method="dialog" class="p-4">
-        <h2 class="mb-3 text-base font-semibold">Add Client / Новый клиент</h2>
-        <label class="block text-xs font-semibold uppercase text-[var(--muted)] mb-1" for="clientNameValue">Client name</label>
+        <h2 class="mb-3 text-base font-semibold">Новый клиент / Add Client</h2>
+        <label class="block text-xs font-semibold uppercase text-[var(--muted)] mb-1" for="clientNameValue">Имя клиента / Client name</label>
         <input id="clientNameValue" class="h-11 w-full rounded-md border border-[var(--line)] bg-[var(--soft)] px-3 outline-none focus:border-[var(--accent)]" placeholder="my_phone" autocomplete="off">
-        <p class="mt-1 text-xs text-[var(--muted)]">Examples: my_phone, iphone_15, home-laptop</p>
+        <p class="mt-1 text-xs text-[var(--muted)]">Примеры: my_phone, iphone_15, home-laptop</p>
         <p id="clientNameHint" class="mt-2 hidden text-xs text-[var(--danger)]">${esc(CLIENT_NAME_HINT_RU)} / ${esc(CLIENT_NAME_HINT_EN)}</p>
 
         <div class="mt-4">
-          <label class="block text-xs font-semibold uppercase text-[var(--muted)] mb-2">Network Profile / Оптимизация сети</label>
+          <label class="block text-xs font-semibold uppercase text-[var(--muted)] mb-2">Профиль защиты от блокировок (DPI)</label>
           <div class="grid gap-2 text-xs">
             <label class="flex items-start gap-2.5 p-2.5 rounded-md border border-[var(--line)] bg-[var(--soft)] cursor-pointer hover:border-[var(--accent)]">
-              <input type="radio" name="clientNetworkProfile" value="mobile" checked class="mt-0.5">
-              <div>
-                <strong class="block text-[var(--text)]">📱 Мобильная сеть (LTE / 5G / CGNAT)</strong>
-                <span class="text-[var(--muted)]">MTU 1280 · Защита от фрагментации и мобильного DPI</span>
-              </div>
-            </label>
-            <label class="flex items-start gap-2.5 p-2.5 rounded-md border border-[var(--line)] bg-[var(--soft)] cursor-pointer hover:border-[var(--accent)]">
-              <input type="radio" name="clientNetworkProfile" value="home" class="mt-0.5">
-              <div>
-                <strong class="block text-[var(--text)]">🏠 Домашняя сеть (Wi-Fi / Оптоволокно)</strong>
-                <span class="text-[var(--muted)]">MTU 1420 · Максимальная скорость для ПК и роутеров</span>
-              </div>
-            </label>
-            <label class="flex items-start gap-2.5 p-2.5 rounded-md border border-[var(--line)] bg-[var(--soft)] cursor-pointer hover:border-[var(--accent)]">
-              <input type="radio" name="clientNetworkProfile" value="home_lan" class="mt-0.5">
-              <div>
-                <strong class="block text-[var(--text)]">🛡️ Домашняя + доступ к LAN (Split-LAN)</strong>
-                <span class="text-[var(--muted)]">MTU 1420 · Доступ к домашним принтерам и 192.168.x.x</span>
-              </div>
-            </label>
-          </div>
-        </div>
-
-        <div class="mt-4">
-          <label class="block text-xs font-semibold uppercase text-[var(--muted)] mb-2">Камуфляж DPI (CPS I1 / QUIC Initial)</label>
-          <div class="grid gap-2 text-xs">
-            <label class="flex items-start gap-2.5 p-2.5 rounded-md border border-[var(--line)] bg-[var(--soft)] cursor-pointer hover:border-[var(--accent)]">
-              <input type="radio" name="clientMimicryMode" value="quic" checked class="mt-0.5">
+              <input type="radio" name="clientDpiProfile" value="quic_stealth" checked class="mt-0.5">
               <div class="w-full">
-                <strong class="block text-[var(--text)]">🌐 QUIC Initial (RFC 9000 + TLS 1.3 ClientHello)</strong>
-                <span class="text-[var(--muted)]">Реалистичное рукопожатие HTTP/3 с SNI для обхода блокировок</span>
+                <div class="flex items-center gap-1.5">
+                  <strong class="text-[var(--text)]">🛡️ QUIC v1 Stealth (RFC 9000 Initial + TLS 1.3)</strong>
+                  <span class="rounded bg-[var(--accent)]/15 px-1.5 py-0.5 text-[10px] font-medium text-[var(--accent)]">Рекомендуется</span>
+                </div>
+                <span class="mt-0.5 block text-[var(--muted)]">Маскировка рукопожатия под HTTP/3 QUIC с SNI. MTU 1280 без фрагментации на мобильных операторах.</span>
                 <div id="mimicrySniContainer" class="mt-2.5 pt-2 border-t border-[var(--line)] grid gap-1.5">
-                  <label class="text-[11px] font-semibold uppercase text-[var(--muted)]" for="clientMimicrySni">Целевой домен (SNI):</label>
+                  <label class="text-[11px] font-semibold uppercase text-[var(--muted)]" for="clientMimicrySni">Целевой домен маскировки (SNI):</label>
                   <select id="clientMimicrySni" class="h-9 w-full rounded border border-[var(--line)] bg-[var(--panel)] px-2 text-xs text-[var(--text)] outline-none focus:border-[var(--accent)]">
                     ${presetOptions}
                   </select>
@@ -4672,26 +4658,53 @@ function clientNameModal() {
                 </div>
               </div>
             </label>
-            <label class="flex items-start gap-2.5 p-2 rounded-md border border-[var(--line)] bg-[var(--soft)] cursor-pointer hover:border-[var(--accent)]">
-              <input type="radio" name="clientMimicryMode" value="random" class="mt-0.5">
+            <label class="flex items-start gap-2.5 p-2.5 rounded-md border border-[var(--line)] bg-[var(--soft)] cursor-pointer hover:border-[var(--accent)]">
+              <input type="radio" name="clientDpiProfile" value="quic_speed" class="mt-0.5">
               <div>
-                <strong class="block text-[var(--text)]">🎲 Случайный мусор (Random Noise)</strong>
-                <span class="text-[var(--muted)]">Псевдослучайные байты в начале сессии</span>
+                <strong class="block text-[var(--text)]">⚡ QUIC v1 High-Speed (Широкополосный / Wi-Fi)</strong>
+                <span class="text-[var(--muted)]">QUIC маскировка + MTU 1360 для максимальной скорости на оптоволокне и быстром домашнем Wi-Fi.</span>
               </div>
             </label>
             <label class="flex items-start gap-2.5 p-2 rounded-md border border-[var(--line)] bg-[var(--soft)] cursor-pointer hover:border-[var(--accent)]">
-              <input type="radio" name="clientMimicryMode" value="none" class="mt-0.5">
+              <input type="radio" name="clientDpiProfile" value="random_noise" class="mt-0.5">
               <div>
-                <strong class="block text-[var(--text)]">⚪ Без камуфляжа (None)</strong>
-                <span class="text-[var(--muted)]">Стандартный AWG без CPS I1 пре-пакета</span>
+                <strong class="block text-[var(--text)]">🎲 Высокоэнтропийный шум (Random Noise CPS)</strong>
+                <span class="text-[var(--muted)]">Случайный криптографический пре-пакет (I1) для пробива эвристических DPI-фильтров.</span>
+              </div>
+            </label>
+            <label class="flex items-start gap-2.5 p-2 rounded-md border border-[var(--line)] bg-[var(--soft)] cursor-pointer hover:border-[var(--accent)]">
+              <input type="radio" name="clientDpiProfile" value="classic" class="mt-0.5">
+              <div>
+                <strong class="block text-[var(--text)]">⚙️ Классический AmneziaWG (Без I1 CPS)</strong>
+                <span class="text-[var(--muted)]">Стандартная обфускация AmneziaWG (Jc, S1-S2, H1-H4) с MTU 1420 без дополнительного пакета.</span>
+              </div>
+            </label>
+          </div>
+        </div>
+
+        <div class="mt-4 pt-3 border-t border-[var(--line)]">
+          <label class="block text-xs font-semibold uppercase text-[var(--muted)] mb-2">Сетевые параметры и безопасность</label>
+          <div class="grid gap-2 text-xs">
+            <label class="flex items-start gap-2.5 p-2.5 rounded-md border border-[var(--line)] bg-[var(--soft)] cursor-pointer hover:border-[var(--accent)]">
+              <input type="checkbox" id="clientSplitLan" checked class="mt-0.5 rounded border-[var(--line)]">
+              <div>
+                <strong class="block text-[var(--text)]">🏠 Доступ к локальной сети (Split-LAN)</strong>
+                <span class="text-[var(--muted)]">Исключить 192.168.x.x, 10.x.x.x и 172.16.x.x из туннеля для доступа к домашним принтерам, роутеру и умному дому</span>
+              </div>
+            </label>
+            <label class="flex items-start gap-2.5 p-2.5 rounded-md border border-[var(--line)] bg-[var(--soft)] cursor-pointer hover:border-[var(--accent)]">
+              <input type="checkbox" id="clientUsePsk" class="mt-0.5 rounded border-[var(--line)]">
+              <div>
+                <strong class="block text-[var(--text)]">🔑 PresharedKey (PSK)</strong>
+                <span class="text-[var(--muted)]">Сгенерировать дополнительный симметричный 256-битный ключ (пост-квантовая защита / Shadowrocket)</span>
               </div>
             </label>
           </div>
         </div>
 
         <div class="mt-5 flex justify-end gap-2">
-          <button value="cancel" class="${buttonClasses()}">Cancel</button>
-          <button id="createClientButton" value="ok" class="${primaryButtonClasses()}" disabled>Create</button>
+          <button value="cancel" class="${buttonClasses()}">Отмена / Cancel</button>
+          <button id="createClientButton" value="ok" class="${primaryButtonClasses()}" disabled>Создать / Create</button>
         </div>
       </form>
     `;
@@ -4702,20 +4715,21 @@ function clientNameModal() {
     const sniContainer = dialog.querySelector("#mimicrySniContainer");
     const sniSelect = dialog.querySelector("#clientMimicrySni");
     const customSniInput = dialog.querySelector("#clientCustomSni");
-    const modeRadios = dialog.querySelectorAll("input[name='clientMimicryMode']");
+    const profileRadios = dialog.querySelectorAll("input[name='clientDpiProfile']");
 
-    const updateMimicryUI = () => {
-      const mode = dialog.querySelector("input[name='clientMimicryMode']:checked")?.value || "quic";
-      if (sniContainer) sniContainer.classList.toggle("hidden", mode !== "quic");
+    const updateDpiUI = () => {
+      const profile = dialog.querySelector("input[name='clientDpiProfile']:checked")?.value || "quic_stealth";
+      const isQuic = (profile === "quic_stealth" || profile === "quic_speed");
+      if (sniContainer) sniContainer.classList.toggle("hidden", !isQuic);
       if (customSniInput) {
-        const isCustom = mode === "quic" && sniSelect?.value === "custom";
+        const isCustom = isQuic && sniSelect?.value === "custom";
         customSniInput.classList.toggle("hidden", !isCustom);
         if (isCustom) customSniInput.focus();
       }
     };
 
-    modeRadios.forEach(r => r.addEventListener("change", updateMimicryUI));
-    if (sniSelect) sniSelect.addEventListener("change", updateMimicryUI);
+    profileRadios.forEach(r => r.addEventListener("change", updateDpiUI));
+    if (sniSelect) sniSelect.addEventListener("change", updateDpiUI);
 
     const validate = () => {
       const value = input.value.trim();
@@ -4733,18 +4747,19 @@ function clientNameModal() {
     });
     dialog.addEventListener("close", () => {
       const value = dialog.returnValue === "ok" ? input.value.trim() : null;
-      const profile = dialog.querySelector("input[name='clientNetworkProfile']:checked")?.value || "mobile";
-      const mimicry_mode = dialog.querySelector("input[name='clientMimicryMode']:checked")?.value || "quic";
-      let mimicry_sni = "s1.charles.men";
+      const dpiProfile = dialog.querySelector("input[name='clientDpiProfile']:checked")?.value || "quic_stealth";
+      const splitLan = !!dialog.querySelector("#clientSplitLan")?.checked;
+      const usePsk = !!dialog.querySelector("#clientUsePsk")?.checked;
+      let mimicry_sni = defaultSni;
       if (sniSelect) {
         if (sniSelect.value === "custom") {
-          mimicry_sni = (customSniInput?.value || "").trim() || "s1.charles.men";
+          mimicry_sni = (customSniInput?.value || "").trim() || defaultSni;
         } else {
           mimicry_sni = sniSelect.value;
         }
       }
       dialog.remove();
-      resolve(value ? {name: value, network_profile: profile, mimicry_mode, mimicry_sni} : null);
+      resolve(value ? {name: value, dpi_profile: dpiProfile, split_lan: splitLan, use_psk: usePsk, mimicry_sni} : null);
     }, {once: true});
     dialog.showModal();
     input.focus();

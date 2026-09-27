@@ -1,24 +1,34 @@
 "use strict";
 
-const I1_SNI_PRESETS = [
-  { value: "s1.charles.men", label: "s1.charles.men (Наш сервер камуфляжа — Рекомендуется)" },
-  { value: "ya.ru", label: "ya.ru (Яндекс Портал)" },
-  { value: "yandex.ru", label: "yandex.ru (Яндекс Сервисы)" },
-  { value: "vk.com", label: "vk.com (ВКонтакте)" },
-  { value: "vk.ru", label: "vk.ru (VK Портал)" },
-  { value: "mail.ru", label: "mail.ru (Почта Mail.ru)" },
-  { value: "ozon.ru", label: "ozon.ru (Маркетплейс Ozon)" },
-  { value: "wildberries.ru", label: "wildberries.ru (Маркетплейс Wildberries)" },
-  { value: "gosuslugi.ru", label: "gosuslugi.ru (Портал Госуслуг РФ)" },
-  { value: "rutube.ru", label: "rutube.ru (Видеохостинг Rutube)" },
-  { value: "cloudflare.com", label: "cloudflare.com (Cloudflare Global CDN)" },
-  { value: "custom", label: "Пользовательский домен (ввести вручную)..." }
-];
+function getCamouflagePresets(serverDomain = "") {
+  const presets = [];
+  if (serverDomain && serverDomain !== "localhost" && !serverDomain.match(/^\d+\.\d+\.\d+\.\d+$/)) {
+    presets.push({ value: serverDomain, label: `${serverDomain} (Текущий домен сервера — Рекомендуется)` });
+  }
+  presets.push(
+    { value: "vk.com", label: "vk.com (ВКонтакте — Белый список RU)" },
+    { value: "ya.ru", label: "ya.ru (Яндекс Портал — Белый список RU)" },
+    { value: "yandex.ru", label: "yandex.ru (Яндекс Сервисы)" },
+    { value: "vk.ru", label: "vk.ru (VK Портал)" },
+    { value: "mail.ru", label: "mail.ru (Почта Mail.ru)" },
+    { value: "ozon.ru", label: "ozon.ru (Маркетплейс Ozon)" },
+    { value: "wildberries.ru", label: "wildberries.ru (Маркетплейс Wildberries)" },
+    { value: "gosuslugi.ru", label: "gosuslugi.ru (Портал Госуслуг РФ)" },
+    { value: "rutube.ru", label: "rutube.ru (Видеохостинг Rutube)" },
+    { value: "cloudflare.com", label: "cloudflare.com (Cloudflare Global CDN)" },
+    { value: "custom", label: "Пользовательский домен (ввести вручную)..." }
+  );
+  return presets;
+}
 
+const I1_SNI_PRESETS = getCamouflagePresets();
 const I1_SNI_CANDIDATES = I1_SNI_PRESETS.filter(p => p.value !== "custom").map(p => p.value);
 
 function pickI1Sni() {
-  return "s1.charles.men";
+  if (typeof window !== "undefined" && window.SERVER_CAMOUFLAGE_DOMAIN) {
+    return window.SERVER_CAMOUFLAGE_DOMAIN;
+  }
+  return "vk.com";
 }
 
 function quicU8a(value) {
@@ -304,7 +314,7 @@ function generateRandomI1(length = 64) {
 }
 
 async function generateQuicI1(sni, padTo = 700) {
-  sni = (sni && String(sni).trim()) || "s1.charles.men";
+  sni = (sni && String(sni).trim()) || pickI1Sni();
   const dcid = new Uint8Array(8);
   const cryptoObj = (typeof window !== "undefined" && window.crypto) || (typeof crypto !== "undefined" && crypto);
   cryptoObj.getRandomValues(dcid);
@@ -323,11 +333,12 @@ async function generateQuicI1(sni, padTo = 700) {
 async function generateI1(sni, level = 0, padTo = 700) {
   if (sni === "none") return "";
   if (sni === "random") return generateRandomI1(64);
-  if (sni === "quic") return generateQuicI1(level || "s1.charles.men", padTo);
+  if (sni === "quic") return generateQuicI1((typeof level === "string" && level) ? level : pickI1Sni(), padTo);
   return generateQuicI1(sni, padTo);
 }
 
 if (typeof window !== "undefined") {
+  window.getCamouflagePresets = getCamouflagePresets;
   window.I1_SNI_PRESETS = I1_SNI_PRESETS;
   window.I1_SNI_CANDIDATES = I1_SNI_CANDIDATES;
   window.pickI1Sni = pickI1Sni;
@@ -338,6 +349,7 @@ if (typeof window !== "undefined") {
 
 if (typeof module !== "undefined" && module.exports) {
   module.exports = {
+    getCamouflagePresets,
     I1_SNI_PRESETS,
     I1_SNI_CANDIDATES,
     pickI1Sni,

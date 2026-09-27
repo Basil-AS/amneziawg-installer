@@ -4857,3 +4857,146 @@ JS
     grep -qF '.geo-confidence-medium' "$BATS_TEST_DIRNAME/../web/style.css"
     grep -qF '.geo-confidence-low' "$BATS_TEST_DIRNAME/../web/style.css"
 }
+
+@test "web panel client creation supports DPI profiles, split-lan default, and prevents ghost endpoints" {
+    command -v python3 &>/dev/null || skip "python3 not available"
+    local tmp
+    tmp=$(mktemp -d)
+    mkdir -p "$tmp/web"
+    cat > "$tmp/awg0.conf" <<'CONF'
+[Interface]
+PrivateKey = PRIV
+Address = 10.9.9.1/24
+
+[Peer]
+#_Name = new_peer
+PublicKey = PUB123
+AllowedIPs = 10.9.9.10/32
+CONF
+    AWG_DIR="$tmp" SERVER_CONF_FILE="$tmp/awg0.conf" REPO_ROOT="$BATS_TEST_DIRNAME/.." python3 - <<'PY'
+import io
+import json
+import os
+import sys
+from pathlib import Path
+
+root = Path(os.environ["REPO_ROOT"])
+sys.path.insert(0, str(root / "web"))
+import server
+
+# Verify no hardcoded domain in web files
+app_js = (root / "web" / "app.js").read_text(encoding="utf-8")
+i1_js = (root / "web" / "awg_i1.js").read_text(encoding="utf-8")
+server_py = (root / "web" / "server.py").read_text(encoding="utf-8")
+
+assert "charles.men" not in i1_js, "hardcoded domain found in awg_i1.js"
+assert "charles.men" not in app_js, "hardcoded domain found in app.js"
+assert "clientDpiProfile" in app_js
+assert "clientSplitLan" in app_js
+assert "clientUsePsk" in app_js
+assert "quic_stealth" in app_js
+assert "quic_speed" in app_js
+
+server.CONFIG_FILE = Path(os.environ["SERVER_CONF_FILE"])
+server.CLIENT_ENDPOINT_HISTORY_FILE = Path(f"{os.environ['SERVER_CONF_FILE']}.history.json")
+server.CLIENT_METADATA_FILE = Path(f"{os.environ['SERVER_CONF_FILE']}.meta.json")
+server.TOKENS_FILE = Path(f"{os.environ['SERVER_CONF_FILE']}.tokens.json")
+
+# Populate an old historical endpoint for new_peer
+server.write_client_endpoint_history({
+    "clients": {
+        "new_peer": [{
+            "endpoint_ip": "198.51.100.77",
+            "endpoint_port": 44444,
+            "latest_handshake": 1700000000,
+            "public_key_fp": "OLD_FP"
+        }]
+    }
+})
+
+calls = []
+def fake_run_manage(*args, timeout=60, extra_env=None):
+    calls.append({"args": args, "extra_env": extra_env or {}})
+    class Result:
+        returncode = 0
+        stdout = "ok"
+        stderr = ""
+    return Result()
+
+server.run_manage = fake_run_manage
+
+# 1. Test GET /api/clients: new_peer is active (not disabled) and has no live handshake (0).
+# It MUST NOT inherit historical endpoint from history cache!
+class Headers(dict):
+    def get(self, key, default=None):
+        return super().get(key, default)
+
+super_token = "s-test-token"
+super_hash = server.token_hash(super_token)
+server.write_tokens({"super_token_hash": super_hash, "users": {super_hash: {"name": "admin", "role": "super", "clients": []}}})
+server.client_stats_map = lambda force=False: {}
+
+h = object.__new__(server.Handler)
+h.path = "/api/clients"
+h.client_address = ("127.0.0.1", 12345)
+h.rfile = io.BytesIO()
+h.wfile = io.BytesIO()
+h.responses = []
+h.headers_sent = []
+h.headers = Headers({"Host": "127.0.0.1", "Authorization": f"Bearer {super_token}"})
+h.send_response = lambda code: h.responses.append(code)
+h.send_error = lambda code, *args, **kwargs: h.responses.append(code)
+h.send_header = lambda key, value: h.headers_sent.append((key, value))
+h.end_headers = lambda: None
+
+h.do_GET()
+assert h.responses == [200]
+payload = json.loads(h.wfile.getvalue().decode())
+peer_row = next(r for r in payload["clients"] if r["config_name"] == "new_peer")
+assert peer_row["endpoint"] == "", f"Expected empty endpoint for active client without live handshake, got: {peer_row['endpoint']}"
+assert peer_row["latestHandshakeAt"] == 0
+
+# 2. Test POST /api/clients with DPI profile, Split-LAN and PSK
+h_post = object.__new__(server.Handler)
+h_post.path = "/api/clients"
+h_post.client_address = ("127.0.0.1", 12345)
+req_body = json.dumps({
+    "name": "stealth_user",
+    "dpi_profile": "quic_stealth",
+    "split_lan": True,
+    "use_psk": True,
+    "mimicry_sni": "vk.com"
+}).encode()
+h_post.rfile = io.BytesIO(req_body)
+h_post.wfile = io.BytesIO()
+h_post.responses = []
+h_post.headers_sent = []
+h_post.headers = Headers({"Host": "127.0.0.1", "Authorization": f"Bearer {super_token}", "Content-Length": str(len(req_body))})
+h_post.send_response = lambda code: h_post.responses.append(code)
+h_post.send_error = lambda code, *args, **kwargs: h_post.responses.append(code)
+h_post.send_header = lambda key, value: h_post.headers_sent.append((key, value))
+h_post.end_headers = lambda: None
+
+server.RATE.clear()
+h_post.do_POST()
+assert h_post.responses == [200]
+
+# Check calls:
+# 1. manage --psk add stealth_user (with AWG_I1_OVERRIDE)
+add_call = next(c for c in calls if "add" in c["args"])
+assert "--psk" in add_call["args"], f"Expected --psk in add call, got {add_call}"
+assert "AWG_I1_OVERRIDE" in add_call["extra_env"]
+assert add_call["extra_env"]["AWG_I1_OVERRIDE"].startswith("<b 0x")
+
+# 2. manage modify stealth_user AllowedIPs 0.0.0.0/1, 128.0.0.0/1, ::/1, 8000::/1
+modify_ips = next(c for c in calls if c["args"] == ("modify", "stealth_user", "AllowedIPs", "0.0.0.0/1, 128.0.0.0/1, ::/1, 8000::/1"))
+assert modify_ips is not None
+
+# 3. manage modify stealth_user MTU 1280
+modify_mtu = next(c for c in calls if c["args"] == ("modify", "stealth_user", "MTU", "1280"))
+assert modify_mtu is not None
+
+PY
+    rm -rf "$tmp"
+}
+
