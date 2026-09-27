@@ -8162,10 +8162,14 @@ class Handler(SimpleHTTPRequestHandler):
                 if p.returncode == 0:
                     split_lan = body.get("split_lan")
                     legacy_profile = str(body.get("network_profile") or "").strip().lower()
+                    cfg = parse_config()
+                    has_v6 = str(cfg.get("AWG_IPV6_ENABLED") or "").strip() == "1"
                     if split_lan is True or legacy_profile == "home_lan":
-                        run_manage("modify", name, "AllowedIPs", "0.0.0.0/1, 128.0.0.0/1, ::/1, 8000::/1")
+                        allowed = "0.0.0.0/1, 128.0.0.0/1, ::/1, 8000::/1" if has_v6 else "0.0.0.0/1, 128.0.0.0/1"
+                        run_manage("modify", name, "AllowedIPs", allowed)
                     elif split_lan is False:
-                        run_manage("modify", name, "AllowedIPs", "0.0.0.0/0, ::/0")
+                        allowed = "0.0.0.0/0, ::/0" if has_v6 else "0.0.0.0/0"
+                        run_manage("modify", name, "AllowedIPs", allowed)
 
                     if dpi_profile == "quic_speed":
                         run_manage("modify", name, "MTU", "1360")

@@ -1397,8 +1397,8 @@ IPV6_ENABLED="${AWG_IPV6_ENABLED:-0}"
 IPV6_MODE="$(normalize_awg_ipv6_mode "${AWG_IPV6_MODE:-legacy}" 2>/dev/null || echo legacy)"
 IPV6_SUBNET="${AWG_IPV6_SUBNET:-}"
 AWG_MTU="${AWG_MTU:-1280}"
-MSS4="$(( ${AWG_MTU:-1280} - 40 ))"
-MSS6="$(( ${AWG_MTU:-1280} - 60 ))"
+MSS4="$(( ${AWG_MTU:-1280} - 60 ))"
+MSS6="$(( ${AWG_MTU:-1280} - 80 ))"
 P2P_RULES="${p2p}"
 SERVER_CONF_FILE="${SERVER_CONF_FILE:-/etc/amnezia/amneziawg/awg0.conf}"
 
@@ -1463,8 +1463,8 @@ IPV6_ENABLED="${AWG_IPV6_ENABLED:-0}"
 IPV6_MODE="$(normalize_awg_ipv6_mode "${AWG_IPV6_MODE:-legacy}" 2>/dev/null || echo legacy)"
 IPV6_SUBNET="${AWG_IPV6_SUBNET:-}"
 AWG_MTU="${AWG_MTU:-1280}"
-MSS4="$(( ${AWG_MTU:-1280} - 40 ))"
-MSS6="$(( ${AWG_MTU:-1280} - 60 ))"
+MSS4="$(( ${AWG_MTU:-1280} - 60 ))"
+MSS6="$(( ${AWG_MTU:-1280} - 80 ))"
 P2P_RULES="${p2p}"
 SERVER_CONF_FILE="${SERVER_CONF_FILE:-/etc/amnezia/amneziawg/awg0.conf}"
 
@@ -3408,7 +3408,7 @@ sync_clients_hosts() {
         } >> "$tmp"
     fi
 
-    if mv "$tmp" "$hosts_file"; then
+    if mv -f "$tmp" "$hosts_file"; then
         chmod 644 "$hosts_file" 2>/dev/null || true
         log_debug "hosts updated for AmneziaWG clients: $hosts_file"
     else

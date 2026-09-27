@@ -1507,7 +1507,7 @@ sudo systemctl restart awg-quick@awg0
 
 ### Automatic MSS clamp (since v5.17.0)
 
-Starting with v5.17.0 the server additionally clamps the TCP MSS to the tunnel size. This is a `TCPMSS` rule in the `mangle` table's `FORWARD` chain, added as separate commands in the `PostUp`/`PostDown` of `awg0.conf`. The value is derived from `MTU` (1280 by default): MSS 1240 for IPv4 and 1220 for IPv6, in both directions.
+Starting with v5.17.0 the server additionally clamps the TCP MSS to the tunnel size. This is a `TCPMSS` rule in the `mangle` table's `FORWARD` chain, added as separate commands in the `PostUp`/`PostDown` of `awg0.conf`. The value is derived from `MTU` (1280 by default): MSS 1220 for IPv4 (accounting for 20 bytes of TCP options/RFC 7323 timestamps) and 1200 for IPv6, in both directions.
 
 **Why:** even with `MTU = 1280`, large pages and downloads sometimes stall on mobile carriers, behind double-NAT, and in a two-server cascade. The cause is a PMTU blackhole: when ICMP "Fragmentation needed" (or ICMPv6 "Packet Too Big" for IPv6) is filtered along the path, oversized TCP segments with the DF flag are silently dropped at the tunnel, and the connection hangs on large transfers (small requests still go through). The MSS clamp tells both sides a tunnel-safe segment size up front, so those packets never appear. It complements `MTU = 1280` rather than replacing it.
 
