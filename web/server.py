@@ -1545,7 +1545,16 @@ def collect_server_health(force=False):
         client_load = client_traffic_load(now=now)
         drops_delta = wan_delta["drops_delta"] + vpn_delta["drops_delta"]
         errors_delta = wan_delta["errors_delta"] + vpn_delta["errors_delta"]
-        network_status = "warn" if drops_delta or errors_delta else "ok"
+        wan_drop_pct = wan_delta.get("drop_pct") or 0
+        wan_error_pct = wan_delta.get("error_pct") or 0
+        vpn_drop_pct = vpn_delta.get("drop_pct") or 0
+        vpn_error_pct = vpn_delta.get("error_pct") or 0
+        has_network_warn = (
+            (drops_delta >= 15 and (wan_drop_pct >= 2.0 or vpn_drop_pct >= 2.0))
+            or (errors_delta >= 15 and (wan_error_pct >= 2.0 or vpn_error_pct >= 2.0))
+            or (drops_delta >= 100 or errors_delta >= 50)
+        )
+        network_status = "warn" if has_network_warn else "ok"
 
         snmp = read_proc_net_table("/proc/net/snmp")
         netstat = read_proc_net_table("/proc/net/netstat")
@@ -2376,18 +2385,28 @@ def summarize_health_history(rows):
     errors_delta = sum(counter_delta(rows, key) for key in (
         "wan_rx_errors", "wan_tx_errors", "vpn_rx_errors", "vpn_tx_errors",
     ))
+    packets_delta = sum(counter_delta(rows, key) for key in (
+        "wan_rx_packets", "wan_tx_packets", "vpn_rx_packets", "vpn_tx_packets",
+    ))
+    drop_pct = (100.0 * drops_delta / (packets_delta + drops_delta)) if (packets_delta + drops_delta) > 0 else 0
+    error_pct = (100.0 * errors_delta / (packets_delta + errors_delta)) if (packets_delta + errors_delta) > 0 else 0
+    has_net_warn = (
+        (drops_delta >= 30 and drop_pct >= 2.0)
+        or (errors_delta >= 30 and error_pct >= 2.0)
+        or (drops_delta >= 200 or errors_delta >= 100)
+    )
     max_rss = max_value(rows, "python_rss_bytes")
     current_rss = safe_int(rows[-1].get("python_rss_bytes")) if rows else None
     rss_growth_ratio = (max_rss / current_rss) if current_rss else None
     status = "ok"
     if critical_count or (max_value(rows, "cpu_usage_percent") or 0) >= 90 or (max_value(rows, "memory_used_percent") or 0) >= 90:
         status = "critical"
-    elif warn_count or drops_delta or errors_delta or (max_value(rows, "cpu_usage_percent") or 0) >= 75 or (max_value(rows, "memory_used_percent") or 0) >= 80:
+    elif warn_count or has_net_warn or (max_value(rows, "cpu_usage_percent") or 0) >= 75 or (max_value(rows, "memory_used_percent") or 0) >= 80:
         status = "warn"
     notes = []
-    if drops_delta:
+    if drops_delta >= 15:
         notes.append(f"Interface drops increased +{drops_delta}.")
-    if errors_delta:
+    if errors_delta >= 15:
         notes.append(f"Interface errors increased +{errors_delta}.")
     if rss_growth_ratio and rss_growth_ratio >= 2:
         notes.append("Python RSS peak is more than 2x current RSS.")
