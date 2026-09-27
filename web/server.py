@@ -13,6 +13,7 @@ import shlex
 import shutil
 import socket
 import ssl
+import struct
 import subprocess
 import sys
 import threading
@@ -24,6 +25,15 @@ from pathlib import Path
 from urllib.parse import parse_qs, quote, unquote, urlencode, urlparse
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
+
+try:
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+    from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+    from cryptography.hazmat.primitives import hashes
+    HAVE_CRYPTOGRAPHY = True
+except ImportError:
+    HAVE_CRYPTOGRAPHY = False
 
 AWG_DIR = Path(os.environ.get("AWG_DIR", "/root/awg"))
 WEB_DIR = AWG_DIR / "web"
@@ -5692,6 +5702,101 @@ def validate_i1(value: str) -> str:
     return value
 
 
+def _quic_varint(n: int) -> bytes:
+    if n < 0x40:
+        return bytes([n])
+    elif n < 0x4000:
+        return struct.pack(">H", 0x4000 | n)
+    elif n < 0x40000000:
+        return struct.pack(">I", 0x80000000 | n)
+    else:
+        return struct.pack(">Q", 0xC000000000000000 | n)
+
+
+def _hkdf_expand_label(secret: bytes, label: str, context: bytes, length: int) -> bytes:
+    full_label = b"tls13 " + label.encode("ascii")
+    info = struct.pack(">H", length) + bytes([len(full_label)]) + full_label + bytes([len(context)]) + context
+    hkdf = HKDF(algorithm=hashes.SHA256(), length=length, salt=None, info=info)
+    return hkdf.derive(secret)
+
+
+def _build_quic_client_hello(sni: str) -> bytes:
+    random_bytes = secrets.token_bytes(32)
+    cipher_suites = b"\x00\x06\x13\x01\x13\x02\x13\x03"
+    compression = b"\x01\x00"
+
+    clean_sni = (sni or "s1.charles.men").strip().encode("ascii", errors="ignore")[:253]
+    sni_entry = b"\x00" + struct.pack(">H", len(clean_sni)) + clean_sni
+    ext_sni = b"\x00\x00" + struct.pack(">H", len(sni_entry) + 2) + struct.pack(">H", len(sni_entry)) + sni_entry
+    ext_versions = b"\x00\x2b\x00\x03\x02\x03\x04"
+    ext_alpn = b"\x00\x10\x00\x05\x00\x03\x02h3"
+    ext_groups = b"\x00\x0a\x00\x04\x00\x02\x00\x1d"
+    key_share_data = b"\x00\x1d\x00\x20" + secrets.token_bytes(32)
+    ext_key_share = b"\x00\x33" + struct.pack(">H", len(key_share_data) + 2) + struct.pack(">H", len(key_share_data)) + key_share_data
+
+    extensions = ext_sni + ext_versions + ext_alpn + ext_groups + ext_key_share
+    ext_block = struct.pack(">H", len(extensions)) + extensions
+
+    body = b"\x03\x03" + random_bytes + b"\x00" + cipher_suites + compression + ext_block
+    ch = b"\x01" + struct.pack(">I", len(body))[1:] + body
+    return ch
+
+
+def generate_random_i1(length: int = 64) -> str:
+    return f"<b 0x{secrets.token_hex(length)}>"
+
+
+def generate_quic_i1(sni: str = "s1.charles.men", pad_to: int = 700) -> str:
+    """Generate an authentic RFC 9000 QUIC Initial packet with TLS 1.3 ClientHello."""
+    if not HAVE_CRYPTOGRAPHY:
+        return generate_random_i1(64)
+    ch = _build_quic_client_hello(sni)
+    crypto_frame = b"\x06" + _quic_varint(0) + _quic_varint(len(ch)) + ch
+
+    if len(crypto_frame) < pad_to:
+        payload = crypto_frame + b"\x00" * (pad_to - len(crypto_frame))
+    else:
+        payload = crypto_frame
+
+    dcid = secrets.token_bytes(8)
+    scid = b""
+    pkn = b"\x00"
+
+    salt = bytes.fromhex("38762cf7f55934b34d179ae6a4c80cadccbb7f0a")
+    hkdf_extract = HKDF(algorithm=hashes.SHA256(), length=32, salt=salt, info=None)
+    initial_secret = hkdf_extract.derive(dcid)
+
+    client_secret = _hkdf_expand_label(initial_secret, "client in", b"", 32)
+    key = _hkdf_expand_label(client_secret, "quic key", b"", 16)
+    iv = _hkdf_expand_label(client_secret, "quic iv", b"", 12)
+    hp = _hkdf_expand_label(client_secret, "quic hp", b"", 16)
+
+    packet_len = len(pkn) + len(payload) + 16
+    header = bytes([0xC0]) + struct.pack(">I", 1) + bytes([len(dcid)]) + dcid + bytes([len(scid)]) + scid + _quic_varint(0) + _quic_varint(packet_len) + pkn
+
+    nonce = bytearray(iv)
+    nonce[-1] ^= pkn[0]
+
+    aesgcm = AESGCM(key)
+    ciphertext = aesgcm.encrypt(bytes(nonce), payload, header)
+
+    packet = bytearray(header + ciphertext)
+
+    sample_offset = len(header)
+    sample = packet[sample_offset : sample_offset + 16]
+
+    cipher = Cipher(algorithms.AES(hp), modes.ECB())
+    encryptor = cipher.encryptor()
+    mask = encryptor.update(sample) + encryptor.finalize()
+
+    packet[0] ^= (mask[0] & 0x0F)
+    pkn_offset = len(header) - len(pkn)
+    for i in range(len(pkn)):
+        packet[pkn_offset + i] ^= mask[1 + i]
+
+    return f"<b 0x{bytes(packet).hex()}>"
+
+
 def require_rotate_preset(value):
     if value not in {"default", "balanced", "mobile", "stealth", "compatibility"}:
         raise ValueError("invalid preset")
@@ -7591,6 +7696,18 @@ class Handler(SimpleHTTPRequestHandler):
             payload, status = adguard_api(f"querylog?limit={limit}")
             self.send_json(payload, status)
             return
+        if u.path == "/api/tools/generate-i1":
+            query = parse_qs(u.query)
+            sni = (query.get("sni") or ["s1.charles.men"])[0].strip()
+            mode = (query.get("mode") or ["quic"])[0].strip().lower()
+            if mode == "random":
+                res = generate_random_i1(64)
+            elif mode == "none":
+                res = ""
+            else:
+                res = generate_quic_i1(sni)
+            self.send_json({"ok": True, "sni": sni, "mode": mode, "i1": res})
+            return
         if u.path == "/api/clients/audit":
             if not self.require_super(auth):
                 return
@@ -7919,6 +8036,17 @@ class Handler(SimpleHTTPRequestHandler):
                 self.send_json({"error": f"geoip auto-update {action} failed", "stderr": p.stderr}, 500)
                 return
             body = self.json_body()
+            if u.path == "/api/tools/generate-i1":
+                sni = str(body.get("sni") or "s1.charles.men").strip()
+                mode = str(body.get("mode") or "quic").strip().lower()
+                if mode == "random":
+                    res = generate_random_i1(64)
+                elif mode == "none":
+                    res = ""
+                else:
+                    res = generate_quic_i1(sni)
+                self.send_json({"ok": True, "sni": sni, "mode": mode, "i1": res})
+                return
             if u.path == "/api/clients":
                 display_name = safe_name(body.get("name", ""))
                 name, collision = unique_client_config_name(display_name)
@@ -7931,15 +8059,24 @@ class Handler(SimpleHTTPRequestHandler):
                         extra_env["AWG_I1_OVERRIDE"] = validate_i1(body["i1"])
                     except Exception:
                         pass
+                elif body.get("mimicry_mode") == "quic" or body.get("mimicry_sni"):
+                    sni = str(body.get("mimicry_sni") or "s1.charles.men").strip()
+                    try:
+                        extra_env["AWG_I1_OVERRIDE"] = generate_quic_i1(sni)
+                    except Exception:
+                        pass
+                elif body.get("mimicry_mode") == "random":
+                    extra_env["AWG_I1_OVERRIDE"] = generate_random_i1(64)
                 p = run_manage(*args, "add", name, extra_env=extra_env)
                 if p.returncode == 0:
-                    profile = str(body.get("network_profile") or "mobile").strip().lower()
-                    if profile in ("home", "home_lan"):
-                        run_manage("modify", name, "MTU", "1420")
-                    else:
-                        run_manage("modify", name, "MTU", "1280")
-                    if profile == "home_lan":
-                        run_manage("modify", name, "AllowedIPs", "0.0.0.0/1, 128.0.0.0/1, ::/1, 8000::/1")
+                    profile = str(body.get("network_profile") or "").strip().lower()
+                    if "network_profile" in body:
+                        if profile in ("home", "home_lan"):
+                            run_manage("modify", name, "MTU", "1420")
+                        else:
+                            run_manage("modify", name, "MTU", "1280")
+                        if profile == "home_lan":
+                            run_manage("modify", name, "AllowedIPs", "0.0.0.0/1, 128.0.0.0/1, ::/1, 8000::/1")
 
                     set_client_metadata(name, display_name, auth, network_profile=profile)
                     assigned_to_current_token = False

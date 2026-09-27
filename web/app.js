@@ -3334,18 +3334,29 @@ async function addClient() {
   const result = await clientNameModal();
   if (!result) return;
   const name = typeof result === "string" ? result : result.name;
-  const network_profile = typeof result === "object" ? result.network_profile : "mobile";
+  const network_profile = typeof result === "object" ? (result.network_profile || "mobile") : "mobile";
+  const mimicry_mode = typeof result === "object" ? (result.mimicry_mode || "quic") : "quic";
+  const mimicry_sni = typeof result === "object" ? (result.mimicry_sni || "s1.charles.men") : "s1.charles.men";
+
   let i1 = "";
   try {
-    if (typeof window.generateI1 === "function" && typeof window.pickI1Sni === "function" && window.crypto?.subtle) {
-      const sni = window.pickI1Sni();
-      i1 = await window.generateI1(sni, 0);
+    if (typeof window.generateI1 === "function") {
+      i1 = await window.generateI1(mimicry_mode, mimicry_sni);
     }
   } catch (err) {
     console.warn("Could not generate I1 in browser:", err);
   }
   try {
-    await api("/api/clients", {method: "POST", body: JSON.stringify({name, network_profile, i1})});
+    await api("/api/clients", {
+      method: "POST",
+      body: JSON.stringify({
+        name,
+        network_profile,
+        mimicry_mode,
+        mimicry_sni,
+        i1
+      })
+    });
     showToast("Client added");
     await loadClients();
     if (statusState.role === "super") await loadTokens();
@@ -4591,7 +4602,24 @@ function rotateProfileModal() {
 function clientNameModal() {
   return new Promise(resolve => {
     const dialog = document.createElement("dialog");
-    dialog.className = "w-[min(460px,calc(100vw-32px))] rounded-lg border border-[var(--line)] bg-[var(--panel)] p-0 text-[var(--text)] shadow-xl backdrop:bg-black/55";
+    dialog.className = "w-[min(520px,calc(100vw-32px))] rounded-lg border border-[var(--line)] bg-[var(--panel)] p-0 text-[var(--text)] shadow-xl backdrop:bg-black/55";
+    const defaultPresets = [
+      { value: "s1.charles.men", label: "s1.charles.men (Наш сервер камуфляжа — Рекомендуется)" },
+      { value: "ya.ru", label: "ya.ru (Яндекс Портал)" },
+      { value: "yandex.ru", label: "yandex.ru (Яндекс Сервисы)" },
+      { value: "vk.com", label: "vk.com (ВКонтакте)" },
+      { value: "vk.ru", label: "vk.ru (VK Портал)" },
+      { value: "mail.ru", label: "mail.ru (Почта Mail.ru)" },
+      { value: "ozon.ru", label: "ozon.ru (Маркетплейс Ozon)" },
+      { value: "wildberries.ru", label: "wildberries.ru (Маркетплейс Wildberries)" },
+      { value: "gosuslugi.ru", label: "gosuslugi.ru (Портал Госуслуг РФ)" },
+      { value: "rutube.ru", label: "rutube.ru (Видеохостинг Rutube)" },
+      { value: "cloudflare.com", label: "cloudflare.com (Cloudflare Global CDN)" },
+      { value: "custom", label: "Пользовательский домен (ввести вручную)..." }
+    ];
+    const presets = (window.I1_SNI_PRESETS || defaultPresets);
+    const presetOptions = presets.map(p => `<option value="${esc(p.value)}">${esc(p.label)}</option>`).join("");
+
     dialog.innerHTML = `
       <form method="dialog" class="p-4">
         <h2 class="mb-3 text-base font-semibold">Add Client / Новый клиент</h2>
@@ -4627,6 +4655,40 @@ function clientNameModal() {
           </div>
         </div>
 
+        <div class="mt-4">
+          <label class="block text-xs font-semibold uppercase text-[var(--muted)] mb-2">Камуфляж DPI (CPS I1 / QUIC Initial)</label>
+          <div class="grid gap-2 text-xs">
+            <label class="flex items-start gap-2.5 p-2.5 rounded-md border border-[var(--line)] bg-[var(--soft)] cursor-pointer hover:border-[var(--accent)]">
+              <input type="radio" name="clientMimicryMode" value="quic" checked class="mt-0.5">
+              <div class="w-full">
+                <strong class="block text-[var(--text)]">🌐 QUIC Initial (RFC 9000 + TLS 1.3 ClientHello)</strong>
+                <span class="text-[var(--muted)]">Реалистичное рукопожатие HTTP/3 с SNI для обхода блокировок</span>
+                <div id="mimicrySniContainer" class="mt-2.5 pt-2 border-t border-[var(--line)] grid gap-1.5">
+                  <label class="text-[11px] font-semibold uppercase text-[var(--muted)]" for="clientMimicrySni">Целевой домен (SNI):</label>
+                  <select id="clientMimicrySni" class="h-9 w-full rounded border border-[var(--line)] bg-[var(--panel)] px-2 text-xs text-[var(--text)] outline-none focus:border-[var(--accent)]">
+                    ${presetOptions}
+                  </select>
+                  <input id="clientCustomSni" type="text" placeholder="например, rutube.ru или example.com" class="hidden h-9 w-full rounded border border-[var(--line)] bg-[var(--panel)] px-2.5 text-xs text-[var(--text)] outline-none focus:border-[var(--accent)]">
+                </div>
+              </div>
+            </label>
+            <label class="flex items-start gap-2.5 p-2 rounded-md border border-[var(--line)] bg-[var(--soft)] cursor-pointer hover:border-[var(--accent)]">
+              <input type="radio" name="clientMimicryMode" value="random" class="mt-0.5">
+              <div>
+                <strong class="block text-[var(--text)]">🎲 Случайный мусор (Random Noise)</strong>
+                <span class="text-[var(--muted)]">Псевдослучайные байты в начале сессии</span>
+              </div>
+            </label>
+            <label class="flex items-start gap-2.5 p-2 rounded-md border border-[var(--line)] bg-[var(--soft)] cursor-pointer hover:border-[var(--accent)]">
+              <input type="radio" name="clientMimicryMode" value="none" class="mt-0.5">
+              <div>
+                <strong class="block text-[var(--text)]">⚪ Без камуфляжа (None)</strong>
+                <span class="text-[var(--muted)]">Стандартный AWG без CPS I1 пре-пакета</span>
+              </div>
+            </label>
+          </div>
+        </div>
+
         <div class="mt-5 flex justify-end gap-2">
           <button value="cancel" class="${buttonClasses()}">Cancel</button>
           <button id="createClientButton" value="ok" class="${primaryButtonClasses()}" disabled>Create</button>
@@ -4637,6 +4699,24 @@ function clientNameModal() {
     const input = dialog.querySelector("#clientNameValue");
     const hint = dialog.querySelector("#clientNameHint");
     const create = dialog.querySelector("#createClientButton");
+    const sniContainer = dialog.querySelector("#mimicrySniContainer");
+    const sniSelect = dialog.querySelector("#clientMimicrySni");
+    const customSniInput = dialog.querySelector("#clientCustomSni");
+    const modeRadios = dialog.querySelectorAll("input[name='clientMimicryMode']");
+
+    const updateMimicryUI = () => {
+      const mode = dialog.querySelector("input[name='clientMimicryMode']:checked")?.value || "quic";
+      if (sniContainer) sniContainer.classList.toggle("hidden", mode !== "quic");
+      if (customSniInput) {
+        const isCustom = mode === "quic" && sniSelect?.value === "custom";
+        customSniInput.classList.toggle("hidden", !isCustom);
+        if (isCustom) customSniInput.focus();
+      }
+    };
+
+    modeRadios.forEach(r => r.addEventListener("change", updateMimicryUI));
+    if (sniSelect) sniSelect.addEventListener("change", updateMimicryUI);
+
     const validate = () => {
       const value = input.value.trim();
       const ok = CLIENT_NAME_RE.test(value);
@@ -4654,8 +4734,17 @@ function clientNameModal() {
     dialog.addEventListener("close", () => {
       const value = dialog.returnValue === "ok" ? input.value.trim() : null;
       const profile = dialog.querySelector("input[name='clientNetworkProfile']:checked")?.value || "mobile";
+      const mimicry_mode = dialog.querySelector("input[name='clientMimicryMode']:checked")?.value || "quic";
+      let mimicry_sni = "s1.charles.men";
+      if (sniSelect) {
+        if (sniSelect.value === "custom") {
+          mimicry_sni = (customSniInput?.value || "").trim() || "s1.charles.men";
+        } else {
+          mimicry_sni = sniSelect.value;
+        }
+      }
       dialog.remove();
-      resolve(value ? {name: value, network_profile: profile} : null);
+      resolve(value ? {name: value, network_profile: profile, mimicry_mode, mimicry_sni} : null);
     }, {once: true});
     dialog.showModal();
     input.focus();
