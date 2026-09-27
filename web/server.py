@@ -3444,6 +3444,10 @@ def clean_client_metadata_record(value):
         raw = value.get(key)
         if raw in {"user", "super", "admin"}:
             clean[key] = raw
+    for key in ("network_profile", "dpi_profile", "preset"):
+        raw = value.get(key)
+        if isinstance(raw, str) and re.fullmatch(r"[a-zA-Z0-9_-]{1,32}", raw):
+            clean[key] = raw
     for key in ("created_at", "last_unassigned_at"):
         raw = value.get(key)
         if isinstance(raw, str) and re.fullmatch(r"[0-9T:Z+.-]{10,40}", raw):
