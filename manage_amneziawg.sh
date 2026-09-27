@@ -9,14 +9,14 @@ fi
 # ==============================================================================
 # Скрипт для управления пользователями (пирами) AmneziaWG 2.0
 # Автор: @bivlked
-# Версия: 5.29.0-bas.7
-# Дата: 2026-08-30
+# Версия: 6.0.0-bas.1
+# Дата: 2026-09-27
 # Репозиторий: https://github.com/bivlked/amneziawg-installer
 # ==============================================================================
 
 # --- Безопасный режим и Константы ---
 # shellcheck disable=SC2034
-SCRIPT_VERSION="5.29.0-bas.7"
+SCRIPT_VERSION="6.0.0-bas.1"
 set -o pipefail
 AWG_DIR="/root/awg"
 SERVER_CONF_FILE="/etc/amnezia/amneziawg/awg0.conf"
@@ -2368,11 +2368,19 @@ stats_clients() {
     local _stats_now
     _stats_now=$(date +%s)
 
+    local -A proxy_sessions_map=()
+    if [[ -f "/var/lib/amneziawg-proxy/sessions.json" ]]; then
+        while IFS=$'\t' read -r _b _r; do
+            [[ -n "$_b" && -n "$_r" ]] && proxy_sessions_map["$_b"]="$_r"
+        done < <(python3 -c "import json; d=json.load(open('/var/lib/amneziawg-proxy/sessions.json')); [print(f\"{s.get('backend_socket_addr')}\t{s.get('remote_addr')}\") for s in d.get('sessions', []) if s.get('backend_socket_addr') and s.get('remote_addr')]" 2>/dev/null || true)
+    fi
+
     # awg show dump: каждая строка пира = pubkey psk endpoint allowed-ips latest-handshake rx tx keepalive
     # shellcheck disable=SC2034
     while IFS=$'\t' read -r pk psk ep aips handshake rx tx keepalive; do
         local cname="${pk_to_name[$pk]:-unknown}"
         if [[ "$cname" == "unknown" ]]; then continue; fi
+        [[ -n "${proxy_sessions_map[$ep]:-}" ]] && ep="${proxy_sessions_map[$ep]}"
 
         [[ "$rx" =~ ^(0|[1-9][0-9]*)$ ]] || rx=0
         [[ "$tx" =~ ^(0|[1-9][0-9]*)$ ]] || tx=0

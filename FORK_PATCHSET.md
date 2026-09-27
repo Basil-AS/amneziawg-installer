@@ -7,7 +7,7 @@ The fork tree is ancestry-synchronized with upstream (`0` commits behind) while
 retaining the documented BAS runtime delta; this file is the fork-delta map for
 future sync work.
 
-Fork releases use `<upstream-sync>-bas.<revision>`. Current fork version is `5.29.0-bas.7`; `bas.N` increments for fork-only releases and resets to `bas.1` when the upstream sync marker changes. This sync marker now corresponds to the complete upstream `v5.29.0` history plus the fork delta.
+Fork releases use `<upstream-sync>-bas.<revision>`. Current fork version is `6.0.0-bas.1`; `bas.N` increments for fork-only releases and resets to `bas.1` when the upstream sync marker changes. This sync marker now corresponds to the complete upstream `v5.29.0` history plus the major stealth proxy, dual-domain isolation, and client lifecycle fork delta.
 
 ## Runtime Fork Delta
 

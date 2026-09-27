@@ -4645,10 +4645,48 @@ def lookup_endpoint_ip_info(ip, allow_refresh=True):
     return lookup_ip_enriched(ip, purpose="endpoint", multi_source=True, want_whois=want_whois)
 
 
+PROXY_ENDPOINT_CACHE = {}
+PROXY_ENDPOINT_CACHE_TS = 0.0
+
+
+def load_proxy_sessions():
+    global PROXY_ENDPOINT_CACHE, PROXY_ENDPOINT_CACHE_TS
+    now = time.time()
+    if now - PROXY_ENDPOINT_CACHE_TS < 1.0 and PROXY_ENDPOINT_CACHE:
+        return PROXY_ENDPOINT_CACHE
+    sessions_file = Path("/var/lib/amneziawg-proxy/sessions.json")
+    if not sessions_file.exists():
+        return PROXY_ENDPOINT_CACHE
+    try:
+        data = json.loads(sessions_file.read_text(encoding="utf-8"))
+        sessions = data.get("sessions", [])
+        if isinstance(sessions, list):
+            for s in sessions:
+                backend = s.get("backend_socket_addr")
+                remote = s.get("remote_addr")
+                if backend and remote:
+                    PROXY_ENDPOINT_CACHE[backend] = remote
+        PROXY_ENDPOINT_CACHE_TS = now
+    except Exception:
+        pass
+    return PROXY_ENDPOINT_CACHE
+
+
+def resolve_proxy_endpoint(endpoint):
+    if not endpoint:
+        return ""
+    endpoint = str(endpoint).strip()
+    if not endpoint.startswith("127.0.0.1:"):
+        return endpoint
+    sessions = load_proxy_sessions()
+    return sessions.get(endpoint, endpoint)
+
+
 def split_endpoint(endpoint):
     endpoint = (endpoint or "").strip()
     if not endpoint or endpoint in {"-", "(none)", "none"}:
         return "", None
+    endpoint = resolve_proxy_endpoint(endpoint)
     host = endpoint
     port = None
     if endpoint.startswith("[") and "]" in endpoint:
@@ -5661,6 +5699,8 @@ def parse_stats_rows(raw_out):
         if isinstance(row, dict) and row.get("name"):
             if "last_handshake" in row:
                 row["latestHandshakeAt"] = row.get("last_handshake")
+            if row.get("endpoint"):
+                row["endpoint"] = resolve_proxy_endpoint(row["endpoint"])
             out[row["name"]] = row
     return out
 

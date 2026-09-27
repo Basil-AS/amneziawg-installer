@@ -12,6 +12,16 @@
 
 ## [Unreleased]
 
+## [6.0.0-bas.1] - 2026-09-27
+
+### Добавлено
+- Архитектура двухконтурной маскировки и изоляции доменов: чистая маскировка Nextcloud Hub на VPN-домене и секретный шлюз доступа на домене панели управления.
+- Динамическое сопоставление сессий `amneziawg-proxy`: автоматическое определение реального публичного IP и GeoIP клиентов туннеля через сопоставление локальных сокетов с сессионной таблицей прокси.
+- Интеграция Hostkey Invapi: отображение живого трафика сервера и квоты биллинга провайдера в Web Panel.
+- Изоляция веб-панели и DNS AdGuard Home: ограничение доступа исключительно внутри VPN-сети (10.9.9.1:3000 и 10.9.9.1:53) с блокировкой на уровне nftables.
+- Унификация MTU = 1280 во всех клиентских пресетах (Mobile, Home PC, WireSock, Router) для предотвращения фрагментации и переполнения буферов DPI.
+- Полноценная очистка и мгновенное освобождение адресов при удалении клиентов с синхронизацией `/etc/hosts` и AdGuard Home.
+
 ## [5.29.0-bas.7] - 2026-09-01
 
 - Исправлена синхронизация версии библиотеки `AWG_COMMON_VERSION` с установщиком и управляющим скриптом.
@@ -1731,7 +1741,8 @@ Hardening-фиксы надёжности и безопасности по ре�
 - Диагностический отчет (`--diagnostic`).
 - Полная деинсталляция (`--uninstall`).
 
-[Unreleased]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.29.0-bas.7...HEAD
+[Unreleased]: https://github.com/Basil-AS/amneziawg-installer/compare/v6.0.0-bas.1...HEAD
+[6.0.0-bas.1]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.29.0-bas.7...v6.0.0-bas.1
 [5.29.0-bas.7]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.29.0-bas.6...v5.29.0-bas.7
 [5.29.0-bas.6]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.29.0-bas.5...v5.29.0-bas.6
 [5.29.0-bas.5]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.29.0-bas.4...v5.29.0-bas.5
