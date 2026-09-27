@@ -300,6 +300,17 @@ DELETED_TRAFFIC_KEY = "_deleted_clients_total"
 PANEL_TITLE = "AmneziaWG Panel"
 PANEL_SHORT_LABEL = "AW"
 REPOSITORY_URL = "https://github.com/Basil-AS/amneziawg-installer"
+
+
+def server_short_label(name):
+    if not name:
+        return PANEL_SHORT_LABEL
+    parts = [p for p in re.split(r"[\s\-_]+", str(name).strip()) if p]
+    if len(parts) >= 2:
+        return (parts[0][0] + parts[1][0]).upper()
+    if len(parts) == 1 and len(parts[0]) >= 2:
+        return parts[0][:2].upper()
+    return PANEL_SHORT_LABEL
 HELP_CLIENT_GROUPS = [
     {
         "name": "Windows",
@@ -3409,6 +3420,8 @@ def write_tokens(data):
             "super_token_hash": data["super_token_hash"],
             "users": data.get("users", {}),
         }
+        if data.get("super_name"):
+            clean["super_name"] = str(data["super_name"]).strip()
         tmp = TOKEN_FILE.with_name(f"{TOKEN_FILE.name}.tmp.{os.getpid()}")
         tmp.write_text(json.dumps(clean, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         os.chmod(tmp, 0o600)
@@ -5331,7 +5344,10 @@ def load_tokens():
                 except ValueError as exc:
                     raise RuntimeError("tokens.json is invalid; run manage_amneziawg.sh web token reset-super") from exc
 
+        super_name = clean_token_name(data.get("super_name", ""))
         clean = {"super_token_hash": super_hash, "users": clean_users}
+        if super_name:
+            clean["super_name"] = super_name
         if clean != data or not TOKEN_FILE.exists():
             write_tokens(clean)
         return clean
@@ -5385,13 +5401,13 @@ def authenticate(header):
     # preserving the regular super/user token model.
     bot_hash = os.environ.get("AWG_BOT_API_TOKEN_HASH", "").strip().lower()
     if TOKEN_HASH_RE.fullmatch(bot_hash) and hmac.compare_digest(digest, bot_hash):
-        return {"role": "super", "hash": digest, "clients": None, "source": "bot-api"}
+        return {"role": "super", "hash": digest, "clients": None, "source": "bot-api", "name": "Bot API"}
     data = load_tokens()
     if hmac.compare_digest(digest, data.get("super_token_hash", "")):
-        return {"role": "super", "hash": digest, "clients": None}
+        return {"role": "super", "hash": digest, "clients": None, "name": data.get("super_name") or "Admin"}
     for user_hash, record in data.get("users", {}).items():
         if hmac.compare_digest(digest, user_hash):
-            return {"role": "user", "hash": digest, "clients": record.get("clients", [])}
+            return {"role": "user", "hash": digest, "clients": record.get("clients", []), "name": record.get("name") or "User"}
     return None
 
 
@@ -6931,6 +6947,7 @@ def bot_snapshot_payload(auth):
         "version": PROJECT_VERSION,
         "fork": "fork delta/patchset",
         "role": "super" if auth.get("role") == "super" else "user",
+        "username": auth.get("name") or ("Admin" if auth.get("role") == "super" else "User"),
         "server_name": cfg.get("AWG_SERVER_NAME", ""),
         "display_name": cfg.get("AWG_SERVER_NAME", ""),
         "service": service,
@@ -7582,16 +7599,19 @@ class Handler(SimpleHTTPRequestHandler):
             cfg = parse_config()
             proxy_info = get_amneziawg_proxy_info()
             proxy_payload = proxy_info if proxy_info.get("active") else None
+            server_name = cfg.get("AWG_SERVER_NAME") or "Sunny-Finland"
+            username = auth.get("name") or ("Admin" if self.is_super(auth) else "User")
             self.send_json({
                 "service": active,
                 "clients": len(self.visible_peers(auth)),
                 "version": PROJECT_VERSION,
                 "fork": "fork delta/patchset",
                 "role": "super" if self.is_super(auth) else "user",
-                "server_name": cfg["AWG_SERVER_NAME"],
-                "display_name": cfg["AWG_SERVER_NAME"],
+                "username": username,
+                "server_name": server_name,
+                "display_name": server_name,
                 "title": PANEL_TITLE,
-                "short_label": PANEL_SHORT_LABEL,
+                "short_label": server_short_label(server_name),
                 "repository_url": REPOSITORY_URL,
                 "proxy": proxy_payload,
             })

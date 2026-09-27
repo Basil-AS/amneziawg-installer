@@ -200,6 +200,7 @@ const icons = {
   refresh: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 6v5h-5"/><path d="M4 18v-5h5"/><path d="M18.5 9A7 7 0 0 0 6.7 6.7L4 9"/><path d="M5.5 15a7 7 0 0 0 11.8 2.3L20 15"/></svg>',
   more: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="5" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="12" cy="19" r="1.5"/></svg>',
   chevron: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m6 9 6 6 6-6"/></svg>',
+  user: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>',
 };
 
 const theme = localStorage.getItem("panelTheme") || "light";
@@ -2396,19 +2397,26 @@ async function renderPanel() {
   stopClientPolling();
   stopServerHealthPolling();
   const nettestPage = isNetworkTesterPage();
-  document.title = statusState.title || "Control";
+  const serverTitle = statusState.display_name || statusState.server_name || "Sunny-Finland";
+  document.title = `${serverTitle} · Web Panel`;
   if (trafficChart) {
     trafficChart.destroy();
     trafficChart = null;
   }
+  const currentUsername = statusState.username || (statusState.role === "super" ? "Admin" : "User");
   app.innerHTML = `
     <header class="flex flex-col gap-4 py-4 sm:flex-row sm:items-center sm:justify-between">
       <div class="flex items-center gap-3">
-        <div class="grid h-11 w-11 place-items-center rounded-lg bg-[var(--accent)] text-lg font-black text-white">${esc(statusState.short_label || "C")}</div>
+        <div class="grid h-11 w-11 place-items-center rounded-lg bg-[var(--accent)] text-lg font-black text-white">${esc(statusState.short_label || "SF")}</div>
         <div>
-          <h1 class="text-xl font-semibold leading-tight">${esc(statusState.display_name || statusState.server_name || "Control")}</h1>
+          <h1 class="text-xl font-semibold leading-tight">${esc(serverTitle)}</h1>
           <p class="flex flex-wrap items-center gap-2 text-sm text-[var(--muted)]">
-            <span>v${esc(statusState.version)} · ${esc(statusState.fork)} · ${esc(statusState.role)}</span>
+            <span class="inline-flex items-center gap-1.5 rounded-full bg-[var(--soft)] px-2.5 py-0.5 text-xs font-semibold text-[var(--text)] border border-[var(--line)] shadow-2xs" title="Logged in as ${esc(currentUsername)} (${esc(statusState.role)})">
+              ${icon("user")}
+              <span>${esc(currentUsername)}</span>
+              ${currentUsername.toLowerCase() !== statusState.role.toLowerCase() ? `<span class="text-[var(--muted)] font-normal text-[11px]">(${esc(statusState.role)})</span>` : ""}
+            </span>
+            <span>v${esc(statusState.version)} · ${esc(statusState.fork)}</span>
             <span id="connectionStatusPill" class="${CONNECTION_PILL_BASE} ${CONNECTION_STATE_INFO.online.className}">${CONNECTION_STATE_INFO.online.label}</span>
             ${statusState.proxy?.active ? `<span class="inline-flex items-center rounded-full bg-emerald-500/10 px-2 py-0.5 text-xs font-semibold text-emerald-500 border border-emerald-500/20" title="QUIC Proxy listening on UDP 443">QUIC Proxy :443</span>` : ""}
           </p>
@@ -2804,6 +2812,7 @@ async function loadClients() {
   const now = Date.now();
   try {
     const payload = await api("/api/clients");
+    if (payload && payload.username && statusState) statusState.username = payload.username;
     const rows = Array.isArray(payload) ? payload : (payload.clients || []);
     trafficState = Array.isArray(payload) ? null : payload.traffic;
     latestClients = await Promise.all(rows.map(async client => {

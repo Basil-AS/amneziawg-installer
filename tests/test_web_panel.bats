@@ -5000,3 +5000,94 @@ PY
     rm -rf "$tmp"
 }
 
+@test "web panel /api/status returns server_name Sunny-Finland, short_label SF, and authenticated username" {
+    tmp="$(mktemp -d)"
+    mkdir -p "$tmp/web"
+    cat <<'EOF' > "$tmp/awg0.conf"
+[Interface]
+Address = 10.7.0.1/24
+ListenPort = 51820
+PrivateKey = aaaaaaaa
+EOF
+    cat <<'EOF' > "$tmp/awgsetup_cfg.init"
+AWG_SERVER_NAME="Sunny-Finland"
+EOF
+
+    python3 - "$tmp" <<'PY'
+import io
+import json
+import os
+import sys
+from pathlib import Path
+
+tmp = sys.argv[1]
+os.environ["AWG_DIR"] = tmp
+os.environ["SERVER_CONF_FILE"] = f"{tmp}/awg0.conf"
+
+sys.path.insert(0, str(Path(__file__).resolve().parent / "web"))
+import server
+
+server.AWG_DIR = Path(tmp)
+server.WEB_DIR = Path(tmp) / "web"
+server.TOKEN_FILE = server.WEB_DIR / "tokens.json"
+server.CONFIG_FILE = Path(os.environ["SERVER_CONF_FILE"])
+
+super_token = "super-secret-token"
+user_token = "user-alice-token"
+
+super_hash = server.token_hash(super_token)
+user_hash = server.token_hash(user_token)
+
+server.write_tokens({
+    "super_token_hash": super_hash,
+    "super_name": "SunnyAdmin",
+    "users": {
+        user_hash: {
+            "name": "Alice",
+            "role": "user",
+            "clients": []
+        }
+    }
+})
+
+class Headers(dict):
+    def get(self, key, default=None):
+        return super().get(key, default)
+
+def call_status(tok):
+    h = object.__new__(server.Handler)
+    h.path = "/api/status"
+    h.client_address = ("127.0.0.1", 12345)
+    h.rfile = io.BytesIO()
+    h.wfile = io.BytesIO()
+    h.responses = []
+    h.headers_sent = []
+    h.headers = Headers({"Host": "127.0.0.1", "Authorization": f"Bearer {tok}"})
+    h.send_response = lambda code: h.responses.append(code)
+    h.send_error = lambda code, *args, **kwargs: h.responses.append(code)
+    h.send_header = lambda key, value: h.headers_sent.append((key, value))
+    h.end_headers = lambda: None
+    server.RATE.clear()
+    h.do_GET()
+    assert h.responses == [200], f"Expected 200, got {h.responses}"
+    return json.loads(h.wfile.getvalue().decode())
+
+# Super user test
+super_res = call_status(super_token)
+assert super_res["server_name"] == "Sunny-Finland"
+assert super_res["display_name"] == "Sunny-Finland"
+assert super_res["short_label"] == "SF"
+assert super_res["role"] == "super"
+assert super_res["username"] == "SunnyAdmin"
+
+# Regular user test
+user_res = call_status(user_token)
+assert user_res["server_name"] == "Sunny-Finland"
+assert user_res["short_label"] == "SF"
+assert user_res["role"] == "user"
+assert user_res["username"] == "Alice"
+
+PY
+    rm -rf "$tmp"
+}
+
