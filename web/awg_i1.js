@@ -3,11 +3,11 @@
 function getCamouflagePresets(serverDomain = "") {
   const presets = [];
   if (serverDomain && serverDomain !== "localhost" && !serverDomain.match(/^\d+\.\d+\.\d+\.\d+$/)) {
-    presets.push({ value: serverDomain, label: `${serverDomain} (Текущий домен сервера — Рекомендуется)` });
+    presets.push({ value: serverDomain, label: `${serverDomain} (Текущий домен сервера - Рекомендуется)` });
   }
   presets.push(
-    { value: "vk.com", label: "vk.com (ВКонтакте — Белый список RU)" },
-    { value: "ya.ru", label: "ya.ru (Яндекс Портал — Белый список RU)" },
+    { value: "vk.com", label: "vk.com (ВКонтакте - Белый список RU)" },
+    { value: "ya.ru", label: "ya.ru (Яндекс Портал - Белый список RU)" },
     { value: "yandex.ru", label: "yandex.ru (Яндекс Сервисы)" },
     { value: "vk.ru", label: "vk.ru (VK Портал)" },
     { value: "mail.ru", label: "mail.ru (Почта Mail.ru)" },
