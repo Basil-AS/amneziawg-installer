@@ -3503,15 +3503,110 @@ async function checkClientPath(name, target = "endpoint") {
   }
 }
 
-async function regenerateConfig(name) {
-  const ok = await confirmModal(
-    "Regenerate profile",
-    `Regenerate profile for "${name}"?\nThe old profile will stop working. Traffic history and client name will be preserved.`,
-    "Regenerate",
-    false
-  );
-  if (!ok) return;
-  const body = {};
+function regenerateConfigModal(name, defaultPreset = "default") {
+  return new Promise(resolve => {
+    const dialog = document.createElement("dialog");
+    dialog.className = "w-[min(540px,calc(100vw-32px))] rounded-lg border border-[var(--line)] bg-[var(--panel)] p-0 text-[var(--text)] shadow-xl backdrop:bg-black/55";
+    const curP = (defaultPreset || "default").toLowerCase();
+    dialog.innerHTML = `
+      <form method="dialog" class="p-4 grid gap-3">
+        <div class="flex items-center justify-between border-b border-[var(--line)] pb-2">
+          <h2 class="text-base font-semibold">🔄 Перегенерация конфига / Regenerate</h2>
+          <span class="rounded bg-[var(--soft)] px-2 py-0.5 font-mono text-xs text-[var(--muted)]">${esc(name)}</span>
+        </div>
+        <p class="text-xs text-[var(--muted)]">
+          Regenerate profile for "${esc(name)}". Создаёт новую пару ключей и обновляет параметры под выбранное устройство. Старый конфиг на устройстве перестанет подключаться. IP-адрес и статистика клиента сохраняются.
+        </p>
+
+        <div>
+          <label class="block text-xs font-semibold uppercase text-[var(--muted)] mb-2">Целевой клиент / Платформа (Пресет)</label>
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs" id="regenPresetList">
+            <label class="flex items-start gap-2 p-2 rounded-md border border-[var(--line)] bg-[var(--soft)] cursor-pointer hover:border-[var(--accent)]">
+              <input type="radio" name="regenPreset" value="macos" ${curP === "macos" ? "checked" : ""} class="mt-0.5">
+              <div>
+                <strong class="block text-[var(--text)]">🍏 macOS</strong>
+                <span class="text-[10px] text-[var(--muted)]">AmneziaVPN: MTU 1280, чистый IPv4</span>
+              </div>
+            </label>
+            <label class="flex items-start gap-2 p-2 rounded-md border border-[var(--line)] bg-[var(--soft)] cursor-pointer hover:border-[var(--accent)]">
+              <input type="radio" name="regenPreset" value="ios" ${curP === "ios" ? "checked" : ""} class="mt-0.5">
+              <div>
+                <strong class="block text-[var(--text)]">📱 iOS</strong>
+                <span class="text-[10px] text-[var(--muted)]">AmneziaWG: MTU 1280, Keepalive 25</span>
+              </div>
+            </label>
+            <label class="flex items-start gap-2 p-2 rounded-md border border-[var(--line)] bg-[var(--soft)] cursor-pointer hover:border-[var(--accent)]">
+              <input type="radio" name="regenPreset" value="android" ${curP === "android" ? "checked" : ""} class="mt-0.5">
+              <div>
+                <strong class="block text-[var(--text)]">🤖 Android</strong>
+                <span class="text-[10px] text-[var(--muted)]">WG Tunnel: MTU 1280, Keepalive 25</span>
+              </div>
+            </label>
+            <label class="flex items-start gap-2 p-2 rounded-md border border-[var(--line)] bg-[var(--soft)] cursor-pointer hover:border-[var(--accent)]">
+              <input type="radio" name="regenPreset" value="wiresock" ${curP === "wiresock" ? "checked" : ""} class="mt-0.5">
+              <div>
+                <strong class="block text-[var(--text)]">🪟 WireSock Windows</strong>
+                <span class="text-[10px] text-[var(--muted)]">Хинты @ws:Id/@ws:Ip, без I1-I5</span>
+              </div>
+            </label>
+            <label class="flex items-start gap-2 p-2 rounded-md border border-[var(--line)] bg-[var(--soft)] cursor-pointer hover:border-[var(--accent)]">
+              <input type="radio" name="regenPreset" value="openwrt" ${curP === "openwrt" ? "checked" : ""} class="mt-0.5">
+              <div>
+                <strong class="block text-[var(--text)]">🌐 OpenWrt</strong>
+                <span class="text-[10px] text-[var(--muted)]">awg-kmod: INT32 safe, MTU 1280</span>
+              </div>
+            </label>
+            <label class="flex items-start gap-2 p-2 rounded-md border border-[var(--line)] bg-[var(--soft)] cursor-pointer hover:border-[var(--accent)]">
+              <input type="radio" name="regenPreset" value="linux" ${curP === "linux" ? "checked" : ""} class="mt-0.5">
+              <div>
+                <strong class="block text-[var(--text)]">🐧 Linux</strong>
+                <span class="text-[10px] text-[var(--muted)]">awg-quick: MTU 1280</span>
+              </div>
+            </label>
+            <label class="flex items-start gap-2 p-2 rounded-md border border-[var(--line)] bg-[var(--soft)] cursor-pointer hover:border-[var(--accent)] sm:col-span-2">
+              <input type="radio" name="regenPreset" value="default" ${(!curP || curP === "default") ? "checked" : ""} class="mt-0.5">
+              <div>
+                <strong class="block text-[var(--text)]">⚡ Default (Универсальный)</strong>
+                <span class="text-[10px] text-[var(--muted)]">Базовый профиль с безопасным MTU 1280</span>
+              </div>
+            </label>
+          </div>
+        </div>
+
+        <div class="mt-2 flex flex-wrap justify-end gap-2 border-t border-[var(--line)] pt-3">
+          <button type="button" value="cancel" id="regenCancelBtn" class="${buttonClasses()}">Отмена / Cancel</button>
+          <button type="submit" value="ok" id="regenConfirmBtn" class="${buttonClasses("border-amber-600 bg-amber-500 text-white hover:bg-amber-600")}">${icon("refresh")}<span>Перегенерировать</span></button>
+        </div>
+      </form>
+    `;
+    document.body.appendChild(dialog);
+    dialog.showModal();
+    const cleanup = () => {
+      dialog.close();
+      dialog.remove();
+    };
+    dialog.querySelector("#regenCancelBtn").onclick = () => {
+      cleanup();
+      resolve(null);
+    };
+    dialog.querySelector("form").onsubmit = (e) => {
+      e.preventDefault();
+      const selected = dialog.querySelector('input[name="regenPreset"]:checked')?.value || "default";
+      cleanup();
+      resolve({ preset: selected });
+    };
+    dialog.oncancel = () => {
+      cleanup();
+      resolve(null);
+    };
+  });
+}
+
+async function regenerateConfig(name, defaultPreset = "default") {
+  const chosen = await regenerateConfigModal(name, defaultPreset);
+  if (!chosen) return;
+  const preset = chosen.preset || "default";
+  const body = { preset };
   try {
     if (typeof window.generateI1 === "function" && typeof window.pickI1Sni === "function" && window.crypto?.subtle) {
       const sni = window.pickI1Sni();
@@ -3519,18 +3614,17 @@ async function regenerateConfig(name) {
       body.i1_sni = sni;
     }
   } catch (error) {
-    const fallback = await confirmModal(
-      "Regenerate with fallback?",
-      "Browser-side profile generation failed. Continue with system fallback?",
-      "Continue",
-      false
-    );
-    if (!fallback) return;
+    console.warn("Browser I1 generation skipped:", error);
   }
-  await api(`/api/clients/${encodeURIComponent(name)}/regenerate`, {method: "POST", body: JSON.stringify(body)});
-  configTextCache.delete(name);
-  showToast("Profile regenerated. Download or copy the new profile.");
-  await loadClients();
+  try {
+    await api(`/api/clients/${encodeURIComponent(name)}/regenerate`, {method: "POST", body: JSON.stringify(body)});
+    configTextCache.delete(name);
+    showToast("Profile regenerated. Download or copy the new profile.");
+    await loadClients();
+    await showConfig(name, preset);
+  } catch (err) {
+    showToast("Could not regenerate profile", "error");
+  }
 }
 
 async function rotateProfile() {
@@ -3628,16 +3722,16 @@ function tuneConfigForPreset(rawText, preset, domain) {
   return lines.join("\n");
 }
 
-async function showConfig(name) {
+async function showConfig(name, initialPreset = "default") {
   const originalText = await configText(name);
-  let activePreset = "default";
-  let currentText = originalText;
+  let activePreset = (initialPreset || "default").toLowerCase();
+  let currentText = tuneConfigForPreset(originalText, activePreset);
 
   showModal(name, `
     <div class="grid gap-3">
       <div class="flex flex-wrap items-center justify-between gap-2 border-b border-[var(--line)] pb-2">
         <div class="flex flex-wrap gap-1" id="configPresetTabs">
-          <button data-preset="default" class="px-2.5 py-1 text-xs rounded-md font-medium bg-[var(--accent)] text-white">Default (1280)</button>
+          <button data-preset="default" class="px-2.5 py-1 text-xs rounded-md font-medium bg-[var(--soft)] hover:bg-[var(--line)]">Default (1280)</button>
           <button data-preset="macos" class="px-2.5 py-1 text-xs rounded-md font-medium bg-[var(--soft)] hover:bg-[var(--line)]">🍏 macOS</button>
           <button data-preset="ios" class="px-2.5 py-1 text-xs rounded-md font-medium bg-[var(--soft)] hover:bg-[var(--line)]">📱 iOS</button>
           <button data-preset="android" class="px-2.5 py-1 text-xs rounded-md font-medium bg-[var(--soft)] hover:bg-[var(--line)]">🤖 Android</button>
@@ -3648,6 +3742,7 @@ async function showConfig(name) {
         <div class="flex flex-wrap gap-2">
           <button id="downloadConfigFromModal" class="${buttonClasses()}">${icon("download")}<span>Download</span></button>
           <button id="copyConfigFromModal" class="${buttonClasses()}">${icon("copy")}<span>Copy</span></button>
+          <button id="regenerateConfigFromModal" class="${buttonClasses("border-amber-600/40 text-amber-700 hover:bg-amber-500/10")}">${icon("refresh")}<span>Regenerate</span></button>
         </div>
       </div>
       <pre id="configPreBlock" class="max-h-[65vh] overflow-auto whitespace-pre-wrap break-words rounded-md bg-[var(--soft)] p-3 text-xs font-mono">${esc(currentText)}</pre>
@@ -3669,6 +3764,8 @@ async function showConfig(name) {
     });
   };
 
+  updatePresetUI(activePreset);
+
   document.querySelectorAll("#configPresetTabs button").forEach(btn => {
     btn.onclick = () => updatePresetUI(btn.dataset.preset);
   });
@@ -3682,6 +3779,11 @@ async function showConfig(name) {
   document.querySelector("#copyConfigFromModal").onclick = async () => {
     await copyText(currentText);
     showToast("Copied");
+  };
+
+  document.querySelector("#regenerateConfigFromModal").onclick = () => {
+    closeModal();
+    regenerateConfig(name, activePreset);
   };
 }
 
@@ -3697,10 +3799,41 @@ async function copyConfig(name) {
   showToast("Copied");
 }
 
-async function showQr(name) {
-  const blob = await api(`/api/clients/${encodeURIComponent(name)}/qr`);
-  const url = URL.createObjectURL(blob);
-  showModal(name, `<img class="mx-auto max-h-[70vh] max-w-full rounded-md bg-white p-2" alt="QR" src="${url}">`);
+async function showQr(name, initialPreset = "default") {
+  let activePreset = (initialPreset || "default").toLowerCase();
+  const qrUrlFor = (p) => `/api/clients/${encodeURIComponent(name)}/qr` + (p !== "default" ? `?preset=${encodeURIComponent(p)}&t=${Date.now()}` : `?t=${Date.now()}`);
+
+  showModal(name, `
+    <div class="grid gap-3">
+      <div class="flex flex-wrap items-center justify-between gap-2 border-b border-[var(--line)] pb-2">
+        <div class="flex flex-wrap gap-1" id="qrPresetTabs">
+          <button data-preset="default" class="px-2 py-0.5 text-xs rounded-md font-medium bg-[var(--accent)] text-white">Default</button>
+          <button data-preset="ios" class="px-2 py-0.5 text-xs rounded-md font-medium bg-[var(--soft)] hover:bg-[var(--line)]">📱 iOS</button>
+          <button data-preset="android" class="px-2 py-0.5 text-xs rounded-md font-medium bg-[var(--soft)] hover:bg-[var(--line)]">🤖 Android</button>
+          <button data-preset="macos" class="px-2 py-0.5 text-xs rounded-md font-medium bg-[var(--soft)] hover:bg-[var(--line)]">🍏 macOS</button>
+          <button data-preset="wiresock" class="px-2 py-0.5 text-xs rounded-md font-medium bg-[var(--soft)] hover:bg-[var(--line)]">🪟 WireSock</button>
+        </div>
+      </div>
+      <img id="qrModalImage" class="mx-auto max-h-[65vh] max-w-full rounded-md bg-white p-2" alt="QR" src="${qrUrlFor(activePreset)}">
+    </div>
+  `);
+
+  const updateQrUI = (preset) => {
+    activePreset = preset;
+    const img = document.querySelector("#qrModalImage");
+    if (img) img.src = qrUrlFor(activePreset);
+    document.querySelectorAll("#qrPresetTabs button").forEach(b => {
+      b.className = b.dataset.preset === activePreset
+        ? "px-2 py-0.5 text-xs rounded-md font-medium bg-[var(--accent)] text-white"
+        : "px-2 py-0.5 text-xs rounded-md font-medium bg-[var(--soft)] hover:bg-[var(--line)]";
+    });
+  };
+
+  updateQrUI(activePreset);
+
+  document.querySelectorAll("#qrPresetTabs button").forEach(btn => {
+    btn.onclick = () => updateQrUI(btn.dataset.preset);
+  });
 }
 
 async function showUri(name) {

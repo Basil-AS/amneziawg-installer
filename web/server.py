@@ -7296,6 +7296,15 @@ class Handler(SimpleHTTPRequestHandler):
             return
         self.write_response_body(data)
 
+    def send_bytes(self, data, ctype):
+        self.send_response(200)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(data)))
+        self.send_security_headers()
+        if not self.finish_response_headers():
+            return
+        self.write_response_body(data)
+
     def send_config_download(self, name, preset=None):
         path = AWG_DIR / f"{name}.conf"
         if not path.exists() or not path.is_file():
@@ -7970,6 +7979,20 @@ class Handler(SimpleHTTPRequestHandler):
             else:
                 self.send_file(AWG_DIR / f"{name}.conf", "text/plain; charset=utf-8")
         elif kind == "qr":
+            query = parse_qs(u.query)
+            preset = str((query.get("preset") or [""])[0]).lower()
+            valid_presets = {"mobile", "home", "router", "wiresock", "macos", "ios", "android", "openwrt", "linux", "windows"}
+            conf_file = AWG_DIR / f"{name}.conf"
+            if preset in valid_presets and conf_file.is_file():
+                raw_text = conf_file.read_text(encoding="utf-8", errors="replace")
+                host = split_host(self.headers.get("Host", ""))
+                tuned = tune_config_preset(raw_text, preset, host)
+                try:
+                    p = subprocess.run(["qrencode", "-t", "png", "-o", "-"], input=tuned.encode("utf-8"), stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=5, check=True)
+                    self.send_bytes(p.stdout, "image/png")
+                    return
+                except Exception:
+                    pass
             self.send_file(AWG_DIR / f"{name}.png", "image/png")
         elif kind in {"vpnuri", "uri"}:
             self.send_file(AWG_DIR / f"{name}.vpnuri", "text/plain; charset=utf-8")
@@ -8397,11 +8420,32 @@ class Handler(SimpleHTTPRequestHandler):
                 p = run_manage("client", "regenerate", name, timeout=120, extra_env=extra_env)
                 if p.returncode == 0:
                     remove_import_tokens_for_client(name)
+                    preset = str(body.get("preset") or "").strip().lower()
+                    valid_presets = {"mobile", "home", "router", "wiresock", "macos", "ios", "android", "openwrt", "linux", "windows", "default"}
+                    conf_path = AWG_DIR / f"{name}.conf"
+                    if conf_path.is_file():
+                        raw_text = conf_path.read_text(encoding="utf-8", errors="replace")
+                        host = split_host(self.headers.get("Host", ""))
+                        if preset in valid_presets and preset != "default":
+                            tuned = tune_config_preset(raw_text, preset, host)
+                            conf_path.write_text(tuned, encoding="utf-8")
+                        else:
+                            cfg = parse_config()
+                            if str(cfg.get("AWG_IPV6_ENABLED") or "").strip() != "1":
+                                lines = raw_text.splitlines()
+                                lines = [re.sub(r",\s*(::/0|::/1,\s*8000::/1)", "", l) for l in lines]
+                                conf_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+                        try:
+                            png_path = AWG_DIR / f"{name}.png"
+                            subprocess.run(["qrencode", "-t", "png", "-o", str(png_path)], input=conf_path.read_bytes(), timeout=10, check=False)
+                        except Exception:
+                            pass
                     self.send_json({
                         "ok": True,
                         "client": name,
+                        "preset": preset or "default",
                         "message": "Config regenerated",
-                        "download_url": f"/api/clients/{quote(name)}/config/download",
+                        "download_url": f"/api/clients/{quote(name)}/config/download" + (f"?preset={preset}" if preset in valid_presets and preset != "default" else ""),
                     })
                     return
                 self.send_json({"error": "regenerate failed"}, 500)
