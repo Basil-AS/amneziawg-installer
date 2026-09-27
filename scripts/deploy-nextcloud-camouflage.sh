@@ -90,16 +90,19 @@ cat > "${NEXTCLOUD_DIR}/ocs/v1.php/cloud/capabilities" <<'EOF'
 </ocs>
 EOF
 
-# 3. Logo SVG
+# 3. Official Nextcloud Logo SVG
 cat > "${NEXTCLOUD_DIR}/core/img/logo/logo.svg" <<'EOF'
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="128" height="128">
- <circle cx="512" cy="512" r="160" fill="#ffffff" />
- <circle cx="270" cy="512" r="100" fill="#ffffff" />
- <circle cx="754" cy="512" r="100" fill="#ffffff" />
-</svg>
+<svg width="256" height="128" version="1.1" viewBox="0 0 256 128" xmlns="http://www.w3.org/2000/svg"><path d="m128 7c-25.871 0-47.817 17.485-54.713 41.209-5.9795-12.461-18.642-21.209-33.287-21.209-20.304 0-37 16.696-37 37s16.696 37 37 37c14.645 0 27.308-8.7481 33.287-21.209 6.8957 23.724 28.842 41.209 54.713 41.209s47.817-17.485 54.713-41.209c5.9795 12.461 18.642 21.209 33.287 21.209 20.304 0 37-16.696 37-37s-16.696-37-37-37c-14.645 0-27.308 8.7481-33.287 21.209-6.8957-23.724-28.842-41.209-54.713-41.209zm0 22c19.46 0 35 15.54 35 35s-15.54 35-35 35-35-15.54-35-35 15.54-35 35-35zm-88 20c8.4146 0 15 6.5854 15 15s-6.5854 15-15 15-15-6.5854-15-15 6.5854-15 15-15zm176 0c8.4146 0 15 6.5854 15 15s-6.5854 15-15 15-15-6.5854-15-15 6.5854-15 15-15z" color="#000000" fill="#fff" style="-inkscape-stroke:none"/></svg>
 EOF
 
-# 4. Login HTML
+# 4. Fetch official background image if network is available
+if curl -sI --max-time 4 https://cloud.nextcloud.com/apps/theming/img/background/jo-myoung-hee-fluid.webp | grep -q "200"; then
+    curl -sL --max-time 10 https://cloud.nextcloud.com/apps/theming/img/background/jo-myoung-hee-fluid.webp -o "${NEXTCLOUD_DIR}/core/img/background.webp" || true
+    curl -sL --max-time 10 https://cloud.nextcloud.com/core/img/favicon.ico -o "${NEXTCLOUD_DIR}/core/img/favicon.ico" || true
+    cp -f "${NEXTCLOUD_DIR}/core/img/favicon.ico" "${NEXTCLOUD_DIR}/favicon.ico" 2>/dev/null || true
+fi
+
+# 5. Authentic Nextcloud Hub Login HTML
 cat > "${NEXTCLOUD_DIR}/index.html" <<'EOF'
 <!DOCTYPE html>
 <html class="ng-csp" data-placeholder-focus="false" lang="en">
@@ -109,92 +112,342 @@ cat > "${NEXTCLOUD_DIR}/index.html" <<'EOF'
   <meta http-equiv="X-UA-Compatible" content="IE=edge">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1.0">
   <meta name="theme-color" content="#0082c9">
-  <link rel="icon" href="/core/img/logo/logo.svg">
+  <meta property="og:title" content="Nextcloud">
+  <meta property="og:description" content="a safe home for all your data">
+  <meta property="og:site_name" content="Nextcloud">
+  <link rel="icon" type="image/x-icon" href="/core/img/favicon.ico">
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
-      background: #0082c9 linear-gradient(40deg, #0082c9 0%, #005a8e 100%);
-      color: #fff;
+      background: #00679e url('/core/img/background.webp') no-repeat center center fixed;
+      background-size: cover;
+      color: #1e293b;
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen-Sans, Ubuntu, Cantarell, "Helvetica Neue", Arial, sans-serif;
       min-height: 100vh;
       display: flex;
       flex-direction: column;
       justify-content: center;
       align-items: center;
+      padding: 16px;
     }
-    .wrapper { width: 100%; max-width: 360px; padding: 20px; text-align: center; }
-    .logo-container { margin-bottom: 2rem; }
-    .logo-container svg { width: 160px; height: auto; filter: drop-shadow(0 2px 8px rgba(0,0,0,0.2)); }
+    .wrapper {
+      width: 100%;
+      max-width: 360px;
+      text-align: center;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+    .logo-container {
+      margin-bottom: 24px;
+    }
+    .logo-container svg {
+      width: 175px;
+      height: 90px;
+      filter: drop-shadow(0 2px 16px rgba(0, 0, 0, 0.35));
+    }
     .login-form {
-      background: rgba(255, 255, 255, 0.15);
-      backdrop-filter: blur(12px);
-      -webkit-backdrop-filter: blur(12px);
-      border: 1px solid rgba(255, 255, 255, 0.25);
-      border-radius: 12px;
-      padding: 28px 24px;
-      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2);
+      background: rgba(255, 255, 255, 0.94);
+      backdrop-filter: blur(24px);
+      -webkit-backdrop-filter: blur(24px);
+      border: 1px solid rgba(255, 255, 255, 0.4);
+      border-radius: 16px;
+      padding: 32px 28px;
+      box-shadow: 0 20px 48px rgba(0, 0, 0, 0.28);
+      width: 100%;
+      text-align: left;
     }
-    .input-group { margin-bottom: 14px; text-align: left; }
-    .input-group label { display: block; font-size: 13px; margin-bottom: 6px; color: rgba(255, 255, 255, 0.9); font-weight: 500; }
+    .input-group {
+      margin-bottom: 16px;
+      position: relative;
+    }
+    .input-group label {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      margin: -1px;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      border: 0;
+    }
+    .input-wrapper {
+      position: relative;
+      display: flex;
+      align-items: center;
+    }
+    .input-icon {
+      position: absolute;
+      left: 14px;
+      width: 18px;
+      height: 18px;
+      color: #94a3b8;
+      pointer-events: none;
+    }
     .input-group input {
-      width: 100%; padding: 12px 14px; border: 1px solid rgba(255, 255, 255, 0.35); border-radius: 8px;
-      background: rgba(255, 255, 255, 0.95); color: #222; font-size: 14px; outline: none; transition: all 0.2s;
+      width: 100%;
+      height: 44px;
+      padding: 10px 42px 10px 42px;
+      border: 1px solid #cbd5e1;
+      border-radius: 10px;
+      background: #ffffff;
+      color: #0f172a;
+      font-size: 14px;
+      outline: none;
+      transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
     }
-    .input-group input:focus { border-color: #fff; box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.4); background: #fff; }
+    .input-group input:focus {
+      border-color: #0082c9;
+      box-shadow: 0 0 0 3px rgba(0, 130, 201, 0.2);
+    }
+    .toggle-pwd {
+      position: absolute;
+      right: 12px;
+      background: none;
+      border: none;
+      color: #94a3b8;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      padding: 4px;
+    }
+    .toggle-pwd:hover {
+      color: #475569;
+    }
     .btn-submit {
-      width: 100%; padding: 13px; border: none; border-radius: 8px; background: #0082c9; color: #fff;
-      font-size: 15px; font-weight: 600; cursor: pointer; margin-top: 10px; box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+      width: 100%;
+      height: 44px;
+      border: none;
+      border-radius: 10px;
+      background: #0082c9;
+      color: #fff;
+      font-size: 15px;
+      font-weight: 600;
+      cursor: pointer;
+      margin-top: 6px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      box-shadow: 0 4px 12px rgba(0, 130, 201, 0.3);
+      transition: all 0.2s ease;
     }
-    .btn-submit:hover { background: #0070ad; }
-    .forgot-link { display: inline-block; margin-top: 16px; color: rgba(255, 255, 255, 0.85); font-size: 13px; text-decoration: none; }
-    .footer { margin-top: 2rem; font-size: 12px; color: rgba(255, 255, 255, 0.7); }
-    .footer a { color: rgba(255, 255, 255, 0.9); text-decoration: none; }
-    .error-msg { display: none; background: rgba(230, 50, 50, 0.85); color: #fff; padding: 10px; border-radius: 6px; font-size: 13px; margin-bottom: 14px; }
+    .btn-submit:hover {
+      background: #0070ad;
+      box-shadow: 0 6px 16px rgba(0, 130, 201, 0.4);
+    }
+    .btn-submit:active {
+      transform: scale(0.99);
+    }
+    .btn-submit:disabled {
+      background: #94a3b8;
+      cursor: not-allowed;
+      box-shadow: none;
+    }
+    .btn-device {
+      width: 100%;
+      height: 40px;
+      border: 1px solid #cbd5e1;
+      border-radius: 10px;
+      background: transparent;
+      color: #475569;
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+      margin-top: 10px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      transition: background 0.15s;
+    }
+    .btn-device:hover {
+      background: #f1f5f9;
+      color: #1e293b;
+    }
+    .divider {
+      display: flex;
+      align-items: center;
+      text-align: center;
+      margin: 14px 0 6px 0;
+      color: #94a3b8;
+      font-size: 12px;
+    }
+    .divider::before, .divider::after {
+      content: '';
+      flex: 1;
+      border-bottom: 1px solid #e2e8f0;
+    }
+    .divider span {
+      padding: 0 10px;
+    }
+    .forgot-link {
+      display: block;
+      text-align: center;
+      margin-top: 16px;
+      color: #0082c9;
+      font-size: 13px;
+      font-weight: 500;
+      text-decoration: none;
+      transition: color 0.15s;
+    }
+    .forgot-link:hover {
+      color: #005a8e;
+      text-decoration: underline;
+    }
+    .footer {
+      margin-top: 28px;
+      font-size: 13px;
+      color: rgba(255, 255, 255, 0.88);
+      text-align: center;
+      line-height: 1.6;
+      text-shadow: 0 1px 4px rgba(0, 0, 0, 0.45);
+    }
+    .footer a {
+      color: #fff;
+      font-weight: 600;
+      text-decoration: none;
+    }
+    .footer a:hover {
+      text-decoration: underline;
+    }
+    .footer-sub {
+      font-size: 11px;
+      opacity: 0.85;
+      display: block;
+      margin-top: 2px;
+    }
+    .error-msg {
+      display: none;
+      background: #fef2f2;
+      border-left: 4px solid #ef4444;
+      color: #991b1b;
+      padding: 12px 14px;
+      border-radius: 6px;
+      font-size: 13px;
+      margin-bottom: 16px;
+      line-height: 1.4;
+    }
+    .spinner {
+      display: none;
+      width: 18px;
+      height: 18px;
+      border: 2px solid rgba(255, 255, 255, 0.4);
+      border-top-color: #fff;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
   </style>
 </head>
 <body id="body-login">
   <div class="wrapper">
     <div class="logo-container">
-      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="128" height="128"><circle cx="512" cy="512" r="160" fill="#ffffff" /><circle cx="270" cy="512" r="100" fill="#ffffff" /><circle cx="754" cy="512" r="100" fill="#ffffff" /></svg>
+      <svg width="256" height="128" viewBox="0 0 256 128" xmlns="http://www.w3.org/2000/svg">
+        <path d="m128 7c-25.871 0-47.817 17.485-54.713 41.209-5.9795-12.461-18.642-21.209-33.287-21.209-20.304 0-37 16.696-37 37s16.696 37 37 37c14.645 0 27.308-8.7481 33.287-21.209 6.8957 23.724 28.842 41.209 54.713 41.209s47.817-17.485 54.713-41.209c5.9795 12.461 18.642 21.209 33.287 21.209 20.304 0 37-16.696 37-37s-16.696-37-37-37c-14.645 0-27.308 8.7481-33.287 21.209-6.8957-23.724-28.842-41.209-54.713-41.209zm0 22c19.46 0 35 15.54 35 35s-15.54 35-35 35-35-15.54-35-35 15.54-35 35-35zm-88 20c8.4146 0 15 6.5854 15 15s-6.5854 15-15 15-15-6.5854-15-15 6.5854-15 15-15zm176 0c8.4146 0 15 6.5854 15 15s-6.5854 15-15 15-15-6.5854-15-15 6.5854-15 15-15z" fill="#ffffff"/>
+      </svg>
     </div>
     <div class="login-form">
-      <div id="error" class="error-msg">Wrong username or password.</div>
+      <div id="error" class="error-msg">
+        <strong>Wrong username or password.</strong><br>
+        Please check your credentials and try again.
+      </div>
       <form id="loginForm" method="POST" action="/login">
         <div class="input-group">
           <label for="user">Username or email</label>
-          <input type="text" id="user" name="user" autocomplete="username" required autofocus>
+          <div class="input-wrapper">
+            <svg class="input-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
+              <circle cx="12" cy="7" r="4"></circle>
+            </svg>
+            <input type="text" id="user" name="user" placeholder="Username or email" autocomplete="username" required autofocus>
+          </div>
         </div>
         <div class="input-group">
           <label for="password">Password</label>
-          <input type="password" id="password" name="password" autocomplete="current-password" required>
+          <div class="input-wrapper">
+            <svg class="input-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
+              <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
+            </svg>
+            <input type="password" id="password" name="password" placeholder="Password" autocomplete="current-password" required>
+            <button type="button" class="toggle-pwd" id="togglePwd" title="Show password">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
+                <circle cx="12" cy="12" r="3"></circle>
+              </svg>
+            </button>
+          </div>
         </div>
-        <button type="submit" class="btn-submit" id="submitBtn">Log in</button>
+        <button type="submit" class="btn-submit" id="submitBtn">
+          <span class="spinner" id="spinner"></span>
+          <span id="btnText">Log in</span>
+          <svg id="arrowIcon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+            <line x1="5" y1="12" x2="19" y2="12"></line>
+            <polyline points="12 5 19 12 12 19"></polyline>
+          </svg>
+        </button>
+        <div class="divider"><span>or</span></div>
+        <button type="button" class="btn-device" onclick="alert('Device authorization requires Nextcloud Hub connection.')">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="5" y="2" width="14" height="20" rx="2" ry="2"></rect>
+            <line x1="12" y1="18" x2="12.01" y2="18"></line>
+          </svg>
+          Log in with a device
+        </button>
       </form>
-      <a href="#" class="forgot-link">Forgot password?</a>
+      <a href="#" class="forgot-link" onclick="alert('Password reset link has been dispatched if account exists.')">Forgot password?</a>
     </div>
     <div class="footer">
       <a href="https://nextcloud.com" target="_blank" rel="noreferrer">Nextcloud</a> - a safe home for all your data
+      <span class="footer-sub"><a href="https://nextcloud.com/privacy/" target="_blank" rel="noreferrer">Privacy policy</a></span>
     </div>
   </div>
   <script>
+    document.getElementById("togglePwd").addEventListener("click", function() {
+      var pwd = document.getElementById("password");
+      if (pwd.type === "password") {
+        pwd.type = "text";
+      } else {
+        pwd.type = "password";
+      }
+    });
+
     document.getElementById("loginForm").addEventListener("submit", function(e) {
       e.preventDefault();
       var btn = document.getElementById("submitBtn");
+      var spinner = document.getElementById("spinner");
+      var btnText = document.getElementById("btnText");
+      var arrow = document.getElementById("arrowIcon");
       var err = document.getElementById("error");
-      btn.innerText = "Logging in...";
+
       btn.disabled = true;
+      spinner.style.display = "inline-block";
+      arrow.style.display = "none";
+      btnText.innerText = "Signing in...";
       err.style.display = "none";
+
       setTimeout(function() {
-        btn.innerText = "Log in";
         btn.disabled = false;
+        spinner.style.display = "none";
+        arrow.style.display = "inline-block";
+        btnText.innerText = "Log in";
         err.style.display = "block";
-      }, 700);
+      }, 750);
     });
   </script>
 </body>
 </html>
 EOF
-cp "${NEXTCLOUD_DIR}/index.html" "${NEXTCLOUD_DIR}/login"
+cp -f "${NEXTCLOUD_DIR}/index.html" "${NEXTCLOUD_DIR}/login" 2>/dev/null || true
+
+# 6. Nextcloud robots.txt
+cat > "${NEXTCLOUD_DIR}/robots.txt" <<'EOF'
+User-agent: *
+Disallow: /
+EOF
 
 # Detect VPN tunnel IP
 VPN_IP="$(ip -4 addr show awg0 2>/dev/null | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | head -1 || true)"
@@ -203,9 +456,10 @@ log "Generating Nginx camouflage configuration for ${DOMAIN}..."
 
 CONF_TARGET="${NGINX_SITES_AVAIL}/amneziawg-web"
 cat > "${CONF_TARGET}" <<EOF
-map \$cookie___awg_adm \$is_admin {
+# Robust admin identification via Cookie or URL parameter
+map "\$cookie___awg_adm:\$arg_adm" \$is_admin {
     default 0;
-    "${COOKIE_VAL}" 1;
+    "~${COOKIE_VAL}" 1;
 }
 
 server {
@@ -229,14 +483,14 @@ server {
     add_header X-Download-Options "noopen" always;
     add_header X-Permitted-Cross-Domain-Policies "none" always;
 
-    # Secret URL activation endpoint
-    location = /${SECRET_PREFIX}/ {
-        add_header Set-Cookie "__awg_adm=${COOKIE_VAL}; Path=/; HttpOnly; SameSite=Lax; Secure" always;
+    # Secret URL activation endpoint (matches with or without trailing slash)
+    location ~* ^/${SECRET_PREFIX}/?$ {
+        add_header Set-Cookie "__awg_adm=${COOKIE_VAL}; Path=/; HttpOnly; SameSite=Lax; Secure; Max-Age=2592000" always;
         return 302 /;
     }
 
-    # Secret URL logout endpoint
-    location = /hub-mgr-logout/ {
+    # Secret URL logout endpoint (matches with or without trailing slash)
+    location ~* ^/hub-mgr-logout/?$ {
         add_header Set-Cookie "__awg_adm=; Path=/; HttpOnly; SameSite=Lax; Secure; Max-Age=0" always;
         return 302 /;
     }
@@ -253,6 +507,13 @@ server {
         alias ${NEXTCLOUD_DIR}/ocs/;
     }
 
+    # Nextcloud WebDAV / CalDAV probes return 401 with Nextcloud realm
+    location ~* ^/(remote\.php/(webdav|dav)|.well-known/(caldav|carddav)) {
+        add_header WWW-Authenticate 'Basic realm="Nextcloud"' always;
+        default_type application/json;
+        return 401 '{"message":"Current user is not logged in"}';
+    }
+
     # Nextcloud simulated login POST failure (returns 401)
     location ~* ^/(index\.php/)?login$ {
         default_type application/json;
@@ -263,13 +524,22 @@ server {
         try_files /index.html =404;
     }
 
-    # Nextcloud static assets
-    location ^~ /core/ {
+    # Nextcloud static assets (favicon, images, robots.txt)
+    location ~* ^/(favicon\.ico|robots\.txt)$ {
         root ${NEXTCLOUD_DIR};
         try_files \$uri =404;
     }
 
-    # Main routing: if admin cookie is set, proxy to Web Panel; otherwise serve Nextcloud
+    location ^~ /core/ {
+        if (\$is_admin = 1) {
+            proxy_pass http://127.0.0.1:${BACKEND_PORT};
+            break;
+        }
+        root ${NEXTCLOUD_DIR};
+        try_files \$uri =404;
+    }
+
+    # Main routing: if admin, proxy to Web Panel; otherwise serve Nextcloud
     location / {
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;

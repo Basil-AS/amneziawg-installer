@@ -6941,6 +6941,8 @@ class Handler(SimpleHTTPRequestHandler):
             self.send_header("Content-Encoding", "gzip")
             self.send_header("Vary", "Accept-Encoding")
         self.send_security_headers()
+        if not self.finish_response_headers():
+            return
         self.write_response_body(data)
 
     def send_config_download(self, name, preset=None):
