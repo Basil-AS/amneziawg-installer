@@ -1238,7 +1238,8 @@ function renderServerHealth() {
   const overlayIface = network["vp" + "n_iface"] || "link";
   const overlayDrops = network["vp" + "n_drops_delta"] || 0;
   const webEdgeLabel = webEdge.mode === "nginx_reverse_proxy" ? "nginx" : "direct";
-  const webEdgeStatus = webEdge.status || (webEdge.mode === "legacy_direct" ? "ok" : "unknown");
+  const proxy = services.amneziawg_proxy || {};
+  const adguard = services.adguard_home || {};
   host.innerHTML = `
     ${renderHealthCard("CPU", cpuValue, `load ${Number(load.one || 0).toFixed(1)} / ${load.cpu_count || 1} core`, cpu.status || load.status || "ok")}
     ${renderHealthCard("RAM", formatPercent(memory.used_percent, 1), `${memoryUsed} used · ${bytes(memory.available_bytes || 0)} available`, memory.status || "unknown")}
@@ -1248,6 +1249,8 @@ function renderServerHealth() {
     ${renderHealthCard("Network", `${network.drops_delta || 0} drops`, `${network.wan_iface || "wan"} / ${overlayIface} · errors ${network.errors_delta || 0}`, network.status || "unknown")}
     ${renderHealthCard("Client Load", `↓ ${speed(clientLoad.client_download_bps || 0)}\n↑ ${speed(clientLoad.client_upload_bps || 0)}`, `peak ↓ ${speed(clientLoad.peak_server_tx_bps || 0)} · ↑ ${speed(clientLoad.peak_server_rx_bps || 0)} · ${clientLoad.active_count || 0}/${clientLoad.client_count || 0} active`, network.status || "unknown")}
     ${renderHealthCard("Web/Link", `${webEdgeLabel} ${webEdgeStatus} / ${overlay.status || "unknown"}`, `python RSS ${bytes(process.rss_bytes || 0)} · FD ${process.fd_count || 0} · link drops ${overlayDrops}`, h.status || "unknown")}
+    ${proxy.active ? renderHealthCard("QUIC Proxy", `UDP 443 → ${proxy.target || "51821"}`, `${proxy.domain || "s1.charles.men"} · ${proxy.sessions_count || 0} sessions`, proxy.status || "ok") : ""}
+    ${adguard.active ? renderHealthCard("AdGuard Home", "DNS Active", adguard.listener || "10.66.66.1:53", adguard.status || "ok") : ""}
   `;
   const stamp = document.querySelector("#serverHealthUpdated");
   if (stamp) stamp.textContent = h.timestamp ? `Updated ${h.timestamp}` : "";
@@ -2404,6 +2407,7 @@ async function renderPanel() {
           <p class="flex flex-wrap items-center gap-2 text-sm text-[var(--muted)]">
             <span>v${esc(statusState.version)} · ${esc(statusState.fork)} · ${esc(statusState.role)}</span>
             <span id="connectionStatusPill" class="${CONNECTION_PILL_BASE} ${CONNECTION_STATE_INFO.online.className}">${CONNECTION_STATE_INFO.online.label}</span>
+            ${statusState.proxy?.active ? `<span class="inline-flex items-center rounded-full bg-emerald-500/10 px-2 py-0.5 text-xs font-semibold text-emerald-500 border border-emerald-500/20" title="QUIC Proxy listening on UDP 443">QUIC Proxy :443</span>` : ""}
           </p>
         </div>
       </div>

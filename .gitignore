@@ -88,3 +88,5 @@ AGENT.local.md
 .agents/runtime/
 .agents/tmp/
 # END UNIVERSAL AGENT KIT
+# Standard Agent & Workstation Safeguards
+codex_history/

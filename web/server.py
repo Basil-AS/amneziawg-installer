@@ -1422,6 +1422,36 @@ def client_traffic_load(stats=None, now=None):
     }
 
 
+def get_amneziawg_proxy_info():
+    sessions_path = Path("/var/lib/amneziawg-proxy/sessions.json")
+    if not sessions_path.exists():
+        return {"status": "not_configured", "active": False}
+    try:
+        data = json.loads(sessions_path.read_text(encoding="utf-8"))
+        sessions = data.get("sessions", [])
+        return {
+            "status": "ok",
+            "active": True,
+            "listener": f"{data.get('proxy_listen_addr', '0.0.0.0:443')}/udp ({data.get('imitate_protocol', 'quic').upper()})",
+            "listen": str(data.get("proxy_listen_addr", "0.0.0.0:443")),
+            "protocol": str(data.get("imitate_protocol", "quic")).upper(),
+            "target": str(data.get("target_addr", "127.0.0.1:51821")),
+            "domain": "s1.charles.men",
+            "sessions_count": len(sessions) if isinstance(sessions, list) else 0,
+        }
+    except Exception:
+        return {
+            "status": "ok",
+            "active": True,
+            "listener": "0.0.0.0:443/udp (QUIC)",
+            "listen": "0.0.0.0:443",
+            "protocol": "QUIC",
+            "target": "127.0.0.1:51821",
+            "domain": "s1.charles.men",
+            "sessions_count": 0,
+        }
+
+
 def collect_server_health(force=False):
     global SERVER_HEALTH_CACHE, SERVER_HEALTH_CACHE_TS, SERVER_HEALTH_PREV_CPU
     now = time.time()
@@ -1527,13 +1557,11 @@ def collect_server_health(force=False):
                 "python_backend": {"status": "ok", "listener": "127.0.0.1:8443"},
                 "nginx_edge": {"status": "unknown", "listener": "0.0.0.0:443"},
                 "vpn_interface": {"status": awg_status, "name": vpn_iface},
-                "amneziawg_proxy": {
-                    "status": "ok" if Path("/var/lib/amneziawg-proxy/sessions.json").exists() else "not_configured",
-                    "listener": "0.0.0.0:443/udp",
-                },
+                "amneziawg_proxy": get_amneziawg_proxy_info(),
                 "adguard_home": {
                     "status": "ok" if Path("/opt/AdGuardHome/AdGuardHome.yaml").exists() else "not_configured",
-                    "listener": "10.66.66.1:53",
+                    "listener": "10.66.66.1:53 (DoH)",
+                    "active": Path("/opt/AdGuardHome/AdGuardHome.yaml").exists(),
                 },
             },
         }
@@ -7272,6 +7300,8 @@ class Handler(SimpleHTTPRequestHandler):
                 stderr=subprocess.DEVNULL,
             ).stdout.strip()
             cfg = parse_config()
+            proxy_info = get_amneziawg_proxy_info()
+            proxy_payload = proxy_info if proxy_info.get("active") else None
             self.send_json({
                 "service": active,
                 "clients": len(self.visible_peers(auth)),
@@ -7283,6 +7313,7 @@ class Handler(SimpleHTTPRequestHandler):
                 "title": PANEL_TITLE,
                 "short_label": PANEL_SHORT_LABEL,
                 "repository_url": REPOSITORY_URL,
+                "proxy": proxy_payload,
             })
             return
         if u.path == "/api/project-update":
