@@ -374,6 +374,21 @@ detect_awg_config() {
         warn "Could not auto-detect AmneziaWG listen port."
         warn "You will be prompted to enter it manually."
     fi
+
+    # Try to detect server domain for QUIC handshake continuation
+    local detected_domain=""
+    if [[ -f "${AWG_DIR}/awgsetup_cfg.init" ]]; then
+        detected_domain="$(grep -E '^(AWG_WEB_DOMAIN|AWG_ENDPOINT)=' "${AWG_DIR}/awgsetup_cfg.init" | head -1 | cut -d= -f2- | tr -d '"'\''' || true)"
+    fi
+    if [[ -z "${detected_domain}" ]] && [[ -d "/etc/letsencrypt/live" ]]; then
+        detected_domain="$(find /etc/letsencrypt/live -mindepth 1 -maxdepth 1 -type d ! -name 'README' -exec basename {} \; 2>/dev/null | head -1 || true)"
+    fi
+    if [[ -n "${detected_domain}" ]] && [[ "${detected_domain}" =~ ^[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$ ]]; then
+        if [[ "${QUIC_DOMAIN}" == "${DEFAULT_QUIC_DOMAIN}" ]]; then
+            QUIC_DOMAIN="${detected_domain}"
+            info "Detected server domain for QUIC handshake: ${QUIC_DOMAIN}"
+        fi
+    fi
 }
 
 # ── Source-build support ──────────────────────────────────────────────────────

@@ -3502,19 +3502,117 @@ async function rotateProfile() {
   await loadClients();
 }
 
+function tuneConfigForPreset(rawText, preset, domain) {
+  let lines = rawText.split("\n");
+  const hostDomain = domain || window.location.hostname || "s1.charles.men";
+
+  if (preset === "mobile") {
+    lines = lines.map(line => {
+      if (/^MTU\s*=/i.test(line.trim())) return "MTU = 1280";
+      if (/^PersistentKeepalive\s*=/i.test(line.trim())) return "PersistentKeepalive = 25";
+      return line;
+    });
+  } else if (preset === "home") {
+    lines = lines.map(line => {
+      if (/^MTU\s*=/i.test(line.trim())) return "MTU = 1380";
+      if (/^PersistentKeepalive\s*=/i.test(line.trim())) return "PersistentKeepalive = 35";
+      return line;
+    });
+  } else if (preset === "router") {
+    lines = lines.map(line => {
+      if (/^MTU\s*=/i.test(line.trim())) return "MTU = 1360";
+      if (/^PersistentKeepalive\s*=/i.test(line.trim())) return "PersistentKeepalive = 30";
+      const m = line.trim().match(/^(H[1-4]\s*=\s*)(\d+)(?:-(\d+))?/i);
+      if (m) {
+        let v1 = Math.min(parseInt(m[2], 10), 2147483647);
+        if (m[3]) {
+          let v2 = Math.min(parseInt(m[3], 10), 2147483647);
+          if (v2 <= v1) v2 = Math.min(v1 + 1000, 2147483647);
+          return `${m[1]}${v1}-${v2}`;
+        }
+        return `${m[1]}${v1}`;
+      }
+      return line;
+    });
+  } else if (preset === "wiresock") {
+    lines = lines.filter(line => !/^I[1-5]\s*=/i.test(line.trim()));
+    lines = lines.map(line => {
+      if (/^MTU\s*=/i.test(line.trim())) return "MTU = 1380";
+      if (/^PersistentKeepalive\s*=/i.test(line.trim())) return "PersistentKeepalive = 35";
+      return line;
+    });
+    lines = lines.filter(line => !/^#@ws:/i.test(line.trim()) && !/^# WireSock compatibility hints/i.test(line.trim()));
+    const peerIdx = lines.findIndex(l => /^\[Peer\]/i.test(l.trim()));
+    const wsDirectives = [
+      "# WireSock compatibility hints",
+      `#@ws:Id = ${hostDomain}`,
+      "#@ws:Ip = quic",
+      "#@ws:Ib = curl",
+      ""
+    ];
+    if (peerIdx >= 0) {
+      lines.splice(peerIdx, 0, ...wsDirectives);
+    } else {
+      lines.push(...wsDirectives);
+    }
+  }
+
+  return lines.join("\n");
+}
+
 async function showConfig(name) {
-  const text = await configText(name);
+  const originalText = await configText(name);
+  let activePreset = "default";
+  let currentText = originalText;
+
   showModal(name, `
     <div class="grid gap-3">
-      <div class="flex flex-wrap justify-end gap-2">
-        <button id="downloadConfigFromModal" class="${buttonClasses()}">${icon("download")}<span>Download .conf</span></button>
-        <button id="copyConfigFromModal" class="${buttonClasses()}">${icon("copy")}<span>Copy profile</span></button>
+      <div class="flex flex-wrap items-center justify-between gap-2 border-b border-[var(--line)] pb-2">
+        <div class="flex flex-wrap gap-1" id="configPresetTabs">
+          <button data-preset="default" class="px-2.5 py-1 text-xs rounded-md font-medium bg-[var(--accent)] text-white">Default</button>
+          <button data-preset="mobile" class="px-2.5 py-1 text-xs rounded-md font-medium bg-[var(--soft)] hover:bg-[var(--line)]">📱 Mobile (1280)</button>
+          <button data-preset="home" class="px-2.5 py-1 text-xs rounded-md font-medium bg-[var(--soft)] hover:bg-[var(--line)]">💻 Home PC (1380)</button>
+          <button data-preset="router" class="px-2.5 py-1 text-xs rounded-md font-medium bg-[var(--soft)] hover:bg-[var(--line)]">🌐 Router (1360)</button>
+          <button data-preset="wiresock" class="px-2.5 py-1 text-xs rounded-md font-medium bg-[var(--soft)] hover:bg-[var(--line)]">🪟 WireSock (Win)</button>
+        </div>
+        <div class="flex flex-wrap gap-2">
+          <button id="downloadConfigFromModal" class="${buttonClasses()}">${icon("download")}<span>Download</span></button>
+          <button id="copyConfigFromModal" class="${buttonClasses()}">${icon("copy")}<span>Copy</span></button>
+        </div>
       </div>
-      <pre class="max-h-[70vh] overflow-auto whitespace-pre-wrap break-words rounded-md bg-[var(--soft)] p-3 text-xs">${esc(text)}</pre>
+      <pre id="configPreBlock" class="max-h-[65vh] overflow-auto whitespace-pre-wrap break-words rounded-md bg-[var(--soft)] p-3 text-xs font-mono">${esc(currentText)}</pre>
     </div>
   `);
-  document.querySelector("#downloadConfigFromModal").onclick = async () => downloadConfig(name);
-  document.querySelector("#copyConfigFromModal").onclick = async () => copyConfig(name);
+
+  const updatePresetUI = (preset) => {
+    activePreset = preset;
+    currentText = tuneConfigForPreset(originalText, preset);
+    const pre = document.querySelector("#configPreBlock");
+    if (pre) pre.textContent = currentText;
+
+    document.querySelectorAll("#configPresetTabs button").forEach(btn => {
+      if (btn.dataset.preset === preset) {
+        btn.className = "px-2.5 py-1 text-xs rounded-md font-medium bg-[var(--accent)] text-white";
+      } else {
+        btn.className = "px-2.5 py-1 text-xs rounded-md font-medium bg-[var(--soft)] hover:bg-[var(--line)]";
+      }
+    });
+  };
+
+  document.querySelectorAll("#configPresetTabs button").forEach(btn => {
+    btn.onclick = () => updatePresetUI(btn.dataset.preset);
+  });
+
+  document.querySelector("#downloadConfigFromModal").onclick = async () => {
+    const filename = activePreset === "default" ? `${name}.conf` : `${name}-${activePreset}.conf`;
+    saveBlob(new Blob([currentText], {type: "text/plain;charset=utf-8"}), filename);
+    showToast(`Downloaded ${filename}`);
+  };
+
+  document.querySelector("#copyConfigFromModal").onclick = async () => {
+    await copyText(currentText);
+    showToast("Copied");
+  };
 }
 
 async function downloadConfig(name) {

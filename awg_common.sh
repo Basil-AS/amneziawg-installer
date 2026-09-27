@@ -3010,6 +3010,24 @@ is_panel_domain_endpoint() {
     [[ -n "$panel_domain" && "$endpoint" == "$panel_domain" ]]
 }
 
+get_client_endpoint_port() {
+    local default_port="${1:-${AWG_PORT:-443}}"
+    local proxy_conf="/etc/amneziawg-proxy/proxy.toml"
+    if [[ -f "$proxy_conf" ]]; then
+        local pport
+        pport=$(grep -E '^[[:space:]]*listen[[:space:]]*=' "$proxy_conf" | head -1 | sed -E 's/.*:([0-9]+).*/\1/' || true)
+        if [[ -n "$pport" && "$pport" =~ ^[0-9]+$ ]]; then
+            printf '%s' "$pport"
+            return 0
+        fi
+    fi
+    if [[ -n "${AWG_PUBLIC_PORT:-}" ]]; then
+        printf '%s' "${AWG_PUBLIC_PORT}"
+        return 0
+    fi
+    _sanitize_port "$default_port"
+}
+
 render_client_config() {
     local name="$1"
     local client_ip="$2"
@@ -4626,7 +4644,8 @@ generate_client() {
     # и отлаживается вслепую. Отказываем явно, как generate_vpn_uri для vpn://
     # URI. Артефакты откатит _rollback ниже.
     local _cport
-    _cport=$(_sanitize_port "${AWG_PORT:-}")
+    _cport=$(get_client_endpoint_port "${AWG_PORT:-}")
+
     if [[ "$_cport" == "0" ]]; then
         log_error "AWG_PORT некорректен ('${AWG_PORT:-}') - клиентский конфиг для '$name' не создан. Проверьте ListenPort в $SERVER_CONF_FILE (или AWG_PORT в $CONFIG_FILE)."
         _rollback_client_artifacts "$name"
@@ -5007,27 +5026,42 @@ generate_awg31_s_values_runtime() {
     return 1
 }
 
+avoid_awg_s_collision() {
+    local s1="$1" s2="$2" s3="$3" s4="$4"
+    if (( s1 + 56 == s2 )); then
+        s2=$(( s2 + 1 ))
+    fi
+    if (( s1 + 84 == s3 )); then
+        s3=$(( s3 + 1 ))
+    fi
+    if (( s2 + 28 == s3 )); then
+        s3=$(( s3 + 1 ))
+    fi
+    printf '%s\n%s\n%s\n%s\n' "$s1" "$s2" "$s3" "$s4"
+}
+
 generate_runtime_awg_profile() {
     local preset="${1:-default}" h_lines s_lines
     case "$preset" in
         mobile)
             AWG_PRESET="mobile"
-            AWG_Jc=3
-            AWG_Jmin=$(awg_rand_range 30 50)
-            AWG_Jmax=$(( AWG_Jmin + $(awg_rand_range 20 80) ))
+            AWG_Jc=2
+            AWG_Jmin=$(awg_rand_range 10 20)
+            AWG_Jmax=$(( AWG_Jmin + $(awg_rand_range 15 25) ))
             if [[ "${AWG_PROTOCOL_VERSION:-2.0}" == "3.0" || "${AWG_PROTOCOL_VERSION:-2.0}" == "3.1" ]]; then
                 mapfile -t s_lines < <(generate_awg31_s_values_runtime) || return 1
                 [[ ${#s_lines[@]} -eq 4 ]] || return 1
                 AWG_S1="${s_lines[0]}"; AWG_S2="${s_lines[1]}"
                 AWG_S3="${s_lines[2]}"; AWG_S4="${s_lines[3]}"
             else
-                AWG_S1=$(awg_rand_range 15 150)
-                AWG_S2=$(awg_rand_range 15 150)
-                if [[ $((AWG_S1 + 56)) -eq $AWG_S2 ]]; then
-                    AWG_S2=$((AWG_S2 + 1)); (( AWG_S2 <= 150 )) || AWG_S2=15
-                fi
-                AWG_S3=$(awg_rand_range 0 10)
-                AWG_S4=$(awg_rand_range 0 10)
+                local s1 s2 s3 s4
+                s1=$(awg_rand_range 15 35)
+                s2=$(awg_rand_range 15 35)
+                s3=$(awg_rand_range 0 10)
+                s4=$(awg_rand_range 0 10)
+                mapfile -t s_lines < <(avoid_awg_s_collision "$s1" "$s2" "$s3" "$s4")
+                AWG_S1="${s_lines[0]}"; AWG_S2="${s_lines[1]}"
+                AWG_S3="${s_lines[2]}"; AWG_S4="${s_lines[3]}"
             fi
             ;;
         default|balanced)
@@ -5041,13 +5075,14 @@ generate_runtime_awg_profile() {
                 AWG_S1="${s_lines[0]}"; AWG_S2="${s_lines[1]}"
                 AWG_S3="${s_lines[2]}"; AWG_S4="${s_lines[3]}"
             else
-                AWG_S1=$(awg_rand_range 15 150)
-                AWG_S2=$(awg_rand_range 15 150)
-                if [[ $((AWG_S1 + 56)) -eq $AWG_S2 ]]; then
-                    AWG_S2=$((AWG_S2 + 1)); (( AWG_S2 <= 150 )) || AWG_S2=15
-                fi
-                AWG_S3=$(awg_rand_range 8 55)
-                AWG_S4=$(awg_rand_range 4 32)
+                local s1 s2 s3 s4
+                s1=$(awg_rand_range 15 150)
+                s2=$(awg_rand_range 15 150)
+                s3=$(awg_rand_range 8 55)
+                s4=$(awg_rand_range 4 32)
+                mapfile -t s_lines < <(avoid_awg_s_collision "$s1" "$s2" "$s3" "$s4")
+                AWG_S1="${s_lines[0]}"; AWG_S2="${s_lines[1]}"
+                AWG_S3="${s_lines[2]}"; AWG_S4="${s_lines[3]}"
             fi
             ;;
         stealth)
@@ -5061,8 +5096,14 @@ generate_runtime_awg_profile() {
                 AWG_S1="${s_lines[0]}"; AWG_S2="${s_lines[1]}"
                 AWG_S3="${s_lines[2]}"; AWG_S4="${s_lines[3]}"
             else
-                AWG_S1=$(awg_rand_range 20 149); AWG_S2=$(awg_rand_range 20 149)
-                AWG_S3=$(awg_rand_range 16 55); AWG_S4=$(awg_rand_range 12 32)
+                local s1 s2 s3 s4
+                s1=$(awg_rand_range 20 149)
+                s2=$(awg_rand_range 20 149)
+                s3=$(awg_rand_range 16 55)
+                s4=$(awg_rand_range 12 32)
+                mapfile -t s_lines < <(avoid_awg_s_collision "$s1" "$s2" "$s3" "$s4")
+                AWG_S1="${s_lines[0]}"; AWG_S2="${s_lines[1]}"
+                AWG_S3="${s_lines[2]}"; AWG_S4="${s_lines[3]}"
             fi
             ;;
         compatibility)
@@ -5076,8 +5117,14 @@ generate_runtime_awg_profile() {
                 AWG_S1="${s_lines[0]}"; AWG_S2="${s_lines[1]}"
                 AWG_S3="${s_lines[2]}"; AWG_S4="${s_lines[3]}"
             else
-                AWG_S1=$(awg_rand_range 15 150); AWG_S2=$(awg_rand_range 15 150)
-                AWG_S3=$(awg_rand_range 12 55); AWG_S4=$(awg_rand_range 12 32)
+                local s1 s2 s3 s4
+                s1=$(awg_rand_range 15 150)
+                s2=$(awg_rand_range 15 150)
+                s3=$(awg_rand_range 12 55)
+                s4=$(awg_rand_range 12 32)
+                mapfile -t s_lines < <(avoid_awg_s_collision "$s1" "$s2" "$s3" "$s4")
+                AWG_S1="${s_lines[0]}"; AWG_S2="${s_lines[1]}"
+                AWG_S3="${s_lines[2]}"; AWG_S4="${s_lines[3]}"
             fi
             ;;
         *)
@@ -5459,7 +5506,7 @@ regenerate_client() {
     local _old_i1="${AWG_I1:-}"
     AWG_I1="$new_i1"
     local _cport
-    _cport=$(_sanitize_port "${AWG_PORT:-}")
+    _cport=$(get_client_endpoint_port "${AWG_PORT:-}")
     if [[ "$_cport" == "0" ]]; then
         log_error "AWG_PORT некорректен ('${AWG_PORT:-}') — конфиг '$name' не перегенерирован."
         AWG_I1="$_old_i1"

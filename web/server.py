@@ -1527,6 +1527,14 @@ def collect_server_health(force=False):
                 "python_backend": {"status": "ok", "listener": "127.0.0.1:8443"},
                 "nginx_edge": {"status": "unknown", "listener": "0.0.0.0:443"},
                 "vpn_interface": {"status": awg_status, "name": vpn_iface},
+                "amneziawg_proxy": {
+                    "status": "ok" if Path("/var/lib/amneziawg-proxy/sessions.json").exists() else "not_configured",
+                    "listener": "0.0.0.0:443/udp",
+                },
+                "adguard_home": {
+                    "status": "ok" if Path("/opt/AdGuardHome/AdGuardHome.yaml").exists() else "not_configured",
+                    "listener": "10.66.66.1:53",
+                },
             },
         }
         SERVER_HEALTH_CACHE = payload
@@ -6683,6 +6691,81 @@ class LimitedThreadingHTTPServer(ThreadingHTTPServer):
             self._sem.release()
 
 
+def tune_config_preset(text, preset, host_domain=None):
+    if not preset or preset == "default":
+        return text
+    lines = text.splitlines()
+    domain = host_domain or "s1.charles.men"
+    if preset == "mobile":
+        out = []
+        for line in lines:
+            if re.match(r"^MTU\s*=", line, re.IGNORECASE):
+                out.append("MTU = 1280")
+            elif re.match(r"^PersistentKeepalive\s*=", line, re.IGNORECASE):
+                out.append("PersistentKeepalive = 25")
+            else:
+                out.append(line)
+        return "\n".join(out) + "\n"
+    elif preset == "home":
+        out = []
+        for line in lines:
+            if re.match(r"^MTU\s*=", line, re.IGNORECASE):
+                out.append("MTU = 1380")
+            elif re.match(r"^PersistentKeepalive\s*=", line, re.IGNORECASE):
+                out.append("PersistentKeepalive = 35")
+            else:
+                out.append(line)
+        return "\n".join(out) + "\n"
+    elif preset == "router":
+        out = []
+        for line in lines:
+            if re.match(r"^MTU\s*=", line, re.IGNORECASE):
+                out.append("MTU = 1360")
+            elif re.match(r"^PersistentKeepalive\s*=", line, re.IGNORECASE):
+                out.append("PersistentKeepalive = 30")
+            else:
+                m = re.match(r"^(H[1-4]\s*=\s*)(\d+)(?:-(\d+))?", line, re.IGNORECASE)
+                if m:
+                    v1 = min(int(m.group(2)), 2147483647)
+                    if m.group(3):
+                        v2 = min(int(m.group(3)), 2147483647)
+                        if v2 <= v1:
+                            v2 = min(v1 + 1000, 2147483647)
+                        out.append(f"{m.group(1)}{v1}-{v2}")
+                    else:
+                        out.append(f"{m.group(1)}{v1}")
+                else:
+                    out.append(line)
+        return "\n".join(out) + "\n"
+    elif preset == "wiresock":
+        out = []
+        for line in lines:
+            if re.match(r"^I[1-5]\s*=", line.strip(), re.IGNORECASE):
+                continue
+            if re.match(r"^MTU\s*=", line, re.IGNORECASE):
+                out.append("MTU = 1380")
+            elif re.match(r"^PersistentKeepalive\s*=", line, re.IGNORECASE):
+                out.append("PersistentKeepalive = 35")
+            elif re.match(r"^#@ws:", line.strip(), re.IGNORECASE) or "WireSock compatibility hints" in line:
+                continue
+            else:
+                out.append(line)
+        peer_idx = next((i for i, l in enumerate(out) if l.strip().lower() == "[peer]"), -1)
+        ws_directives = [
+            "# WireSock compatibility hints",
+            f"#@ws:Id = {domain}",
+            "#@ws:Ip = quic",
+            "#@ws:Ib = curl",
+            ""
+        ]
+        if peer_idx >= 0:
+            out[peer_idx:peer_idx] = ws_directives
+        else:
+            out.extend(ws_directives)
+        return "\n".join(out) + "\n"
+    return text
+
+
 class Handler(SimpleHTTPRequestHandler):
     server_version = "Panel"
     sys_version = ""
@@ -6801,6 +6884,17 @@ class Handler(SimpleHTTPRequestHandler):
             return
         self.write_response_body(data)
 
+    def send_text(self, text, ctype="text/plain; charset=utf-8"):
+        data = text.encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_security_headers()
+        if not self.finish_response_headers():
+            return
+        self.write_response_body(data)
+
     def send_api_error(self, status, error):
         self.send_json({"error": error}, status)
 
@@ -6847,19 +6941,22 @@ class Handler(SimpleHTTPRequestHandler):
             self.send_header("Content-Encoding", "gzip")
             self.send_header("Vary", "Accept-Encoding")
         self.send_security_headers()
-        if not self.finish_response_headers():
-            return
         self.write_response_body(data)
 
-    def send_config_download(self, name):
+    def send_config_download(self, name, preset=None):
         path = AWG_DIR / f"{name}.conf"
         if not path.exists() or not path.is_file():
             self.send_error(404)
             return
-        data = path.read_bytes()
+        text = path.read_text(encoding="utf-8", errors="replace")
+        if preset:
+            host = split_host(self.headers.get("Host", ""))
+            text = tune_config_preset(text, preset, host)
+        data = text.encode("utf-8")
+        filename = f"{name}-{preset}.conf" if preset else f"{name}.conf"
         self.send_response(200)
         self.send_header("Content-Type", "application/octet-stream")
-        self.send_header("Content-Disposition", f'attachment; filename="{name}.conf"')
+        self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
         self.send_header("Content-Length", str(len(data)))
         self.send_security_headers()
         if not self.finish_response_headers():
@@ -7468,7 +7565,9 @@ class Handler(SimpleHTTPRequestHandler):
             name = safe_name(m_download.group(1))
             if not self.require_client_access(auth, name):
                 return
-            self.send_config_download(name)
+            query = parse_qs(u.query)
+            preset = str((query.get("preset") or [""])[0]).lower()
+            self.send_config_download(name, preset=preset if preset in {"mobile", "home", "router", "wiresock"} else None)
             return
 
         m = re.match(r"^/api/clients/([^/]+)/(config|qr|vpnuri|uri|p2p|ports)$", u.path)
@@ -7479,7 +7578,15 @@ class Handler(SimpleHTTPRequestHandler):
         if not self.require_client_access(auth, name):
             return
         if kind == "config":
-            self.send_file(AWG_DIR / f"{name}.conf", "text/plain; charset=utf-8")
+            query = parse_qs(u.query)
+            preset = str((query.get("preset") or [""])[0]).lower()
+            if preset in {"mobile", "home", "router", "wiresock"}:
+                text = (AWG_DIR / f"{name}.conf").read_text(encoding="utf-8", errors="replace")
+                host = split_host(self.headers.get("Host", ""))
+                text = tune_config_preset(text, preset, host)
+                self.send_text(text, "text/plain; charset=utf-8")
+            else:
+                self.send_file(AWG_DIR / f"{name}.conf", "text/plain; charset=utf-8")
         elif kind == "qr":
             self.send_file(AWG_DIR / f"{name}.png", "image/png")
         elif kind in {"vpnuri", "uri"}:
@@ -8109,10 +8216,25 @@ def main():
     start_server_health_collector()
     os.chdir(WEB_DIR)
     bind_host = policy.get("bind_host") or os.environ.get("AWG_WEB_BIND") or configured_vpn_ipv4()[0]
-    httpd = LimitedThreadingHTTPServer((bind_host, int(os.environ.get("AWG_WEB_PORT", "8443"))), Handler)
-    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-    ctx.load_cert_chain(WEB_DIR / "cert.pem", WEB_DIR / "key.pem")
-    httpd.ssl_context = ctx
+    port = int(os.environ.get("AWG_WEB_PORT", "8443"))
+    httpd = LimitedThreadingHTTPServer((bind_host, port), Handler)
+
+    use_tls = os.environ.get("AWG_WEB_TLS", "1").lower() not in {"0", "false", "off", "no"}
+    if use_tls:
+        cert_file = WEB_DIR / "cert.pem"
+        key_file = WEB_DIR / "key.pem"
+        if not cert_file.exists() or not key_file.exists():
+            subprocess.run([
+                "openssl", "req", "-x509", "-newkey", "rsa:2048",
+                "-keyout", str(WEB_DIR / "key.pem"),
+                "-out", str(WEB_DIR / "cert.pem"),
+                "-days", "3650", "-nodes", "-subj", "/CN=VPN Panel"
+            ], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if cert_file.exists() and key_file.exists():
+            ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+            ctx.load_cert_chain(cert_file, key_file)
+            httpd.ssl_context = ctx
+
     httpd.serve_forever()
 
 
