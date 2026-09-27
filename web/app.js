@@ -1238,8 +1238,10 @@ function renderServerHealth() {
   const overlayIface = network["vp" + "n_iface"] || "link";
   const overlayDrops = network["vp" + "n_drops_delta"] || 0;
   const webEdgeLabel = webEdge.mode === "nginx_reverse_proxy" ? "nginx" : "direct";
+  const webEdgeStatus = webEdge.status || (webEdge.mode === "legacy_direct" ? "ok" : "unknown");
   const proxy = services.amneziawg_proxy || {};
   const adguard = services.adguard_home || {};
+  const threat = services.threat_defense || h.threat_defense || {};
   host.innerHTML = `
     ${renderHealthCard("CPU", cpuValue, `load ${Number(load.one || 0).toFixed(1)} / ${load.cpu_count || 1} core`, cpu.status || load.status || "ok")}
     ${renderHealthCard("RAM", formatPercent(memory.used_percent, 1), `${memoryUsed} used · ${bytes(memory.available_bytes || 0)} available`, memory.status || "unknown")}
@@ -1250,7 +1252,8 @@ function renderServerHealth() {
     ${renderHealthCard("Client Load", `↓ ${speed(clientLoad.client_download_bps || 0)}\n↑ ${speed(clientLoad.client_upload_bps || 0)}`, `peak ↓ ${speed(clientLoad.peak_server_tx_bps || 0)} · ↑ ${speed(clientLoad.peak_server_rx_bps || 0)} · ${clientLoad.active_count || 0}/${clientLoad.client_count || 0} active`, network.status || "unknown")}
     ${renderHealthCard("Web/Link", `${webEdgeLabel} ${webEdgeStatus} / ${overlay.status || "unknown"}`, `python RSS ${bytes(process.rss_bytes || 0)} · FD ${process.fd_count || 0} · link drops ${overlayDrops}`, h.status || "unknown")}
     ${proxy.active ? renderHealthCard("QUIC Proxy", `UDP 443 → ${proxy.target || "51821"}`, `${proxy.domain || "s1.charles.men"} · ${proxy.sessions_count || 0} sessions`, proxy.status || "ok") : ""}
-    ${adguard.active ? renderHealthCard("AdGuard Home", "DNS Active", adguard.listener || "10.66.66.1:53", adguard.status || "ok") : ""}
+    ${adguard.active ? renderHealthCard("AdGuard Home", "DNS Active", adguard.listener || "10.9.9.1:53", adguard.status || "ok") : ""}
+    ${threat.active ? renderHealthCard("Threat Shield", `${threat.banned_count || 0} Banned`, `${threat.banned_drops_packets || 0} dropped · ${threat.honeypot_triggers || 0} traps`, "ok") : ""}
   `;
   const stamp = document.querySelector("#serverHealthUpdated");
   if (stamp) stamp.textContent = h.timestamp ? `Updated ${h.timestamp}` : "";
@@ -3328,10 +3331,12 @@ async function showHelp() {
 }
 
 async function addClient() {
-  const name = await clientNameModal();
-  if (!name) return;
+  const result = await clientNameModal();
+  if (!result) return;
+  const name = typeof result === "string" ? result : result.name;
+  const network_profile = typeof result === "object" ? result.network_profile : "mobile";
   try {
-    await api("/api/clients", {method: "POST", body: JSON.stringify({name})});
+    await api("/api/clients", {method: "POST", body: JSON.stringify({name, network_profile})});
     showToast("Client added");
     await loadClients();
     if (statusState.role === "super") await loadTokens();
@@ -4577,15 +4582,43 @@ function rotateProfileModal() {
 function clientNameModal() {
   return new Promise(resolve => {
     const dialog = document.createElement("dialog");
-    dialog.className = "w-[min(420px,calc(100vw-32px))] rounded-lg border border-[var(--line)] bg-[var(--panel)] p-0 text-[var(--text)] shadow-xl backdrop:bg-black/55";
+    dialog.className = "w-[min(460px,calc(100vw-32px))] rounded-lg border border-[var(--line)] bg-[var(--panel)] p-0 text-[var(--text)] shadow-xl backdrop:bg-black/55";
     dialog.innerHTML = `
       <form method="dialog" class="p-4">
-        <h2 class="mb-4 text-base font-semibold">Add Client</h2>
-        <label class="sr-only" for="clientNameValue">Client name</label>
+        <h2 class="mb-3 text-base font-semibold">Add Client / Новый клиент</h2>
+        <label class="block text-xs font-semibold uppercase text-[var(--muted)] mb-1" for="clientNameValue">Client name</label>
         <input id="clientNameValue" class="h-11 w-full rounded-md border border-[var(--line)] bg-[var(--soft)] px-3 outline-none focus:border-[var(--accent)]" placeholder="my_phone" autocomplete="off">
-        <p class="mt-2 text-xs text-[var(--muted)]">Examples: my_phone, iphone_15, laptop-home</p>
+        <p class="mt-1 text-xs text-[var(--muted)]">Examples: my_phone, iphone_15, home-laptop</p>
         <p id="clientNameHint" class="mt-2 hidden text-xs text-[var(--danger)]">${esc(CLIENT_NAME_HINT_RU)} / ${esc(CLIENT_NAME_HINT_EN)}</p>
-        <div class="mt-4 flex justify-end gap-2">
+
+        <div class="mt-4">
+          <label class="block text-xs font-semibold uppercase text-[var(--muted)] mb-2">Network Profile / Оптимизация сети</label>
+          <div class="grid gap-2 text-xs">
+            <label class="flex items-start gap-2.5 p-2.5 rounded-md border border-[var(--line)] bg-[var(--soft)] cursor-pointer hover:border-[var(--accent)]">
+              <input type="radio" name="clientNetworkProfile" value="mobile" checked class="mt-0.5">
+              <div>
+                <strong class="block text-[var(--text)]">📱 Мобильная сеть (LTE / 5G / CGNAT)</strong>
+                <span class="text-[var(--muted)]">MTU 1280 · Защита от фрагментации и мобильного DPI</span>
+              </div>
+            </label>
+            <label class="flex items-start gap-2.5 p-2.5 rounded-md border border-[var(--line)] bg-[var(--soft)] cursor-pointer hover:border-[var(--accent)]">
+              <input type="radio" name="clientNetworkProfile" value="home" class="mt-0.5">
+              <div>
+                <strong class="block text-[var(--text)]">🏠 Домашняя сеть (Wi-Fi / Оптоволокно)</strong>
+                <span class="text-[var(--muted)]">MTU 1420 · Максимальная скорость для ПК и роутеров</span>
+              </div>
+            </label>
+            <label class="flex items-start gap-2.5 p-2.5 rounded-md border border-[var(--line)] bg-[var(--soft)] cursor-pointer hover:border-[var(--accent)]">
+              <input type="radio" name="clientNetworkProfile" value="home_lan" class="mt-0.5">
+              <div>
+                <strong class="block text-[var(--text)]">🛡️ Домашняя + доступ к LAN (Split-LAN)</strong>
+                <span class="text-[var(--muted)]">MTU 1420 · Доступ к домашним принтерам и 192.168.x.x</span>
+              </div>
+            </label>
+          </div>
+        </div>
+
+        <div class="mt-5 flex justify-end gap-2">
           <button value="cancel" class="${buttonClasses()}">Cancel</button>
           <button id="createClientButton" value="ok" class="${primaryButtonClasses()}" disabled>Create</button>
         </div>
@@ -4611,8 +4644,9 @@ function clientNameModal() {
     });
     dialog.addEventListener("close", () => {
       const value = dialog.returnValue === "ok" ? input.value.trim() : null;
+      const profile = dialog.querySelector("input[name='clientNetworkProfile']:checked")?.value || "mobile";
       dialog.remove();
-      resolve(value);
+      resolve(value ? {name: value, network_profile: profile} : null);
     }, {once: true});
     dialog.showModal();
     input.focus();

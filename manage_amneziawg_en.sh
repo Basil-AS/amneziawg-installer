@@ -1042,7 +1042,7 @@ modify_client() {
     fi
 
     # Validation BEFORE taking the lock (early returns need no fd cleanup)
-    local allowed_params="DNS|Endpoint|AllowedIPs|PersistentKeepalive"
+    local allowed_params="DNS|Endpoint|AllowedIPs|PersistentKeepalive|MTU"
     if ! [[ "$param" =~ ^($allowed_params)$ ]]; then
         log_error "Parameter '$param' cannot be changed via modify."
         log_error "Allowed parameters: ${allowed_params//|/, }"
@@ -1050,6 +1050,11 @@ modify_client() {
     fi
 
     case "$param" in
+        MTU)
+            if ! [[ "$value" =~ ^[0-9]+$ ]] || [[ "$value" -lt 576 || "$value" -gt 9100 ]]; then
+                log_error "Invalid MTU: '$value' (allowed: 576-9100)"
+                return 1
+            fi ;;
         DNS)
             # Structural validation of the DNS list. The old charset-only regex
             # ^[0-9a-fA-F.:,\ ]+$ let garbage through ('abc' - a-f letters;

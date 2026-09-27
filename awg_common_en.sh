@@ -2766,6 +2766,24 @@ is_panel_domain_endpoint() {
     [[ -n "$panel_domain" && "$endpoint" == "$panel_domain" ]]
 }
 
+get_client_endpoint_port() {
+    local default_port="${1:-${AWG_PORT:-443}}"
+    local proxy_conf="/etc/amneziawg-proxy/proxy.toml"
+    if [[ -f "$proxy_conf" ]]; then
+        local pport
+        pport=$(grep -E '^[[:space:]]*listen[[:space:]]*=' "$proxy_conf" | head -1 | sed -E 's/.*:([0-9]+).*/\1/' || true)
+        if [[ -n "$pport" && "$pport" =~ ^[0-9]+$ ]]; then
+            printf '%s' "$pport"
+            return 0
+        fi
+    fi
+    if [[ -n "${AWG_PUBLIC_PORT:-}" ]]; then
+        printf '%s' "${AWG_PUBLIC_PORT}"
+        return 0
+    fi
+    _sanitize_port "$default_port"
+}
+
 render_client_config() {
     local name="$1"
     local client_ip="$2"
@@ -4329,7 +4347,7 @@ generate_client() {
     fi
 
     local _cport
-    _cport=$(_sanitize_port "${AWG_PORT:-}")
+    _cport=$(get_client_endpoint_port "${AWG_PORT:-}")
     if [[ "$_cport" == "0" ]]; then
         log_error "AWG_PORT is invalid ('${AWG_PORT:-}') — the client config for '$name' was not created."
         _rollback_client_artifacts "$name"
@@ -4558,7 +4576,7 @@ refresh_client_config() {
 
     # Regenerate the client config
     local _cport
-    _cport=$(_sanitize_port "${AWG_PORT:-}")
+    _cport=$(get_client_endpoint_port "${AWG_PORT:-}")
     if [[ "$_cport" == "0" ]]; then
         log_error "AWG_PORT is invalid ('${AWG_PORT:-}') — '$name' was not refreshed."
         exec {lock_fd}>&-
@@ -5147,7 +5165,7 @@ regenerate_client() {
     local _old_i1="${AWG_I1:-}"
     AWG_I1="$new_i1"
     local _cport
-    _cport=$(_sanitize_port "${AWG_PORT:-}")
+    _cport=$(get_client_endpoint_port "${AWG_PORT:-}")
     if [[ "$_cport" == "0" ]]; then
         log_error "AWG_PORT is invalid ('${AWG_PORT:-}') — '$name' was not regenerated."
         AWG_I1="$_old_i1"

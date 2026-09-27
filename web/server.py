@@ -1452,6 +1452,41 @@ def get_amneziawg_proxy_info():
         }
 
 
+def get_threat_defense_info():
+    telemetry = {
+        "status": "ok",
+        "active": False,
+        "banned_count": 0,
+        "banned_drops_packets": 0,
+        "honeypot_triggers": 0,
+        "scan_meter_count": 0,
+    }
+    try:
+        res = subprocess.run(["nft", "-j", "list", "table", "inet", "security"], capture_output=True, text=True, timeout=1.5)
+        if res.returncode == 0:
+            data = json.loads(res.stdout)
+            telemetry["active"] = True
+            for item in data.get("nftables", []):
+                if "set" in item:
+                    s = item["set"]
+                    if s.get("name") == "threat_banned":
+                        telemetry["banned_count"] = len(s.get("elem", []))
+                    elif s.get("name") == "threat_scan_meter":
+                        telemetry["scan_meter_count"] = len(s.get("elem", []))
+                elif "rule" in item:
+                    r = item["rule"]
+                    for ex in r.get("expr", []):
+                        if "match" in ex and ex["match"].get("right") == "@threat_banned":
+                            if "counter" in ex:
+                                telemetry["banned_drops_packets"] = ex["counter"].get("packets", 0)
+                        if "log" in ex and ex["log"].get("prefix") == "THREAT_HONEYPOT: ":
+                            if "counter" in ex:
+                                telemetry["honeypot_triggers"] = ex["counter"].get("packets", 0)
+    except Exception:
+        pass
+    return telemetry
+
+
 def collect_server_health(force=False):
     global SERVER_HEALTH_CACHE, SERVER_HEALTH_CACHE_TS, SERVER_HEALTH_PREV_CPU
     now = time.time()
@@ -1560,9 +1595,10 @@ def collect_server_health(force=False):
                 "amneziawg_proxy": get_amneziawg_proxy_info(),
                 "adguard_home": {
                     "status": "ok" if Path("/opt/AdGuardHome/AdGuardHome.yaml").exists() else "not_configured",
-                    "listener": "10.66.66.1:53 (DoH)",
+                    "listener": "10.9.9.1:53",
                     "active": Path("/opt/AdGuardHome/AdGuardHome.yaml").exists(),
                 },
+                "threat_defense": get_threat_defense_info(),
             },
         }
         SERVER_HEALTH_CACHE = payload
@@ -3394,7 +3430,7 @@ def utc_now_iso():
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 
-def set_client_metadata(config_name, display_name, auth=None):
+def set_client_metadata(config_name, display_name, auth=None, network_profile=None):
     config_name = safe_name(config_name)
     display_name = safe_name(display_name)
     data = load_client_metadata()
@@ -3402,6 +3438,8 @@ def set_client_metadata(config_name, display_name, auth=None):
     if not isinstance(record, dict):
         record = {}
     record["display_name"] = display_name
+    if network_profile:
+        record["network_profile"] = network_profile
     if auth is not None:
         record["created_by_fp"] = auth_fingerprint(auth)
         record["created_by_role"] = auth.get("role", "")
@@ -5498,11 +5536,13 @@ def parse_peers():
         if peer["ipv6_enabled"] is None:
             peer["ipv6_enabled"] = bool(peer.get("ipv6"))
         config_name = peer["name"]
-        display_name = metadata.get(config_name, {}).get("display_name") or config_name
+        meta = metadata.get(config_name, {})
+        display_name = meta.get("display_name") or config_name
         peer["id"] = config_name
         peer["name"] = config_name
         peer["config_name"] = config_name
         peer["display_name"] = display_name
+        peer["network_profile"] = meta.get("network_profile", "mobile")
         rows.append(peer)
     return rows
 
@@ -7887,7 +7927,15 @@ class Handler(SimpleHTTPRequestHandler):
                     args.append(f"--expires={require_expires(body['expires'])}")
                 p = run_manage(*args, "add", name)
                 if p.returncode == 0:
-                    set_client_metadata(name, display_name, auth)
+                    profile = str(body.get("network_profile") or "mobile").strip().lower()
+                    if profile in ("home", "home_lan"):
+                        run_manage("modify", name, "MTU", "1420")
+                    else:
+                        run_manage("modify", name, "MTU", "1280")
+                    if profile == "home_lan":
+                        run_manage("modify", name, "AllowedIPs", "0.0.0.0/1, 128.0.0.0/1, ::/1, 8000::/1")
+
+                    set_client_metadata(name, display_name, auth, network_profile=profile)
                     assigned_to_current_token = False
                     if collision:
                         audit_log(

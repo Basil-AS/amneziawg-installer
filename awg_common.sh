@@ -4954,7 +4954,7 @@ refresh_client_config() {
 
     # Перегенерация конфига
     local _cport
-    _cport=$(_sanitize_port "${AWG_PORT:-}")
+    _cport=$(get_client_endpoint_port "${AWG_PORT:-}")
     if [[ "$_cport" == "0" ]]; then
         log_error "AWG_PORT некорректен ('${AWG_PORT:-}') — конфиг '$name' не обновлён."
         exec {lock_fd}>&-

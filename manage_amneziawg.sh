@@ -1034,7 +1034,7 @@ modify_client() {
     fi
 
     # Валидация ДО взятия блокировки (ранние return не требуют fd cleanup)
-    local allowed_params="DNS|Endpoint|AllowedIPs|PersistentKeepalive"
+    local allowed_params="DNS|Endpoint|AllowedIPs|PersistentKeepalive|MTU"
     if ! [[ "$param" =~ ^($allowed_params)$ ]]; then
         log_error "Параметр '$param' нельзя изменить через modify."
         log_error "Допустимые параметры: ${allowed_params//|/, }"
@@ -1042,6 +1042,11 @@ modify_client() {
     fi
 
     case "$param" in
+        MTU)
+            if ! [[ "$value" =~ ^[0-9]+$ ]] || [[ "$value" -lt 576 || "$value" -gt 9100 ]]; then
+                log_error "Невалидный MTU: '$value' (допустимо: 576-9100)"
+                return 1
+            fi ;;
         DNS)
             # Структурная проверка списка DNS. Старый charset-only regex
             # ^[0-9a-fA-F.:,\ ]+$ пропускал мусор ('abc' - буквы a-f; '999.999.999.999' -
