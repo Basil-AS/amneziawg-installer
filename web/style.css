@@ -34,3 +34,22 @@
 [data-collapsible-section][data-collapsed=true] .section-collapse-toggle svg{transform:rotate(-90deg)}
 @media(max-width:1100px){.summary-cards{grid-template-columns:repeat(2,minmax(0,1fr))}.summary-card-traffic,.summary-card-provider,.summary-card-links,.summary-card-addresses{grid-column:span 1}}
 @media(max-width:640px){.summary-cards{grid-template-columns:1fr}.summary-card-traffic,.summary-card-provider,.summary-card-links,.summary-card-addresses{grid-column:span 1}.summary-address-row{grid-template-columns:5.5rem minmax(0,1fr)}}
+.preset-cloud-wrap{display:flex;align-items:center;margin-bottom:2px}
+.preset-cloud-badge{display:inline-flex;align-items:center;gap:.3rem;padding:.12rem .5rem;border-radius:9999px;font-size:.68rem;font-weight:600;line-height:1.25;white-space:nowrap;letter-spacing:.01em;background:var(--soft);border:1px solid var(--line);color:var(--text);box-shadow:0 2px 6px -1px rgba(0,0,0,.08),0 1px 3px rgba(0,0,0,.04);transition:transform .2s cubic-bezier(.16,1,.3,1),box-shadow .2s cubic-bezier(.16,1,.3,1),border-color .2s ease;user-select:none;backdrop-filter:blur(4px)}
+.preset-cloud-badge:hover{transform:translateY(-1.5px);box-shadow:0 4px 10px -1px rgba(0,0,0,.14),0 2px 5px rgba(0,0,0,.08);border-color:var(--accent)}
+.preset-cloud-badge .preset-icon{font-size:.78rem;line-height:1;display:inline-flex;align-items:center}
+.preset-cloud-badge .preset-name{font-weight:600}
+.preset-badge-macos{border-color:rgba(100,116,139,.35);background:rgba(148,163,184,.15);color:var(--text)}
+.preset-badge-ios{border-color:rgba(59,130,246,.35);background:rgba(59,130,246,.12);color:#2563eb}
+.preset-badge-android{border-color:rgba(34,197,94,.35);background:rgba(34,197,94,.12);color:#16a34a}
+.preset-badge-wiresock{border-color:rgba(14,165,233,.35);background:rgba(14,165,233,.12);color:#0284c7}
+.preset-badge-openwrt{border-color:rgba(245,158,11,.35);background:rgba(245,158,11,.12);color:#d97706}
+.preset-badge-linux{border-color:rgba(234,179,8,.35);background:rgba(234,179,8,.12);color:#b45309}
+.preset-badge-default{border-color:rgba(168,85,247,.35);background:rgba(168,85,247,.1);color:#9333ea}
+:root[data-theme=dark] .preset-badge-ios,.dark .preset-badge-ios{color:#60a5fa;border-color:rgba(96,165,250,.4);background:rgba(96,165,250,.15)}
+:root[data-theme=dark] .preset-badge-android,.dark .preset-badge-android{color:#4ade80;border-color:rgba(74,222,128,.4);background:rgba(74,222,128,.15)}
+:root[data-theme=dark] .preset-badge-wiresock,.dark .preset-badge-wiresock{color:#38bdf8;border-color:rgba(56,189,248,.4);background:rgba(56,189,248,.15)}
+:root[data-theme=dark] .preset-badge-openwrt,.dark .preset-badge-openwrt{color:#fbbf24;border-color:rgba(251,191,36,.4);background:rgba(251,191,36,.15)}
+:root[data-theme=dark] .preset-badge-linux,.dark .preset-badge-linux{color:#facc15;border-color:rgba(250,204,21,.4);background:rgba(250,204,21,.15)}
+:root[data-theme=dark] .preset-badge-default,.dark .preset-badge-default{color:#c084fc;border-color:rgba(192,132,252,.4);background:rgba(192,132,252,.15)}
+

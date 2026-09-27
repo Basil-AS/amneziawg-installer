@@ -721,6 +721,26 @@ function renderAssignedTokenBadges(client) {
   `).join("") + (extra ? `<span class="rounded-full border border-[var(--line)] bg-[var(--soft)] px-2 py-0.5 text-[11px] font-medium text-[var(--muted)]">+${extra}</span>` : "");
 }
 
+function renderPresetBadge(client) {
+  const preset = String(client?.preset || "default").trim().toLowerCase();
+  const map = {
+    macos: { icon: "🍏", label: "macOS", cls: "preset-badge-macos" },
+    ios: { icon: "📱", label: "iOS", cls: "preset-badge-ios" },
+    android: { icon: "🤖", label: "Android", cls: "preset-badge-android" },
+    wiresock: { icon: "🪟", label: "WireSock", cls: "preset-badge-wiresock" },
+    openwrt: { icon: "🌐", label: "OpenWrt", cls: "preset-badge-openwrt" },
+    linux: { icon: "🐧", label: "Linux", cls: "preset-badge-linux" },
+    default: { icon: "⚡", label: "Universal", cls: "preset-badge-default" }
+  };
+  const item = map[preset] || { icon: "⚡", label: esc(preset), cls: "preset-badge-default" };
+  return `
+    <span class="preset-cloud-badge ${item.cls}" title="Устройство / пресет: ${item.label}">
+      <span class="preset-icon">${item.icon}</span>
+      <span class="preset-name">${item.label}</span>
+    </span>
+  `;
+}
+
 const _GEO_SOURCE_LABELS = {
   "2ip": "2IP", "dbip": "DB-IP", "dbip_mmdb": "DB-IP MMDB",
   "maxmind": "MaxMind", "ipinfo": "ipinfo", "ip-api": "ip-api", "cache": "cache",
@@ -3117,9 +3137,14 @@ function renderClients() {
                 ${client.disabled ? '<span class="rounded-full border border-[var(--danger)] px-2 py-0.5 text-xs font-semibold text-[var(--danger)]">disabled</span>' : ""}
               </div>
               <div class="mt-1 flex flex-wrap gap-1.5">${renderAssignedTokenBadges(client)}</div>
-              <div class="mt-1 flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 text-sm text-[var(--muted)]">
-                <span class="shrink-0 font-mono text-xs text-[var(--text)]" title="${esc(ipv4)}">${esc(ipv4)}</span>
-                ${ipv6 ? `<span class="min-w-0 max-w-full truncate font-mono text-xs" title="${esc(ipv6)}">${esc(ipv6)}</span>` : ""}
+              <div class="client-ip-group mt-1.5 flex flex-col gap-1">
+                <div class="preset-cloud-wrap flex items-center">
+                  ${renderPresetBadge(client)}
+                </div>
+                <div class="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 text-sm text-[var(--muted)]">
+                  <span class="shrink-0 font-mono text-xs font-semibold text-[var(--text)]" title="${esc(ipv4)}">${esc(ipv4)}</span>
+                  ${ipv6 ? `<span class="min-w-0 max-w-full truncate font-mono text-xs" title="${esc(ipv6)}">${esc(ipv6)}</span>` : ""}
+                </div>
               </div>
               <p class="mt-1 text-xs text-[var(--muted)]">${active ? "Active recently" : "No recent traffic"} · Last seen ${esc(timeAgo(client.latestHandshakeAt || client.last_handshake))}</p>
               <p class="mt-1 flex min-w-0 flex-wrap items-center gap-2 text-xs text-[var(--muted)]"><span class="truncate">Endpoint: ${esc(endpoint)}</span>${statusState.role === "super" ? renderLatencyChip(client) + renderSharedProfileChip(client) + renderPathChip(client) : ""}</p>
