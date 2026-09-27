@@ -9,10 +9,10 @@ import collections
 import datetime
 import ipaddress
 import json
-import logging
 import os
 import re
 import signal
+import socket
 import sqlite3
 import subprocess
 import sys
@@ -23,26 +23,43 @@ import urllib.request
 
 CONF_PATH = os.environ.get("THREAT_REPORTER_CONF", "/etc/threat-reporter/config.json")
 DB_PATH = os.environ.get("THREAT_REPORTER_DB", "/var/lib/threat-reporter/reported.db")
+LOG_PATH = os.environ.get("THREAT_REPORTER_LOG", "/var/log/threat-reporter.log")
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
-)
-logger = logging.getLogger("threat-reporter")
+SERVICE_NAMES = {
+    21: "FTP",
+    22: "SSH",
+    23: "Telnet",
+    25: "SMTP",
+    53: "DNS",
+    80: "HTTP",
+    110: "POP3",
+    143: "IMAP",
+    443: "HTTPS",
+    445: "SMB",
+    1433: "MSSQL",
+    1521: "Oracle",
+    3306: "MySQL",
+    3389: "RDP",
+    5432: "PostgreSQL",
+    5900: "VNC",
+    6379: "Redis",
+    8080: "HTTP-Alt",
+    8443: "HTTPS-Alt",
+    9056: "Tor-Alt",
+    12121: "SSH",
+}
 
-# Provider mappings
 ABUSEIPDB_CATEGORIES = {
-    "THREAT_HONEYPOT": "14,15",    # Port Scan, Hacking
-    "THREAT_PORTSCAN": "14",       # Port Scan
-    "THREAT_SSH_BRUTE": "18,22",   # Brute-Force, SSH
-    "THREAT_FLOOD": "4",           # DDoS Attack
-    "THREAT_QUIC_FLOOD": "4",      # DDoS Attack
+    "THREAT_HONEYPOT": "14",      # Port Scan / Unauthorized probe
+    "THREAT_PORTSCAN": "14",      # Port Scan
+    "THREAT_SSH_BRUTE": "18,22",  # Brute-Force, SSH
+    "THREAT_FLOOD": "4",          # DDoS Attack
+    "THREAT_QUIC_FLOOD": "4",     # DDoS Attack
 }
 
 TWOIP_TYPES = {
-    "THREAT_HONEYPOT": 6,          # Port scan / Unauthorized probe
-    "THREAT_PORTSCAN": 6,          # Port scan / Unauthorized probe
+    "THREAT_HONEYPOT": 6,          # Port scan / probe
+    "THREAT_PORTSCAN": 6,          # Port scan / probe
     "THREAT_SSH_BRUTE": 2,         # Brute-force
     "THREAT_FLOOD": 5,             # DoS / Flood
     "THREAT_QUIC_FLOOD": 5,        # DoS / Flood
@@ -70,6 +87,32 @@ class RateLimiter:
         self.timestamps.append(time.time())
 
 
+def log_msg(msg):
+    print(msg, flush=True)
+    if LOG_PATH:
+        try:
+            with open(LOG_PATH, "a", encoding="utf-8") as f:
+                f.write(msg + "\n")
+        except Exception:
+            pass
+
+
+def get_service_name(proto, port):
+    if port in SERVICE_NAMES:
+        return SERVICE_NAMES[port]
+    try:
+        return socket.getservbyport(port, proto.lower()).upper()
+    except (OSError, OverflowError):
+        return None
+
+
+def get_target_str(proto, port):
+    svc = get_service_name(proto, port)
+    if svc:
+        return f"{proto}/{port} ({svc})"
+    return f"{proto}/{port}"
+
+
 def load_config():
     default_conf = {
         "api_keys": {
@@ -95,7 +138,8 @@ def load_config():
                     if "rate_limit_reports_per_minute" in user_conf:
                         default_conf["rate_limit_reports_per_minute"] = int(user_conf["rate_limit_reports_per_minute"])
         except Exception as exc:
-            logger.warning("Error reading config %s: %s", CONF_PATH, exc)
+            now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            log_msg(f"[{now_str}] Warning: Error reading config {CONF_PATH}: {exc}")
     return default_conf
 
 
@@ -122,7 +166,6 @@ def init_db(db_path):
         """)
         conn.execute("CREATE INDEX IF NOT EXISTS idx_reports_time ON reports(last_reported_at)")
     return conn
-
 
 
 def is_global_ip(ip_str):
@@ -160,25 +203,52 @@ def record_report(conn, ip_str, provider, threat_type):
         """, (ip_str, provider, threat_type, now))
 
 
-def build_comment(threat_type, proto, port):
-    ts = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    proto = proto.upper() if proto else "TCP"
+def build_abuseipdb_comment(threat_type, ip_str, proto, port, target_str, ts_utc):
     if threat_type == "THREAT_HONEYPOT":
-        return f"{ts} - Connection attempt to honeypot port {proto} {port}. Action: immediate drop & 24h ban."
+        event = "Unauthorized Port Probe"
     elif threat_type == "THREAT_PORTSCAN":
-        return f"{ts} - Port scan detected on closed ports (hits > 15/min). Action: firewall drop & 24h ban."
+        event = "Network Port Scan Sweep"
     elif threat_type == "THREAT_SSH_BRUTE":
-        return f"{ts} - SSH brute-force attempt on port {port} (> 15 conns/min). Action: blocked by nftables."
-    elif threat_type == "THREAT_FLOOD":
-        return f"{ts} - SYN flood attack detected on {proto} port {port} (> 600 SYN/min). Action: 24h ban."
-    elif threat_type == "THREAT_QUIC_FLOOD":
-        return f"{ts} - UDP flood on QUIC port {port}. Action: blocked by nftables."
-    return f"{ts} - Threat detected: {threat_type} on {proto} port {port}. Action: 24h ban."
+        event = "SSH Service Brute-Force Attack"
+    elif threat_type in ("THREAT_FLOOD", "THREAT_QUIC_FLOOD"):
+        event = "Connection Flood / Denial of Service"
+    else:
+        event = "Unauthorized Network Activity"
+
+    return (
+        f"Event: {event}\n"
+        f"Target: {target_str}\n"
+        f"Observed: {ts_utc}\n"
+        f"Evidence: SRC={ip_str} PROTO={proto} DPT={port}"
+    )
 
 
-def report_abuseipdb(api_key, ip_str, threat_type, comment):
+def build_twoip_comment(threat_type, target_str):
+    if threat_type == "THREAT_HONEYPOT":
+        return f"Unauthorized port probe targeting port {target_str}"
+    elif threat_type == "THREAT_PORTSCAN":
+        return f"Network port scan sweep probing port {target_str}"
+    elif threat_type == "THREAT_SSH_BRUTE":
+        return f"SSH brute-force attack targeting port {target_str}"
+    elif threat_type in ("THREAT_FLOOD", "THREAT_QUIC_FLOOD"):
+        return f"Connection flood / denial of service targeting port {target_str}"
+    return f"Unauthorized network threat targeting port {target_str}"
+
+
+def build_spamhaus_reason(threat_type, target_str):
+    if threat_type in ("THREAT_HONEYPOT", "THREAT_PORTSCAN"):
+        return f"Unauthorized automated network probe targeting {target_str}."
+    elif threat_type == "THREAT_SSH_BRUTE":
+        return f"SSH brute-force attack targeting {target_str}."
+    elif threat_type in ("THREAT_FLOOD", "THREAT_QUIC_FLOOD"):
+        return f"Denial of service connection flood targeting {target_str}."
+    return f"Unauthorized automated network probe targeting {target_str}."
+
+
+def report_abuseipdb(api_key, ip_str, threat_type, proto, port, target_str, ts_utc):
     url = "https://api.abuseipdb.com/api/v2/report"
     categories = ABUSEIPDB_CATEGORIES.get(threat_type, "14")
+    comment = build_abuseipdb_comment(threat_type, ip_str, proto, port, target_str, ts_utc)
     payload = urllib.parse.urlencode({
         "ip": ip_str,
         "categories": categories,
@@ -197,15 +267,13 @@ def report_abuseipdb(api_key, ip_str, threat_type, comment):
     )
 
     with urllib.request.urlopen(req, timeout=12) as resp:
-        body = resp.read().decode("utf-8", errors="replace")
-        data = json.loads(body)
-        score = data.get("data", {}).get("abuseConfidenceScore", "unknown")
-        return f"ConfidenceScore={score}"
+        return resp.status
 
 
-def report_twoip(token, ip_str, threat_type, comment):
+def report_twoip(token, ip_str, threat_type, target_str):
     url = f"https://api.2ip.io/abuse?token={urllib.parse.quote(token)}"
     attack_type = TWOIP_TYPES.get(threat_type, 6)
+    comment = build_twoip_comment(threat_type, target_str)
     payload = urllib.parse.urlencode({
         "ips": ip_str,
         "type": str(attack_type),
@@ -223,15 +291,15 @@ def report_twoip(token, ip_str, threat_type, comment):
     )
 
     with urllib.request.urlopen(req, timeout=12) as resp:
-        body = resp.read().decode("utf-8", errors="replace")
-        return body[:120].strip() or "OK"
+        return resp.status
 
 
-def report_spamhaus(token, ip_str, comment):
+def report_spamhaus(token, ip_str, threat_type, target_str):
     url = "https://submit.spamhaus.org/portal/api/v1/submissions/add/ip"
+    reason = build_spamhaus_reason(threat_type, target_str)
     payload = json.dumps({
         "threat_type": "attack",
-        "reason": comment,
+        "reason": reason,
         "source": {
             "object": ip_str,
         },
@@ -250,23 +318,25 @@ def report_spamhaus(token, ip_str, comment):
     )
 
     with urllib.request.urlopen(req, timeout=12) as resp:
-        body = resp.read().decode("utf-8", errors="replace")
-        return body[:120].strip() or "OK"
+        return resp.status
 
 
 def main():
     conn = init_db(DB_PATH)
-    logger.info("Threat reporter daemon initialized. DB: %s", DB_PATH)
+    now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    log_msg(f"[{now_str}] Threat reporter daemon initialized. DB: {DB_PATH}")
 
+    # Regex extracts: threat_type, iface, src_ip, dst_ip, proto, port
     pattern = re.compile(
-        r"(THREAT_\w+):.*?SRC=([\d\.]+).*?PROTO=(\w+).*?DPT=(\d+)"
+        r"(THREAT_\w+):\s+IN=(\S*).*?SRC=([0-9a-fA-F\.:]+)\s+DST=([0-9a-fA-F\.:]+).*?PROTO=(\w+).*?DPT=(\d+)"
     )
 
     cmd = ["journalctl", "-k", "-f", "-o", "cat"]
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, bufsize=1)
 
     def sig_handler(sig, frame):
-        logger.info("Termination signal received. Exiting.")
+        ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        log_msg(f"[{ts}] Termination signal received. Exiting.")
         proc.terminate()
         sys.exit(0)
 
@@ -279,9 +349,9 @@ def main():
 
     active_providers = [k for k, v in cfg["api_keys"].items() if v]
     if active_providers:
-        logger.info("Threat reporting ACTIVE for providers: %s", ", ".join(active_providers))
+        log_msg(f"[{now_str}] Threat reporting ACTIVE for providers: {', '.join(active_providers)}")
     else:
-        logger.warning("No API keys found in %s. Running in standby mode (logging threats only).", CONF_PATH)
+        log_msg(f"[{now_str}] No API keys found in {CONF_PATH}. Running in standby mode (logging threats only).")
 
     for line in proc.stdout:
         if time.time() - last_cfg_check > 30:
@@ -293,68 +363,77 @@ def main():
         if not m:
             continue
 
-        threat_type, ip_str, proto, port = m.groups()
-        ok_ip, ip_reason = is_global_ip(ip_str)
+        threat_type = m.group(1)
+        iface = m.group(2) or "eth0"
+        ip_str = m.group(3)
+        dst_ip = m.group(4)
+        proto = m.group(5).upper()
+        port = int(m.group(6))
+
+        ok_ip, _ = is_global_ip(ip_str)
         if not ok_ip:
-            logger.debug("Skipping non-global IP %s (%s): %s", ip_str, threat_type, ip_reason)
             continue
 
-        comment = build_comment(threat_type, proto, port)
-        logger.info("THREAT DETECTED: %s from %s:%s on %s | %s", threat_type, ip_str, port, proto, comment)
-
-        # Provider: AbuseIPDB
         abuse_key = cfg["api_keys"].get("abuseipdb", "").strip()
-        if abuse_key:
-            can_rep, r_reason = can_report_ip(conn, ip_str, "abuseipdb", cfg["dedup_window_seconds"])
-            if can_rep:
-                rate_limiter.acquire()
-                try:
-                    res = report_abuseipdb(abuse_key, ip_str, threat_type, comment)
-                    logger.info("[AbuseIPDB] REPORTED %s: %s", ip_str, res)
-                    record_report(conn, ip_str, "abuseipdb", threat_type)
-                except urllib.error.HTTPError as he:
-                    err_b = he.read().decode("utf-8", errors="replace")
-                    logger.warning("[AbuseIPDB] HTTP %d for %s: %s", he.code, ip_str, err_b)
-                except Exception as e:
-                    logger.warning("[AbuseIPDB] Failed to report %s: %s", ip_str, e)
-            else:
-                logger.debug("[AbuseIPDB] Skip %s: %s", ip_str, r_reason)
-
-        # Provider: 2ip.io
         twoip_token = cfg["api_keys"].get("twoip", "").strip()
-        if twoip_token:
-            can_rep, r_reason = can_report_ip(conn, ip_str, "twoip", cfg["dedup_window_seconds"])
-            if can_rep:
-                rate_limiter.acquire()
-                try:
-                    res = report_twoip(twoip_token, ip_str, threat_type, comment)
-                    logger.info("[2ip.io] REPORTED %s: %s", ip_str, res)
-                    record_report(conn, ip_str, "twoip", threat_type)
-                except urllib.error.HTTPError as he:
-                    err_b = he.read().decode("utf-8", errors="replace")
-                    logger.warning("[2ip.io] HTTP %d for %s: %s", he.code, ip_str, err_b)
-                except Exception as e:
-                    logger.warning("[2ip.io] Failed to report %s: %s", ip_str, e)
-            else:
-                logger.debug("[2ip.io] Skip %s: %s", ip_str, r_reason)
-
-        # Provider: Spamhaus
         spamhaus_token = cfg["api_keys"].get("spamhaus", "").strip()
-        if spamhaus_token:
-            can_rep, r_reason = can_report_ip(conn, ip_str, "spamhaus", cfg["dedup_window_seconds"])
-            if can_rep:
-                rate_limiter.acquire()
-                try:
-                    res = report_spamhaus(spamhaus_token, ip_str, comment)
-                    logger.info("[Spamhaus] REPORTED %s: %s", ip_str, res)
-                    record_report(conn, ip_str, "spamhaus", threat_type)
-                except urllib.error.HTTPError as he:
-                    err_b = he.read().decode("utf-8", errors="replace")
-                    logger.warning("[Spamhaus] HTTP %d for %s: %s", he.code, ip_str, err_b)
-                except Exception as e:
-                    logger.warning("[Spamhaus] Failed to report %s: %s", ip_str, e)
-            else:
-                logger.debug("[Spamhaus] Skip %s: %s", ip_str, r_reason)
+
+        dedup = cfg["dedup_window_seconds"]
+        can_abuse = abuse_key and can_report_ip(conn, ip_str, "abuseipdb", dedup)[0]
+        can_twoip = twoip_token and can_report_ip(conn, ip_str, "twoip", dedup)[0]
+        can_spamhaus = spamhaus_token and can_report_ip(conn, ip_str, "spamhaus", dedup)[0]
+
+        if not (can_abuse or can_twoip or can_spamhaus):
+            continue
+
+        attack_short = threat_type.replace("THREAT_", "")
+        target_str = get_target_str(proto, port)
+        ts_local = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        ts_utc = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+
+        log_msg(f"[{ts_local}] Dispatching forensic abuse reports for IP={ip_str} (attack={attack_short}, iface={iface}, bind_ip={dst_ip}, target={proto}/{port})")
+
+        # Provider 1: AbuseIPDB
+        if can_abuse:
+            rate_limiter.acquire()
+            ts_report = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            try:
+                code = report_abuseipdb(abuse_key, ip_str, threat_type, proto, port, target_str, ts_utc)
+                log_msg(f"[{ts_report}] AbuseIPDB report [{iface} -> {dst_ip}] for {ip_str}: HTTP {code}")
+                record_report(conn, ip_str, "abuseipdb", threat_type)
+            except urllib.error.HTTPError as he:
+                err_b = he.read().decode("utf-8", errors="replace")[:100]
+                log_msg(f"[{ts_report}] AbuseIPDB report [{iface} -> {dst_ip}] for {ip_str}: HTTP {he.code} ({err_b})")
+            except Exception as e:
+                log_msg(f"[{ts_report}] AbuseIPDB report [{iface} -> {dst_ip}] for {ip_str}: ERROR ({e})")
+
+        # Provider 2: 2ip.io
+        if can_twoip:
+            rate_limiter.acquire()
+            ts_report = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            try:
+                code = report_twoip(twoip_token, ip_str, threat_type, target_str)
+                log_msg(f"[{ts_report}] 2ip.io report [{iface} -> {dst_ip}] for {ip_str}: HTTP {code}")
+                record_report(conn, ip_str, "twoip", threat_type)
+            except urllib.error.HTTPError as he:
+                err_b = he.read().decode("utf-8", errors="replace")[:100]
+                log_msg(f"[{ts_report}] 2ip.io report [{iface} -> {dst_ip}] for {ip_str}: HTTP {he.code} ({err_b})")
+            except Exception as e:
+                log_msg(f"[{ts_report}] 2ip.io report [{iface} -> {dst_ip}] for {ip_str}: ERROR ({e})")
+
+        # Provider 3: Spamhaus
+        if can_spamhaus:
+            rate_limiter.acquire()
+            ts_report = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            try:
+                code = report_spamhaus(spamhaus_token, ip_str, threat_type, target_str)
+                log_msg(f"[{ts_report}] Spamhaus report [{iface} -> {dst_ip}] for {ip_str}: HTTP {code}")
+                record_report(conn, ip_str, "spamhaus", threat_type)
+            except urllib.error.HTTPError as he:
+                err_b = he.read().decode("utf-8", errors="replace")[:100]
+                log_msg(f"[{ts_report}] Spamhaus report [{iface} -> {dst_ip}] for {ip_str}: HTTP {he.code} ({err_b})")
+            except Exception as e:
+                log_msg(f"[{ts_report}] Spamhaus report [{iface} -> {dst_ip}] for {ip_str}: ERROR ({e})")
 
 
 if __name__ == "__main__":
