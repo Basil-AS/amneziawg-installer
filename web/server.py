@@ -8124,9 +8124,9 @@ class Handler(SimpleHTTPRequestHandler):
                     split_lan = body.get("split_lan")
                     legacy_profile = str(body.get("network_profile") or "").strip().lower()
                     if split_lan is True or legacy_profile == "home_lan":
-                        run_manage("modify", name, "AllowedIPs", "0.0.0.0/1, 128.0.0.0/1, ::/1, 8000::/1")
+                        run_manage("modify", name, "AllowedIPs", "0.0.0.0/1, 128.0.0.0/1")
                     elif split_lan is False:
-                        run_manage("modify", name, "AllowedIPs", "0.0.0.0/0, ::/0")
+                        run_manage("modify", name, "AllowedIPs", "0.0.0.0/0")
 
                     if dpi_profile == "quic_speed":
                         run_manage("modify", name, "MTU", "1360")

@@ -4988,8 +4988,8 @@ assert "--psk" in add_call["args"], f"Expected --psk in add call, got {add_call}
 assert "AWG_I1_OVERRIDE" in add_call["extra_env"]
 assert add_call["extra_env"]["AWG_I1_OVERRIDE"].startswith("<b 0x")
 
-# 2. manage modify stealth_user AllowedIPs 0.0.0.0/1, 128.0.0.0/1, ::/1, 8000::/1
-modify_ips = next(c for c in calls if c["args"] == ("modify", "stealth_user", "AllowedIPs", "0.0.0.0/1, 128.0.0.0/1, ::/1, 8000::/1"))
+# 2. manage modify stealth_user AllowedIPs 0.0.0.0/1, 128.0.0.0/1
+modify_ips = next(c for c in calls if c["args"] == ("modify", "stealth_user", "AllowedIPs", "0.0.0.0/1, 128.0.0.0/1"))
 assert modify_ips is not None
 
 # 3. manage modify stealth_user MTU 1280
