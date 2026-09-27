@@ -4127,6 +4127,62 @@ PY
 }
 
 # Удаление [Peer] из серверного конфига по имени (с блокировкой)
+normalize_legacy_peers() {
+    [[ -n "${SERVER_CONF_FILE:-}" && -f "$SERVER_CONF_FILE" ]] || return 0
+    grep -q '^### Client ' "$SERVER_CONF_FILE" 2>/dev/null || return 0
+
+    local lockfile="${AWG_DIR}/.awg_config.lock"
+    local lock_fd
+    exec {lock_fd}>"$lockfile"
+    flock -x -w 5 "$lock_fd" 2>/dev/null || { exec {lock_fd}>&-; return 0; }
+
+    python3 -c '
+import sys
+from pathlib import Path
+
+p = Path(sys.argv[1])
+try:
+    lines = p.read_text(encoding="utf-8", errors="ignore").splitlines()
+except Exception:
+    sys.exit(0)
+
+out = []
+pending_name = None
+in_peer = False
+has_name = False
+changed = False
+
+for line in lines:
+    s = line.strip()
+    if s.startswith("### Client "):
+        pending_name = s.split("### Client ", 1)[1].strip()
+        out.append(line)
+        continue
+    if s == "[Peer]":
+        in_peer = True
+        has_name = False
+        out.append(line)
+        continue
+    if in_peer:
+        if s.startswith("[") and s != "[Peer]":
+            in_peer = False
+            pending_name = None
+        elif s.startswith("#_Name = "):
+            has_name = True
+        elif (s.startswith("PublicKey = ") or s.startswith("AllowedIPs = ")) and pending_name and not has_name:
+            out.append(f"#_Name = {pending_name}")
+            has_name = True
+            pending_name = None
+            changed = True
+    out.append(line)
+
+if changed:
+    p.write_text("\n".join(out) + "\n", encoding="utf-8")
+' "$SERVER_CONF_FILE" 2>/dev/null || true
+
+    exec {lock_fd}>&-
+}
+
 # remove_peer_from_server <name>
 remove_peer_from_server() {
     local name="$1"
@@ -4151,7 +4207,7 @@ remove_peer_from_server() {
         return 1
     fi
 
-    if ! grep -qxF "#_Name = ${name}" "$SERVER_CONF_FILE" 2>/dev/null; then
+    if ! grep -qxF "#_Name = ${name}" "$SERVER_CONF_FILE" 2>/dev/null && ! grep -qxF "### Client ${name}" "$SERVER_CONF_FILE" 2>/dev/null; then
         log_error "Пир '$name' не найден в конфиге"
         exec {lock_fd}>&-
         return 1
@@ -4161,44 +4217,72 @@ remove_peer_from_server() {
     local tmpfile
     tmpfile=$(awg_mktemp "$(dirname "$SERVER_CONF_FILE")") || { log_error "Ошибка mktemp"; exec {lock_fd}>&-; return 1; }
 
-    # Удаляем блок [Peer] содержащий #_Name = name
-    # Логика: буферизуем каждый [Peer] блок, проверяем имя, выводим только если не совпадает
-    awk -v target="$name" '
-    BEGIN { buf=""; is_target=0 }
-    /^\[Peer\]/ {
-        # Вывести предыдущий буфер если он не target
-        if (buf != "" && !is_target) printf "%s", buf
-        buf = $0 "\n"
-        is_target = 0
-        next
-    }
-    /^\[/ && !/^\[Peer\]/ {
-        # Любая другая секция — сбросить буфер
-        if (buf != "" && !is_target) printf "%s", buf
-        buf = ""
-        is_target = 0
-        print
-        next
-    }
-    {
-        if (buf != "") {
-            buf = buf $0 "\n"
-            if ($0 == "#_Name = " target) is_target = 1
-        } else {
-            print
-        }
-    }
-    END {
-        if (buf != "" && !is_target) printf "%s", buf
-    }
-    ' "$SERVER_CONF_FILE" > "$tmpfile" || {
-        log_error "Ошибка фильтрации серверного конфига (awk)"
+    # Удаляем блок [Peer] и связанный комментарий ### Client name
+    python3 -c '
+import sys
+from pathlib import Path
+
+target = sys.argv[1]
+conf_in = Path(sys.argv[2])
+conf_out = Path(sys.argv[3])
+lines = conf_in.read_text(encoding="utf-8", errors="ignore").splitlines()
+
+blocks = []
+cur_lines = []
+is_target = False
+in_peer = False
+pending_target = False
+
+for line in lines:
+    s = line.strip()
+    if s.startswith("### Client "):
+        cname = s.split("### Client ", 1)[1].strip()
+        if cur_lines:
+            blocks.append((is_target, cur_lines))
+            cur_lines = []
+            is_target = False
+        in_peer = False
+        if cname == target:
+            is_target = True
+            pending_target = True
+        cur_lines.append(line)
+        continue
+    if s == "[Peer]":
+        if not pending_target and cur_lines:
+            blocks.append((is_target, cur_lines))
+            cur_lines = []
+            is_target = False
+        in_peer = True
+        pending_target = False
+        cur_lines.append(line)
+        continue
+    if in_peer:
+        if s.startswith("[") and s != "[Peer]":
+            in_peer = False
+            blocks.append((is_target, cur_lines))
+            cur_lines = []
+            is_target = False
+        elif s == f"#_Name = {target}":
+            is_target = True
+    cur_lines.append(line)
+
+if cur_lines:
+    blocks.append((is_target, cur_lines))
+
+out = []
+for target_block, blines in blocks:
+    if not target_block:
+        out.extend(blines)
+
+conf_out.write_text("\n".join(out) + "\n", encoding="utf-8")
+' "$name" "$SERVER_CONF_FILE" "$tmpfile" || {
+        log_error "Ошибка удаления пира из серверного конфига"
         rm -f "$tmpfile"
         exec {lock_fd}>&-
         return 1
     }
 
-    # Sanity-check ДО mv: при ENOSPC/I/O-сбое awk оставил бы пустой/обрезанный
+    # Sanity-check ДО mv: при ENOSPC/I/O-сбое python оставил бы пустой/обрезанный
     # tmpfile, и атомарный mv заменил бы рабочий конфиг битым (потеря
     # PrivateKey сервера и всех пиров). [Interface] обязан сохраниться.
     if ! grep -q '^\[Interface\]' "$tmpfile"; then

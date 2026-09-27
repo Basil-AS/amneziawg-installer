@@ -464,6 +464,7 @@ check_dependencies() {
     # shellcheck source=/dev/null
     source "$COMMON_SCRIPT_PATH" || die "Failed to load $COMMON_SCRIPT_PATH"
     _check_common_compat
+    normalize_legacy_peers 2>/dev/null || true
 
     log "Dependencies OK."
 }
@@ -2677,7 +2678,7 @@ case $COMMAND in
         _jr=()
         for _rname in "${ARGS[@]}"; do
             validate_client_name "$_rname" || { _cmd_rc=1; _jr+=("{\"name\":\"$(json_escape "$_rname")\",\"status\":\"invalid_name\"}"); continue; }
-            if ! grep -qxF "#_Name = ${_rname}" "$SERVER_CONF_FILE"; then
+            if ! grep -qxF "#_Name = ${_rname}" "$SERVER_CONF_FILE" && ! grep -qxF "### Client ${_rname}" "$SERVER_CONF_FILE"; then
                 # _cmd_rc=1 (v5.21.0): a partial not-found used to give rc 0 -
                 # asymmetric with add (exists -> rc 1) and regen (not-found ->
                 # rc 1). Spec 3.4: 'remove a ghost' = partial success = rc 1.
