@@ -3698,12 +3698,17 @@ ag_yaml = Path(sys.argv[2])
 def parse_peers(path):
     peers = []
     cur = None
+    pending_name = ""
     for raw in path.read_text(encoding="utf-8", errors="ignore").splitlines():
         line = raw.strip()
+        if line.startswith("### Client "):
+            pending_name = line.split("### Client ", 1)[1].strip()
+            continue
         if line == "[Peer]":
             if cur and cur.get("name") and cur.get("ids"):
                 peers.append(cur)
-            cur = {"name": "", "ids": []}
+            cur = {"name": pending_name, "ids": []}
+            pending_name = ""
             continue
         if cur is None:
             continue
@@ -3824,6 +3829,82 @@ if new_text != old_text:
     ag_yaml.chmod(0o600)
 PY
 }
+
+adguard_api_request() {
+    local method="$1" path="$2" data="${3:-}"
+    local ag_dir="${AWG_ADGUARD_DIR:-/opt/AdGuardHome}"
+    local port="${AWG_ADGUARD_PORT:-3000}"
+    local vpn_ip="127.0.0.1"
+    if [[ -n "${AWG_TUNNEL_SUBNET:-}" ]]; then
+        vpn_ip="${AWG_TUNNEL_SUBNET%%/*}"
+    elif [[ -f "${SERVER_CONF_FILE:-/etc/amnezia/amneziawg/awg0.conf}" ]]; then
+        local s_ip
+        s_ip=$(grep -oP '^Address\s*=\s*\K[0-9.]+' "${SERVER_CONF_FILE:-/etc/amnezia/amneziawg/awg0.conf}" 2>/dev/null | head -n1 || true)
+        [[ -n "$s_ip" ]] && vpn_ip="$s_ip"
+    fi
+
+
+    local username="admin" password=""
+    if [[ -f "$ag_dir/admin_password.txt" ]]; then
+        password=$(grep -v '^#' "$ag_dir/admin_password.txt" 2>/dev/null | grep -i 'password:' | sed -E 's/^[Pp]assword:\s*//')
+        local u
+        u=$(grep -v '^#' "$ag_dir/admin_password.txt" 2>/dev/null | grep -i 'username:' | sed -E 's/^[Uu]sername:\s*//')
+        [[ -n "$u" ]] && username="$u"
+    fi
+    if [[ -z "$password" && -f "$AWG_DIR/INSTALL_SUMMARY.txt" ]]; then
+        password=$(grep -E '^\s*(Admin\s+)?Password\s*:' "$AWG_DIR/INSTALL_SUMMARY.txt" 2>/dev/null | head -n1 | sed -E 's/.*Password\s*:\s*//')
+    fi
+    [[ -n "$password" ]] || return 0
+
+    local curl_cmd=(curl -s -S -u "${username}:${password}" -X "$method" --connect-timeout 2 --max-time 5)
+    if [[ -n "$data" ]]; then
+        curl_cmd+=(-H "Content-Type: application/json" -d "$data")
+    fi
+
+    if ! "${curl_cmd[@]}" "http://${vpn_ip}:${port}/control/${path#/}" >/dev/null 2>&1; then
+        "${curl_cmd[@]}" "http://127.0.0.1:${port}/control/${path#/}" >/dev/null 2>&1 || true
+    fi
+    return 0
+}
+
+adguard_add_client() {
+    local name="$1" ipv4="$2" ipv6="${3:-}"
+    [[ -n "$name" && -n "$ipv4" ]] || return 0
+    local ids_json="\"$ipv4\""
+    [[ -n "$ipv6" ]] && ids_json="\"$ipv4\", \"$ipv6\""
+
+    adguard_api_request "POST" "clients/add" "{\"name\":\"$name\",\"ids\":[$ids_json]}"
+    local alias
+    alias=$(echo "$name" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9-]+/-/g; s/^-+|-+$//g')
+    alias="${alias:-client}.awg"
+    adguard_api_request "POST" "rewrite/add" "{\"domain\":\"$alias\",\"answer\":\"$ipv4\"}"
+    if [[ -n "$ipv6" ]]; then
+        adguard_api_request "POST" "rewrite/add" "{\"domain\":\"$alias\",\"answer\":\"$ipv6\"}"
+    fi
+    sync_adguard_clients
+}
+
+adguard_delete_client() {
+    local name="$1" ipv4="${2:-}" ipv6="${3:-}"
+    [[ -n "$name" ]] || return 0
+    adguard_api_request "POST" "clients/delete" "{\"name\":\"$name\"}"
+
+    local alias
+    alias=$(echo "$name" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9-]+/-/g; s/^-+|-+$//g')
+    alias="${alias:-client}.awg"
+    if [[ -n "$ipv4" ]]; then
+        adguard_api_request "POST" "rewrite/delete" "{\"domain\":\"$alias\",\"answer\":\"$ipv4\"}"
+    fi
+    if [[ -n "$ipv6" ]]; then
+        adguard_api_request "POST" "rewrite/delete" "{\"domain\":\"$alias\",\"answer\":\"$ipv6\"}"
+    fi
+
+    adguard_api_request "POST" "stats_reset"
+    adguard_api_request "POST" "querylog_clear"
+
+    sync_adguard_clients
+}
+
 
 # Добавление [Peer] в серверный конфиг (атомарно через tmpfile + mv).
 #
@@ -4513,6 +4594,7 @@ _remove_client_files() {
     local name="$1"
     rm -f "$AWG_DIR/${name}.conf" "$AWG_DIR/${name}.png" \
         "$AWG_DIR/${name}.vpnuri" "$AWG_DIR/${name}.vpnuri.png" \
+        "$AWG_DIR/clients/awg0-client-${name}.conf" \
         "$KEYS_DIR/${name}.private" "$KEYS_DIR/${name}.public"
 }
 
@@ -4690,6 +4772,7 @@ generate_client() {
     [[ -n "$p2p_ports" ]] && msg="${msg}, P2P: $p2p_ports"
     msg="${msg})."
     log "$msg"
+    adguard_add_client "$name" "$client_ip" "${client_ipv6:-}" 2>/dev/null || true
     return 0
 }
 

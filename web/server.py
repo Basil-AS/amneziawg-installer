@@ -3698,13 +3698,27 @@ def audit_client_state():
 def delete_client_global(config_name, actor):
     config_name = safe_name(config_name)
     before = audit_client_state()
+    before_row = next((row for row in before["clients"] if row["config_name"] == config_name), {})
+    client_ipv4 = before_row.get("ipv4", "")
+    client_ipv6 = before_row.get("ipv6", "")
+
     p = run_manage("remove", config_name)
     if p.returncode == 0:
         remove_client_from_all_tokens(config_name)
         remove_client_metadata(config_name)
         remove_import_tokens_for_client(config_name)
+        try:
+            adguard_api("clients/delete", "POST", {"name": config_name})
+            alias = re.sub(r"[^a-z0-9-]+", "-", config_name.lower()).strip("-") or "client"
+            if client_ipv4:
+                adguard_api("rewrite/delete", "POST", {"domain": f"{alias}.awg", "answer": client_ipv4})
+            if client_ipv6:
+                adguard_api("rewrite/delete", "POST", {"domain": f"{alias}.awg", "answer": client_ipv6})
+            adguard_api("stats_reset", "POST")
+            adguard_api("querylog_clear", "POST")
+        except Exception:
+            pass
         after = audit_client_state()
-        before_row = next((row for row in before["clients"] if row["config_name"] == config_name), {})
         after_row = next((row for row in after["clients"] if row["config_name"] == config_name), {})
         leftovers = [status for status in after_row.get("status", []) if status != "history_only"]
         audit_log(
@@ -3713,6 +3727,7 @@ def delete_client_global(config_name, actor):
             f"files_before={len(before_row.get('files', []))} leftovers={','.join(leftovers) if leftovers else 'none'}"
         )
     return p
+
 
 
 def load_traffic_history():
@@ -5426,14 +5441,18 @@ def parse_config():
 
 def parse_peers():
     peers, cur = [], None
+    pending_name = ""
     if not SERVER_CONF.exists():
         return peers
     for line in SERVER_CONF.read_text(errors="ignore").splitlines():
+        if line.startswith("### Client "):
+            pending_name = line.split("### Client ", 1)[1].strip()
+            continue
         if line in {"[Peer]", "# [Peer]"}:
             if cur:
                 peers.append(cur)
             cur = {
-                "name": "",
+                "name": pending_name,
                 "public_key": "",
                 "ipv4": "",
                 "ipv6": "",
@@ -5443,8 +5462,10 @@ def parse_peers():
                 "p2p_enabled": True,
                 "disabled": line == "# [Peer]",
             }
+            pending_name = ""
         elif cur is not None and line.startswith("#_Name = "):
             cur["name"] = line.split("=", 1)[1].strip()
+
         elif cur is not None and re.match(r"^#_(IPv4|IPv6)\s*=\s*(on|off)$", line):
             family, state = re.match(r"^#_(IPv4|IPv6)\s*=\s*(on|off)$", line).groups()
             cur[f"{family.lower()}_enabled"] = state == "on"
@@ -5535,13 +5556,29 @@ def adguard_credentials():
     password = os.environ.get("AWG_ADGUARD_API_PASSWORD", "")
     if username and password:
         return username, password
+
+    ag_dir = Path(os.environ.get("AWG_ADGUARD_DIR", "/opt/AdGuardHome"))
+    for candidate in [ag_dir / "admin_password.txt", Path("/opt/AdGuardHome/admin_password.txt")]:
+        if candidate.exists():
+            try:
+                text = candidate.read_text(encoding="utf-8", errors="replace")
+                u_m = re.search(r"(?im)^\s*(?:Admin\s+)?(?:Username|Login)\s*:\s*(\S+)\s*$", text)
+                p_m = re.search(r"(?im)^\s*(?:Admin\s+)?Password\s*:\s*(.*?)\s*$", text)
+                u = u_m.group(1).strip() if u_m else "admin"
+                p = p_m.group(1).strip() if p_m else ""
+                if p:
+                    return u, p
+            except OSError:
+                pass
+
     try:
         text = ADGUARD_SUMMARY_FILE.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return "", ""
-    user_match = re.search(r"(?im)^\s*(?:Admin\s+)?Login\s*:\s*(\S+)\s*$", text)
+    user_match = re.search(r"(?im)^\s*(?:Admin\s+)?(?:Username|Login)\s*:\s*(\S+)\s*$", text)
     pass_match = re.search(r"(?im)^\s*(?:Admin\s+)?Password\s*:\s*(.*?)\s*$", text)
     return (user_match.group(1).strip() if user_match else "", pass_match.group(1).strip() if pass_match else "")
+
 
 
 def adguard_api(path, method="GET", body=None):
@@ -7876,6 +7913,22 @@ class Handler(SimpleHTTPRequestHandler):
                         f"actor_role={auth.get('role')} actor_fp={auth_fingerprint(auth)} "
                         f"assigned={'true' if assigned_to_current_token else 'false'}"
                     )
+                    try:
+                        state = audit_client_state()
+                        row = next((r for r in state["clients"] if r["config_name"] == name), {})
+                        c_ipv4 = row.get("ipv4", "")
+                        c_ipv6 = row.get("ipv6", "")
+                        if c_ipv4:
+                            ids = [c_ipv4]
+                            if c_ipv6:
+                                ids.append(c_ipv6)
+                            adguard_api("clients/add", "POST", {"name": name, "ids": ids})
+                            alias = re.sub(r"[^a-z0-9-]+", "-", name.lower()).strip("-") or "client"
+                            adguard_api("rewrite/add", "POST", {"domain": f"{alias}.awg", "answer": c_ipv4})
+                            if c_ipv6:
+                                adguard_api("rewrite/add", "POST", {"domain": f"{alias}.awg", "answer": c_ipv6})
+                    except Exception:
+                        pass
                     self.send_json({
                         "ok": True,
                         "stdout": p.stdout,
@@ -7888,6 +7941,7 @@ class Handler(SimpleHTTPRequestHandler):
                         "assigned_to_current_token": assigned_to_current_token,
                     })
                     return
+
             elif u.path == "/api/server/restart":
                 if not self.require_super(auth):
                     return

@@ -2780,10 +2780,17 @@ case $COMMAND in
             _removed=0
             for _rname in "${_valid_names[@]}"; do
                 log "Удаление '$_rname'..."
+                _ripv4=""
+                _ripv6=""
+                if [[ -f "$AWG_DIR/${_rname}.conf" ]]; then
+                    _ripv4=$(grep -oP 'Address\s*=\s*\K[0-9.]+' "$AWG_DIR/${_rname}.conf" 2>/dev/null | head -n1 || true)
+                    _ripv6=$(grep -oP 'Address\s*=.*,\s*\K[0-9a-fA-F:]+' "$AWG_DIR/${_rname}.conf" 2>/dev/null | head -n1 || true)
+                fi
                 [[ -x "$AWG_DIR/p2p_rules.sh" ]] && bash "$AWG_DIR/p2p_rules.sh" down 2>/dev/null || true
                 if remove_peer_from_server "$_rname"; then
                     _remove_client_files "$_rname"
                     remove_client_expiry "$_rname"
+                    adguard_delete_client "$_rname" "$_ripv4" "$_ripv6" 2>/dev/null || true
                     log "Клиент '$_rname' удалён."
                     ((_removed++))
                     _jr+=("{\"name\":\"$(json_escape "$_rname")\",\"status\":\"removed\"}")
@@ -2797,7 +2804,9 @@ case $COMMAND in
             _japplied=false
             if [[ $_removed -gt 0 ]]; then
                 sync_clients_hosts
+                sync_adguard_clients 2>/dev/null || true
                 bash "$AWG_DIR/postup.sh" 2>/dev/null || log_warn "Не удалось применить firewall hooks live; перезапустите awg-quick@awg0."
+
                 [[ -n "${_CLI_APPLY_MODE:-}" ]] && export AWG_APPLY_MODE="$_CLI_APPLY_MODE"
                 if [[ "${AWG_SKIP_APPLY:-0}" == "1" ]]; then
                     apply_config
