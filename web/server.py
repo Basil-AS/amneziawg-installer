@@ -6710,7 +6710,7 @@ def tune_config_preset(text, preset, host_domain=None):
         out = []
         for line in lines:
             if re.match(r"^MTU\s*=", line, re.IGNORECASE):
-                out.append("MTU = 1380")
+                out.append("MTU = 1280")
             elif re.match(r"^PersistentKeepalive\s*=", line, re.IGNORECASE):
                 out.append("PersistentKeepalive = 35")
             else:
@@ -6720,7 +6720,7 @@ def tune_config_preset(text, preset, host_domain=None):
         out = []
         for line in lines:
             if re.match(r"^MTU\s*=", line, re.IGNORECASE):
-                out.append("MTU = 1360")
+                out.append("MTU = 1280")
             elif re.match(r"^PersistentKeepalive\s*=", line, re.IGNORECASE):
                 out.append("PersistentKeepalive = 30")
             else:
@@ -6743,7 +6743,7 @@ def tune_config_preset(text, preset, host_domain=None):
             if re.match(r"^I[1-5]\s*=", line.strip(), re.IGNORECASE):
                 continue
             if re.match(r"^MTU\s*=", line, re.IGNORECASE):
-                out.append("MTU = 1380")
+                out.append("MTU = 1280")
             elif re.match(r"^PersistentKeepalive\s*=", line, re.IGNORECASE):
                 out.append("PersistentKeepalive = 35")
             elif re.match(r"^#@ws:", line.strip(), re.IGNORECASE) or "WireSock compatibility hints" in line:

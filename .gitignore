@@ -61,13 +61,6 @@ AGENT.local.md
 *.agent-local.*
 .agents/runtime/
 .agents/tmp/
-
-# BEGIN UNIVERSAL AGENT KIT
-AGENT.local.md
-.agent-cache/
-*.agent-local.*
-.agents/runtime/
-.agents/tmp/
 .clinerules
 .windsurfrules
 .cursor/
@@ -87,4 +80,11 @@ scripts/self_test*
 scripts/cache_fetch*
 .github/*[c]opilot*
 .github/workflows/ci.yml
+
+# BEGIN UNIVERSAL AGENT KIT
+AGENT.local.md
+.agent-cache/
+*.agent-local.*
+.agents/runtime/
+.agents/tmp/
 # END UNIVERSAL AGENT KIT

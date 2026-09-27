@@ -3514,13 +3514,13 @@ function tuneConfigForPreset(rawText, preset, domain) {
     });
   } else if (preset === "home") {
     lines = lines.map(line => {
-      if (/^MTU\s*=/i.test(line.trim())) return "MTU = 1380";
+      if (/^MTU\s*=/i.test(line.trim())) return "MTU = 1280";
       if (/^PersistentKeepalive\s*=/i.test(line.trim())) return "PersistentKeepalive = 35";
       return line;
     });
   } else if (preset === "router") {
     lines = lines.map(line => {
-      if (/^MTU\s*=/i.test(line.trim())) return "MTU = 1360";
+      if (/^MTU\s*=/i.test(line.trim())) return "MTU = 1280";
       if (/^PersistentKeepalive\s*=/i.test(line.trim())) return "PersistentKeepalive = 30";
       const m = line.trim().match(/^(H[1-4]\s*=\s*)(\d+)(?:-(\d+))?/i);
       if (m) {
@@ -3537,7 +3537,7 @@ function tuneConfigForPreset(rawText, preset, domain) {
   } else if (preset === "wiresock") {
     lines = lines.filter(line => !/^I[1-5]\s*=/i.test(line.trim()));
     lines = lines.map(line => {
-      if (/^MTU\s*=/i.test(line.trim())) return "MTU = 1380";
+      if (/^MTU\s*=/i.test(line.trim())) return "MTU = 1280";
       if (/^PersistentKeepalive\s*=/i.test(line.trim())) return "PersistentKeepalive = 35";
       return line;
     });
@@ -3569,11 +3569,11 @@ async function showConfig(name) {
     <div class="grid gap-3">
       <div class="flex flex-wrap items-center justify-between gap-2 border-b border-[var(--line)] pb-2">
         <div class="flex flex-wrap gap-1" id="configPresetTabs">
-          <button data-preset="default" class="px-2.5 py-1 text-xs rounded-md font-medium bg-[var(--accent)] text-white">Default</button>
-          <button data-preset="mobile" class="px-2.5 py-1 text-xs rounded-md font-medium bg-[var(--soft)] hover:bg-[var(--line)]">📱 Mobile (1280)</button>
-          <button data-preset="home" class="px-2.5 py-1 text-xs rounded-md font-medium bg-[var(--soft)] hover:bg-[var(--line)]">💻 Home PC (1380)</button>
-          <button data-preset="router" class="px-2.5 py-1 text-xs rounded-md font-medium bg-[var(--soft)] hover:bg-[var(--line)]">🌐 Router (1360)</button>
-          <button data-preset="wiresock" class="px-2.5 py-1 text-xs rounded-md font-medium bg-[var(--soft)] hover:bg-[var(--line)]">🪟 WireSock (Win)</button>
+          <button data-preset="default" class="px-2.5 py-1 text-xs rounded-md font-medium bg-[var(--accent)] text-white">Default (1280)</button>
+          <button data-preset="mobile" class="px-2.5 py-1 text-xs rounded-md font-medium bg-[var(--soft)] hover:bg-[var(--line)]">📱 Mobile</button>
+          <button data-preset="home" class="px-2.5 py-1 text-xs rounded-md font-medium bg-[var(--soft)] hover:bg-[var(--line)]">💻 Home PC</button>
+          <button data-preset="router" class="px-2.5 py-1 text-xs rounded-md font-medium bg-[var(--soft)] hover:bg-[var(--line)]">🌐 Router</button>
+          <button data-preset="wiresock" class="px-2.5 py-1 text-xs rounded-md font-medium bg-[var(--soft)] hover:bg-[var(--line)]">🪟 WireSock</button>
         </div>
         <div class="flex flex-wrap gap-2">
           <button id="downloadConfigFromModal" class="${buttonClasses()}">${icon("download")}<span>Download</span></button>
