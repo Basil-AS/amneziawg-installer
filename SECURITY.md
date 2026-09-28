@@ -4,9 +4,9 @@
 
 | Version | Supported          |
 |---------|--------------------|
-| 5.29.x  | :white_check_mark: |
-| 5.28.x  | Security fixes only |
-| < 5.28  | :x:                |
+| 6.0.x   | :white_check_mark: |
+| 5.29.x  | Security fixes only |
+| < 5.29  | :x:                |
 
 ## Reporting a Vulnerability
 

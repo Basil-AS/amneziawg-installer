@@ -11,7 +11,7 @@ load test_helper
     grep -qF 'ipt_add mangle FORWARD -o "$AWG_IFACE" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss "$MSS4"' "$AWG_DIR/postup.sh"
     grep -qF 'ipt_add mangle FORWARD -i "$AWG_IFACE" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss "$MSS4"' "$AWG_DIR/postup.sh"
     grep -qF 'del_ipt_table mangle FORWARD -o "$AWG_IFACE" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss "$MSS4"' "$AWG_DIR/postdown.sh"
-    grep -qF 'MSS4="1240"' "$AWG_DIR/postup.sh"
+    grep -qF 'MSS4="1220"' "$AWG_DIR/postup.sh"
 }
 
 @test "MSS clamp derives values from a custom tunnel MTU" {
@@ -19,8 +19,8 @@ load test_helper
     run generate_firewall_scripts "eth0"
     [ "$status" -eq 0 ]
 
-    grep -qF 'MSS4="1380"' "$AWG_DIR/postup.sh"
-    grep -qF 'MSS6="1360"' "$AWG_DIR/postup.sh"
+    grep -qF 'MSS4="1360"' "$AWG_DIR/postup.sh"
+    grep -qF 'MSS6="1340"' "$AWG_DIR/postup.sh"
 }
 
 @test "IPv6 MSS clamp follows the fork IPv6 enable gate" {

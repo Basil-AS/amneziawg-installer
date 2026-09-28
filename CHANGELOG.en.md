@@ -12,6 +12,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [6.0.0-bas.1] - 2026-09-27
+
+### Added
+- Dual-domain isolation architecture: pure Nextcloud Hub camouflage on the VPN domain and secret admin access gate on the web panel domain.
+- Dynamic `amneziawg-proxy` session translation: automatic detection of tunnel clients' real public IP and GeoIP by mapping local proxy backend sockets to the live session table.
+- Hostkey Invapi integration: real-time provider traffic monitoring and billing quota display in Web Panel.
+- AdGuard Home web panel and DNS isolation: restricted exclusively to the internal VPN network (10.9.9.1:3000 and 10.9.9.1:53) with nftables firewall protection.
+- Unified MTU = 1280 across all client presets (Mobile, Home PC, WireSock, Router) preventing packet fragmentation and DPI buffer drops.
+- Clean client removal and instant IP reclamation with atomic `/etc/hosts` and AdGuard Home synchronization.
+
 ## [5.29.0-bas.7] - 2026-09-01
 
 - Fixed `AWG_COMMON_VERSION` synchronization between the library, installer, and management script.
@@ -1724,7 +1734,8 @@ Major security and reliability update after several consecutive code audits. The
 - Diagnostic report (`--diagnostic`).
 - Full uninstall (`--uninstall`).
 
-[Unreleased]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.29.0-bas.7...HEAD
+[Unreleased]: https://github.com/Basil-AS/amneziawg-installer/compare/v6.0.0-bas.1...HEAD
+[6.0.0-bas.1]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.29.0-bas.7...v6.0.0-bas.1
 [5.29.0-bas.7]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.29.0-bas.6...v5.29.0-bas.7
 [5.29.0-bas.6]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.29.0-bas.5...v5.29.0-bas.6
 [5.29.0-bas.5]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.29.0-bas.4...v5.29.0-bas.5

@@ -872,7 +872,7 @@ graph TD
 Инсталлятор скачивает `awg_common.sh` и `manage_amneziawg.sh` с URL, привязанных к конкретному тегу версии:
 
 ```
-https://raw.githubusercontent.com/bivlked/amneziawg-installer/v5.29.0/awg_common.sh
+https://raw.githubusercontent.com/bivlked/amneziawg-installer/v6.0.0/awg_common.sh
 ```
 
 Это даёт **supply chain pinning**: скачиваемые скрипты соответствуют версии инсталлятора, даже если `main` уже обновлён.
@@ -892,12 +892,12 @@ AWG_BRANCH=my-feature-branch sudo bash ./install_amneziawg.sh
 
 ```bash
 # Русская версия:
-wget -O /root/awg/manage_amneziawg.sh https://raw.githubusercontent.com/bivlked/amneziawg-installer/v5.29.0/manage_amneziawg.sh
-wget -O /root/awg/awg_common.sh https://raw.githubusercontent.com/bivlked/amneziawg-installer/v5.29.0/awg_common.sh
+wget -O /root/awg/manage_amneziawg.sh https://raw.githubusercontent.com/bivlked/amneziawg-installer/v6.0.0/manage_amneziawg.sh
+wget -O /root/awg/awg_common.sh https://raw.githubusercontent.com/bivlked/amneziawg-installer/v6.0.0/awg_common.sh
 
 # Английская версия:
-wget -O /root/awg/manage_amneziawg.sh https://raw.githubusercontent.com/bivlked/amneziawg-installer/v5.29.0/manage_amneziawg_en.sh
-wget -O /root/awg/awg_common.sh https://raw.githubusercontent.com/bivlked/amneziawg-installer/v5.29.0/awg_common_en.sh
+wget -O /root/awg/manage_amneziawg.sh https://raw.githubusercontent.com/bivlked/amneziawg-installer/v6.0.0/manage_amneziawg_en.sh
+wget -O /root/awg/awg_common.sh https://raw.githubusercontent.com/bivlked/amneziawg-installer/v6.0.0/awg_common_en.sh
 
 # Установить права
 chmod 700 /root/awg/manage_amneziawg.sh /root/awg/awg_common.sh
@@ -1505,7 +1505,7 @@ sudo systemctl restart awg-quick@awg0
 
 ### Автоматический MSS-clamp (с v5.17.0)
 
-Начиная с v5.17.0 сервер дополнительно ограничивает TCP MSS под размер туннеля. Это правило `TCPMSS` в таблице `mangle` цепочки `FORWARD`, которое добавляется отдельными командами в `PostUp`/`PostDown` конфига `awg0.conf`. Значение берётся из `MTU` (по умолчанию 1280): MSS 1240 для IPv4 и 1220 для IPv6, в обе стороны.
+Начиная с v5.17.0 сервер дополнительно ограничивает TCP MSS под размер туннеля. Это правило `TCPMSS` в таблице `mangle` цепочки `FORWARD`, которое добавляется отдельными командами в `PostUp`/`PostDown` конфига `awg0.conf`. Значение берётся из `MTU` (по умолчанию 1280): MSS 1220 для IPv4 (с учётом 20 байт TCP-опций/таймстемпов RFC 7323) и 1200 для IPv6, в обе стороны.
 
 **Зачем:** даже при `MTU = 1280` крупные страницы и закачки иногда зависают на мобильных операторах, при двойном NAT и в каскаде из двух серверов. Причина - PMTUD-блэкхол: когда по пути фильтруется ICMP «Fragmentation needed» (для IPv6 - ICMPv6 «Packet Too Big»), крупные TCP-сегменты с флагом DF молча отбрасываются на туннеле, и соединение «висит» на больших объёмах данных (мелкие запросы при этом проходят). MSS-clamp заранее сообщает обеим сторонам туннель-безопасный размер сегмента, поэтому такие пакеты просто не появляются. Это дополняет `MTU = 1280`, а не заменяет его.
 

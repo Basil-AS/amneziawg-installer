@@ -9,14 +9,14 @@ fi
 # ==============================================================================
 # AmneziaWG 2.0 installation and configuration script for Ubuntu/Debian servers
 # Author: @bivlked
-# Version: 5.29.0-bas.7
-# Date: 2026-08-30
+# Version: 6.0.0-bas.1
+# Date: 2026-09-27
 # Repository: https://github.com/bivlked/amneziawg-installer
 # ==============================================================================
 
 # --- Safe mode and Constants ---
 set -o pipefail
-SCRIPT_VERSION="5.29.0-bas.7"
+SCRIPT_VERSION="6.0.0-bas.1"
 
 AWG_DIR="/root/awg"
 INSTALLER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)"
@@ -3282,13 +3282,17 @@ $(if [[ "${DISABLE_IPV6:-1}" -ne 1 ]]; then
     echo "net.ipv6.conf.default.accept_redirects = 0"
 fi)
 
-# --- BBR Congestion Control ---
+# --- BBR Congestion Control & Performance ---
 net.core.default_qdisc = fq
 net.ipv4.tcp_congestion_control = bbr
+net.ipv4.tcp_mtu_probing = 1
+net.ipv4.tcp_slow_start_after_idle = 0
 
 # --- Network Buffers (adaptive) ---
 net.core.rmem_max = ${rmem_max}
 net.core.wmem_max = ${wmem_max}
+net.core.rmem_default = $(( rmem_max / 4 ))
+net.core.wmem_default = $(( wmem_max / 4 ))
 net.core.netdev_max_backlog = ${netdev_backlog}
 
 # --- Conntrack ---

@@ -9,14 +9,14 @@ fi
 # ==============================================================================
 # Скрипт для управления пользователями (пирами) AmneziaWG 2.0
 # Автор: @bivlked
-# Версия: 5.29.0-bas.7
-# Дата: 2026-08-30
+# Версия: 6.0.0-bas.1
+# Дата: 2026-09-27
 # Репозиторий: https://github.com/bivlked/amneziawg-installer
 # ==============================================================================
 
 # --- Безопасный режим и Константы ---
 # shellcheck disable=SC2034
-SCRIPT_VERSION="5.29.0-bas.7"
+SCRIPT_VERSION="6.0.0-bas.1"
 set -o pipefail
 AWG_DIR="/root/awg"
 SERVER_CONF_FILE="/etc/amnezia/amneziawg/awg0.conf"
@@ -466,6 +466,7 @@ check_dependencies() {
     # shellcheck source=/dev/null
     source "$COMMON_SCRIPT_PATH" || die "Ошибка загрузки $COMMON_SCRIPT_PATH"
     _check_common_compat
+    normalize_legacy_peers 2>/dev/null || true
 
     log "Зависимости OK."
 }
@@ -1034,7 +1035,7 @@ modify_client() {
     fi
 
     # Валидация ДО взятия блокировки (ранние return не требуют fd cleanup)
-    local allowed_params="DNS|Endpoint|AllowedIPs|PersistentKeepalive"
+    local allowed_params="DNS|Endpoint|AllowedIPs|PersistentKeepalive|MTU"
     if ! [[ "$param" =~ ^($allowed_params)$ ]]; then
         log_error "Параметр '$param' нельзя изменить через modify."
         log_error "Допустимые параметры: ${allowed_params//|/, }"
@@ -1042,6 +1043,11 @@ modify_client() {
     fi
 
     case "$param" in
+        MTU)
+            if ! [[ "$value" =~ ^[0-9]+$ ]] || [[ "$value" -lt 576 || "$value" -gt 9100 ]]; then
+                log_error "Невалидный MTU: '$value' (допустимо: 576-9100)"
+                return 1
+            fi ;;
         DNS)
             # Структурная проверка списка DNS. Старый charset-only regex
             # ^[0-9a-fA-F.:,\ ]+$ пропускал мусор ('abc' - буквы a-f; '999.999.999.999' -
@@ -2368,11 +2374,19 @@ stats_clients() {
     local _stats_now
     _stats_now=$(date +%s)
 
+    local -A proxy_sessions_map=()
+    if [[ -f "/var/lib/amneziawg-proxy/sessions.json" ]]; then
+        while IFS=$'\t' read -r _b _r; do
+            [[ -n "$_b" && -n "$_r" ]] && proxy_sessions_map["$_b"]="$_r"
+        done < <(python3 -c "import json; d=json.load(open('/var/lib/amneziawg-proxy/sessions.json')); [print(f\"{s.get('backend_socket_addr')}\t{s.get('remote_addr')}\") for s in d.get('sessions', []) if s.get('backend_socket_addr') and s.get('remote_addr')]" 2>/dev/null || true)
+    fi
+
     # awg show dump: каждая строка пира = pubkey psk endpoint allowed-ips latest-handshake rx tx keepalive
     # shellcheck disable=SC2034
     while IFS=$'\t' read -r pk psk ep aips handshake rx tx keepalive; do
         local cname="${pk_to_name[$pk]:-unknown}"
         if [[ "$cname" == "unknown" ]]; then continue; fi
+        [[ -n "${proxy_sessions_map[$ep]:-}" ]] && ep="${proxy_sessions_map[$ep]}"
 
         [[ "$rx" =~ ^(0|[1-9][0-9]*)$ ]] || rx=0
         [[ "$tx" =~ ^(0|[1-9][0-9]*)$ ]] || tx=0
@@ -2732,7 +2746,7 @@ case $COMMAND in
         _jr=()
         for _rname in "${ARGS[@]}"; do
             validate_client_name "$_rname" || { _cmd_rc=1; _jr+=("{\"name\":\"$(json_escape "$_rname")\",\"status\":\"invalid_name\"}"); continue; }
-            if ! grep -qxF "#_Name = ${_rname}" "$SERVER_CONF_FILE"; then
+            if ! grep -qxF "#_Name = ${_rname}" "$SERVER_CONF_FILE" && ! grep -qxF "### Client ${_rname}" "$SERVER_CONF_FILE"; then
                 # _cmd_rc=1 (v5.21.0): раньше частичный not-found давал rc 0 -
                 # асимметрия с add (exists -> rc 1) и regen (not-found -> rc 1).
                 # Спека 3.4: 'remove a ghost' = частичный успех = rc 1.
@@ -2772,10 +2786,17 @@ case $COMMAND in
             _removed=0
             for _rname in "${_valid_names[@]}"; do
                 log "Удаление '$_rname'..."
+                _ripv4=""
+                _ripv6=""
+                if [[ -f "$AWG_DIR/${_rname}.conf" ]]; then
+                    _ripv4=$(grep -oP 'Address\s*=\s*\K[0-9.]+' "$AWG_DIR/${_rname}.conf" 2>/dev/null | head -n1 || true)
+                    _ripv6=$(grep -oP 'Address\s*=.*,\s*\K[0-9a-fA-F:]+' "$AWG_DIR/${_rname}.conf" 2>/dev/null | head -n1 || true)
+                fi
                 [[ -x "$AWG_DIR/p2p_rules.sh" ]] && bash "$AWG_DIR/p2p_rules.sh" down 2>/dev/null || true
                 if remove_peer_from_server "$_rname"; then
                     _remove_client_files "$_rname"
                     remove_client_expiry "$_rname"
+                    adguard_delete_client "$_rname" "$_ripv4" "$_ripv6" 2>/dev/null || true
                     log "Клиент '$_rname' удалён."
                     ((_removed++))
                     _jr+=("{\"name\":\"$(json_escape "$_rname")\",\"status\":\"removed\"}")
@@ -2789,7 +2810,9 @@ case $COMMAND in
             _japplied=false
             if [[ $_removed -gt 0 ]]; then
                 sync_clients_hosts
+                sync_adguard_clients 2>/dev/null || true
                 bash "$AWG_DIR/postup.sh" 2>/dev/null || log_warn "Не удалось применить firewall hooks live; перезапустите awg-quick@awg0."
+
                 [[ -n "${_CLI_APPLY_MODE:-}" ]] && export AWG_APPLY_MODE="$_CLI_APPLY_MODE"
                 if [[ "${AWG_SKIP_APPLY:-0}" == "1" ]]; then
                     apply_config

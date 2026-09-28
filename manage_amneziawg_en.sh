@@ -9,14 +9,14 @@ fi
 # ==============================================================================
 # AmneziaWG 2.0 peer management script
 # Author: @bivlked
-# Version: 5.29.0-bas.7
-# Date: 2026-08-30
+# Version: 6.0.0-bas.1
+# Date: 2026-09-27
 # Repository: https://github.com/bivlked/amneziawg-installer
 # ==============================================================================
 
 # --- Safe mode and Constants ---
 # shellcheck disable=SC2034
-SCRIPT_VERSION="5.29.0-bas.7"
+SCRIPT_VERSION="6.0.0-bas.1"
 set -o pipefail
 AWG_DIR="/root/awg"
 SERVER_CONF_FILE="/etc/amnezia/amneziawg/awg0.conf"
@@ -464,6 +464,7 @@ check_dependencies() {
     # shellcheck source=/dev/null
     source "$COMMON_SCRIPT_PATH" || die "Failed to load $COMMON_SCRIPT_PATH"
     _check_common_compat
+    normalize_legacy_peers 2>/dev/null || true
 
     log "Dependencies OK."
 }
@@ -1042,7 +1043,7 @@ modify_client() {
     fi
 
     # Validation BEFORE taking the lock (early returns need no fd cleanup)
-    local allowed_params="DNS|Endpoint|AllowedIPs|PersistentKeepalive"
+    local allowed_params="DNS|Endpoint|AllowedIPs|PersistentKeepalive|MTU"
     if ! [[ "$param" =~ ^($allowed_params)$ ]]; then
         log_error "Parameter '$param' cannot be changed via modify."
         log_error "Allowed parameters: ${allowed_params//|/, }"
@@ -1050,6 +1051,11 @@ modify_client() {
     fi
 
     case "$param" in
+        MTU)
+            if ! [[ "$value" =~ ^[0-9]+$ ]] || [[ "$value" -lt 576 || "$value" -gt 9100 ]]; then
+                log_error "Invalid MTU: '$value' (allowed: 576-9100)"
+                return 1
+            fi ;;
         DNS)
             # Structural validation of the DNS list. The old charset-only regex
             # ^[0-9a-fA-F.:,\ ]+$ let garbage through ('abc' - a-f letters;
@@ -2672,7 +2678,7 @@ case $COMMAND in
         _jr=()
         for _rname in "${ARGS[@]}"; do
             validate_client_name "$_rname" || { _cmd_rc=1; _jr+=("{\"name\":\"$(json_escape "$_rname")\",\"status\":\"invalid_name\"}"); continue; }
-            if ! grep -qxF "#_Name = ${_rname}" "$SERVER_CONF_FILE"; then
+            if ! grep -qxF "#_Name = ${_rname}" "$SERVER_CONF_FILE" && ! grep -qxF "### Client ${_rname}" "$SERVER_CONF_FILE"; then
                 # _cmd_rc=1 (v5.21.0): a partial not-found used to give rc 0 -
                 # asymmetric with add (exists -> rc 1) and regen (not-found ->
                 # rc 1). Spec 3.4: 'remove a ghost' = partial success = rc 1.
@@ -2712,10 +2718,17 @@ case $COMMAND in
             _removed=0
             for _rname in "${_valid_names[@]}"; do
                 log "Removing '$_rname'..."
+                _ripv4=""
+                _ripv6=""
+                if [[ -f "$AWG_DIR/${_rname}.conf" ]]; then
+                    _ripv4=$(grep -oP 'Address\s*=\s*\K[0-9.]+' "$AWG_DIR/${_rname}.conf" 2>/dev/null | head -n1 || true)
+                    _ripv6=$(grep -oP 'Address\s*=.*,\s*\K[0-9a-fA-F:]+' "$AWG_DIR/${_rname}.conf" 2>/dev/null | head -n1 || true)
+                fi
                 [[ -x "$AWG_DIR/p2p_rules.sh" ]] && bash "$AWG_DIR/p2p_rules.sh" down 2>/dev/null || true
                 if remove_peer_from_server "$_rname"; then
                     _remove_client_files "$_rname"
                     remove_client_expiry "$_rname"
+                    adguard_delete_client "$_rname" "$_ripv4" "$_ripv6" 2>/dev/null || true
                     log "Client '$_rname' removed."
                     ((_removed++))
                     _jr+=("{\"name\":\"$(json_escape "$_rname")\",\"status\":\"removed\"}")
@@ -2728,7 +2741,10 @@ case $COMMAND in
 
             _japplied=false
             if [[ $_removed -gt 0 ]]; then
+                sync_clients_hosts
+                sync_adguard_clients 2>/dev/null || true
                 bash "$AWG_DIR/postup.sh" 2>/dev/null || log_warn "Failed to apply firewall hooks live; restart awg-quick@awg0 if needed."
+
                 [[ -n "${_CLI_APPLY_MODE:-}" ]] && export AWG_APPLY_MODE="$_CLI_APPLY_MODE"
                 if [[ "${AWG_SKIP_APPLY:-0}" == "1" ]]; then
                     apply_config

@@ -13,6 +13,7 @@ import shlex
 import shutil
 import socket
 import ssl
+import struct
 import subprocess
 import sys
 import threading
@@ -24,6 +25,15 @@ from pathlib import Path
 from urllib.parse import parse_qs, quote, unquote, urlencode, urlparse
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
+
+try:
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+    from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+    from cryptography.hazmat.primitives import hashes
+    HAVE_CRYPTOGRAPHY = True
+except ImportError:
+    HAVE_CRYPTOGRAPHY = False
 
 AWG_DIR = Path(os.environ.get("AWG_DIR", "/root/awg"))
 WEB_DIR = AWG_DIR / "web"
@@ -290,6 +300,17 @@ DELETED_TRAFFIC_KEY = "_deleted_clients_total"
 PANEL_TITLE = "AmneziaWG Panel"
 PANEL_SHORT_LABEL = "AW"
 REPOSITORY_URL = "https://github.com/Basil-AS/amneziawg-installer"
+
+
+def server_short_label(name):
+    if not name:
+        return PANEL_SHORT_LABEL
+    parts = [p for p in re.split(r"[\s\-_]+", str(name).strip()) if p]
+    if len(parts) >= 2:
+        return (parts[0][0] + parts[1][0]).upper()
+    if len(parts) == 1 and len(parts[0]) >= 2:
+        return parts[0][:2].upper()
+    return PANEL_SHORT_LABEL
 HELP_CLIENT_GROUPS = [
     {
         "name": "Windows",
@@ -487,11 +508,27 @@ def host_is_ip(value):
         return False
 
 
+def get_server_domain(default="vk.com"):
+    """Dynamically determine the configured server domain from AWG config or environment."""
+    try:
+        cfg = parse_config()
+        endpoint = cfg.get("AWG_ENDPOINT") or cfg.get("AWG_ENDPOINT_DOMAIN") or cfg.get("AWG_WEB_DOMAIN") or ""
+        host, _ = split_endpoint(endpoint)
+        if host and not host_is_ip(host):
+            return host
+        web_domain = cfg.get("AWG_WEB_DOMAIN") or ""
+        if web_domain and not host_is_ip(web_domain):
+            return web_domain
+    except Exception:
+        pass
+    return default
+
+
 def web_access_required_hosts(extra_host=""):
     """Return the only hosts accepted by the panel access policy.
 
     The public VPN endpoint is deliberately not part of this list.  It may be
-    a stale literal address, a transport-only name such as s1/s2.charles.men,
+    a stale literal address, a transport-only name such as s1/s2.example.com,
     or a generated sslip.io name.  The panel has its own explicit domain; the
     VPN gateway and loopback names are the only additional local hosts.
     """
@@ -1422,6 +1459,72 @@ def client_traffic_load(stats=None, now=None):
     }
 
 
+def get_amneziawg_proxy_info():
+    sessions_path = Path("/var/lib/amneziawg-proxy/sessions.json")
+    if not sessions_path.exists():
+        return {"status": "not_configured", "active": False}
+    domain = get_server_domain()
+    try:
+        data = json.loads(sessions_path.read_text(encoding="utf-8"))
+        sessions = data.get("sessions", [])
+        return {
+            "status": "ok",
+            "active": True,
+            "listener": f"{data.get('proxy_listen_addr', '0.0.0.0:443')}/udp ({data.get('imitate_protocol', 'quic').upper()})",
+            "listen": str(data.get("proxy_listen_addr", "0.0.0.0:443")),
+            "protocol": str(data.get("imitate_protocol", "quic")).upper(),
+            "target": str(data.get("target_addr", "127.0.0.1:51821")),
+            "domain": domain,
+            "sessions_count": len(sessions) if isinstance(sessions, list) else 0,
+        }
+    except Exception:
+        return {
+            "status": "ok",
+            "active": True,
+            "listener": "0.0.0.0:443/udp (QUIC)",
+            "listen": "0.0.0.0:443",
+            "protocol": "QUIC",
+            "target": "127.0.0.1:51821",
+            "domain": domain,
+            "sessions_count": 0,
+        }
+
+
+def get_threat_defense_info():
+    telemetry = {
+        "status": "ok",
+        "active": False,
+        "banned_count": 0,
+        "banned_drops_packets": 0,
+        "honeypot_triggers": 0,
+        "scan_meter_count": 0,
+    }
+    try:
+        res = subprocess.run(["nft", "-j", "list", "table", "inet", "security"], capture_output=True, text=True, timeout=1.5)
+        if res.returncode == 0:
+            data = json.loads(res.stdout)
+            telemetry["active"] = True
+            for item in data.get("nftables", []):
+                if "set" in item:
+                    s = item["set"]
+                    if s.get("name") == "threat_banned":
+                        telemetry["banned_count"] = len(s.get("elem", []))
+                    elif s.get("name") == "threat_scan_meter":
+                        telemetry["scan_meter_count"] = len(s.get("elem", []))
+                elif "rule" in item:
+                    r = item["rule"]
+                    for ex in r.get("expr", []):
+                        if "match" in ex and ex["match"].get("right") == "@threat_banned":
+                            if "counter" in ex:
+                                telemetry["banned_drops_packets"] = ex["counter"].get("packets", 0)
+                        if "log" in ex and ex["log"].get("prefix") == "THREAT_HONEYPOT: ":
+                            if "counter" in ex:
+                                telemetry["honeypot_triggers"] = ex["counter"].get("packets", 0)
+    except Exception:
+        pass
+    return telemetry
+
+
 def collect_server_health(force=False):
     global SERVER_HEALTH_CACHE, SERVER_HEALTH_CACHE_TS, SERVER_HEALTH_PREV_CPU
     now = time.time()
@@ -1453,7 +1556,16 @@ def collect_server_health(force=False):
         client_load = client_traffic_load(now=now)
         drops_delta = wan_delta["drops_delta"] + vpn_delta["drops_delta"]
         errors_delta = wan_delta["errors_delta"] + vpn_delta["errors_delta"]
-        network_status = "warn" if drops_delta or errors_delta else "ok"
+        wan_drop_pct = wan_delta.get("drop_pct") or 0
+        wan_error_pct = wan_delta.get("error_pct") or 0
+        vpn_drop_pct = vpn_delta.get("drop_pct") or 0
+        vpn_error_pct = vpn_delta.get("error_pct") or 0
+        has_network_warn = (
+            (drops_delta >= 15 and (wan_drop_pct >= 2.0 or vpn_drop_pct >= 2.0))
+            or (errors_delta >= 15 and (wan_error_pct >= 2.0 or vpn_error_pct >= 2.0))
+            or (drops_delta >= 100 or errors_delta >= 50)
+        )
+        network_status = "warn" if has_network_warn else "ok"
 
         snmp = read_proc_net_table("/proc/net/snmp")
         netstat = read_proc_net_table("/proc/net/netstat")
@@ -1527,6 +1639,13 @@ def collect_server_health(force=False):
                 "python_backend": {"status": "ok", "listener": "127.0.0.1:8443"},
                 "nginx_edge": {"status": "unknown", "listener": "0.0.0.0:443"},
                 "vpn_interface": {"status": awg_status, "name": vpn_iface},
+                "amneziawg_proxy": get_amneziawg_proxy_info(),
+                "adguard_home": {
+                    "status": "ok" if Path("/opt/AdGuardHome/AdGuardHome.yaml").exists() else "not_configured",
+                    "listener": "10.9.9.1:53",
+                    "active": Path("/opt/AdGuardHome/AdGuardHome.yaml").exists(),
+                },
+                "threat_defense": get_threat_defense_info(),
             },
         }
         SERVER_HEALTH_CACHE = payload
@@ -2277,18 +2396,28 @@ def summarize_health_history(rows):
     errors_delta = sum(counter_delta(rows, key) for key in (
         "wan_rx_errors", "wan_tx_errors", "vpn_rx_errors", "vpn_tx_errors",
     ))
+    packets_delta = sum(counter_delta(rows, key) for key in (
+        "wan_rx_packets", "wan_tx_packets", "vpn_rx_packets", "vpn_tx_packets",
+    ))
+    drop_pct = (100.0 * drops_delta / (packets_delta + drops_delta)) if (packets_delta + drops_delta) > 0 else 0
+    error_pct = (100.0 * errors_delta / (packets_delta + errors_delta)) if (packets_delta + errors_delta) > 0 else 0
+    has_net_warn = (
+        (drops_delta >= 30 and drop_pct >= 2.0)
+        or (errors_delta >= 30 and error_pct >= 2.0)
+        or (drops_delta >= 200 or errors_delta >= 100)
+    )
     max_rss = max_value(rows, "python_rss_bytes")
     current_rss = safe_int(rows[-1].get("python_rss_bytes")) if rows else None
     rss_growth_ratio = (max_rss / current_rss) if current_rss else None
     status = "ok"
     if critical_count or (max_value(rows, "cpu_usage_percent") or 0) >= 90 or (max_value(rows, "memory_used_percent") or 0) >= 90:
         status = "critical"
-    elif warn_count or drops_delta or errors_delta or (max_value(rows, "cpu_usage_percent") or 0) >= 75 or (max_value(rows, "memory_used_percent") or 0) >= 80:
+    elif warn_count or has_net_warn or (max_value(rows, "cpu_usage_percent") or 0) >= 75 or (max_value(rows, "memory_used_percent") or 0) >= 80:
         status = "warn"
     notes = []
-    if drops_delta:
+    if drops_delta >= 15:
         notes.append(f"Interface drops increased +{drops_delta}.")
-    if errors_delta:
+    if errors_delta >= 15:
         notes.append(f"Interface errors increased +{errors_delta}.")
     if rss_growth_ratio and rss_growth_ratio >= 2:
         notes.append("Python RSS peak is more than 2x current RSS.")
@@ -3291,6 +3420,8 @@ def write_tokens(data):
             "super_token_hash": data["super_token_hash"],
             "users": data.get("users", {}),
         }
+        if data.get("super_name"):
+            clean["super_name"] = str(data["super_name"]).strip()
         tmp = TOKEN_FILE.with_name(f"{TOKEN_FILE.name}.tmp.{os.getpid()}")
         tmp.write_text(json.dumps(clean, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         os.chmod(tmp, 0o600)
@@ -3312,6 +3443,10 @@ def clean_client_metadata_record(value):
     for key in ("created_by_role",):
         raw = value.get(key)
         if raw in {"user", "super", "admin"}:
+            clean[key] = raw
+    for key in ("network_profile", "dpi_profile", "preset"):
+        raw = value.get(key)
+        if isinstance(raw, str) and re.fullmatch(r"[a-zA-Z0-9_-]{1,32}", raw):
             clean[key] = raw
     for key in ("created_at", "last_unassigned_at"):
         raw = value.get(key)
@@ -3358,7 +3493,7 @@ def utc_now_iso():
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 
-def set_client_metadata(config_name, display_name, auth=None):
+def set_client_metadata(config_name, display_name, auth=None, network_profile=None, dpi_profile=None, preset=None):
     config_name = safe_name(config_name)
     display_name = safe_name(display_name)
     data = load_client_metadata()
@@ -3366,6 +3501,12 @@ def set_client_metadata(config_name, display_name, auth=None):
     if not isinstance(record, dict):
         record = {}
     record["display_name"] = display_name
+    if network_profile:
+        record["network_profile"] = network_profile
+    if dpi_profile:
+        record["dpi_profile"] = dpi_profile
+    if preset:
+        record["preset"] = preset
     if auth is not None:
         record["created_by_fp"] = auth_fingerprint(auth)
         record["created_by_role"] = auth.get("role", "")
@@ -3383,6 +3524,7 @@ def remove_client_metadata(config_name):
     data = load_client_metadata()
     if data.get("clients", {}).pop(config_name, None) is not None:
         write_client_metadata(data)
+    clear_client_endpoint_history(config_name)
 
 
 def rollback_created_client(config_name):
@@ -3662,13 +3804,27 @@ def audit_client_state():
 def delete_client_global(config_name, actor):
     config_name = safe_name(config_name)
     before = audit_client_state()
+    before_row = next((row for row in before["clients"] if row["config_name"] == config_name), {})
+    client_ipv4 = before_row.get("ipv4", "")
+    client_ipv6 = before_row.get("ipv6", "")
+
     p = run_manage("remove", config_name)
     if p.returncode == 0:
         remove_client_from_all_tokens(config_name)
         remove_client_metadata(config_name)
         remove_import_tokens_for_client(config_name)
+        try:
+            adguard_api("clients/delete", "POST", {"name": config_name})
+            alias = re.sub(r"[^a-z0-9-]+", "-", config_name.lower()).strip("-") or "client"
+            if client_ipv4:
+                adguard_api("rewrite/delete", "POST", {"domain": f"{alias}.awg", "answer": client_ipv4})
+            if client_ipv6:
+                adguard_api("rewrite/delete", "POST", {"domain": f"{alias}.awg", "answer": client_ipv6})
+            adguard_api("stats_reset", "POST")
+            adguard_api("querylog_clear", "POST")
+        except Exception:
+            pass
         after = audit_client_state()
-        before_row = next((row for row in before["clients"] if row["config_name"] == config_name), {})
         after_row = next((row for row in after["clients"] if row["config_name"] == config_name), {})
         leftovers = [status for status in after_row.get("status", []) if status != "history_only"]
         audit_log(
@@ -3677,6 +3833,7 @@ def delete_client_global(config_name, actor):
             f"files_before={len(before_row.get('files', []))} leftovers={','.join(leftovers) if leftovers else 'none'}"
         )
     return p
+
 
 
 def load_traffic_history():
@@ -4609,10 +4766,48 @@ def lookup_endpoint_ip_info(ip, allow_refresh=True):
     return lookup_ip_enriched(ip, purpose="endpoint", multi_source=True, want_whois=want_whois)
 
 
+PROXY_ENDPOINT_CACHE = {}
+PROXY_ENDPOINT_CACHE_TS = 0.0
+
+
+def load_proxy_sessions():
+    global PROXY_ENDPOINT_CACHE, PROXY_ENDPOINT_CACHE_TS
+    now = time.time()
+    if now - PROXY_ENDPOINT_CACHE_TS < 1.0 and PROXY_ENDPOINT_CACHE:
+        return PROXY_ENDPOINT_CACHE
+    sessions_file = Path("/var/lib/amneziawg-proxy/sessions.json")
+    if not sessions_file.exists():
+        return PROXY_ENDPOINT_CACHE
+    try:
+        data = json.loads(sessions_file.read_text(encoding="utf-8"))
+        sessions = data.get("sessions", [])
+        if isinstance(sessions, list):
+            for s in sessions:
+                backend = s.get("backend_socket_addr")
+                remote = s.get("remote_addr")
+                if backend and remote:
+                    PROXY_ENDPOINT_CACHE[backend] = remote
+        PROXY_ENDPOINT_CACHE_TS = now
+    except Exception:
+        pass
+    return PROXY_ENDPOINT_CACHE
+
+
+def resolve_proxy_endpoint(endpoint):
+    if not endpoint:
+        return ""
+    endpoint = str(endpoint).strip()
+    if not endpoint.startswith("127.0.0.1:"):
+        return endpoint
+    sessions = load_proxy_sessions()
+    return sessions.get(endpoint, endpoint)
+
+
 def split_endpoint(endpoint):
     endpoint = (endpoint or "").strip()
     if not endpoint or endpoint in {"-", "(none)", "none"}:
         return "", None
+    endpoint = resolve_proxy_endpoint(endpoint)
     host = endpoint
     port = None
     if endpoint.startswith("[") and "]" in endpoint:
@@ -4974,11 +5169,15 @@ def update_traffic_history(rows):
             write_traffic_history(data)
 
 
-def latest_client_endpoint_snapshot(history_rows):
+def latest_client_endpoint_snapshot(history_rows, current_fp=""):
     if not isinstance(history_rows, list):
         return {}
     for row in reversed(history_rows):
         if isinstance(row, dict):
+            if current_fp:
+                row_fp = row.get("public_key_fp")
+                if row_fp and row_fp != current_fp:
+                    continue
             return row
     return {}
 
@@ -5151,7 +5350,10 @@ def load_tokens():
                 except ValueError as exc:
                     raise RuntimeError("tokens.json is invalid; run manage_amneziawg.sh web token reset-super") from exc
 
+        super_name = clean_token_name(data.get("super_name", ""))
         clean = {"super_token_hash": super_hash, "users": clean_users}
+        if super_name:
+            clean["super_name"] = super_name
         if clean != data or not TOKEN_FILE.exists():
             write_tokens(clean)
         return clean
@@ -5205,13 +5407,13 @@ def authenticate(header):
     # preserving the regular super/user token model.
     bot_hash = os.environ.get("AWG_BOT_API_TOKEN_HASH", "").strip().lower()
     if TOKEN_HASH_RE.fullmatch(bot_hash) and hmac.compare_digest(digest, bot_hash):
-        return {"role": "super", "hash": digest, "clients": None, "source": "bot-api"}
+        return {"role": "super", "hash": digest, "clients": None, "source": "bot-api", "name": "Bot API"}
     data = load_tokens()
     if hmac.compare_digest(digest, data.get("super_token_hash", "")):
-        return {"role": "super", "hash": digest, "clients": None}
+        return {"role": "super", "hash": digest, "clients": None, "name": data.get("super_name") or "Admin"}
     for user_hash, record in data.get("users", {}).items():
         if hmac.compare_digest(digest, user_hash):
-            return {"role": "user", "hash": digest, "clients": record.get("clients", [])}
+            return {"role": "user", "hash": digest, "clients": record.get("clients", []), "name": record.get("name") or "User"}
     return None
 
 
@@ -5352,14 +5554,18 @@ def parse_config():
 
 def parse_peers():
     peers, cur = [], None
+    pending_name = ""
     if not SERVER_CONF.exists():
         return peers
     for line in SERVER_CONF.read_text(errors="ignore").splitlines():
+        if line.startswith("### Client "):
+            pending_name = line.split("### Client ", 1)[1].strip()
+            continue
         if line in {"[Peer]", "# [Peer]"}:
             if cur:
                 peers.append(cur)
             cur = {
-                "name": "",
+                "name": pending_name,
                 "public_key": "",
                 "ipv4": "",
                 "ipv6": "",
@@ -5369,8 +5575,10 @@ def parse_peers():
                 "p2p_enabled": True,
                 "disabled": line == "# [Peer]",
             }
+            pending_name = ""
         elif cur is not None and line.startswith("#_Name = "):
             cur["name"] = line.split("=", 1)[1].strip()
+
         elif cur is not None and re.match(r"^#_(IPv4|IPv6)\s*=\s*(on|off)$", line):
             family, state = re.match(r"^#_(IPv4|IPv6)\s*=\s*(on|off)$", line).groups()
             cur[f"{family.lower()}_enabled"] = state == "on"
@@ -5403,12 +5611,30 @@ def parse_peers():
         if peer["ipv6_enabled"] is None:
             peer["ipv6_enabled"] = bool(peer.get("ipv6"))
         config_name = peer["name"]
-        display_name = metadata.get(config_name, {}).get("display_name") or config_name
+        meta = metadata.get(config_name, {})
+        display_name = meta.get("display_name") or config_name
         peer["id"] = config_name
         peer["name"] = config_name
         peer["config_name"] = config_name
         peer["display_name"] = display_name
+        peer["network_profile"] = meta.get("network_profile", "mobile")
+        peer["dpi_profile"] = meta.get("dpi_profile", "")
+        peer["preset"] = meta.get("preset", "default")
         rows.append(peer)
+
+    def _peer_sort_key(p):
+        v4 = p.get("ipv4") or ""
+        if v4:
+            try:
+                return (0, [int(part) for part in v4.split(".")])
+            except Exception:
+                pass
+        v6 = p.get("ipv6") or ""
+        if v6:
+            return (1, v6)
+        return (2, p.get("name") or "")
+
+    rows.sort(key=_peer_sort_key)
     return rows
 
 
@@ -5461,13 +5687,29 @@ def adguard_credentials():
     password = os.environ.get("AWG_ADGUARD_API_PASSWORD", "")
     if username and password:
         return username, password
+
+    ag_dir = Path(os.environ.get("AWG_ADGUARD_DIR", "/opt/AdGuardHome"))
+    for candidate in [ag_dir / "admin_password.txt", Path("/opt/AdGuardHome/admin_password.txt")]:
+        if candidate.exists():
+            try:
+                text = candidate.read_text(encoding="utf-8", errors="replace")
+                u_m = re.search(r"(?im)^\s*(?:Admin\s+)?(?:Username|Login)\s*:\s*(\S+)\s*$", text)
+                p_m = re.search(r"(?im)^\s*(?:Admin\s+)?Password\s*:\s*(.*?)\s*$", text)
+                u = u_m.group(1).strip() if u_m else "admin"
+                p = p_m.group(1).strip() if p_m else ""
+                if p:
+                    return u, p
+            except OSError:
+                pass
+
     try:
         text = ADGUARD_SUMMARY_FILE.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return "", ""
-    user_match = re.search(r"(?im)^\s*(?:Admin\s+)?Login\s*:\s*(\S+)\s*$", text)
+    user_match = re.search(r"(?im)^\s*(?:Admin\s+)?(?:Username|Login)\s*:\s*(\S+)\s*$", text)
     pass_match = re.search(r"(?im)^\s*(?:Admin\s+)?Password\s*:\s*(.*?)\s*$", text)
     return (user_match.group(1).strip() if user_match else "", pass_match.group(1).strip() if pass_match else "")
+
 
 
 def adguard_api(path, method="GET", body=None):
@@ -5539,6 +5781,103 @@ def validate_i1(value: str) -> str:
     if "<b 0x" not in value and "<r " not in value:
         raise ValueError("invalid I1 chunks")
     return value
+
+
+def _quic_varint(n: int) -> bytes:
+    if n < 0x40:
+        return bytes([n])
+    elif n < 0x4000:
+        return struct.pack(">H", 0x4000 | n)
+    elif n < 0x40000000:
+        return struct.pack(">I", 0x80000000 | n)
+    else:
+        return struct.pack(">Q", 0xC000000000000000 | n)
+
+
+def _hkdf_expand_label(secret: bytes, label: str, context: bytes, length: int) -> bytes:
+    full_label = b"tls13 " + label.encode("ascii")
+    info = struct.pack(">H", length) + bytes([len(full_label)]) + full_label + bytes([len(context)]) + context
+    hkdf = HKDF(algorithm=hashes.SHA256(), length=length, salt=None, info=info)
+    return hkdf.derive(secret)
+
+
+def _build_quic_client_hello(sni: str = None) -> bytes:
+    random_bytes = secrets.token_bytes(32)
+    cipher_suites = b"\x00\x06\x13\x01\x13\x02\x13\x03"
+    compression = b"\x01\x00"
+
+    target_sni = (sni or "").strip() or get_server_domain()
+    clean_sni = target_sni.encode("ascii", errors="ignore")[:253]
+    sni_entry = b"\x00" + struct.pack(">H", len(clean_sni)) + clean_sni
+    ext_sni = b"\x00\x00" + struct.pack(">H", len(sni_entry) + 2) + struct.pack(">H", len(sni_entry)) + sni_entry
+    ext_versions = b"\x00\x2b\x00\x03\x02\x03\x04"
+    ext_alpn = b"\x00\x10\x00\x05\x00\x03\x02h3"
+    ext_groups = b"\x00\x0a\x00\x04\x00\x02\x00\x1d"
+    key_share_data = b"\x00\x1d\x00\x20" + secrets.token_bytes(32)
+    ext_key_share = b"\x00\x33" + struct.pack(">H", len(key_share_data) + 2) + struct.pack(">H", len(key_share_data)) + key_share_data
+
+    extensions = ext_sni + ext_versions + ext_alpn + ext_groups + ext_key_share
+    ext_block = struct.pack(">H", len(extensions)) + extensions
+
+    body = b"\x03\x03" + random_bytes + b"\x00" + cipher_suites + compression + ext_block
+    ch = b"\x01" + struct.pack(">I", len(body))[1:] + body
+    return ch
+
+
+def generate_random_i1(length: int = 64) -> str:
+    return f"<b 0x{secrets.token_hex(length)}>"
+
+
+def generate_quic_i1(sni: str = None, pad_to: int = 700) -> str:
+    """Generate an authentic RFC 9000 QUIC Initial packet with TLS 1.3 ClientHello."""
+    if not HAVE_CRYPTOGRAPHY:
+        return generate_random_i1(64)
+    target_sni = (sni or "").strip() or get_server_domain()
+    ch = _build_quic_client_hello(target_sni)
+    crypto_frame = b"\x06" + _quic_varint(0) + _quic_varint(len(ch)) + ch
+
+    if len(crypto_frame) < pad_to:
+        payload = crypto_frame + b"\x00" * (pad_to - len(crypto_frame))
+    else:
+        payload = crypto_frame
+
+    dcid = secrets.token_bytes(8)
+    scid = b""
+    pkn = b"\x00"
+
+    salt = bytes.fromhex("38762cf7f55934b34d179ae6a4c80cadccbb7f0a")
+    hkdf_extract = HKDF(algorithm=hashes.SHA256(), length=32, salt=salt, info=None)
+    initial_secret = hkdf_extract.derive(dcid)
+
+    client_secret = _hkdf_expand_label(initial_secret, "client in", b"", 32)
+    key = _hkdf_expand_label(client_secret, "quic key", b"", 16)
+    iv = _hkdf_expand_label(client_secret, "quic iv", b"", 12)
+    hp = _hkdf_expand_label(client_secret, "quic hp", b"", 16)
+
+    packet_len = len(pkn) + len(payload) + 16
+    header = bytes([0xC0]) + struct.pack(">I", 1) + bytes([len(dcid)]) + dcid + bytes([len(scid)]) + scid + _quic_varint(0) + _quic_varint(packet_len) + pkn
+
+    nonce = bytearray(iv)
+    nonce[-1] ^= pkn[0]
+
+    aesgcm = AESGCM(key)
+    ciphertext = aesgcm.encrypt(bytes(nonce), payload, header)
+
+    packet = bytearray(header + ciphertext)
+
+    sample_offset = len(header)
+    sample = packet[sample_offset : sample_offset + 16]
+
+    cipher = Cipher(algorithms.AES(hp), modes.ECB())
+    encryptor = cipher.encryptor()
+    mask = encryptor.update(sample) + encryptor.finalize()
+
+    packet[0] ^= (mask[0] & 0x0F)
+    pkn_offset = len(header) - len(pkn)
+    for i in range(len(pkn)):
+        packet[pkn_offset + i] ^= mask[1 + i]
+
+    return f"<b 0x{bytes(packet).hex()}>"
 
 
 def require_rotate_preset(value):
@@ -5625,6 +5964,8 @@ def parse_stats_rows(raw_out):
         if isinstance(row, dict) and row.get("name"):
             if "last_handshake" in row:
                 row["latestHandshakeAt"] = row.get("last_handshake")
+            if row.get("endpoint"):
+                row["endpoint"] = resolve_proxy_endpoint(row["endpoint"])
             out[row["name"]] = row
     return out
 
@@ -5736,6 +6077,18 @@ def write_client_endpoint_history(data):
     os.chmod(tmp, 0o600)
     os.replace(tmp, CLIENT_ENDPOINT_HISTORY_FILE)
     os.chmod(CLIENT_ENDPOINT_HISTORY_FILE, 0o600)
+
+
+def clear_client_endpoint_history(name):
+    config_name = safe_name(name)
+    if not config_name:
+        return
+    with CLIENT_ENDPOINT_HISTORY_LOCK:
+        data = load_client_endpoint_history()
+        clients = data.get("clients", {})
+        if config_name in clients:
+            clients.pop(config_name, None)
+            write_client_endpoint_history(data)
 
 
 def endpoint_geo_snapshot(endpoint_ip):
@@ -6608,6 +6961,7 @@ def bot_snapshot_payload(auth):
             "tx": safe_int(row.get("tx")) or 0,
             "p2p_ports": peer.get("p2p_ports", []),
             "disabled": bool(peer.get("disabled")),
+            "preset": peer.get("preset", "default"),
         })
     return {
         "ok": True,
@@ -6615,6 +6969,7 @@ def bot_snapshot_payload(auth):
         "version": PROJECT_VERSION,
         "fork": "fork delta/patchset",
         "role": "super" if auth.get("role") == "super" else "user",
+        "username": auth.get("name") or ("Admin" if auth.get("role") == "super" else "User"),
         "server_name": cfg.get("AWG_SERVER_NAME", ""),
         "display_name": cfg.get("AWG_SERVER_NAME", ""),
         "service": service,
@@ -6681,6 +7036,107 @@ class LimitedThreadingHTTPServer(ThreadingHTTPServer):
             super().process_request_thread(request, client_address)
         finally:
             self._sem.release()
+
+
+def tune_config_preset(text, preset, host_domain=None):
+    if not preset or preset == "default":
+        return text
+    lines = text.splitlines()
+    domain = host_domain or get_server_domain()
+    cfg = parse_config()
+    has_v6 = str(cfg.get("AWG_IPV6_ENABLED") or "").strip() == "1"
+    if not has_v6:
+        lines = [re.sub(r",\s*(::/0|::/1,\s*8000::/1)", "", l) for l in lines]
+
+    p = preset.lower()
+    if p in ("mobile", "ios"):
+        out = []
+        for line in lines:
+            if re.match(r"^MTU\s*=", line, re.IGNORECASE):
+                out.append("MTU = 1280")
+            elif re.match(r"^PersistentKeepalive\s*=", line, re.IGNORECASE):
+                out.append("PersistentKeepalive = 25")
+            else:
+                out.append(line)
+        return "\n".join(out) + "\n"
+    elif p in ("macos", "amneziavpn-macos"):
+        out = []
+        for line in lines:
+            if re.match(r"^MTU\s*=", line, re.IGNORECASE):
+                out.append("MTU = 1280")
+            elif re.match(r"^PersistentKeepalive\s*=", line, re.IGNORECASE):
+                out.append("PersistentKeepalive = 25")
+            else:
+                out.append(line)
+        return "\n".join(out) + "\n"
+    elif p in ("android", "wgtunnel"):
+        out = []
+        for line in lines:
+            if re.match(r"^MTU\s*=", line, re.IGNORECASE):
+                out.append("MTU = 1280")
+            elif re.match(r"^PersistentKeepalive\s*=", line, re.IGNORECASE):
+                out.append("PersistentKeepalive = 25")
+            else:
+                out.append(line)
+        return "\n".join(out) + "\n"
+    elif p in ("home", "linux"):
+        out = []
+        for line in lines:
+            if re.match(r"^MTU\s*=", line, re.IGNORECASE):
+                out.append("MTU = 1280")
+            elif re.match(r"^PersistentKeepalive\s*=", line, re.IGNORECASE):
+                out.append("PersistentKeepalive = 25")
+            else:
+                out.append(line)
+        return "\n".join(out) + "\n"
+    elif p in ("router", "openwrt"):
+        out = []
+        for line in lines:
+            if re.match(r"^MTU\s*=", line, re.IGNORECASE):
+                out.append("MTU = 1280")
+            elif re.match(r"^PersistentKeepalive\s*=", line, re.IGNORECASE):
+                out.append("PersistentKeepalive = 25")
+            else:
+                m = re.match(r"^(H[1-4]\s*=\s*)(\d+)(?:-(\d+))?", line, re.IGNORECASE)
+                if m:
+                    v1 = min(int(m.group(2)), 2147483647)
+                    if m.group(3):
+                        v2 = min(int(m.group(3)), 2147483647)
+                        if v2 <= v1:
+                            v2 = min(v1 + 1000, 2147483647)
+                        out.append(f"{m.group(1)}{v1}-{v2}")
+                    else:
+                        out.append(f"{m.group(1)}{v1}")
+                else:
+                    out.append(line)
+        return "\n".join(out) + "\n"
+    elif p in ("wiresock", "windows"):
+        out = []
+        for line in lines:
+            if re.match(r"^I[1-5]\s*=", line.strip(), re.IGNORECASE):
+                continue
+            if re.match(r"^MTU\s*=", line, re.IGNORECASE):
+                out.append("MTU = 1280")
+            elif re.match(r"^PersistentKeepalive\s*=", line, re.IGNORECASE):
+                out.append("PersistentKeepalive = 35")
+            elif re.match(r"^#@ws:", line.strip(), re.IGNORECASE) or "WireSock compatibility hints" in line:
+                continue
+            else:
+                out.append(line)
+        peer_idx = next((i for i, l in enumerate(out) if l.strip().lower() == "[peer]"), -1)
+        ws_directives = [
+            "# WireSock compatibility hints",
+            f"#@ws:Id = {domain}",
+            "#@ws:Ip = quic",
+            "#@ws:Ib = curl",
+            ""
+        ]
+        if peer_idx >= 0:
+            out[peer_idx:peer_idx] = ws_directives
+        else:
+            out.extend(ws_directives)
+        return "\n".join(out) + "\n"
+    return text
 
 
 class Handler(SimpleHTTPRequestHandler):
@@ -6801,6 +7257,17 @@ class Handler(SimpleHTTPRequestHandler):
             return
         self.write_response_body(data)
 
+    def send_text(self, text, ctype="text/plain; charset=utf-8"):
+        data = text.encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_security_headers()
+        if not self.finish_response_headers():
+            return
+        self.write_response_body(data)
+
     def send_api_error(self, status, error):
         self.send_json({"error": error}, status)
 
@@ -6851,15 +7318,29 @@ class Handler(SimpleHTTPRequestHandler):
             return
         self.write_response_body(data)
 
-    def send_config_download(self, name):
+    def send_bytes(self, data, ctype):
+        self.send_response(200)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(data)))
+        self.send_security_headers()
+        if not self.finish_response_headers():
+            return
+        self.write_response_body(data)
+
+    def send_config_download(self, name, preset=None):
         path = AWG_DIR / f"{name}.conf"
         if not path.exists() or not path.is_file():
             self.send_error(404)
             return
-        data = path.read_bytes()
+        text = path.read_text(encoding="utf-8", errors="replace")
+        if preset:
+            host = split_host(self.headers.get("Host", ""))
+            text = tune_config_preset(text, preset, host)
+        data = text.encode("utf-8")
+        filename = f"{name}-{preset}.conf" if preset else f"{name}.conf"
         self.send_response(200)
         self.send_header("Content-Type", "application/octet-stream")
-        self.send_header("Content-Disposition", f'attachment; filename="{name}.conf"')
+        self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
         self.send_header("Content-Length", str(len(data)))
         self.send_security_headers()
         if not self.finish_response_headers():
@@ -7173,17 +7654,23 @@ class Handler(SimpleHTTPRequestHandler):
                 stderr=subprocess.DEVNULL,
             ).stdout.strip()
             cfg = parse_config()
+            proxy_info = get_amneziawg_proxy_info()
+            proxy_payload = proxy_info if proxy_info.get("active") else None
+            server_name = cfg.get("AWG_SERVER_NAME") or "Sunny-Finland"
+            username = auth.get("name") or ("Admin" if self.is_super(auth) else "User")
             self.send_json({
                 "service": active,
                 "clients": len(self.visible_peers(auth)),
                 "version": PROJECT_VERSION,
                 "fork": "fork delta/patchset",
                 "role": "super" if self.is_super(auth) else "user",
-                "server_name": cfg["AWG_SERVER_NAME"],
-                "display_name": cfg["AWG_SERVER_NAME"],
+                "username": username,
+                "server_name": server_name,
+                "display_name": server_name,
                 "title": PANEL_TITLE,
-                "short_label": PANEL_SHORT_LABEL,
+                "short_label": server_short_label(server_name),
                 "repository_url": REPOSITORY_URL,
+                "proxy": proxy_payload,
             })
             return
         if u.path == "/api/project-update":
@@ -7344,6 +7831,18 @@ class Handler(SimpleHTTPRequestHandler):
             payload, status = adguard_api(f"querylog?limit={limit}")
             self.send_json(payload, status)
             return
+        if u.path == "/api/tools/generate-i1":
+            query = parse_qs(u.query)
+            sni = (query.get("sni") or [""])[0].strip() or get_server_domain()
+            mode = (query.get("mode") or ["quic"])[0].strip().lower()
+            if mode == "random":
+                res = generate_random_i1(64)
+            elif mode == "none":
+                res = ""
+            else:
+                res = generate_quic_i1(sni)
+            self.send_json({"ok": True, "sni": sni, "mode": mode, "i1": res})
+            return
         if u.path == "/api/clients/audit":
             if not self.require_super(auth):
                 return
@@ -7372,7 +7871,8 @@ class Handler(SimpleHTTPRequestHandler):
             for peer in visible:
                 item = dict(peer)
                 row_stats = stats.get(peer["name"], {})
-                endpoint_snapshot = latest_client_endpoint_snapshot(history_clients.get(peer["name"], []))
+                current_fp = public_key_fingerprint(peer.get("public_key", ""))
+                endpoint_snapshot = latest_client_endpoint_snapshot(history_clients.get(peer["name"], []), current_fp=current_fp)
                 item["id"] = peer["name"]
                 item["config_name"] = peer["name"]
                 item["display_name"] = peer.get("display_name") or peer["name"]
@@ -7396,20 +7896,28 @@ class Handler(SimpleHTTPRequestHandler):
                 item["traffic_30d"] = client_traffic_30d(peer["name"], history)
                 item["traffic_total"] = client_traffic_total(peer["name"], history)
                 item["traffic"] = client_traffic_api(item["traffic_total"], item["traffic_30d"])
-                item["latestHandshakeAt"] = row_stats.get(
-                    "latestHandshakeAt",
-                    row_stats.get("last_handshake", endpoint_snapshot.get("latest_handshake", 0)),
-                )
+                is_disabled = bool(peer.get("disabled"))
+                live_handshake = safe_int(row_stats.get("latestHandshakeAt") or row_stats.get("last_handshake")) or 0
+                if live_handshake > 0:
+                    item["latestHandshakeAt"] = live_handshake
+                elif is_disabled and endpoint_snapshot:
+                    item["latestHandshakeAt"] = safe_int(endpoint_snapshot.get("latest_handshake")) or 0
+                else:
+                    item["latestHandshakeAt"] = 0
+
                 endpoint = row_stats.get("endpoint", "")
-                if endpoint in {"", "-", "(none)", "none"} and endpoint_snapshot:
-                    endpoint_ip = endpoint_snapshot.get("endpoint_ip", "")
-                    endpoint_port = endpoint_snapshot.get("endpoint_port", "")
-                    endpoint = f"{endpoint_ip}:{endpoint_port}" if endpoint_ip and endpoint_port else endpoint_ip
+                if endpoint in {"", "-", "(none)", "none"}:
+                    if is_disabled and endpoint_snapshot and item["latestHandshakeAt"] > 0:
+                        endpoint_ip = endpoint_snapshot.get("endpoint_ip", "")
+                        endpoint_port = endpoint_snapshot.get("endpoint_port", "")
+                        endpoint = f"{endpoint_ip}:{endpoint_port}" if endpoint_ip and endpoint_port else endpoint_ip
+                    else:
+                        endpoint = ""
                 item["endpoint"] = "" if endpoint in {"", "-", "(none)", "none"} else endpoint
                 endpoint_ip, endpoint_port = split_endpoint(item["endpoint"])
                 item["endpoint_ip"] = endpoint_ip
                 item["endpoint_port"] = endpoint_port
-                item["public_key_fp"] = public_key_fingerprint(peer.get("public_key", ""))
+                item["public_key_fp"] = current_fp
                 item["shared_profile"] = shared_profile_detection(history_clients.get(peer["name"], []))
                 if endpoint_ip:
                     item["endpoint_info"] = lookup_endpoint_ip_info(endpoint_ip, allow_refresh=endpoint_lookup_budget > 0)
@@ -7468,7 +7976,10 @@ class Handler(SimpleHTTPRequestHandler):
             name = safe_name(m_download.group(1))
             if not self.require_client_access(auth, name):
                 return
-            self.send_config_download(name)
+            query = parse_qs(u.query)
+            preset = str((query.get("preset") or [""])[0]).lower()
+            valid_presets = {"mobile", "home", "router", "wiresock", "macos", "ios", "android", "openwrt", "linux", "windows"}
+            self.send_config_download(name, preset=preset if preset in valid_presets else None)
             return
 
         m = re.match(r"^/api/clients/([^/]+)/(config|qr|vpnuri|uri|p2p|ports)$", u.path)
@@ -7479,8 +7990,31 @@ class Handler(SimpleHTTPRequestHandler):
         if not self.require_client_access(auth, name):
             return
         if kind == "config":
-            self.send_file(AWG_DIR / f"{name}.conf", "text/plain; charset=utf-8")
+            query = parse_qs(u.query)
+            preset = str((query.get("preset") or [""])[0]).lower()
+            valid_presets = {"mobile", "home", "router", "wiresock", "macos", "ios", "android", "openwrt", "linux", "windows"}
+            if preset in valid_presets:
+                text = (AWG_DIR / f"{name}.conf").read_text(encoding="utf-8", errors="replace")
+                host = split_host(self.headers.get("Host", ""))
+                text = tune_config_preset(text, preset, host)
+                self.send_text(text, "text/plain; charset=utf-8")
+            else:
+                self.send_file(AWG_DIR / f"{name}.conf", "text/plain; charset=utf-8")
         elif kind == "qr":
+            query = parse_qs(u.query)
+            preset = str((query.get("preset") or [""])[0]).lower()
+            valid_presets = {"mobile", "home", "router", "wiresock", "macos", "ios", "android", "openwrt", "linux", "windows"}
+            conf_file = AWG_DIR / f"{name}.conf"
+            if preset in valid_presets and conf_file.is_file():
+                raw_text = conf_file.read_text(encoding="utf-8", errors="replace")
+                host = split_host(self.headers.get("Host", ""))
+                tuned = tune_config_preset(raw_text, preset, host)
+                try:
+                    p = subprocess.run(["qrencode", "-t", "png", "-o", "-"], input=tuned.encode("utf-8"), stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=5, check=True)
+                    self.send_bytes(p.stdout, "image/png")
+                    return
+                except Exception:
+                    pass
             self.send_file(AWG_DIR / f"{name}.png", "image/png")
         elif kind in {"vpnuri", "uri"}:
             self.send_file(AWG_DIR / f"{name}.vpnuri", "text/plain; charset=utf-8")
@@ -7662,15 +8196,88 @@ class Handler(SimpleHTTPRequestHandler):
                 self.send_json({"error": f"geoip auto-update {action} failed", "stderr": p.stderr}, 500)
                 return
             body = self.json_body()
+            if u.path == "/api/tools/generate-i1":
+                sni = str(body.get("sni") or "").strip() or get_server_domain()
+                mode = str(body.get("mode") or "quic").strip().lower()
+                if mode == "random":
+                    res = generate_random_i1(64)
+                elif mode == "none":
+                    res = ""
+                else:
+                    res = generate_quic_i1(sni)
+                self.send_json({"ok": True, "sni": sni, "mode": mode, "i1": res})
+                return
             if u.path == "/api/clients":
                 display_name = safe_name(body.get("name", ""))
                 name, collision = unique_client_config_name(display_name)
+                clear_client_endpoint_history(name)
                 args = []
                 if body.get("expires"):
                     args.append(f"--expires={require_expires(body['expires'])}")
-                p = run_manage(*args, "add", name)
+                if body.get("use_psk"):
+                    args.append("--psk")
+                dpi_profile = str(body.get("dpi_profile") or "").strip().lower()
+                extra_env = {}
+                if "i1" in body and body["i1"]:
+                    try:
+                        extra_env["AWG_I1_OVERRIDE"] = validate_i1(body["i1"])
+                    except Exception:
+                        pass
+                elif dpi_profile in ("quic_stealth", "quic_speed") or body.get("mimicry_mode") == "quic" or body.get("mimicry_sni"):
+                    sni = str(body.get("mimicry_sni") or body.get("sni") or "").strip() or get_server_domain()
+                    try:
+                        extra_env["AWG_I1_OVERRIDE"] = generate_quic_i1(sni)
+                    except Exception:
+                        pass
+                elif dpi_profile == "random_noise" or body.get("mimicry_mode") == "random":
+                    extra_env["AWG_I1_OVERRIDE"] = generate_random_i1(64)
+                p = run_manage(*args, "add", name, extra_env=extra_env)
                 if p.returncode == 0:
-                    set_client_metadata(name, display_name, auth)
+                    split_lan = body.get("split_lan")
+                    legacy_profile = str(body.get("network_profile") or "").strip().lower()
+                    cfg = parse_config()
+                    has_v6 = str(cfg.get("AWG_IPV6_ENABLED") or "").strip() == "1"
+                    if split_lan is True or legacy_profile == "home_lan":
+                        allowed = "0.0.0.0/1, 128.0.0.0/1, ::/1, 8000::/1" if has_v6 else "0.0.0.0/1, 128.0.0.0/1"
+                        run_manage("modify", name, "AllowedIPs", allowed)
+                    elif split_lan is False:
+                        allowed = "0.0.0.0/0, ::/0" if has_v6 else "0.0.0.0/0"
+                        run_manage("modify", name, "AllowedIPs", allowed)
+
+                    if dpi_profile == "quic_speed":
+                        run_manage("modify", name, "MTU", "1360")
+                        run_manage("modify", name, "PersistentKeepalive", "35")
+                    elif dpi_profile == "classic":
+                        run_manage("modify", name, "MTU", "1420")
+                    elif dpi_profile in ("quic_stealth", "random_noise"):
+                        run_manage("modify", name, "MTU", "1280")
+                    elif legacy_profile in ("home", "home_lan"):
+                        run_manage("modify", name, "MTU", "1420")
+                    elif legacy_profile == "mobile":
+                        run_manage("modify", name, "MTU", "1280")
+
+                    preset = str(body.get("preset") or body.get("client_preset") or "default").strip().lower()
+                    valid_presets = {"mobile", "home", "router", "wiresock", "macos", "ios", "android", "openwrt", "linux", "windows", "default"}
+                    conf_path = AWG_DIR / f"{name}.conf"
+                    if conf_path.is_file():
+                        raw_text = conf_path.read_text(encoding="utf-8", errors="replace")
+                        host = split_host(self.headers.get("Host", ""))
+                        if preset in valid_presets and preset != "default":
+                            tuned = tune_config_preset(raw_text, preset, host)
+                            conf_path.write_text(tuned, encoding="utf-8")
+                        else:
+                            if not has_v6:
+                                lines = raw_text.splitlines()
+                                lines = [re.sub(r",\s*(::/0|::/1,\s*8000::/1)", "", l) for l in lines]
+                                conf_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+                        try:
+                            png_path = AWG_DIR / f"{name}.png"
+                            subprocess.run(["qrencode", "-t", "png", "-o", str(png_path)], input=conf_path.read_bytes(), timeout=10, check=False)
+                        except Exception:
+                            pass
+
+                    effective_net_profile = "home_lan" if (split_lan or legacy_profile == "home_lan") else ("home" if (dpi_profile == "classic" or legacy_profile == "home") else "mobile")
+                    set_client_metadata(name, display_name, auth, network_profile=effective_net_profile, dpi_profile=dpi_profile, preset=preset)
                     assigned_to_current_token = False
                     if collision:
                         audit_log(
@@ -7696,6 +8303,22 @@ class Handler(SimpleHTTPRequestHandler):
                         f"actor_role={auth.get('role')} actor_fp={auth_fingerprint(auth)} "
                         f"assigned={'true' if assigned_to_current_token else 'false'}"
                     )
+                    try:
+                        state = audit_client_state()
+                        row = next((r for r in state["clients"] if r["config_name"] == name), {})
+                        c_ipv4 = row.get("ipv4", "")
+                        c_ipv6 = row.get("ipv6", "")
+                        if c_ipv4:
+                            ids = [c_ipv4]
+                            if c_ipv6:
+                                ids.append(c_ipv6)
+                            adguard_api("clients/add", "POST", {"name": name, "ids": ids})
+                            alias = re.sub(r"[^a-z0-9-]+", "-", name.lower()).strip("-") or "client"
+                            adguard_api("rewrite/add", "POST", {"domain": f"{alias}.awg", "answer": c_ipv4})
+                            if c_ipv6:
+                                adguard_api("rewrite/add", "POST", {"domain": f"{alias}.awg", "answer": c_ipv6})
+                    except Exception:
+                        pass
                     self.send_json({
                         "ok": True,
                         "stdout": p.stdout,
@@ -7708,6 +8331,7 @@ class Handler(SimpleHTTPRequestHandler):
                         "assigned_to_current_token": assigned_to_current_token,
                     })
                     return
+
             elif u.path == "/api/server/restart":
                 if not self.require_super(auth):
                     return
@@ -7838,11 +8462,32 @@ class Handler(SimpleHTTPRequestHandler):
                 p = run_manage("client", "regenerate", name, timeout=120, extra_env=extra_env)
                 if p.returncode == 0:
                     remove_import_tokens_for_client(name)
+                    preset = str(body.get("preset") or "").strip().lower()
+                    valid_presets = {"mobile", "home", "router", "wiresock", "macos", "ios", "android", "openwrt", "linux", "windows", "default"}
+                    conf_path = AWG_DIR / f"{name}.conf"
+                    if conf_path.is_file():
+                        raw_text = conf_path.read_text(encoding="utf-8", errors="replace")
+                        host = split_host(self.headers.get("Host", ""))
+                        if preset in valid_presets and preset != "default":
+                            tuned = tune_config_preset(raw_text, preset, host)
+                            conf_path.write_text(tuned, encoding="utf-8")
+                        else:
+                            cfg = parse_config()
+                            if str(cfg.get("AWG_IPV6_ENABLED") or "").strip() != "1":
+                                lines = raw_text.splitlines()
+                                lines = [re.sub(r",\s*(::/0|::/1,\s*8000::/1)", "", l) for l in lines]
+                                conf_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+                        try:
+                            png_path = AWG_DIR / f"{name}.png"
+                            subprocess.run(["qrencode", "-t", "png", "-o", str(png_path)], input=conf_path.read_bytes(), timeout=10, check=False)
+                        except Exception:
+                            pass
                     self.send_json({
                         "ok": True,
                         "client": name,
+                        "preset": preset or "default",
                         "message": "Config regenerated",
-                        "download_url": f"/api/clients/{quote(name)}/config/download",
+                        "download_url": f"/api/clients/{quote(name)}/config/download" + (f"?preset={preset}" if preset in valid_presets and preset != "default" else ""),
                     })
                     return
                 self.send_json({"error": "regenerate failed"}, 500)
@@ -8109,10 +8754,25 @@ def main():
     start_server_health_collector()
     os.chdir(WEB_DIR)
     bind_host = policy.get("bind_host") or os.environ.get("AWG_WEB_BIND") or configured_vpn_ipv4()[0]
-    httpd = LimitedThreadingHTTPServer((bind_host, int(os.environ.get("AWG_WEB_PORT", "8443"))), Handler)
-    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-    ctx.load_cert_chain(WEB_DIR / "cert.pem", WEB_DIR / "key.pem")
-    httpd.ssl_context = ctx
+    port = int(os.environ.get("AWG_WEB_PORT", "8443"))
+    httpd = LimitedThreadingHTTPServer((bind_host, port), Handler)
+
+    use_tls = os.environ.get("AWG_WEB_TLS", "1").lower() not in {"0", "false", "off", "no"}
+    if use_tls:
+        cert_file = WEB_DIR / "cert.pem"
+        key_file = WEB_DIR / "key.pem"
+        if not cert_file.exists() or not key_file.exists():
+            subprocess.run([
+                "openssl", "req", "-x509", "-newkey", "rsa:2048",
+                "-keyout", str(WEB_DIR / "key.pem"),
+                "-out", str(WEB_DIR / "cert.pem"),
+                "-days", "3650", "-nodes", "-subj", "/CN=VPN Panel"
+            ], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if cert_file.exists() and key_file.exists():
+            ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+            ctx.load_cert_chain(cert_file, key_file)
+            httpd.ssl_context = ctx
+
     httpd.serve_forever()
 
 

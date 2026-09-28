@@ -4,8 +4,8 @@
 # ==============================================================================
 # Общая библиотека функций для AmneziaWG 2.0
 # Автор: @bivlked
-# Версия: 5.29.0-bas.7
-# Дата: 2026-08-30
+# Версия: 6.0.0-bas.1
+# Дата: 2026-09-27
 # Репозиторий: https://github.com/bivlked/amneziawg-installer
 # ==============================================================================
 #
@@ -100,7 +100,7 @@ awg_profile_status() {
 # (обновили один файл, забыли второй) - иначе рассинхрон всплывает как
 # "command not found" в случайном месте. Бампается вместе с остальными версиями.
 # shellcheck disable=SC2034  # используется в manage-скрипте после source
-AWG_COMMON_VERSION="5.29.0-bas.7"
+AWG_COMMON_VERSION="6.0.0-bas.1"
 
 # --- Автоочистка временных файлов ---
 # ВАЖНО: trap НЕ устанавливается здесь, чтобы не перезаписать trap вызывающего скрипта.
@@ -1546,8 +1546,8 @@ IPV6_ENABLED="${AWG_IPV6_ENABLED:-0}"
 IPV6_MODE="${AWG_IPV6_MODE:-legacy}"
 IPV6_SUBNET="${AWG_IPV6_SUBNET:-}"
 AWG_MTU="${AWG_MTU:-1280}"
-MSS4="$(( ${AWG_MTU:-1280} - 40 ))"
-MSS6="$(( ${AWG_MTU:-1280} - 60 ))"
+MSS4="$(( ${AWG_MTU:-1280} - 60 ))"
+MSS6="$(( ${AWG_MTU:-1280} - 80 ))"
 P2P_RULES="${p2p}"
 SERVER_CONF_FILE="${SERVER_CONF_FILE:-/etc/amnezia/amneziawg/awg0.conf}"
 
@@ -1619,8 +1619,8 @@ IPV6_ENABLED="${AWG_IPV6_ENABLED:-0}"
 IPV6_MODE="${AWG_IPV6_MODE:-legacy}"
 IPV6_SUBNET="${AWG_IPV6_SUBNET:-}"
 AWG_MTU="${AWG_MTU:-1280}"
-MSS4="$(( ${AWG_MTU:-1280} - 40 ))"
-MSS6="$(( ${AWG_MTU:-1280} - 60 ))"
+MSS4="$(( ${AWG_MTU:-1280} - 60 ))"
+MSS6="$(( ${AWG_MTU:-1280} - 80 ))"
 P2P_RULES="${p2p}"
 SERVER_CONF_FILE="${SERVER_CONF_FILE:-/etc/amnezia/amneziawg/awg0.conf}"
 
@@ -2548,6 +2548,10 @@ load_awg_params() {
         log_debug "$SERVER_CONF_FILE не существует — использую AWG params из $CONFIG_FILE (bootstrap)"
     fi
 
+    if [[ -n "${AWG_I1_OVERRIDE:-}" ]]; then
+        export AWG_I1="$AWG_I1_OVERRIDE"
+    fi
+
     # 3. Проверка обязательных параметров выбранной версии
     local missing=0
     local param
@@ -3008,6 +3012,24 @@ is_panel_domain_endpoint() {
     endpoint="${endpoint,,}"; panel_domain="${panel_domain,,}"
     endpoint="${endpoint%.}"; panel_domain="${panel_domain%.}"
     [[ -n "$panel_domain" && "$endpoint" == "$panel_domain" ]]
+}
+
+get_client_endpoint_port() {
+    local default_port="${1:-${AWG_PORT:-443}}"
+    local proxy_conf="/etc/amneziawg-proxy/proxy.toml"
+    if [[ -f "$proxy_conf" ]]; then
+        local pport
+        pport=$(grep -E '^[[:space:]]*listen[[:space:]]*=' "$proxy_conf" | head -1 | sed -E 's/.*:([0-9]+).*/\1/' || true)
+        if [[ -n "$pport" && "$pport" =~ ^[0-9]+$ ]]; then
+            printf '%s' "$pport"
+            return 0
+        fi
+    fi
+    if [[ -n "${AWG_PUBLIC_PORT:-}" ]]; then
+        printf '%s' "${AWG_PUBLIC_PORT}"
+        return 0
+    fi
+    _sanitize_port "$default_port"
 }
 
 render_client_config() {
@@ -3594,7 +3616,7 @@ sync_clients_hosts() {
     body=$(awg_mktemp) || return 0
 
     awk '
-    function dns_alias(src, out) {
+    function dns_label(src, out) {
         out=tolower(src)
         gsub(/[^a-z0-9-]/, "-", out)
         gsub(/-+/, "-", out)
@@ -3605,13 +3627,14 @@ sync_clients_hosts() {
             out=substr(out, 1, 63)
             sub(/-+$/, "", out)
         }
-        return out ".awg"
+        return out
     }
     function emit() {
         if (name != "" && ipv4 != "") {
-            alias=dns_alias(name)
-            print ipv4 " " name " " alias
-            if (ipv6 != "") print ipv6 " " name " " alias
+            label=dns_label(name)
+            alias=label ".awg"
+            print ipv4 " " label " " alias
+            if (ipv6 != "") print ipv6 " " label " " alias
         }
     }
     /^\[Peer\]/ { emit(); name=""; ipv4=""; ipv6=""; in_peer=1; next }
@@ -3655,7 +3678,7 @@ sync_clients_hosts() {
         } >> "$tmp"
     fi
 
-    if mv "$tmp" "$hosts_file"; then
+    if mv -f "$tmp" "$hosts_file"; then
         chmod 644 "$hosts_file" 2>/dev/null || true
         log_debug "hosts обновлён для клиентов AmneziaWG: $hosts_file"
     else
@@ -3680,12 +3703,17 @@ ag_yaml = Path(sys.argv[2])
 def parse_peers(path):
     peers = []
     cur = None
+    pending_name = ""
     for raw in path.read_text(encoding="utf-8", errors="ignore").splitlines():
         line = raw.strip()
+        if line.startswith("### Client "):
+            pending_name = line.split("### Client ", 1)[1].strip()
+            continue
         if line == "[Peer]":
             if cur and cur.get("name") and cur.get("ids"):
                 peers.append(cur)
-            cur = {"name": "", "ids": []}
+            cur = {"name": pending_name, "ids": []}
+            pending_name = ""
             continue
         if cur is None:
             continue
@@ -3806,6 +3834,82 @@ if new_text != old_text:
     ag_yaml.chmod(0o600)
 PY
 }
+
+adguard_api_request() {
+    local method="$1" path="$2" data="${3:-}"
+    local ag_dir="${AWG_ADGUARD_DIR:-/opt/AdGuardHome}"
+    local port="${AWG_ADGUARD_PORT:-3000}"
+    local vpn_ip="127.0.0.1"
+    if [[ -n "${AWG_TUNNEL_SUBNET:-}" ]]; then
+        vpn_ip="${AWG_TUNNEL_SUBNET%%/*}"
+    elif [[ -f "${SERVER_CONF_FILE:-/etc/amnezia/amneziawg/awg0.conf}" ]]; then
+        local s_ip
+        s_ip=$(grep -oP '^Address\s*=\s*\K[0-9.]+' "${SERVER_CONF_FILE:-/etc/amnezia/amneziawg/awg0.conf}" 2>/dev/null | head -n1 || true)
+        [[ -n "$s_ip" ]] && vpn_ip="$s_ip"
+    fi
+
+
+    local username="admin" password=""
+    if [[ -f "$ag_dir/admin_password.txt" ]]; then
+        password=$(grep -v '^#' "$ag_dir/admin_password.txt" 2>/dev/null | grep -i 'password:' | sed -E 's/^[Pp]assword:\s*//')
+        local u
+        u=$(grep -v '^#' "$ag_dir/admin_password.txt" 2>/dev/null | grep -i 'username:' | sed -E 's/^[Uu]sername:\s*//')
+        [[ -n "$u" ]] && username="$u"
+    fi
+    if [[ -z "$password" && -f "$AWG_DIR/INSTALL_SUMMARY.txt" ]]; then
+        password=$(grep -E '^\s*(Admin\s+)?Password\s*:' "$AWG_DIR/INSTALL_SUMMARY.txt" 2>/dev/null | head -n1 | sed -E 's/.*Password\s*:\s*//')
+    fi
+    [[ -n "$password" ]] || return 0
+
+    local curl_cmd=(curl -s -S -u "${username}:${password}" -X "$method" --connect-timeout 2 --max-time 5)
+    if [[ -n "$data" ]]; then
+        curl_cmd+=(-H "Content-Type: application/json" -d "$data")
+    fi
+
+    if ! "${curl_cmd[@]}" "http://${vpn_ip}:${port}/control/${path#/}" >/dev/null 2>&1; then
+        "${curl_cmd[@]}" "http://127.0.0.1:${port}/control/${path#/}" >/dev/null 2>&1 || true
+    fi
+    return 0
+}
+
+adguard_add_client() {
+    local name="$1" ipv4="$2" ipv6="${3:-}"
+    [[ -n "$name" && -n "$ipv4" ]] || return 0
+    local ids_json="\"$ipv4\""
+    [[ -n "$ipv6" ]] && ids_json="\"$ipv4\", \"$ipv6\""
+
+    adguard_api_request "POST" "clients/add" "{\"name\":\"$name\",\"ids\":[$ids_json]}"
+    local alias
+    alias=$(echo "$name" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9-]+/-/g; s/^-+|-+$//g')
+    alias="${alias:-client}.awg"
+    adguard_api_request "POST" "rewrite/add" "{\"domain\":\"$alias\",\"answer\":\"$ipv4\"}"
+    if [[ -n "$ipv6" ]]; then
+        adguard_api_request "POST" "rewrite/add" "{\"domain\":\"$alias\",\"answer\":\"$ipv6\"}"
+    fi
+    sync_adguard_clients
+}
+
+adguard_delete_client() {
+    local name="$1" ipv4="${2:-}" ipv6="${3:-}"
+    [[ -n "$name" ]] || return 0
+    adguard_api_request "POST" "clients/delete" "{\"name\":\"$name\"}"
+
+    local alias
+    alias=$(echo "$name" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9-]+/-/g; s/^-+|-+$//g')
+    alias="${alias:-client}.awg"
+    if [[ -n "$ipv4" ]]; then
+        adguard_api_request "POST" "rewrite/delete" "{\"domain\":\"$alias\",\"answer\":\"$ipv4\"}"
+    fi
+    if [[ -n "$ipv6" ]]; then
+        adguard_api_request "POST" "rewrite/delete" "{\"domain\":\"$alias\",\"answer\":\"$ipv6\"}"
+    fi
+
+    adguard_api_request "POST" "stats_reset"
+    adguard_api_request "POST" "querylog_clear"
+
+    sync_adguard_clients
+}
+
 
 # Добавление [Peer] в серверный конфиг (атомарно через tmpfile + mv).
 #
@@ -4028,6 +4132,62 @@ PY
 }
 
 # Удаление [Peer] из серверного конфига по имени (с блокировкой)
+normalize_legacy_peers() {
+    [[ -n "${SERVER_CONF_FILE:-}" && -f "$SERVER_CONF_FILE" ]] || return 0
+    grep -q '^### Client ' "$SERVER_CONF_FILE" 2>/dev/null || return 0
+
+    local lockfile="${AWG_DIR}/.awg_config.lock"
+    local lock_fd
+    exec {lock_fd}>"$lockfile"
+    flock -x -w 5 "$lock_fd" 2>/dev/null || { exec {lock_fd}>&-; return 0; }
+
+    python3 -c '
+import sys
+from pathlib import Path
+
+p = Path(sys.argv[1])
+try:
+    lines = p.read_text(encoding="utf-8", errors="ignore").splitlines()
+except Exception:
+    sys.exit(0)
+
+out = []
+pending_name = None
+in_peer = False
+has_name = False
+changed = False
+
+for line in lines:
+    s = line.strip()
+    if s.startswith("### Client "):
+        pending_name = s.split("### Client ", 1)[1].strip()
+        out.append(line)
+        continue
+    if s == "[Peer]":
+        in_peer = True
+        has_name = False
+        out.append(line)
+        continue
+    if in_peer:
+        if s.startswith("[") and s != "[Peer]":
+            in_peer = False
+            pending_name = None
+        elif s.startswith("#_Name = "):
+            has_name = True
+        elif (s.startswith("PublicKey = ") or s.startswith("AllowedIPs = ")) and pending_name and not has_name:
+            out.append(f"#_Name = {pending_name}")
+            has_name = True
+            pending_name = None
+            changed = True
+    out.append(line)
+
+if changed:
+    p.write_text("\n".join(out) + "\n", encoding="utf-8")
+' "$SERVER_CONF_FILE" 2>/dev/null || true
+
+    exec {lock_fd}>&-
+}
+
 # remove_peer_from_server <name>
 remove_peer_from_server() {
     local name="$1"
@@ -4052,7 +4212,7 @@ remove_peer_from_server() {
         return 1
     fi
 
-    if ! grep -qxF "#_Name = ${name}" "$SERVER_CONF_FILE" 2>/dev/null; then
+    if ! grep -qxF "#_Name = ${name}" "$SERVER_CONF_FILE" 2>/dev/null && ! grep -qxF "### Client ${name}" "$SERVER_CONF_FILE" 2>/dev/null; then
         log_error "Пир '$name' не найден в конфиге"
         exec {lock_fd}>&-
         return 1
@@ -4062,44 +4222,72 @@ remove_peer_from_server() {
     local tmpfile
     tmpfile=$(awg_mktemp "$(dirname "$SERVER_CONF_FILE")") || { log_error "Ошибка mktemp"; exec {lock_fd}>&-; return 1; }
 
-    # Удаляем блок [Peer] содержащий #_Name = name
-    # Логика: буферизуем каждый [Peer] блок, проверяем имя, выводим только если не совпадает
-    awk -v target="$name" '
-    BEGIN { buf=""; is_target=0 }
-    /^\[Peer\]/ {
-        # Вывести предыдущий буфер если он не target
-        if (buf != "" && !is_target) printf "%s", buf
-        buf = $0 "\n"
-        is_target = 0
-        next
-    }
-    /^\[/ && !/^\[Peer\]/ {
-        # Любая другая секция — сбросить буфер
-        if (buf != "" && !is_target) printf "%s", buf
-        buf = ""
-        is_target = 0
-        print
-        next
-    }
-    {
-        if (buf != "") {
-            buf = buf $0 "\n"
-            if ($0 == "#_Name = " target) is_target = 1
-        } else {
-            print
-        }
-    }
-    END {
-        if (buf != "" && !is_target) printf "%s", buf
-    }
-    ' "$SERVER_CONF_FILE" > "$tmpfile" || {
-        log_error "Ошибка фильтрации серверного конфига (awk)"
+    # Удаляем блок [Peer] и связанный комментарий ### Client name
+    python3 -c '
+import sys
+from pathlib import Path
+
+target = sys.argv[1]
+conf_in = Path(sys.argv[2])
+conf_out = Path(sys.argv[3])
+lines = conf_in.read_text(encoding="utf-8", errors="ignore").splitlines()
+
+blocks = []
+cur_lines = []
+is_target = False
+in_peer = False
+pending_target = False
+
+for line in lines:
+    s = line.strip()
+    if s.startswith("### Client "):
+        cname = s.split("### Client ", 1)[1].strip()
+        if cur_lines:
+            blocks.append((is_target, cur_lines))
+            cur_lines = []
+            is_target = False
+        in_peer = False
+        if cname == target:
+            is_target = True
+            pending_target = True
+        cur_lines.append(line)
+        continue
+    if s == "[Peer]":
+        if not pending_target and cur_lines:
+            blocks.append((is_target, cur_lines))
+            cur_lines = []
+            is_target = False
+        in_peer = True
+        pending_target = False
+        cur_lines.append(line)
+        continue
+    if in_peer:
+        if s.startswith("[") and s != "[Peer]":
+            in_peer = False
+            blocks.append((is_target, cur_lines))
+            cur_lines = []
+            is_target = False
+        elif s == f"#_Name = {target}":
+            is_target = True
+    cur_lines.append(line)
+
+if cur_lines:
+    blocks.append((is_target, cur_lines))
+
+out = []
+for target_block, blines in blocks:
+    if not target_block:
+        out.extend(blines)
+
+conf_out.write_text("\n".join(out) + "\n", encoding="utf-8")
+' "$name" "$SERVER_CONF_FILE" "$tmpfile" || {
+        log_error "Ошибка удаления пира из серверного конфига"
         rm -f "$tmpfile"
         exec {lock_fd}>&-
         return 1
     }
 
-    # Sanity-check ДО mv: при ENOSPC/I/O-сбое awk оставил бы пустой/обрезанный
+    # Sanity-check ДО mv: при ENOSPC/I/O-сбое python оставил бы пустой/обрезанный
     # tmpfile, и атомарный mv заменил бы рабочий конфиг битым (потеря
     # PrivateKey сервера и всех пиров). [Interface] обязан сохраниться.
     if ! grep -q '^\[Interface\]' "$tmpfile"; then
@@ -4495,6 +4683,7 @@ _remove_client_files() {
     local name="$1"
     rm -f "$AWG_DIR/${name}.conf" "$AWG_DIR/${name}.png" \
         "$AWG_DIR/${name}.vpnuri" "$AWG_DIR/${name}.vpnuri.png" \
+        "$AWG_DIR/clients/awg0-client-${name}.conf" \
         "$KEYS_DIR/${name}.private" "$KEYS_DIR/${name}.public"
 }
 
@@ -4626,7 +4815,8 @@ generate_client() {
     # и отлаживается вслепую. Отказываем явно, как generate_vpn_uri для vpn://
     # URI. Артефакты откатит _rollback ниже.
     local _cport
-    _cport=$(_sanitize_port "${AWG_PORT:-}")
+    _cport=$(get_client_endpoint_port "${AWG_PORT:-}")
+
     if [[ "$_cport" == "0" ]]; then
         log_error "AWG_PORT некорректен ('${AWG_PORT:-}') - клиентский конфиг для '$name' не создан. Проверьте ListenPort в $SERVER_CONF_FILE (или AWG_PORT в $CONFIG_FILE)."
         _rollback_client_artifacts "$name"
@@ -4671,6 +4861,7 @@ generate_client() {
     [[ -n "$p2p_ports" ]] && msg="${msg}, P2P: $p2p_ports"
     msg="${msg})."
     log "$msg"
+    adguard_add_client "$name" "$client_ip" "${client_ipv6:-}" 2>/dev/null || true
     return 0
 }
 
@@ -4852,7 +5043,7 @@ refresh_client_config() {
 
     # Перегенерация конфига
     local _cport
-    _cport=$(_sanitize_port "${AWG_PORT:-}")
+    _cport=$(get_client_endpoint_port "${AWG_PORT:-}")
     if [[ "$_cport" == "0" ]]; then
         log_error "AWG_PORT некорректен ('${AWG_PORT:-}') — конфиг '$name' не обновлён."
         exec {lock_fd}>&-
@@ -5007,27 +5198,42 @@ generate_awg31_s_values_runtime() {
     return 1
 }
 
+avoid_awg_s_collision() {
+    local s1="$1" s2="$2" s3="$3" s4="$4"
+    if (( s1 + 56 == s2 )); then
+        s2=$(( s2 + 1 ))
+    fi
+    if (( s1 + 84 == s3 )); then
+        s3=$(( s3 + 1 ))
+    fi
+    if (( s2 + 28 == s3 )); then
+        s3=$(( s3 + 1 ))
+    fi
+    printf '%s\n%s\n%s\n%s\n' "$s1" "$s2" "$s3" "$s4"
+}
+
 generate_runtime_awg_profile() {
     local preset="${1:-default}" h_lines s_lines
     case "$preset" in
         mobile)
             AWG_PRESET="mobile"
-            AWG_Jc=3
-            AWG_Jmin=$(awg_rand_range 30 50)
-            AWG_Jmax=$(( AWG_Jmin + $(awg_rand_range 20 80) ))
+            AWG_Jc=2
+            AWG_Jmin=$(awg_rand_range 10 20)
+            AWG_Jmax=$(( AWG_Jmin + $(awg_rand_range 15 25) ))
             if [[ "${AWG_PROTOCOL_VERSION:-2.0}" == "3.0" || "${AWG_PROTOCOL_VERSION:-2.0}" == "3.1" ]]; then
                 mapfile -t s_lines < <(generate_awg31_s_values_runtime) || return 1
                 [[ ${#s_lines[@]} -eq 4 ]] || return 1
                 AWG_S1="${s_lines[0]}"; AWG_S2="${s_lines[1]}"
                 AWG_S3="${s_lines[2]}"; AWG_S4="${s_lines[3]}"
             else
-                AWG_S1=$(awg_rand_range 15 150)
-                AWG_S2=$(awg_rand_range 15 150)
-                if [[ $((AWG_S1 + 56)) -eq $AWG_S2 ]]; then
-                    AWG_S2=$((AWG_S2 + 1)); (( AWG_S2 <= 150 )) || AWG_S2=15
-                fi
-                AWG_S3=$(awg_rand_range 0 10)
-                AWG_S4=$(awg_rand_range 0 10)
+                local s1 s2 s3 s4
+                s1=$(awg_rand_range 15 35)
+                s2=$(awg_rand_range 15 35)
+                s3=$(awg_rand_range 0 10)
+                s4=$(awg_rand_range 0 10)
+                mapfile -t s_lines < <(avoid_awg_s_collision "$s1" "$s2" "$s3" "$s4")
+                AWG_S1="${s_lines[0]}"; AWG_S2="${s_lines[1]}"
+                AWG_S3="${s_lines[2]}"; AWG_S4="${s_lines[3]}"
             fi
             ;;
         default|balanced)
@@ -5041,13 +5247,14 @@ generate_runtime_awg_profile() {
                 AWG_S1="${s_lines[0]}"; AWG_S2="${s_lines[1]}"
                 AWG_S3="${s_lines[2]}"; AWG_S4="${s_lines[3]}"
             else
-                AWG_S1=$(awg_rand_range 15 150)
-                AWG_S2=$(awg_rand_range 15 150)
-                if [[ $((AWG_S1 + 56)) -eq $AWG_S2 ]]; then
-                    AWG_S2=$((AWG_S2 + 1)); (( AWG_S2 <= 150 )) || AWG_S2=15
-                fi
-                AWG_S3=$(awg_rand_range 8 55)
-                AWG_S4=$(awg_rand_range 4 32)
+                local s1 s2 s3 s4
+                s1=$(awg_rand_range 15 150)
+                s2=$(awg_rand_range 15 150)
+                s3=$(awg_rand_range 8 55)
+                s4=$(awg_rand_range 4 32)
+                mapfile -t s_lines < <(avoid_awg_s_collision "$s1" "$s2" "$s3" "$s4")
+                AWG_S1="${s_lines[0]}"; AWG_S2="${s_lines[1]}"
+                AWG_S3="${s_lines[2]}"; AWG_S4="${s_lines[3]}"
             fi
             ;;
         stealth)
@@ -5061,8 +5268,14 @@ generate_runtime_awg_profile() {
                 AWG_S1="${s_lines[0]}"; AWG_S2="${s_lines[1]}"
                 AWG_S3="${s_lines[2]}"; AWG_S4="${s_lines[3]}"
             else
-                AWG_S1=$(awg_rand_range 20 149); AWG_S2=$(awg_rand_range 20 149)
-                AWG_S3=$(awg_rand_range 16 55); AWG_S4=$(awg_rand_range 12 32)
+                local s1 s2 s3 s4
+                s1=$(awg_rand_range 20 149)
+                s2=$(awg_rand_range 20 149)
+                s3=$(awg_rand_range 16 55)
+                s4=$(awg_rand_range 12 32)
+                mapfile -t s_lines < <(avoid_awg_s_collision "$s1" "$s2" "$s3" "$s4")
+                AWG_S1="${s_lines[0]}"; AWG_S2="${s_lines[1]}"
+                AWG_S3="${s_lines[2]}"; AWG_S4="${s_lines[3]}"
             fi
             ;;
         compatibility)
@@ -5076,8 +5289,14 @@ generate_runtime_awg_profile() {
                 AWG_S1="${s_lines[0]}"; AWG_S2="${s_lines[1]}"
                 AWG_S3="${s_lines[2]}"; AWG_S4="${s_lines[3]}"
             else
-                AWG_S1=$(awg_rand_range 15 150); AWG_S2=$(awg_rand_range 15 150)
-                AWG_S3=$(awg_rand_range 12 55); AWG_S4=$(awg_rand_range 12 32)
+                local s1 s2 s3 s4
+                s1=$(awg_rand_range 15 150)
+                s2=$(awg_rand_range 15 150)
+                s3=$(awg_rand_range 12 55)
+                s4=$(awg_rand_range 12 32)
+                mapfile -t s_lines < <(avoid_awg_s_collision "$s1" "$s2" "$s3" "$s4")
+                AWG_S1="${s_lines[0]}"; AWG_S2="${s_lines[1]}"
+                AWG_S3="${s_lines[2]}"; AWG_S4="${s_lines[3]}"
             fi
             ;;
         *)
@@ -5459,7 +5678,7 @@ regenerate_client() {
     local _old_i1="${AWG_I1:-}"
     AWG_I1="$new_i1"
     local _cport
-    _cport=$(_sanitize_port "${AWG_PORT:-}")
+    _cport=$(get_client_endpoint_port "${AWG_PORT:-}")
     if [[ "$_cport" == "0" ]]; then
         log_error "AWG_PORT некорректен ('${AWG_PORT:-}') — конфиг '$name' не перегенерирован."
         AWG_I1="$_old_i1"

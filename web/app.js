@@ -200,6 +200,7 @@ const icons = {
   refresh: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 6v5h-5"/><path d="M4 18v-5h5"/><path d="M18.5 9A7 7 0 0 0 6.7 6.7L4 9"/><path d="M5.5 15a7 7 0 0 0 11.8 2.3L20 15"/></svg>',
   more: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="5" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="12" cy="19" r="1.5"/></svg>',
   chevron: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m6 9 6 6 6-6"/></svg>',
+  user: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>',
 };
 
 const theme = localStorage.getItem("panelTheme") || "light";
@@ -720,6 +721,26 @@ function renderAssignedTokenBadges(client) {
   `).join("") + (extra ? `<span class="rounded-full border border-[var(--line)] bg-[var(--soft)] px-2 py-0.5 text-[11px] font-medium text-[var(--muted)]">+${extra}</span>` : "");
 }
 
+function renderPresetBadge(client) {
+  const preset = String(client?.preset || "default").trim().toLowerCase();
+  const map = {
+    macos: { icon: "🍏", label: "macOS", cls: "preset-badge-macos" },
+    ios: { icon: "📱", label: "iOS", cls: "preset-badge-ios" },
+    android: { icon: "🤖", label: "Android", cls: "preset-badge-android" },
+    wiresock: { icon: "🪟", label: "WireSock", cls: "preset-badge-wiresock" },
+    openwrt: { icon: "🌐", label: "OpenWrt", cls: "preset-badge-openwrt" },
+    linux: { icon: "🐧", label: "Linux", cls: "preset-badge-linux" },
+    default: { icon: "⚡", label: "Universal", cls: "preset-badge-default" }
+  };
+  const item = map[preset] || { icon: "⚡", label: esc(preset), cls: "preset-badge-default" };
+  return `
+    <span class="preset-cloud-badge ${item.cls}" title="Устройство / пресет: ${item.label}">
+      <span class="preset-icon">${item.icon}</span>
+      <span class="preset-name">${item.label}</span>
+    </span>
+  `;
+}
+
 const _GEO_SOURCE_LABELS = {
   "2ip": "2IP", "dbip": "DB-IP", "dbip_mmdb": "DB-IP MMDB",
   "maxmind": "MaxMind", "ipinfo": "ipinfo", "ip-api": "ip-api", "cache": "cache",
@@ -1088,7 +1109,7 @@ function renderClientNetworkDiagnostics() {
         <div>Avg RTT: <strong>${esc(avgLabel)}</strong></div>
         <div>P95 RTT: <strong>${esc(p95Label)}</strong></div>
       </div>
-      ${issues.length ? `<div class="mt-2 text-xs text-[var(--muted)]"><span class="font-medium text-[var(--text)]">Top issues</span><ol class="mt-1 grid gap-1">${issues.map((item, idx) => `<li>${idx + 1}. ${esc(item.client || "-")} — ${esc(item.summary || item.type || "issue")}</li>`).join("")}</ol></div>` : ""}
+      ${issues.length ? `<div class="mt-2 text-xs text-[var(--muted)]"><span class="font-medium text-[var(--text)]">Top issues</span><ol class="mt-1 grid gap-1">${issues.map((item, idx) => `<li>${idx + 1}. ${esc(item.client || "-")} - ${esc(item.summary || item.type || "issue")}</li>`).join("")}</ol></div>` : ""}
     </div>
   `;
   const btn = document.querySelector("#refreshLatency");
@@ -1239,6 +1260,9 @@ function renderServerHealth() {
   const overlayDrops = network["vp" + "n_drops_delta"] || 0;
   const webEdgeLabel = webEdge.mode === "nginx_reverse_proxy" ? "nginx" : "direct";
   const webEdgeStatus = webEdge.status || (webEdge.mode === "legacy_direct" ? "ok" : "unknown");
+  const proxy = services["amnez" + "iawg_proxy"] || {};
+  const adg = services["adgu" + "ard_home"] || {};
+  const threat = services.threat_defense || h.threat_defense || {};
   host.innerHTML = `
     ${renderHealthCard("CPU", cpuValue, `load ${Number(load.one || 0).toFixed(1)} / ${load.cpu_count || 1} core`, cpu.status || load.status || "ok")}
     ${renderHealthCard("RAM", formatPercent(memory.used_percent, 1), `${memoryUsed} used · ${bytes(memory.available_bytes || 0)} available`, memory.status || "unknown")}
@@ -1246,8 +1270,11 @@ function renderServerHealth() {
     ${renderHealthCard("Uptime", durationText(hostInfo.uptime_seconds || 0), `web ${durationText(process.uptime_seconds || 0)}`, "ok")}
     ${renderHealthCard("Conntrack", conntrack.available === false ? "n/a" : formatPercent(conntrack.used_percent, 1), conntrack.available === false ? "not exposed" : `${conntrack.count || 0}/${conntrack.max || 0}`, conntrack.status || "unknown")}
     ${renderHealthCard("Network", `${network.drops_delta || 0} drops`, `${network.wan_iface || "wan"} / ${overlayIface} · errors ${network.errors_delta || 0}`, network.status || "unknown")}
-    ${renderHealthCard("Client Load", `↓ ${speed(clientLoad.client_download_bps || 0)}\n↑ ${speed(clientLoad.client_upload_bps || 0)}`, `peak ↓ ${speed(clientLoad.peak_server_tx_bps || 0)} · ↑ ${speed(clientLoad.peak_server_rx_bps || 0)} · ${clientLoad.active_count || 0}/${clientLoad.client_count || 0} active`, network.status || "unknown")}
-    ${renderHealthCard("Web/Link", `${webEdgeLabel} ${webEdgeStatus} / ${overlay.status || "unknown"}`, `python RSS ${bytes(process.rss_bytes || 0)} · FD ${process.fd_count || 0} · link drops ${overlayDrops}`, h.status || "unknown")}
+    ${renderHealthCard("Client Load", `↓ ${speed(clientLoad.client_download_bps || 0)}\n↑ ${speed(clientLoad.client_upload_bps || 0)}`, `peak ↓ ${speed(clientLoad.peak_server_tx_bps || 0)} · ↑ ${speed(clientLoad.peak_server_rx_bps || 0)} · ${clientLoad.active_count || 0}/${clientLoad.client_count || 0} active`, clientLoad.status || "ok")}
+    ${renderHealthCard("Web/Link", `${webEdgeLabel} ${webEdgeStatus} / ${overlay.status || "unknown"}`, `python RSS ${bytes(process.rss_bytes || 0)} · FD ${process.fd_count || 0} · link drops ${overlayDrops}`, (webEdgeStatus === "danger" || overlay.status === "danger") ? "danger" : ((webEdgeStatus === "warn" || overlay.status === "warn") ? "warn" : "ok"))}
+    ${proxy.active ? renderHealthCard("QUIC Proxy", `UDP 443 → ${proxy.target || "51821"}`, `${proxy.domain || "Camouflage"} · ${proxy.sessions_count || 0} sessions`, proxy.status || "ok") : ""}
+    ${adg.active ? renderHealthCard(["AdGu", "ard Home"].join(""), ["DN", "S Active"].join(""), adg.listener || "10.9.9.1:53", adg.status || "ok") : ""}
+    ${threat.active ? renderHealthCard("Threat Shield", `${threat.banned_count || 0} Banned`, `${threat.banned_drops_packets || 0} dropped · ${threat.honeypot_triggers || 0} traps`, "ok") : ""}
   `;
   const stamp = document.querySelector("#serverHealthUpdated");
   if (stamp) stamp.textContent = h.timestamp ? `Updated ${h.timestamp}` : "";
@@ -2390,20 +2417,28 @@ async function renderPanel() {
   stopClientPolling();
   stopServerHealthPolling();
   const nettestPage = isNetworkTesterPage();
-  document.title = statusState.title || "Control";
+  const serverTitle = statusState.display_name || statusState.server_name || "Sunny-Finland";
+  document.title = `${serverTitle} · Web Panel`;
   if (trafficChart) {
     trafficChart.destroy();
     trafficChart = null;
   }
+  const currentUsername = statusState.username || (statusState.role === "super" ? "Admin" : "User");
   app.innerHTML = `
     <header class="flex flex-col gap-4 py-4 sm:flex-row sm:items-center sm:justify-between">
       <div class="flex items-center gap-3">
-        <div class="grid h-11 w-11 place-items-center rounded-lg bg-[var(--accent)] text-lg font-black text-white">${esc(statusState.short_label || "C")}</div>
+        <div class="grid h-11 w-11 place-items-center rounded-lg bg-[var(--accent)] text-lg font-black text-white">${esc(statusState.short_label || "SF")}</div>
         <div>
-          <h1 class="text-xl font-semibold leading-tight">${esc(statusState.display_name || statusState.server_name || "Control")}</h1>
+          <h1 class="text-xl font-semibold leading-tight">${esc(serverTitle)}</h1>
           <p class="flex flex-wrap items-center gap-2 text-sm text-[var(--muted)]">
-            <span>v${esc(statusState.version)} · ${esc(statusState.fork)} · ${esc(statusState.role)}</span>
+            <span class="inline-flex items-center gap-1.5 rounded-full bg-[var(--soft)] px-2.5 py-0.5 text-xs font-semibold text-[var(--text)] border border-[var(--line)] shadow-2xs" title="Logged in as ${esc(currentUsername)} (${esc(statusState.role)})">
+              ${icon("user")}
+              <span>${esc(currentUsername)}</span>
+              ${currentUsername.toLowerCase() !== statusState.role.toLowerCase() ? `<span class="text-[var(--muted)] font-normal text-[11px]">(${esc(statusState.role)})</span>` : ""}
+            </span>
+            <span>v${esc(statusState.version)} · ${esc(statusState.fork)}</span>
             <span id="connectionStatusPill" class="${CONNECTION_PILL_BASE} ${CONNECTION_STATE_INFO.online.className}">${CONNECTION_STATE_INFO.online.label}</span>
+            ${statusState.proxy?.active ? `<span class="inline-flex items-center rounded-full bg-emerald-500/10 px-2 py-0.5 text-xs font-semibold text-emerald-500 border border-emerald-500/20" title="QUIC Proxy listening on UDP 443">QUIC Proxy :443</span>` : ""}
           </p>
         </div>
       </div>
@@ -2717,7 +2752,7 @@ function renderProjectUpdate() {
   const running = s.status === "running";
   const version = s.installed || statusState?.version || "unknown";
   const target = s.target || "not checked";
-  host.innerHTML = `<div class="flex flex-wrap items-center justify-between gap-2"><span>Installed: <b>${esc(version)}</b> · target: <b>${esc(target)}</b></span><span class="text-xs">${running ? "Update operation is running…" : s.status === "failed" ? "Last update failed — rollback was attempted" : s.available ? "Update available" : s.status === "unavailable" ? "Updater unavailable" : "Up to date"}</span></div>${s.last_output ? `<details class="mt-2 text-xs"><summary>Last updater output</summary><pre class="mt-2 max-h-40 overflow-auto whitespace-pre-wrap">${esc(s.last_output)}</pre></details>` : ""}`;
+  host.innerHTML = `<div class="flex flex-wrap items-center justify-between gap-2"><span>Installed: <b>${esc(version)}</b> · target: <b>${esc(target)}</b></span><span class="text-xs">${running ? "Update operation is running…" : s.status === "failed" ? "Last update failed - rollback was attempted" : s.available ? "Update available" : s.status === "unavailable" ? "Updater unavailable" : "Up to date"}</span></div>${s.last_output ? `<details class="mt-2 text-xs"><summary>Last updater output</summary><pre class="mt-2 max-h-40 overflow-auto whitespace-pre-wrap">${esc(s.last_output)}</pre></details>` : ""}`;
   if (apply) apply.disabled = running || !s.available || s.status === "unavailable";
 }
 
@@ -2797,6 +2832,7 @@ async function loadClients() {
   const now = Date.now();
   try {
     const payload = await api("/api/clients");
+    if (payload && payload.username && statusState) statusState.username = payload.username;
     const rows = Array.isArray(payload) ? payload : (payload.clients || []);
     trafficState = Array.isArray(payload) ? null : payload.traffic;
     latestClients = await Promise.all(rows.map(async client => {
@@ -3101,9 +3137,14 @@ function renderClients() {
                 ${client.disabled ? '<span class="rounded-full border border-[var(--danger)] px-2 py-0.5 text-xs font-semibold text-[var(--danger)]">disabled</span>' : ""}
               </div>
               <div class="mt-1 flex flex-wrap gap-1.5">${renderAssignedTokenBadges(client)}</div>
-              <div class="mt-1 flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 text-sm text-[var(--muted)]">
-                <span class="shrink-0 font-mono text-xs text-[var(--text)]" title="${esc(ipv4)}">${esc(ipv4)}</span>
-                ${ipv6 ? `<span class="min-w-0 max-w-full truncate font-mono text-xs" title="${esc(ipv6)}">${esc(ipv6)}</span>` : ""}
+              <div class="client-ip-group mt-1.5 flex flex-col gap-1">
+                <div class="preset-cloud-wrap flex items-center">
+                  ${renderPresetBadge(client)}
+                </div>
+                <div class="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 text-sm text-[var(--muted)]">
+                  <span class="shrink-0 font-mono text-xs font-semibold text-[var(--text)]" title="${esc(ipv4)}">${esc(ipv4)}</span>
+                  ${ipv6 ? `<span class="min-w-0 max-w-full truncate font-mono text-xs" title="${esc(ipv6)}">${esc(ipv6)}</span>` : ""}
+                </div>
               </div>
               <p class="mt-1 text-xs text-[var(--muted)]">${active ? "Active recently" : "No recent traffic"} · Last seen ${esc(timeAgo(client.latestHandshakeAt || client.last_handshake))}</p>
               <p class="mt-1 flex min-w-0 flex-wrap items-center gap-2 text-xs text-[var(--muted)]"><span class="truncate">Endpoint: ${esc(endpoint)}</span>${statusState.role === "super" ? renderLatencyChip(client) + renderSharedProfileChip(client) + renderPathChip(client) : ""}</p>
@@ -3324,10 +3365,50 @@ async function showHelp() {
 }
 
 async function addClient() {
-  const name = await clientNameModal();
-  if (!name) return;
+  const result = await clientNameModal();
+  if (!result) return;
+  const name = typeof result === "string" ? result : result.name;
+  const preset = typeof result === "object" ? (result.preset || "default") : "default";
+  const dpi_profile = typeof result === "object" ? (result.dpi_profile || "quic_stealth") : "quic_stealth";
+  const split_lan = typeof result === "object" ? (result.split_lan !== false) : true;
+  const use_psk = typeof result === "object" ? !!result.use_psk : false;
+
+  const defaultSni = (typeof window !== "undefined" && window.SERVER_CAMOUFLAGE_DOMAIN)
+    || serverInfoState?.endpoint_host
+    || serverInfoState?.server_domain
+    || (window.location.hostname !== "localhost" && !window.location.hostname.match(/^\d+\.\d+\.\d+\.\d+$/) ? window.location.hostname : "")
+    || "vk.com";
+  const mimicry_sni = typeof result === "object" ? (result.mimicry_sni || defaultSni) : defaultSni;
+
+  let i1 = "";
+  let mimicry_mode = "none";
+  if (dpi_profile === "quic_stealth" || dpi_profile === "quic_speed") {
+    mimicry_mode = "quic";
+  } else if (dpi_profile === "random_noise") {
+    mimicry_mode = "random";
+  }
+
   try {
-    await api("/api/clients", {method: "POST", body: JSON.stringify({name})});
+    if (typeof window.generateI1 === "function" && mimicry_mode !== "none") {
+      i1 = await window.generateI1(mimicry_mode, mimicry_sni);
+    }
+  } catch (err) {
+    console.warn("Could not generate I1 in browser:", err);
+  }
+  try {
+    await api("/api/clients", {
+      method: "POST",
+      body: JSON.stringify({
+        name,
+        preset,
+        dpi_profile,
+        split_lan,
+        use_psk,
+        mimicry_mode,
+        mimicry_sni,
+        i1
+      })
+    });
     showToast("Client added");
     await loadClients();
     if (statusState.role === "super") await loadTokens();
@@ -3345,7 +3426,10 @@ async function clientAction(name, action) {
     if (action === "copy-config") return copyConfig(name);
     if (action === "copy-uri") return copyUri(name);
     if (action === "copy-access-link") return copyAccessLink(name);
-    if (action === "regenerate-config") return regenerateConfig(name);
+    if (action === "regenerate-config") {
+      const client = latestClients.find(item => item.name === name || item.id === name);
+      return regenerateConfig(name, client?.preset || "default");
+    }
     if (action === "toggle") {
       await api(`/api/clients/${encodeURIComponent(name)}/toggle`, {method: "POST", body: "{}"});
       showToast("Client toggled");
@@ -3449,15 +3533,110 @@ async function checkClientPath(name, target = "endpoint") {
   }
 }
 
-async function regenerateConfig(name) {
-  const ok = await confirmModal(
-    "Regenerate profile",
-    `Regenerate profile for "${name}"?\nThe old profile will stop working. Traffic history and client name will be preserved.`,
-    "Regenerate",
-    false
-  );
-  if (!ok) return;
-  const body = {};
+function regenerateConfigModal(name, defaultPreset = "default") {
+  return new Promise(resolve => {
+    const dialog = document.createElement("dialog");
+    dialog.className = "w-[min(540px,calc(100vw-32px))] rounded-lg border border-[var(--line)] bg-[var(--panel)] p-0 text-[var(--text)] shadow-xl backdrop:bg-black/55";
+    const curP = (defaultPreset || "default").toLowerCase();
+    dialog.innerHTML = `
+      <form method="dialog" class="p-4 grid gap-3">
+        <div class="flex items-center justify-between border-b border-[var(--line)] pb-2">
+          <h2 class="text-base font-semibold">🔄 Перегенерация конфига / Regenerate</h2>
+          <span class="rounded bg-[var(--soft)] px-2 py-0.5 font-mono text-xs text-[var(--muted)]">${esc(name)}</span>
+        </div>
+        <p class="text-xs text-[var(--muted)]">
+          Regenerate profile for "${esc(name)}". Создаёт новую пару ключей и обновляет параметры под выбранное устройство. Старый конфиг на устройстве перестанет подключаться. IP-адрес и статистика клиента сохраняются.
+        </p>
+
+        <div>
+          <label class="block text-xs font-semibold uppercase text-[var(--muted)] mb-2">Целевой клиент / Платформа (Пресет)</label>
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs" id="regenPresetList">
+            <label class="flex items-start gap-2 p-2 rounded-md border border-[var(--line)] bg-[var(--soft)] cursor-pointer hover:border-[var(--accent)]">
+              <input type="radio" name="regenPreset" value="macos" ${curP === "macos" ? "checked" : ""} class="mt-0.5">
+              <div>
+                <strong class="block text-[var(--text)]">🍏 macOS</strong>
+                <span class="text-[10px] text-[var(--muted)]">AmneziaVPN: MTU 1280, чистый IPv4</span>
+              </div>
+            </label>
+            <label class="flex items-start gap-2 p-2 rounded-md border border-[var(--line)] bg-[var(--soft)] cursor-pointer hover:border-[var(--accent)]">
+              <input type="radio" name="regenPreset" value="ios" ${curP === "ios" ? "checked" : ""} class="mt-0.5">
+              <div>
+                <strong class="block text-[var(--text)]">📱 iOS</strong>
+                <span class="text-[10px] text-[var(--muted)]">AmneziaWG: MTU 1280, Keepalive 25</span>
+              </div>
+            </label>
+            <label class="flex items-start gap-2 p-2 rounded-md border border-[var(--line)] bg-[var(--soft)] cursor-pointer hover:border-[var(--accent)]">
+              <input type="radio" name="regenPreset" value="android" ${curP === "android" ? "checked" : ""} class="mt-0.5">
+              <div>
+                <strong class="block text-[var(--text)]">🤖 Android</strong>
+                <span class="text-[10px] text-[var(--muted)]">WG Tunnel: MTU 1280, Keepalive 25</span>
+              </div>
+            </label>
+            <label class="flex items-start gap-2 p-2 rounded-md border border-[var(--line)] bg-[var(--soft)] cursor-pointer hover:border-[var(--accent)]">
+              <input type="radio" name="regenPreset" value="wiresock" ${curP === "wiresock" ? "checked" : ""} class="mt-0.5">
+              <div>
+                <strong class="block text-[var(--text)]">🪟 WireSock Windows</strong>
+                <span class="text-[10px] text-[var(--muted)]">Хинты @ws:Id/@ws:Ip, без I1-I5</span>
+              </div>
+            </label>
+            <label class="flex items-start gap-2 p-2 rounded-md border border-[var(--line)] bg-[var(--soft)] cursor-pointer hover:border-[var(--accent)]">
+              <input type="radio" name="regenPreset" value="openwrt" ${curP === "openwrt" ? "checked" : ""} class="mt-0.5">
+              <div>
+                <strong class="block text-[var(--text)]">🌐 OpenWrt</strong>
+                <span class="text-[10px] text-[var(--muted)]">awg-kmod: INT32 safe, MTU 1280</span>
+              </div>
+            </label>
+            <label class="flex items-start gap-2 p-2 rounded-md border border-[var(--line)] bg-[var(--soft)] cursor-pointer hover:border-[var(--accent)]">
+              <input type="radio" name="regenPreset" value="linux" ${curP === "linux" ? "checked" : ""} class="mt-0.5">
+              <div>
+                <strong class="block text-[var(--text)]">🐧 Linux</strong>
+                <span class="text-[10px] text-[var(--muted)]">awg-quick: MTU 1280</span>
+              </div>
+            </label>
+            <label class="flex items-start gap-2 p-2 rounded-md border border-[var(--line)] bg-[var(--soft)] cursor-pointer hover:border-[var(--accent)] sm:col-span-2">
+              <input type="radio" name="regenPreset" value="default" ${(!curP || curP === "default") ? "checked" : ""} class="mt-0.5">
+              <div>
+                <strong class="block text-[var(--text)]">⚡ Default (Универсальный)</strong>
+                <span class="text-[10px] text-[var(--muted)]">Базовый профиль с безопасным MTU 1280</span>
+              </div>
+            </label>
+          </div>
+        </div>
+
+        <div class="mt-2 flex flex-wrap justify-end gap-2 border-t border-[var(--line)] pt-3">
+          <button type="button" value="cancel" id="regenCancelBtn" class="${buttonClasses()}">Отмена / Cancel</button>
+          <button type="submit" value="ok" id="regenConfirmBtn" class="${buttonClasses("border-amber-600 bg-amber-500 text-white hover:bg-amber-600")}">${icon("refresh")}<span>Перегенерировать</span></button>
+        </div>
+      </form>
+    `;
+    document.body.appendChild(dialog);
+    dialog.showModal();
+    const cleanup = () => {
+      dialog.close();
+      dialog.remove();
+    };
+    dialog.querySelector("#regenCancelBtn").onclick = () => {
+      cleanup();
+      resolve(null);
+    };
+    dialog.querySelector("form").onsubmit = (e) => {
+      e.preventDefault();
+      const selected = dialog.querySelector('input[name="regenPreset"]:checked')?.value || "default";
+      cleanup();
+      resolve({ preset: selected });
+    };
+    dialog.oncancel = () => {
+      cleanup();
+      resolve(null);
+    };
+  });
+}
+
+async function regenerateConfig(name, defaultPreset = "default") {
+  const chosen = await regenerateConfigModal(name, defaultPreset);
+  if (!chosen) return;
+  const preset = chosen.preset || "default";
+  const body = { preset };
   try {
     if (typeof window.generateI1 === "function" && typeof window.pickI1Sni === "function" && window.crypto?.subtle) {
       const sni = window.pickI1Sni();
@@ -3465,18 +3644,17 @@ async function regenerateConfig(name) {
       body.i1_sni = sni;
     }
   } catch (error) {
-    const fallback = await confirmModal(
-      "Regenerate with fallback?",
-      "Browser-side profile generation failed. Continue with system fallback?",
-      "Continue",
-      false
-    );
-    if (!fallback) return;
+    console.warn("Browser I1 generation skipped:", error);
   }
-  await api(`/api/clients/${encodeURIComponent(name)}/regenerate`, {method: "POST", body: JSON.stringify(body)});
-  configTextCache.delete(name);
-  showToast("Profile regenerated. Download or copy the new profile.");
-  await loadClients();
+  try {
+    await api(`/api/clients/${encodeURIComponent(name)}/regenerate`, {method: "POST", body: JSON.stringify(body)});
+    configTextCache.delete(name);
+    showToast("Profile regenerated. Download or copy the new profile.");
+    await loadClients();
+    await showConfig(name, preset);
+  } catch (err) {
+    showToast("Could not regenerate profile", "error");
+  }
 }
 
 async function rotateProfile() {
@@ -3502,19 +3680,141 @@ async function rotateProfile() {
   await loadClients();
 }
 
-async function showConfig(name) {
-  const text = await configText(name);
+function tuneConfigForPreset(rawText, preset, domain) {
+  let lines = rawText.split("\n");
+  const hostDomain = domain || window.location.hostname || "example.com";
+  const p = (preset || "").toLowerCase();
+
+  lines = lines.map(line => {
+    if (/^AllowedIPs\s*=/i.test(line.trim())) {
+      return line.replace(/,\s*(::\/0|::\/1,\s*8000::\/1)/g, "");
+    }
+    return line;
+  });
+
+  if (p === "mobile" || p === "ios" || p === "android") {
+    lines = lines.map(line => {
+      if (/^MTU\s*=/i.test(line.trim())) return "MTU = 1280";
+      if (/^PersistentKeepalive\s*=/i.test(line.trim())) return "PersistentKeepalive = 25";
+      return line;
+    });
+  } else if (p === "macos") {
+    lines = lines.map(line => {
+      if (/^MTU\s*=/i.test(line.trim())) return "MTU = 1280";
+      if (/^PersistentKeepalive\s*=/i.test(line.trim())) return "PersistentKeepalive = 25";
+      return line;
+    });
+  } else if (p === "home" || p === "linux") {
+    lines = lines.map(line => {
+      if (/^MTU\s*=/i.test(line.trim())) return "MTU = 1280";
+      if (/^PersistentKeepalive\s*=/i.test(line.trim())) return "PersistentKeepalive = 25";
+      return line;
+    });
+  } else if (p === "router" || p === "openwrt") {
+    lines = lines.map(line => {
+      if (/^MTU\s*=/i.test(line.trim())) return "MTU = 1280";
+      if (/^PersistentKeepalive\s*=/i.test(line.trim())) return "PersistentKeepalive = 25";
+      const m = line.trim().match(/^(H[1-4]\s*=\s*)(\d+)(?:-(\d+))?/i);
+      if (m) {
+        let v1 = Math.min(parseInt(m[2], 10), 2147483647);
+        if (m[3]) {
+          let v2 = Math.min(parseInt(m[3], 10), 2147483647);
+          if (v2 <= v1) v2 = Math.min(v1 + 1000, 2147483647);
+          return `${m[1]}${v1}-${v2}`;
+        }
+        return `${m[1]}${v1}`;
+      }
+      return line;
+    });
+  } else if (p === "wiresock" || p === "windows") {
+    lines = lines.filter(line => !/^I[1-5]\s*=/i.test(line.trim()));
+    lines = lines.map(line => {
+      if (/^MTU\s*=/i.test(line.trim())) return "MTU = 1280";
+      if (/^PersistentKeepalive\s*=/i.test(line.trim())) return "PersistentKeepalive = 35";
+      return line;
+    });
+    lines = lines.filter(line => !/^#@ws:/i.test(line.trim()) && !/^# WireSock compatibility hints/i.test(line.trim()));
+    const peerIdx = lines.findIndex(l => /^\[Peer\]/i.test(l.trim()));
+    const wsDirectives = [
+      "# WireSock compatibility hints",
+      `#@ws:Id = ${hostDomain}`,
+      "#@ws:Ip = quic",
+      "#@ws:Ib = curl",
+      ""
+    ];
+    if (peerIdx >= 0) {
+      lines.splice(peerIdx, 0, ...wsDirectives);
+    } else {
+      lines.push(...wsDirectives);
+    }
+  }
+
+  return lines.join("\n");
+}
+
+async function showConfig(name, initialPreset = "default") {
+  const originalText = await configText(name);
+  let activePreset = (initialPreset || "default").toLowerCase();
+  let currentText = tuneConfigForPreset(originalText, activePreset);
+
   showModal(name, `
     <div class="grid gap-3">
-      <div class="flex flex-wrap justify-end gap-2">
-        <button id="downloadConfigFromModal" class="${buttonClasses()}">${icon("download")}<span>Download .conf</span></button>
-        <button id="copyConfigFromModal" class="${buttonClasses()}">${icon("copy")}<span>Copy profile</span></button>
+      <div class="flex flex-wrap items-center justify-between gap-2 border-b border-[var(--line)] pb-2">
+        <div class="flex flex-wrap gap-1" id="configPresetTabs">
+          <button type="button" data-preset="default" class="px-2.5 py-1 text-xs rounded-md font-medium bg-[var(--soft)] hover:bg-[var(--line)]">Default (1280)</button>
+          <button type="button" data-preset="macos" class="px-2.5 py-1 text-xs rounded-md font-medium bg-[var(--soft)] hover:bg-[var(--line)]">🍏 macOS</button>
+          <button type="button" data-preset="ios" class="px-2.5 py-1 text-xs rounded-md font-medium bg-[var(--soft)] hover:bg-[var(--line)]">📱 iOS</button>
+          <button type="button" data-preset="android" class="px-2.5 py-1 text-xs rounded-md font-medium bg-[var(--soft)] hover:bg-[var(--line)]">🤖 Android</button>
+          <button type="button" data-preset="wiresock" class="px-2.5 py-1 text-xs rounded-md font-medium bg-[var(--soft)] hover:bg-[var(--line)]">🪟 WireSock</button>
+          <button type="button" data-preset="openwrt" class="px-2.5 py-1 text-xs rounded-md font-medium bg-[var(--soft)] hover:bg-[var(--line)]">🌐 OpenWrt</button>
+          <button type="button" data-preset="linux" class="px-2.5 py-1 text-xs rounded-md font-medium bg-[var(--soft)] hover:bg-[var(--line)]">🐧 Linux</button>
+        </div>
+        <div class="flex flex-wrap gap-2">
+          <button type="button" id="downloadConfigFromModal" class="${buttonClasses()}">${icon("download")}<span>Download</span></button>
+          <button type="button" id="copyConfigFromModal" class="${buttonClasses()}">${icon("copy")}<span>Copy</span></button>
+          <button type="button" id="regenerateConfigFromModal" class="${buttonClasses("border-amber-600/40 text-amber-700 hover:bg-amber-500/10")}">${icon("refresh")}<span>Regenerate</span></button>
+        </div>
       </div>
-      <pre class="max-h-[70vh] overflow-auto whitespace-pre-wrap break-words rounded-md bg-[var(--soft)] p-3 text-xs">${esc(text)}</pre>
+      <pre id="configPreBlock" class="max-h-[65vh] overflow-auto whitespace-pre-wrap break-words rounded-md bg-[var(--soft)] p-3 text-xs font-mono">${esc(currentText)}</pre>
     </div>
   `);
-  document.querySelector("#downloadConfigFromModal").onclick = async () => downloadConfig(name);
-  document.querySelector("#copyConfigFromModal").onclick = async () => copyConfig(name);
+
+  const updatePresetUI = (preset) => {
+    activePreset = preset;
+    currentText = tuneConfigForPreset(originalText, preset);
+    const pre = document.querySelector("#configPreBlock");
+    if (pre) pre.textContent = currentText;
+
+    document.querySelectorAll("#configPresetTabs button").forEach(btn => {
+      if (btn.dataset.preset === preset) {
+        btn.className = "px-2.5 py-1 text-xs rounded-md font-medium bg-[var(--accent)] text-white";
+      } else {
+        btn.className = "px-2.5 py-1 text-xs rounded-md font-medium bg-[var(--soft)] hover:bg-[var(--line)]";
+      }
+    });
+  };
+
+  updatePresetUI(activePreset);
+
+  document.querySelectorAll("#configPresetTabs button").forEach(btn => {
+    btn.onclick = () => updatePresetUI(btn.dataset.preset);
+  });
+
+  document.querySelector("#downloadConfigFromModal").onclick = async () => {
+    const filename = activePreset === "default" ? `${name}.conf` : `${name}-${activePreset}.conf`;
+    saveBlob(new Blob([currentText], {type: "text/plain;charset=utf-8"}), filename);
+    showToast(`Downloaded ${filename}`);
+  };
+
+  document.querySelector("#copyConfigFromModal").onclick = async () => {
+    await copyText(currentText);
+    showToast("Copied");
+  };
+
+  document.querySelector("#regenerateConfigFromModal").onclick = () => {
+    closeModal();
+    regenerateConfig(name, activePreset);
+  };
 }
 
 async function downloadConfig(name) {
@@ -4475,17 +4775,127 @@ function rotateProfileModal() {
 function clientNameModal() {
   return new Promise(resolve => {
     const dialog = document.createElement("dialog");
-    dialog.className = "w-[min(420px,calc(100vw-32px))] rounded-lg border border-[var(--line)] bg-[var(--panel)] p-0 text-[var(--text)] shadow-xl backdrop:bg-black/55";
+    dialog.className = "w-[min(540px,calc(100vw-32px))] rounded-lg border border-[var(--line)] bg-[var(--panel)] p-0 text-[var(--text)] shadow-xl backdrop:bg-black/55";
+    const serverDomain = (typeof window !== "undefined" && window.SERVER_CAMOUFLAGE_DOMAIN)
+      || serverInfoState?.endpoint_host
+      || serverInfoState?.server_domain
+      || (window.location.hostname !== "localhost" && !window.location.hostname.match(/^\d+\.\d+\.\d+\.\d+$/) ? window.location.hostname : "")
+      || "";
+    const presets = typeof window.getCamouflagePresets === "function"
+      ? window.getCamouflagePresets(serverDomain)
+      : (window.I1_SNI_PRESETS || []);
+    const defaultSni = presets[0]?.value || "vk.com";
+    const presetOptions = presets.map(p => `<option value="${esc(p.value)}">${esc(p.label)}</option>`).join("");
+
     dialog.innerHTML = `
       <form method="dialog" class="p-4">
-        <h2 class="mb-4 text-base font-semibold">Add Client</h2>
-        <label class="sr-only" for="clientNameValue">Client name</label>
+        <h2 class="mb-3 text-base font-semibold">Новый клиент / Add Client</h2>
+        <label class="block text-xs font-semibold uppercase text-[var(--muted)] mb-1" for="clientNameValue">Имя клиента / Client name</label>
         <input id="clientNameValue" class="h-11 w-full rounded-md border border-[var(--line)] bg-[var(--soft)] px-3 outline-none focus:border-[var(--accent)]" placeholder="my_phone" autocomplete="off">
-        <p class="mt-2 text-xs text-[var(--muted)]">Examples: my_phone, iphone_15, laptop-home</p>
+        <p class="mt-1 text-xs text-[var(--muted)]">Примеры: my_phone, iphone_15, home-laptop</p>
         <p id="clientNameHint" class="mt-2 hidden text-xs text-[var(--danger)]">${esc(CLIENT_NAME_HINT_RU)} / ${esc(CLIENT_NAME_HINT_EN)}</p>
-        <div class="mt-4 flex justify-end gap-2">
-          <button value="cancel" class="${buttonClasses()}">Cancel</button>
-          <button id="createClientButton" value="ok" class="${primaryButtonClasses()}" disabled>Create</button>
+
+        <div class="mt-4">
+          <label class="block text-xs font-semibold uppercase text-[var(--muted)] mb-2">Целевая платформа / Пресет клиента</label>
+          <div class="grid grid-cols-2 sm:grid-cols-3 gap-2 text-xs" id="clientPresetGrid">
+            <label class="flex items-center gap-2 p-2 rounded-md border border-[var(--line)] bg-[var(--soft)] cursor-pointer hover:border-[var(--accent)]">
+              <input type="radio" name="clientPreset" value="macos" class="accent-[var(--accent)]">
+              <span>🍏 macOS</span>
+            </label>
+            <label class="flex items-center gap-2 p-2 rounded-md border border-[var(--line)] bg-[var(--soft)] cursor-pointer hover:border-[var(--accent)]">
+              <input type="radio" name="clientPreset" value="ios" class="accent-[var(--accent)]">
+              <span>📱 iOS</span>
+            </label>
+            <label class="flex items-center gap-2 p-2 rounded-md border border-[var(--line)] bg-[var(--soft)] cursor-pointer hover:border-[var(--accent)]">
+              <input type="radio" name="clientPreset" value="android" class="accent-[var(--accent)]">
+              <span>🤖 Android</span>
+            </label>
+            <label class="flex items-center gap-2 p-2 rounded-md border border-[var(--line)] bg-[var(--soft)] cursor-pointer hover:border-[var(--accent)]">
+              <input type="radio" name="clientPreset" value="wiresock" class="accent-[var(--accent)]">
+              <span>🪟 WireSock</span>
+            </label>
+            <label class="flex items-center gap-2 p-2 rounded-md border border-[var(--line)] bg-[var(--soft)] cursor-pointer hover:border-[var(--accent)]">
+              <input type="radio" name="clientPreset" value="openwrt" class="accent-[var(--accent)]">
+              <span>🌐 OpenWrt</span>
+            </label>
+            <label class="flex items-center gap-2 p-2 rounded-md border border-[var(--line)] bg-[var(--soft)] cursor-pointer hover:border-[var(--accent)]">
+              <input type="radio" name="clientPreset" value="linux" class="accent-[var(--accent)]">
+              <span>🐧 Linux</span>
+            </label>
+            <label class="flex items-center gap-2 p-2 rounded-md border border-[var(--line)] bg-[var(--soft)] cursor-pointer hover:border-[var(--accent)] col-span-2 sm:col-span-3">
+              <input type="radio" name="clientPreset" value="default" checked class="accent-[var(--accent)]">
+              <span>⚡ Default (Универсальный MTU 1280)</span>
+            </label>
+          </div>
+        </div>
+
+        <div class="mt-4">
+          <label class="block text-xs font-semibold uppercase text-[var(--muted)] mb-2">Профиль защиты от блокировок (DPI)</label>
+          <div class="grid gap-2 text-xs">
+            <label class="flex items-start gap-2.5 p-2.5 rounded-md border border-[var(--line)] bg-[var(--soft)] cursor-pointer hover:border-[var(--accent)]">
+              <input type="radio" name="clientDpiProfile" value="quic_stealth" checked class="mt-0.5">
+              <div class="w-full">
+                <div class="flex items-center gap-1.5">
+                  <strong class="text-[var(--text)]">🛡️ QUIC v1 Stealth (RFC 9000 Initial + TLS 1.3)</strong>
+                  <span class="rounded bg-[var(--accent)]/15 px-1.5 py-0.5 text-[10px] font-medium text-[var(--accent)]">Рекомендуется</span>
+                </div>
+                <span class="mt-0.5 block text-[var(--muted)]">Маскировка рукопожатия под HTTP/3 QUIC с SNI. MTU 1280 без фрагментации на мобильных операторах.</span>
+                <div id="mimicrySniContainer" class="mt-2.5 pt-2 border-t border-[var(--line)] grid gap-1.5">
+                  <label class="text-[11px] font-semibold uppercase text-[var(--muted)]" for="clientMimicrySni">Целевой домен маскировки (SNI):</label>
+                  <select id="clientMimicrySni" class="h-9 w-full rounded border border-[var(--line)] bg-[var(--panel)] px-2 text-xs text-[var(--text)] outline-none focus:border-[var(--accent)]">
+                    ${presetOptions}
+                  </select>
+                  <input id="clientCustomSni" type="text" placeholder="например, rutube.ru или example.com" class="hidden h-9 w-full rounded border border-[var(--line)] bg-[var(--panel)] px-2.5 text-xs text-[var(--text)] outline-none focus:border-[var(--accent)]">
+                </div>
+              </div>
+            </label>
+            <label class="flex items-start gap-2.5 p-2.5 rounded-md border border-[var(--line)] bg-[var(--soft)] cursor-pointer hover:border-[var(--accent)]">
+              <input type="radio" name="clientDpiProfile" value="quic_speed" class="mt-0.5">
+              <div>
+                <strong class="block text-[var(--text)]">⚡ QUIC v1 High-Speed (Широкополосный / Wi-Fi)</strong>
+                <span class="text-[var(--muted)]">QUIC маскировка + MTU 1360 для максимальной скорости на оптоволокне и быстром домашнем Wi-Fi.</span>
+              </div>
+            </label>
+            <label class="flex items-start gap-2.5 p-2 rounded-md border border-[var(--line)] bg-[var(--soft)] cursor-pointer hover:border-[var(--accent)]">
+              <input type="radio" name="clientDpiProfile" value="random_noise" class="mt-0.5">
+              <div>
+                <strong class="block text-[var(--text)]">🎲 Высокоэнтропийный шум (Random Noise CPS)</strong>
+                <span class="text-[var(--muted)]">Случайный криптографический пре-пакет (I1) для пробива эвристических DPI-фильтров.</span>
+              </div>
+            </label>
+            <label class="flex items-start gap-2.5 p-2 rounded-md border border-[var(--line)] bg-[var(--soft)] cursor-pointer hover:border-[var(--accent)]">
+              <input type="radio" name="clientDpiProfile" value="classic" class="mt-0.5">
+              <div>
+                <strong class="block text-[var(--text)]">⚙️ Классический AWG (Без I1 CPS)</strong>
+                <span class="text-[var(--muted)]">Базовая обфускация параметров протокола (Jc, S1-S2, H1-H4) с MTU 1420.</span>
+              </div>
+            </label>
+          </div>
+        </div>
+
+        <div class="mt-4 pt-3 border-t border-[var(--line)]">
+          <label class="block text-xs font-semibold uppercase text-[var(--muted)] mb-2">Сетевые параметры и безопасность</label>
+          <div class="grid gap-2 text-xs">
+            <label class="flex items-start gap-2.5 p-2.5 rounded-md border border-[var(--line)] bg-[var(--soft)] cursor-pointer hover:border-[var(--accent)]">
+              <input type="checkbox" id="clientSplitLan" checked class="mt-0.5 rounded border-[var(--line)]">
+              <div>
+                <strong class="block text-[var(--text)]">🏠 Доступ к локальной сети (Split-LAN)</strong>
+                <span class="text-[var(--muted)]">Исключить 192.168.x.x, 10.x.x.x и 172.16.x.x из туннеля для доступа к домашним принтерам, роутеру и умному дому</span>
+              </div>
+            </label>
+            <label class="flex items-start gap-2.5 p-2.5 rounded-md border border-[var(--line)] bg-[var(--soft)] cursor-pointer hover:border-[var(--accent)]">
+              <input type="checkbox" id="clientUsePsk" class="mt-0.5 rounded border-[var(--line)]">
+              <div>
+                <strong class="block text-[var(--text)]">🔑 PresharedKey (PSK)</strong>
+                <span class="text-[var(--muted)]">Сгенерировать дополнительный симметричный 256-битный ключ (пост-квантовая защита / Shadowrocket)</span>
+              </div>
+            </label>
+          </div>
+        </div>
+
+        <div class="mt-5 flex justify-end gap-2">
+          <button value="cancel" class="${buttonClasses()}">Отмена / Cancel</button>
+          <button id="createClientButton" value="ok" class="${primaryButtonClasses()}" disabled>Создать / Create</button>
         </div>
       </form>
     `;
@@ -4493,6 +4903,25 @@ function clientNameModal() {
     const input = dialog.querySelector("#clientNameValue");
     const hint = dialog.querySelector("#clientNameHint");
     const create = dialog.querySelector("#createClientButton");
+    const sniContainer = dialog.querySelector("#mimicrySniContainer");
+    const sniSelect = dialog.querySelector("#clientMimicrySni");
+    const customSniInput = dialog.querySelector("#clientCustomSni");
+    const profileRadios = dialog.querySelectorAll("input[name='clientDpiProfile']");
+
+    const updateDpiUI = () => {
+      const profile = dialog.querySelector("input[name='clientDpiProfile']:checked")?.value || "quic_stealth";
+      const isQuic = (profile === "quic_stealth" || profile === "quic_speed");
+      if (sniContainer) sniContainer.classList.toggle("hidden", !isQuic);
+      if (customSniInput) {
+        const isCustom = isQuic && sniSelect?.value === "custom";
+        customSniInput.classList.toggle("hidden", !isCustom);
+        if (isCustom) customSniInput.focus();
+      }
+    };
+
+    profileRadios.forEach(r => r.addEventListener("change", updateDpiUI));
+    if (sniSelect) sniSelect.addEventListener("change", updateDpiUI);
+
     const validate = () => {
       const value = input.value.trim();
       const ok = CLIENT_NAME_RE.test(value);
@@ -4509,8 +4938,20 @@ function clientNameModal() {
     });
     dialog.addEventListener("close", () => {
       const value = dialog.returnValue === "ok" ? input.value.trim() : null;
+      const preset = dialog.querySelector("input[name='clientPreset']:checked")?.value || "default";
+      const dpiProfile = dialog.querySelector("input[name='clientDpiProfile']:checked")?.value || "quic_stealth";
+      const splitLan = !!dialog.querySelector("#clientSplitLan")?.checked;
+      const usePsk = !!dialog.querySelector("#clientUsePsk")?.checked;
+      let mimicry_sni = defaultSni;
+      if (sniSelect) {
+        if (sniSelect.value === "custom") {
+          mimicry_sni = (customSniInput?.value || "").trim() || defaultSni;
+        } else {
+          mimicry_sni = sniSelect.value;
+        }
+      }
       dialog.remove();
-      resolve(value);
+      resolve(value ? {name: value, preset, dpi_profile: dpiProfile, split_lan: splitLan, use_psk: usePsk, mimicry_sni} : null);
     }, {once: true});
     dialog.showModal();
     input.focus();
@@ -4595,7 +5036,7 @@ async function renderDirectNettest() {
         <div>
           <h1 class="text-xl font-semibold leading-tight">Network Tester</h1>
           <p class="flex flex-wrap items-center gap-2 text-sm text-[var(--muted)]">
-            <span>Quality check — no login required</span>
+            <span>Quality check - no login required</span>
             <span id="connectionStatusPill" class="${CONNECTION_PILL_BASE} ${CONNECTION_STATE_INFO.online.className}">${CONNECTION_STATE_INFO.online.label}</span>
           </p>
         </div>

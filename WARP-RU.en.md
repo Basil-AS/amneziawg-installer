@@ -147,7 +147,7 @@ awg show warp
 
 The first command should return a Cloudflare address, different from your server's. After it, `awg show warp` will show a `latest handshake` and a non-zero `transfer`. If no address came back there is no point going further - fix WARP first, not BGP.
 
-> **About MSS.** The original recipe also carried a `TCPMSS --clamp-mss-to-pmtu` rule for traffic into `warp`. On an install from this repository it changes nothing: since version 5.17.0 the installer already clamps MSS to 1240 in both directions for `awg0`, and with a `warp` MTU of 1280 the IPv4 result is exactly the same 1240. You only need that rule if you lower the WARP MTU or build this on top of someone else's install with no MSS clamping.
+> **About MSS.** The original recipe also carried a `TCPMSS --clamp-mss-to-pmtu` rule for traffic into `warp`. On an install from this repository it changes nothing: since version 5.17.0 the installer already clamps MSS to 1220 in both directions for `awg0`, and with a `warp` MTU of 1280 the IPv4 result leaves safe headroom for TCP options. You only need that rule if you lower the WARP MTU or build this on top of someone else's install with no MSS clamping.
 
 > **Where to keep the `ip rule`.** Above it lives in `warp.conf` with an explicit `awg0`. The reverse also works: put `PostUp = ip rule add iif %i lookup 200` into `awg0.conf`, where `%i` expands to `awg0`, and both configs become generic. Either variant is fine; such a line in `awg0.conf` has been verified to survive the management script's `add`, `regen` and `remove` commands. What you must not do is write `iif %i` inside `warp.conf`: there `%i` expands to `warp`, and the rule would catch the wrong traffic.
 

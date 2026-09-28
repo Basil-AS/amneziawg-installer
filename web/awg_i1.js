@@ -1,18 +1,34 @@
 "use strict";
 
-const I1_SNI_CANDIDATES = [
-  "mail.ru",
-  "vk.com",
-  "ozon.ru",
-  "wildberries.ru",
-  "cdn.jsdelivr.net",
-  "cloudflare.com"
-];
+function getCamouflagePresets(serverDomain = "") {
+  const presets = [];
+  if (serverDomain && serverDomain !== "localhost" && !serverDomain.match(/^\d+\.\d+\.\d+\.\d+$/)) {
+    presets.push({ value: serverDomain, label: `${serverDomain} (Текущий домен сервера - Рекомендуется)` });
+  }
+  presets.push(
+    { value: "vk.com", label: "vk.com (ВКонтакте - Белый список RU)" },
+    { value: "ya.ru", label: "ya.ru (Яндекс Портал - Белый список RU)" },
+    { value: "yandex.ru", label: "yandex.ru (Яндекс Сервисы)" },
+    { value: "vk.ru", label: "vk.ru (VK Портал)" },
+    { value: "mail.ru", label: "mail.ru (Почта Mail.ru)" },
+    { value: "ozon.ru", label: "ozon.ru (Маркетплейс Ozon)" },
+    { value: "wildberries.ru", label: "wildberries.ru (Маркетплейс Wildberries)" },
+    { value: "gosuslugi.ru", label: "gosuslugi.ru (Портал Госуслуг РФ)" },
+    { value: "rutube.ru", label: "rutube.ru (Видеохостинг Rutube)" },
+    { value: "cloudflare.com", label: "cloudflare.com (Cloudflare Global CDN)" },
+    { value: "custom", label: "Пользовательский домен (ввести вручную)..." }
+  );
+  return presets;
+}
+
+const I1_SNI_PRESETS = getCamouflagePresets();
+const I1_SNI_CANDIDATES = I1_SNI_PRESETS.filter(p => p.value !== "custom").map(p => p.value);
 
 function pickI1Sni() {
-  return I1_SNI_CANDIDATES[
-    Math.floor(Math.random() * I1_SNI_CANDIDATES.length)
-  ];
+  if (typeof window !== "undefined" && window.SERVER_CAMOUFLAGE_DOMAIN) {
+    return window.SERVER_CAMOUFLAGE_DOMAIN;
+  }
+  return "vk.com";
 }
 
 function quicU8a(value) {
@@ -251,7 +267,7 @@ function buildRealisticClientHello(sni) {
         extLength
     ], 4);
 
-    const view = new DataView(payload);
+    const view = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
     view.setUint32(0, payload.byteLength - 4, false);
     view.setUint8(0, 0x01);
 
@@ -282,30 +298,63 @@ function quicFixCutSettings(cutSettings, packetLength, packetNumberLength, paylo
   return cutSettings;
 }
 
-function quicToProfile(packet, cutSettings) {
-  const parts = [`<b 0x${quicToHex(packet)}>`];
-  for (const cut of cutSettings) {
-    parts.push(`<r ${cut.offset} ${cut.length}>`);
+function quicToProfile(packet) {
+  return `<b 0x${quicToHex(packet)}>`;
+}
+
+function generateRandomI1(length = 64) {
+  const bytes = new Uint8Array(length);
+  const cryptoObj = (typeof window !== "undefined" && window.crypto) || (typeof crypto !== "undefined" && crypto);
+  if (cryptoObj && cryptoObj.getRandomValues) {
+    cryptoObj.getRandomValues(bytes);
+  } else {
+    for (let i = 0; i < length; i++) bytes[i] = Math.floor(Math.random() * 256);
   }
-  return parts.join("");
+  return `<b 0x${quicToHex(bytes)}>`;
 }
 
-async function generateI1(sni, level = 0, padTo = 0) {
-    const dcid = new Uint8Array(1);
-    window.crypto.getRandomValues(dcid);
+async function generateQuicI1(sni, padTo = 700) {
+  sni = (sni && String(sni).trim()) || pickI1Sni();
+  const dcid = new Uint8Array(8);
+  const cryptoObj = (typeof window !== "undefined" && window.crypto) || (typeof crypto !== "undefined" && crypto);
+  cryptoObj.getRandomValues(dcid);
 
-    const scid = new Uint8Array(0);
-    const token = new Uint8Array(0);
-    const pkn = new Uint8Array([0]);
+  const scid = new Uint8Array(0);
+  const token = new Uint8Array(0);
+  const pkn = new Uint8Array([0]);
 
-    const clientHello = buildRealisticClientHello(sni);
-    const [payload, cutSettings] = quicTlsClientHelloToFrames(clientHello, level);
-    const packet = await quicInitial(dcid, scid, token, pkn, payload, padTo);
-    quicFixCutSettings(cutSettings, packet.byteLength, pkn.byteLength, payload.byteLength);
+  const clientHello = buildRealisticClientHello(sni);
+  const cryptoFrame = quicCryptoFrame(0, clientHello);
+  const packet = await quicInitial(dcid, scid, token, pkn, cryptoFrame, padTo);
 
-    return quicToProfile(packet, cutSettings);
+  return quicToProfile(packet);
 }
 
-window.I1_SNI_CANDIDATES = I1_SNI_CANDIDATES;
-window.pickI1Sni = pickI1Sni;
-window.generateI1 = generateI1;
+async function generateI1(sni, level = 0, padTo = 700) {
+  if (sni === "none") return "";
+  if (sni === "random") return generateRandomI1(64);
+  if (sni === "quic") return generateQuicI1((typeof level === "string" && level) ? level : pickI1Sni(), padTo);
+  return generateQuicI1(sni, padTo);
+}
+
+if (typeof window !== "undefined") {
+  window.getCamouflagePresets = getCamouflagePresets;
+  window.I1_SNI_PRESETS = I1_SNI_PRESETS;
+  window.I1_SNI_CANDIDATES = I1_SNI_CANDIDATES;
+  window.pickI1Sni = pickI1Sni;
+  window.generateQuicI1 = generateQuicI1;
+  window.generateRandomI1 = generateRandomI1;
+  window.generateI1 = generateI1;
+}
+
+if (typeof module !== "undefined" && module.exports) {
+  module.exports = {
+    getCamouflagePresets,
+    I1_SNI_PRESETS,
+    I1_SNI_CANDIDATES,
+    pickI1Sni,
+    generateQuicI1,
+    generateRandomI1,
+    generateI1
+  };
+}
