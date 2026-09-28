@@ -5621,6 +5621,20 @@ def parse_peers():
         peer["dpi_profile"] = meta.get("dpi_profile", "")
         peer["preset"] = meta.get("preset", "default")
         rows.append(peer)
+
+    def _peer_sort_key(p):
+        v4 = p.get("ipv4") or ""
+        if v4:
+            try:
+                return (0, [int(part) for part in v4.split(".")])
+            except Exception:
+                pass
+        v6 = p.get("ipv6") or ""
+        if v6:
+            return (1, v6)
+        return (2, p.get("name") or "")
+
+    rows.sort(key=_peer_sort_key)
     return rows
 
 
