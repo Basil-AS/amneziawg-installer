@@ -2522,7 +2522,7 @@ usage() {
     echo "  profile status         Версия AWG, валидность профиля и capability probe"
     echo "  profile validate       Проверить AWG 3.1 профиль без вывода секретов"
     echo "  client-profile set <имя> [--os=OS --device=D --network=N --carrier=C --preset=P]"
-    echo "                        Создать профиль клиента (уникальные Jc/Jmin/Jmax/I1, MTU) и перегенерировать клиента"
+    echo "                        Создать профиль клиента (уникальные Jc/Jmin/Jmax/I1, MTU) и пересобрать конфиг клиента (ключи не меняются)"
     echo "  client-profile show|clear <имя>    Показать / удалить профиль клиента"
     echo "  client-profile presets|classify [ASN ORG]  Пресеты / определить тип сети по ASN и названию"
     echo "  voice-check           Диагностика UDP/STUN/NAT для звонков"
@@ -2857,18 +2857,18 @@ case $COMMAND in
                 grep -qxF "#_Name = ${_cn}" "$SERVER_CONF_FILE" || die "Клиент '$_cn' не найден."
                 case "$_sub" in
                     set)
-                        client_profile_set "$_cn" "${CLIENT_TAG_OS:-}" "${CLIENT_TAG_DEVICE:-}" "${CLIENT_TAG_NETWORK:-}"                             "${CLIENT_TAG_CARRIER:-}" "${CLIENT_TAG_PRESET:-}" && regenerate_client "$_cn" || _cmd_rc=1
+                        client_profile_set "$_cn" "${CLIENT_TAG_OS:-}" "${CLIENT_TAG_DEVICE:-}" "${CLIENT_TAG_NETWORK:-}"                             "${CLIENT_TAG_CARRIER:-}" "${CLIENT_TAG_PRESET:-}" && refresh_client_config "$_cn" || _cmd_rc=1
                         ;;
                     show)
                         if [[ -f "$AWG_CLIENT_PROFILE_DIR/${_cn}.json" ]]; then
-                            sed -E 's/("i1": "<b 0x.{16}).*/...>"/' "$AWG_CLIENT_PROFILE_DIR/${_cn}.json"
+                            sed -E 's/("i1": "<b 0x.{16}).*/\1...>"/' "$AWG_CLIENT_PROFILE_DIR/${_cn}.json"
                         else
                             echo "Профиля клиента нет: используются параметры сервера."
                         fi
                         ;;
                     clear)
                         rm -f "$AWG_CLIENT_PROFILE_DIR/${_cn}.json"
-                        regenerate_client "$_cn" || _cmd_rc=1
+                        refresh_client_config "$_cn" || _cmd_rc=1
                         ;;
                 esac
                 ;;
