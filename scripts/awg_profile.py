@@ -143,18 +143,26 @@ def validate(profile: dict[str, object], version: str = "3.1") -> dict[str, obje
 
 
 def _generate_h_ranges(rng: random.Random, width: int) -> tuple[str, str, str, str]:
-    """Generate four non-overlapping ranges in the Windows-safe int32 space."""
+    """Generate four non-overlapping ranges in the Windows-safe int32 space.
+
+    H1-H3 (rare handshake messages) are narrow ranges of ``width`` inside the
+    lower 2^28 values.  H4 is the data message type, i.e. all bulk traffic, so
+    it gets almost the whole remaining space: a narrow H4 makes the top header
+    byte nearly constant, which is a cheap DPI signature.
+    """
     minimum = 5
-    available = INT32_MAX - minimum + 1
-    segment = available // 4
+    low_limit = 1 << 28
+    segment = (low_limit - minimum) // 3
     starts = []
-    for index in range(4):
+    for index in range(3):
         segment_start = minimum + index * segment
-        segment_end = minimum + (index + 1) * segment - 1
-        latest = segment_end - width + 1
-        start = rng.randrange(segment_start, max(segment_start, latest) + 1)
-        starts.append(start)
-    return tuple(f"{start}-{start + width - 1}" for start in starts)  # type: ignore[return-value]
+        latest = segment_start + segment - width
+        starts.append(rng.randrange(segment_start, max(segment_start, latest) + 1))
+    h4_low = low_limit + rng.randrange(0, 1 << 26)
+    h4_high = INT32_MAX - rng.randrange(0, 1 << 26)
+    ranges = [f"{start}-{start + width - 1}" for start in starts]
+    ranges.append(f"{h4_low}-{h4_high}")
+    return tuple(ranges)  # type: ignore[return-value]
 
 
 def generate(version: str, seed: int | None = None, profile: str = "balanced") -> dict[str, object]:

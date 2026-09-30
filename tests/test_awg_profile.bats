@@ -105,3 +105,12 @@ setup() {
     [ "$status" -eq 0 ]
     [[ "$output" == *'HeaderProtectionKey = '* ]]
 }
+
+@test "awg_profile: H4 is the widest range (>= half of int32 space) for every profile" {
+    for profile in mobile balanced stealth compatibility; do
+        run "$PYTHON_BIN" "$SCRIPT" generate --version 3.1 --profile "$profile" --seed 5
+        [ "$status" -eq 0 ]
+        run "$PYTHON_BIN" -c 'import json,sys; p=json.loads(sys.argv[1]); a,b=map(int,p["h4"].split("-")); assert b-a >= 2**30' "$output"
+        [ "$status" -eq 0 ]
+    done
+}

@@ -126,3 +126,16 @@ load test_helper
     [ "$output" -ge 0 ]
     [ "$output" -le 4294967295 ]
 }
+
+@test "generate_awg_h_ranges: H4 (data type) is wide, top byte is not near-constant" {
+    # H4 covers all bulk traffic; a narrow range makes the header's top byte a
+    # cheap DPI fingerprint. Require >= 1/2 of the int32 space over many runs.
+    for _ in $(seq 1 25); do
+        run generate_awg_h_ranges
+        [ "$status" -eq 0 ]
+        local h4="${lines[3]}"
+        local low="${h4%-*}" high="${h4#*-}"
+        [ $(( high - low )) -ge 1073741824 ]
+        [ "$high" -le 2147483647 ]
+    done
+}
