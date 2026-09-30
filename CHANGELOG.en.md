@@ -12,6 +12,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [5.29.0-bas.8] - 2026-09-30
+
+### Fixed
+
+- H1-H4 generator (installer, `awg_common*.sh`, runtime, `scripts/awg_profile.py`): H4 (the data message type, i.e. all bulk traffic) is now the widest range (~7/8 of the int32 space) while H1-H3 stay narrow in the lower part. Previously H4 was narrow (median 3.8%), leaving a near-constant top header byte, a cheap DPI fingerprint.
+
+
 ## [5.29.0-bas.7] - 2026-09-01
 
 - Fixed `AWG_COMMON_VERSION` synchronization between the library, installer, and management script.
@@ -1724,7 +1731,8 @@ Major security and reliability update after several consecutive code audits. The
 - Diagnostic report (`--diagnostic`).
 - Full uninstall (`--uninstall`).
 
-[Unreleased]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.29.0-bas.7...HEAD
+[Unreleased]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.29.0-bas.8...HEAD
+[5.29.0-bas.8]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.29.0-bas.7...v5.29.0-bas.8
 [5.29.0-bas.7]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.29.0-bas.6...v5.29.0-bas.7
 [5.29.0-bas.6]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.29.0-bas.5...v5.29.0-bas.6
 [5.29.0-bas.5]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.29.0-bas.4...v5.29.0-bas.5

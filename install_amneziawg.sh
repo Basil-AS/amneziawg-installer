@@ -9,7 +9,7 @@ fi
 # ==============================================================================
 # Скрипт для установки и настройки AmneziaWG 2.0 на Ubuntu/Debian серверах
 # Автор: @bivlked
-# Версия: 5.29.0-bas.7
+# Версия: 5.29.0-bas.8
 # Дата: 2026-08-30
 # Репозиторий: https://github.com/bivlked/amneziawg-installer
 # ==============================================================================
@@ -17,7 +17,7 @@ fi
 # --- Безопасный режим и Константы ---
 set -o pipefail
 
-SCRIPT_VERSION="5.29.0-bas.7"
+SCRIPT_VERSION="5.29.0-bas.8"
 AWG_DIR="/root/awg"
 INSTALLER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)"
 CONFIG_FILE="$AWG_DIR/awgsetup_cfg.init"
@@ -36,8 +36,8 @@ AWG_PROFILE_SCRIPT_PATH="$AWG_DIR/scripts/awg_profile.py"
 # используются первыми; remote download разрешён только с pinned SHA256 либо
 # при явном AWG_ALLOW_UNVERIFIED_DOWNLOAD=1 для разработки.
 declare -A AWG_ASSET_SHA256=(
-    ["awg_common.sh"]="1e4345a07c388d695a866d1c6a39df44ec99f6b90c4b257a3222f9c1e1379016"
-    ["manage_amneziawg.sh"]="a9089bf7d38c3d9cd56ab6d02f747090ddcf7bf816556a1a6b3ff21cc2b7262b"
+    ["awg_common.sh"]="63728327c725913d2f70b39ebddcd26fa781b1018f523a245d273630e627a021"
+    ["manage_amneziawg.sh"]="ad9f6986f36fd731b6de337452c1adea7cdc0e2810662bc092b2fc528e5bea9a"
     ["web/server.py"]="2ed05a206297341e13e869903e9a0a86cc9742e9116ebee89525e7024d6b3306"
     ["web/index.html"]="7c07ed1d1991e08c0f9fc31e86ed8eb2bba5fa96387088f1f18918396cf7e662"
     ["web/app.js"]="5a9f15e50fc30a833b9080e92ae865911df6ca0cddc7da380ffaae3a1e2f26b3"
@@ -50,7 +50,7 @@ declare -A AWG_ASSET_SHA256=(
     ["scripts/gen_vpn_uri.py"]="4b6e9be27b4f27fd01a8b9c689fbfa83d85da919ae4e3314d6952de4deb18235"
     ["scripts/update-installed.sh"]="de611d33ccbeaafd79eb2ef59eab1c7827f54f1ee943159f5f5d14b9ecf3e481"
     ["scripts/migrate-tunnel-subnet.sh"]="a8b40101e8f02627c10d2bb769802bf860fdf41dd2bc8ac38a180e953329c3bb"
-    ["scripts/awg_profile.py"]="a6b0b33fb0f1d60faaf4b5989591ae9d2fc25b4c30b79c5ab919af1adff13cf2"
+    ["scripts/awg_profile.py"]="831e0501bb5a658c0aef4a98a42bf459ad61caad781e2d3f6f2db90b4912c890"
     ["scripts/probe-awg31.sh"]="67867c7acfd2569b31a7266feac942d0f16b6f580f61e4f377be70cfed9036bf"
 )
 
@@ -2257,6 +2257,13 @@ generate_awg_h_ranges() {
                 arr+=("$(rand_range 0 2147483647)")
             done
         fi
+        # Поле H4 - тип ДАННЫХ (весь трафик): делаем его самым широким, чтобы старший
+        # байт заголовка не был почти константой (иначе сигнатура для DPI). H1-H3
+        # (редкие handshake-пакеты) остаются узкими в нижней части диапазона.
+        arr[0]=$(( arr[0] & 268435455 )); arr[1]=$(( arr[1] & 268435455 ))
+        arr[2]=$(( arr[2] & 268435455 )); arr[3]=$(( arr[3] & 268435455 ))
+        arr[4]=$(( arr[4] & 268435455 )); arr[5]=$(( arr[5] & 268435455 ))
+        arr[6]=$(( 268435456 + (arr[6] & 67108863) )); arr[7]=$(( 2147483647 - (arr[7] & 67108863) ))
         local sorted
         sorted=$(printf '%s\n' "${arr[@]}" | sort -n)
         arr=()

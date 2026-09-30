@@ -4,7 +4,7 @@
 # ==============================================================================
 # Common function library for AmneziaWG 2.0
 # Author: @bivlked
-# Version: 5.29.0-bas.7
+# Version: 5.29.0-bas.8
 # Date: 2026-08-30
 # Repository: https://github.com/bivlked/amneziawg-installer
 # ==============================================================================
@@ -96,7 +96,7 @@ awg_profile_status() {
 # Library version. The manage script verifies it after sourcing this file so a
 # partial update fails with a clear message instead of a later missing symbol.
 # shellcheck disable=SC2034
-AWG_COMMON_VERSION="5.29.0-bas.7"
+AWG_COMMON_VERSION="5.29.0-bas.8"
 
 # --- Автоочистка временных файлов ---
 # ВАЖНО: trap НЕ устанавливается здесь, чтобы не перезаписать trap вызывающего скрипта.
@@ -1678,6 +1678,13 @@ generate_awg_h_ranges() {
             done
         fi
         # Сортировка
+        # H4 is the DATA message type (all bulk traffic): make it the widest so the
+        # top header byte is not near-constant (a DPI signature). H1-H3 (rare
+        # handshake packets) stay narrow in the lower part of the range.
+        arr[0]=$(( arr[0] & 268435455 )); arr[1]=$(( arr[1] & 268435455 ))
+        arr[2]=$(( arr[2] & 268435455 )); arr[3]=$(( arr[3] & 268435455 ))
+        arr[4]=$(( arr[4] & 268435455 )); arr[5]=$(( arr[5] & 268435455 ))
+        arr[6]=$(( 268435456 + (arr[6] & 67108863) )); arr[7]=$(( 2147483647 - (arr[7] & 67108863) ))
         local sorted
         sorted=$(printf '%s\n' "${arr[@]}" | sort -n)
         arr=()
@@ -4579,6 +4586,13 @@ generate_awg_h_ranges_runtime() {
             arr=()
             for _v in 1 2 3 4 5 6 7 8; do arr+=("$(awg_rand_range 0 2147483647)"); done
         fi
+        # H4 is the DATA message type (all bulk traffic): make it the widest so the
+        # top header byte is not near-constant (a DPI signature). H1-H3 (rare
+        # handshake packets) stay narrow in the lower part of the range.
+        arr[0]=$(( arr[0] & 268435455 )); arr[1]=$(( arr[1] & 268435455 ))
+        arr[2]=$(( arr[2] & 268435455 )); arr[3]=$(( arr[3] & 268435455 ))
+        arr[4]=$(( arr[4] & 268435455 )); arr[5]=$(( arr[5] & 268435455 ))
+        arr[6]=$(( 268435456 + (arr[6] & 67108863) )); arr[7]=$(( 2147483647 - (arr[7] & 67108863) ))
         mapfile -t arr < <(printf '%s\n' "${arr[@]}" | sort -n)
         if (( ${arr[1]} - ${arr[0]} >= 1000 )) && (( ${arr[3]} - ${arr[2]} >= 1000 )) && \
            (( ${arr[5]} - ${arr[4]} >= 1000 )) && (( ${arr[7]} - ${arr[6]} >= 1000 )); then

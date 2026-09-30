@@ -9,14 +9,14 @@ fi
 # ==============================================================================
 # AmneziaWG 2.0 installation and configuration script for Ubuntu/Debian servers
 # Author: @bivlked
-# Version: 5.29.0-bas.7
+# Version: 5.29.0-bas.8
 # Date: 2026-08-30
 # Repository: https://github.com/bivlked/amneziawg-installer
 # ==============================================================================
 
 # --- Safe mode and Constants ---
 set -o pipefail
-SCRIPT_VERSION="5.29.0-bas.7"
+SCRIPT_VERSION="5.29.0-bas.8"
 
 AWG_DIR="/root/awg"
 INSTALLER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)"
@@ -36,8 +36,8 @@ AWG_PROFILE_SCRIPT_PATH="$AWG_DIR/scripts/awg_profile.py"
 # are used first; remote download is allowed only with pinned SHA256 or explicit
 # AWG_ALLOW_UNVERIFIED_DOWNLOAD=1 for development.
 declare -A AWG_ASSET_SHA256=(
-    ["awg_common_en.sh"]="52603c80b0b837a9755eeed43cee8840ee503e8af0d45f26886fe40e5bf7a315"
-    ["manage_amneziawg_en.sh"]="67f04ca8a57576b63614939eba7dbdae9d1fa0ddbb206be569d3c7c200261f0e"
+    ["awg_common_en.sh"]="eebedafb62a9d1ca8d254c98557f0771411135b4e47e086d78277f09755a22f1"
+    ["manage_amneziawg_en.sh"]="bde20eec6265e7e75026a7168073c5644164325d4171e000a75146d057c497db"
     ["web/server.py"]="2ed05a206297341e13e869903e9a0a86cc9742e9116ebee89525e7024d6b3306"
     ["web/index.html"]="7c07ed1d1991e08c0f9fc31e86ed8eb2bba5fa96387088f1f18918396cf7e662"
     ["web/app.js"]="5a9f15e50fc30a833b9080e92ae865911df6ca0cddc7da380ffaae3a1e2f26b3"
@@ -50,7 +50,7 @@ declare -A AWG_ASSET_SHA256=(
     ["scripts/gen_vpn_uri.py"]="4b6e9be27b4f27fd01a8b9c689fbfa83d85da919ae4e3314d6952de4deb18235"
     ["scripts/update-installed.sh"]="de611d33ccbeaafd79eb2ef59eab1c7827f54f1ee943159f5f5d14b9ecf3e481"
     ["scripts/migrate-tunnel-subnet.sh"]="a8b40101e8f02627c10d2bb769802bf860fdf41dd2bc8ac38a180e953329c3bb"
-    ["scripts/awg_profile.py"]="a6b0b33fb0f1d60faaf4b5989591ae9d2fc25b4c30b79c5ab919af1adff13cf2"
+    ["scripts/awg_profile.py"]="831e0501bb5a658c0aef4a98a42bf459ad61caad781e2d3f6f2db90b4912c890"
     ["scripts/probe-awg31.sh"]="67867c7acfd2569b31a7266feac942d0f16b6f580f61e4f377be70cfed9036bf"
 )
 
@@ -2272,6 +2272,13 @@ generate_awg_h_ranges() {
                 arr+=("$(rand_range 0 2147483647)")
             done
         fi
+        # H4 is the DATA message type (all bulk traffic): make it the widest so the
+        # top header byte is not near-constant (a DPI signature). H1-H3 (rare
+        # handshake packets) stay narrow in the lower part of the range.
+        arr[0]=$(( arr[0] & 268435455 )); arr[1]=$(( arr[1] & 268435455 ))
+        arr[2]=$(( arr[2] & 268435455 )); arr[3]=$(( arr[3] & 268435455 ))
+        arr[4]=$(( arr[4] & 268435455 )); arr[5]=$(( arr[5] & 268435455 ))
+        arr[6]=$(( 268435456 + (arr[6] & 67108863) )); arr[7]=$(( 2147483647 - (arr[7] & 67108863) ))
         local sorted
         sorted=$(printf '%s\n' "${arr[@]}" | sort -n)
         arr=()
