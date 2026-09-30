@@ -12,6 +12,8 @@
 
 ## [Unreleased]
 
+## [5.29.0-bas.8] - 2026-09-30
+
 ### Исправлено
 
 - Генератор H1-H4 (установщик, `awg_common*.sh`, runtime, `scripts/awg_profile.py`): H4 (тип пакетов данных, весь трафик) теперь самый широкий диапазон (~7/8 пространства int32), а H1-H3 остаются узкими в нижней части. Раньше H4 был узким (медиана 3.8%), и старший байт заголовка почти не менялся - дешёвая сигнатура для DPI.
@@ -1736,7 +1738,8 @@ Hardening-фиксы надёжности и безопасности по ре�
 - Диагностический отчет (`--diagnostic`).
 - Полная деинсталляция (`--uninstall`).
 
-[Unreleased]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.29.0-bas.7...HEAD
+[Unreleased]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.29.0-bas.8...HEAD
+[5.29.0-bas.8]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.29.0-bas.7...v5.29.0-bas.8
 [5.29.0-bas.7]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.29.0-bas.6...v5.29.0-bas.7
 [5.29.0-bas.6]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.29.0-bas.5...v5.29.0-bas.6
 [5.29.0-bas.5]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.29.0-bas.4...v5.29.0-bas.5
