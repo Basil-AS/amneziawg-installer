@@ -17,6 +17,7 @@
 - Установщик: не была инициализирована `CLI_ISOLATION`, из-за чего любая неинтерактивная установка (`--yes`) падала с `Invalid --isolation=''`.
 - `scripts/probe-awg31.sh`: HeaderProtectionKey кодировался как base64 от hex-текста (64 байта), проба AWG 3.x всегда падала на модуле 3.1.2026xxxx.
 - Рендер профиля: булевы `RandomTrailers`/`DisableCookies` пишутся как `on`/`off` (`true` отвергается `awg setconf`, сервис не стартовал). `RandomTrailers` по умолчанию выключен (двусторонний, в замерах ухудшал результат).
+- AdGuard Home: при повторной установке пользователь `admin` дублировался в `AdGuardHome.yaml` (регулярка не видела строку `- name:`), и сервис не стартовал (`login: duplicated value`).
 
 
 ## [5.29.0-bas.8] - 2026-09-30

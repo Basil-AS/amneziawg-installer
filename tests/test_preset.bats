@@ -235,6 +235,9 @@ teardown() {
 @test "installers initialise CLI_ISOLATION so a non-interactive install does not die" {
     for f in install_amneziawg.sh install_amneziawg_en.sh; do
         run grep -Fx 'CLI_ISOLATION="default"' "$BATS_TEST_DIRNAME/../$f"
+@test "AdGuard users renderer recognises the '- name:' line so reinstall does not duplicate the admin" {
+    for f in install_amneziawg.sh install_amneziawg_en.sh; do
+        run grep -F 're.match(r"^\s*-?\s*name\s*:", line)' "$BATS_TEST_DIRNAME/../$f"
         [ "$status" -eq 0 ]
     done
 }

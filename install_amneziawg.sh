@@ -6136,7 +6136,7 @@ def render_users(lines):
             while i < len(users) and not re.match(r"^  -\s+", users[i]):
                 item.append(users[i])
                 i += 1
-            name_line = next((line for line in item if re.match(r"^\s+name\s*:", line)), "")
+            name_line = next((line for line in item if re.match(r"^\s*-?\s*name\s*:", line)), "")
             if not re.search(rf"name\s*:\s*['\"]?{re.escape(ag_user)}['\"]?\s*$", name_line):
                 out.extend(item)
             continue
