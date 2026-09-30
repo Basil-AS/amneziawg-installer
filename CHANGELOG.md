@@ -12,12 +12,18 @@
 
 ## [Unreleased]
 
+## [5.29.0-bas.9] - 2026-09-30
+
 ### Исправлено
 
 - Установщик: не была инициализирована `CLI_ISOLATION`, из-за чего любая неинтерактивная установка (`--yes`) падала с `Invalid --isolation=''`.
 - `scripts/probe-awg31.sh`: HeaderProtectionKey кодировался как base64 от hex-текста (64 байта), проба AWG 3.x всегда падала на модуле 3.1.2026xxxx.
 - Рендер профиля: булевы `RandomTrailers`/`DisableCookies` пишутся как `on`/`off` (`true` отвергается `awg setconf`, сервис не стартовал). `RandomTrailers` по умолчанию выключен (двусторонний, в замерах ухудшал результат).
 - AdGuard Home: при повторной установке пользователь `admin` дублировался в `AdGuardHome.yaml` (регулярка не видела строку `- name:`), и сервис не стартовал (`login: duplicated value`).
+### Добавлено
+
+- Индивидуальные профили клиентов: `scripts/awg_client_profile.py` даёт каждому клиенту свои `Jc/Jmin/Jmax`, уникальный DNS-/QUIC-подобный `I1`, MTU и keepalive (параметры отправителя; `S1-S4`/`H1-H4` остаются общими). Пресеты `mobile`, `ios`, `home`, `desktop`, `router`, `stealth`, подбор по метке ОС/устройства/сети, эвристика оператора по ASN/названию. Команды `manage client-profile set|show|clear|presets|classify`, `manage add --os= --device= --network= --carrier=`; по умолчанию новые клиенты получают профиль (`AWG_PER_CLIENT_PARAMS=0` отключает). Ключи при `set|clear` не меняются.
+- Web-панель: метки клиентов (ОС, устройство, сеть, оператор, пресет, заметка), кнопка «Labels and profile» с генерацией профиля, чипы меток и подсказка по оператору из ASN/названия провайдера в списке клиентов. API: `GET /api/presets`, `GET /api/ip-lookup?ip=` (GeoIP/ASN + классификация сети), `POST /api/clients/tags`; `/api/clients` отдаёт `tags`, `client_profile` (без I1) и `suggested_tags`.
 
 
 ## [5.29.0-bas.8] - 2026-09-30
@@ -1746,7 +1752,8 @@ Hardening-фиксы надёжности и безопасности по ре�
 - Диагностический отчет (`--diagnostic`).
 - Полная деинсталляция (`--uninstall`).
 
-[Unreleased]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.29.0-bas.8...HEAD
+[Unreleased]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.29.0-bas.9...HEAD
+[5.29.0-bas.9]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.29.0-bas.8...v5.29.0-bas.9
 [5.29.0-bas.8]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.29.0-bas.7...v5.29.0-bas.8
 [5.29.0-bas.7]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.29.0-bas.6...v5.29.0-bas.7
 [5.29.0-bas.6]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.29.0-bas.5...v5.29.0-bas.6

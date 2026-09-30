@@ -9,14 +9,14 @@ fi
 # ==============================================================================
 # AmneziaWG 2.0 peer management script
 # Author: @bivlked
-# Version: 5.29.0-bas.8
+# Version: 5.29.0-bas.9
 # Date: 2026-08-30
 # Repository: https://github.com/bivlked/amneziawg-installer
 # ==============================================================================
 
 # --- Safe mode and Constants ---
 # shellcheck disable=SC2034
-SCRIPT_VERSION="5.29.0-bas.8"
+SCRIPT_VERSION="5.29.0-bas.9"
 set -o pipefail
 AWG_DIR="/root/awg"
 SERVER_CONF_FILE="/etc/amnezia/amneziawg/awg0.conf"
@@ -210,6 +210,9 @@ while [[ $# -gt 0 ]]; do
         --preset=*)        ROTATE_PRESET="${1#*=}"; shift ;;
         --preset)          ROTATE_PRESET="${2:-}"; shift 2 ;;
         --carrier=*)       CLI_CARRIER="${1#*=}"; shift ;;
+        --os=*)            CLIENT_TAG_OS="${1#*=}"; shift ;;
+        --device=*)        CLIENT_TAG_DEVICE="${1#*=}"; shift ;;
+        --network=*)       CLIENT_TAG_NETWORK="${1#*=}"; shift ;;
         --*)
             echo "Unknown option: $1" >&2
             for _rest in "$@"; do [[ "$_rest" == "--json" ]] && JSON_OUTPUT=1; done
@@ -225,6 +228,8 @@ while [[ $# -gt 0 ]]; do
 done
 CLIENT_NAME="${ARGS[0]}"
 PARAM="${ARGS[1]}"
+CLIENT_TAG_CARRIER="${CLI_CARRIER:-}"
+[[ "${ROTATE_PRESET:-default}" != "default" ]] && CLIENT_TAG_PRESET="$ROTATE_PRESET"
 VALUE="${ARGS[2]}"
 
 if [[ -n "${_CLI_APPLY_MODE:-}" ]]; then
@@ -2459,6 +2464,10 @@ usage() {
     echo "  diagnose [--carrier=N] Diagnose kernel/sysctl/UFW and fork-specific sections"
     echo "  profile status         Show AWG version, profile validity, and capability probe"
     echo "  profile validate       Validate the AWG 3.1 profile without printing secrets"
+    echo "  client-profile set <name> [--os=OS --device=D --network=N --carrier=C --preset=P]"
+    echo "                        Generate a per-client profile (unique Jc/Jmin/Jmax/I1, MTU) and re-render the client config (keys unchanged)"
+    echo "  client-profile show|clear <name>   Show / remove a client profile"
+    echo "  client-profile presets|classify [ASN ORG]  List presets / guess network type from ASN and org"
     echo "  voice-check           UDP/STUN/NAT diagnostics for calls"
     echo "  p2p list              Show P2P ports for all clients"
     echo "  p2p show <name>       Show client P2P information"
@@ -3315,6 +3324,40 @@ case $COMMAND in
 
     diagnose)
         diagnose_server || _cmd_rc=1
+        ;;
+
+    client-profile)
+        _sub="${ARGS[0]:-show}"; _cn="${ARGS[1]:-}"
+        case "$_sub" in
+            presets)
+                python3 "$AWG_CLIENT_PROFILE_SCRIPT_PATH" presets || _cmd_rc=1
+                ;;
+            classify)
+                python3 "$AWG_CLIENT_PROFILE_SCRIPT_PATH" classify --asn "${ARGS[1]:-}" --org "${ARGS[2]:-}" || _cmd_rc=1
+                ;;
+            set|show|clear)
+                [[ -n "$_cn" ]] || die "Client name not specified."
+                validate_client_name "$_cn" || exit 1
+                grep -qxF "#_Name = ${_cn}" "$SERVER_CONF_FILE" || die "Client '$_cn' not found."
+                case "$_sub" in
+                    set)
+                        client_profile_set "$_cn" "${CLIENT_TAG_OS:-}" "${CLIENT_TAG_DEVICE:-}" "${CLIENT_TAG_NETWORK:-}"                             "${CLIENT_TAG_CARRIER:-}" "${CLIENT_TAG_PRESET:-}" && refresh_client_config "$_cn" || _cmd_rc=1
+                        ;;
+                    show)
+                        if [[ -f "$AWG_CLIENT_PROFILE_DIR/${_cn}.json" ]]; then
+                            sed -E 's/("i1": "<b 0x.{16}).*/\1...>"/' "$AWG_CLIENT_PROFILE_DIR/${_cn}.json"
+                        else
+                            echo "No client profile: server defaults are used."
+                        fi
+                        ;;
+                    clear)
+                        rm -f "$AWG_CLIENT_PROFILE_DIR/${_cn}.json"
+                        refresh_client_config "$_cn" || _cmd_rc=1
+                        ;;
+                esac
+                ;;
+            *) die "Unknown client-profile command: ${_sub}" ;;
+        esac
         ;;
 
     profile-status)
