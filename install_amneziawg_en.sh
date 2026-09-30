@@ -50,7 +50,7 @@ declare -A AWG_ASSET_SHA256=(
     ["scripts/gen_vpn_uri.py"]="4b6e9be27b4f27fd01a8b9c689fbfa83d85da919ae4e3314d6952de4deb18235"
     ["scripts/update-installed.sh"]="de611d33ccbeaafd79eb2ef59eab1c7827f54f1ee943159f5f5d14b9ecf3e481"
     ["scripts/migrate-tunnel-subnet.sh"]="a8b40101e8f02627c10d2bb769802bf860fdf41dd2bc8ac38a180e953329c3bb"
-    ["scripts/awg_profile.py"]="831e0501bb5a658c0aef4a98a42bf459ad61caad781e2d3f6f2db90b4912c890"
+    ["scripts/awg_profile.py"]="d3b13be7f2725f1601e052f8e1f73d54085f158ba7f9c8cf6958785740c2993c"
     ["scripts/probe-awg31.sh"]="29adacb4945a380274a38aa32120de70981a6f095d097cf8ba0c45a93509fa53"
 )
 
