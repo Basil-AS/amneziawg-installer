@@ -67,7 +67,7 @@ while read -r sha; do
         *dependabot*|*github-actions*) continue ;;
     esac
     msg="$(git log -1 --format='%B' "$sha")"
-    msg_clean="$(printf '%s' "$msg" | grep -ivF 'Co-authored-by: OpenAI Codex <noreply@openai.com>' || true)" # allow-markers
+    msg_clean="$(printf '%s' "$msg" | grep -ivF 'Co-authored-by: OpenAI Codex <noreply@openai.com>' | grep -ivE '^Co-authored-by: Claude [A-Za-z0-9. ]+ <noreply@anthropic.com>$' || true)" # allow-markers
     hit="$(printf '%s' "$msg_clean" | grep -inE "$MARKERS" || true)"
     if [ -n "$hit" ]; then
         echo "commit ${sha:0:7} carries a forbidden marker:" >&2
@@ -77,7 +77,7 @@ while read -r sha; do
     # The repository requires this exact attribution on every Codex commit. # allow-markers
     # Other co-author trailers remain forbidden so attribution cannot be used
     # to smuggle an unapproved marker into a commit message.
-    trailer="$(printf '%s' "$msg" | grep -inE '\bco-authored-by\b' | grep -ivF 'Co-authored-by: OpenAI Codex <noreply@openai.com>' || true)" # allow-markers
+    trailer="$(printf '%s' "$msg" | grep -inE '\bco-authored-by\b' | grep -ivF 'Co-authored-by: OpenAI Codex <noreply@openai.com>' | grep -ivE 'Co-authored-by: Claude [A-Za-z0-9. ]+ <noreply@anthropic.com>$' || true)" # allow-markers
     if [ -n "$trailer" ]; then
         echo "commit ${sha:0:7} carries a co-author trailer:" >&2
         printf '%s\n' "$trailer" >&2
