@@ -13,7 +13,7 @@ PROF() { python3 "$BATS_TEST_DIRNAME/../scripts/awg_client_profile.py" "$@"; }
 }
 
 @test "client profile: 30 profiles are pairwise different and I1 first byte is odd" {
-    for i in $(seq 1 30); do PROF generate --os windows >> "$TEST_DIR/all.jsonl"; done
+    for _ in $(seq 1 30); do PROF generate --os windows >> "$TEST_DIR/all.jsonl"; done
     run python3 -c '
 import json,sys
 rows=[json.loads(l) for l in open(sys.argv[1])]
@@ -80,7 +80,7 @@ assert len({(r["jmin"],r["jmax"],r["jc"]) for r in rows})>5
     export AWG_CLIENT_PROFILE_DIR="$TEST_DIR/client_profiles"
     mkdir -p "$AWG_CLIENT_PROFILE_DIR"
     printf '{"jc":3,"jmin":40,"jmax":77,"mtu":1200,"keepalive":20,"i1":"<b 0xab>"}' > "$AWG_CLIENT_PROFILE_DIR/laptop.json"
-    AWG_I1="<r 5>"; AWG_I1_OVERRIDE="<r 9>"
+    AWG_I1="<r 5>"; export AWG_I1_OVERRIDE="<r 9>"
     _apply_client_profile laptop
     [ "$AWG_I1" = "<r 5>" ]
 }

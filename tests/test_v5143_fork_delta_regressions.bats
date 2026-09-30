@@ -12,7 +12,7 @@ bats_require_minimum_version 1.5.0
     grep -qF 'ensure_dns_allowedips_routes' <<<"$block"
     grep -qF 'render_wiresock_hints' <<<"$block"
     grep -qF 'MTU = ${mtu}' <<<"$block"
-    grep -qF 'PersistentKeepalive = 25' <<<"$block"
+    grep -qF 'PersistentKeepalive = ${CLIENT_PROFILE_KEEPALIVE:-25}' <<<"$block"
     grep -qF 'CLIENT_PSK' <<<"$block"
     grep -qF '#_P2PPorts' "$BATS_TEST_DIRNAME/../awg_common.sh"
 }
