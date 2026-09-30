@@ -121,14 +121,20 @@ def dns_i1() -> str:
 
 
 def quic_i1() -> str:
-    """A QUIC long-header shaped packet: fixed-form header, random connection ids and payload."""
+    """A QUIC Initial shaped packet: real long-header layout, then random bytes up to a realistic size.
+
+    Real Initial packets are padded to at least 1200 bytes, so a 100-byte "QUIC" packet is itself an
+    anomaly.  The random tail uses the `<r N>` tag, which keeps the CPS string short.
+    """
     first = 0xC0 | (secrets.randbelow(4) << 4) | secrets.randbelow(4)
     first |= 1  # keep the first byte odd
-    dcid = secrets.token_bytes(rand_range(8, 16))
-    scid = secrets.token_bytes(rand_range(0, 8))
-    payload = secrets.token_bytes(rand_range(96, 220))
-    pkt = bytes([first]) + bytes.fromhex("00000001") + bytes([len(dcid)]) + dcid + bytes([len(scid)]) + scid + payload
-    return "<b 0x" + pkt.hex() + ">"
+    dcid = secrets.token_bytes(8)
+    total = rand_range(1200, 1252)
+    # version, dcid len + dcid, scid len 0, token length 0
+    head = bytes([first]) + bytes.fromhex("00000001") + bytes([len(dcid)]) + dcid + bytes.fromhex("0000")
+    length = total - len(head) - 2
+    head += bytes([0x40 | (length >> 8), length & 0xFF])  # 2-byte QUIC varint payload length
+    return "<b 0x" + head.hex() + "><r " + str(total - len(head)) + ">"
 
 
 I1_STYLES = {"dns": dns_i1, "quic": quic_i1}
