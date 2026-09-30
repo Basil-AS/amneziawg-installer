@@ -15,6 +15,7 @@
 ### Добавлено
 
 - Индивидуальные профили клиентов: `scripts/awg_client_profile.py` даёт каждому клиенту свои `Jc/Jmin/Jmax`, уникальный DNS-/QUIC-подобный `I1`, MTU и keepalive (параметры отправителя; `S1-S4`/`H1-H4` остаются общими). Пресеты `mobile`, `ios`, `home`, `desktop`, `router`, `stealth`, подбор по метке ОС/устройства/сети, эвристика оператора по ASN/названию. Команды `manage client-profile set|show|clear|presets|classify`, `manage add --os= --device= --network= --carrier=`; по умолчанию новые клиенты получают профиль (`AWG_PER_CLIENT_PARAMS=0` отключает). Ключи при `set|clear` не меняются.
+- Web-панель: метки клиентов (ОС, устройство, сеть, оператор, пресет, заметка), кнопка «Labels and profile» с генерацией профиля, чипы меток и подсказка по оператору из ASN/названия провайдера в списке клиентов. API: `GET /api/presets`, `GET /api/ip-lookup?ip=` (GeoIP/ASN + классификация сети), `POST /api/clients/tags`; `/api/clients` отдаёт `tags`, `client_profile` (без I1) и `suggested_tags`.
 
 
 ## [5.29.0-bas.8] - 2026-09-30

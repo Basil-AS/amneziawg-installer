@@ -3298,6 +3298,84 @@ def write_tokens(data):
         os.chmod(TOKEN_FILE, 0o600)
 
 
+CLIENT_PROFILE_SCRIPT = AWG_DIR / "scripts" / "awg_client_profile.py"
+CLIENT_PROFILE_DIR = AWG_DIR / "client_profiles"
+_CLIENT_PROFILE_MODULE = None
+_CLIENT_TAG_NOTE_RE = re.compile(r"^[\w .,:;!()/+\-]{0,80}$", re.UNICODE)
+
+
+def client_profile_module():
+    """Load scripts/awg_client_profile.py once (stdlib only); None when it is not installed."""
+    global _CLIENT_PROFILE_MODULE
+    if _CLIENT_PROFILE_MODULE is None:
+        try:
+            import importlib.util
+            spec = importlib.util.spec_from_file_location("awg_client_profile", str(CLIENT_PROFILE_SCRIPT))
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            _CLIENT_PROFILE_MODULE = mod
+        except Exception:
+            _CLIENT_PROFILE_MODULE = False
+    return _CLIENT_PROFILE_MODULE or None
+
+
+def clean_client_tags(value):
+    """Validated client labels: os, device, network, carrier, preset, note. Unknown keys are dropped."""
+    if not isinstance(value, dict):
+        return {}
+    mod = client_profile_module()
+    os_values = set(getattr(mod, "OS_VALUES", ())) if mod else set()
+    device_values = set(getattr(mod, "DEVICE_VALUES", ())) if mod else set()
+    network_values = set(getattr(mod, "NETWORK_VALUES", ())) if mod else set()
+    presets = set(getattr(mod, "PRESETS", {})) if mod else set()
+    clean = {}
+    for key, allowed in (("os", os_values), ("device", device_values), ("network", network_values), ("preset", presets)):
+        raw = str(value.get(key) or "").strip().lower()
+        if raw and (not allowed or raw in allowed):
+            clean[key] = raw
+    carrier = str(value.get("carrier") or "").strip().lower()
+    if carrier and re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,31}", carrier):
+        clean["carrier"] = carrier
+    note = str(value.get("note") or "").strip()
+    if note and _CLIENT_TAG_NOTE_RE.fullmatch(note):
+        clean["note"] = note
+    return clean
+
+
+def client_profile_summary(config_name):
+    """Public view of a saved per-client profile (never the full I1 packet)."""
+    try:
+        data = json.loads((CLIENT_PROFILE_DIR / f"{safe_name(config_name)}.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    out = {k: data[k] for k in ("preset", "jc", "jmin", "jmax", "mtu", "keepalive") if isinstance(data.get(k), (int, str)) and not isinstance(data.get(k), bool)}
+    i1 = str(data.get("i1") or "")
+    if i1:
+        out["i1_bytes"] = max(0, (len(i1) - len("<b 0x>")) // 2)
+    return out
+
+
+def classify_endpoint_info(info):
+    """Network type / carrier guess from an endpoint_info dict (ASN + org name); heuristic."""
+    mod = client_profile_module()
+    if not mod or not isinstance(info, dict):
+        return {}
+    org = info.get("org") or info.get("provider") or info.get("provider_display") or ""
+    result = mod.classify(str(info.get("asn") or ""), str(org))
+    result["suggested_preset"] = mod.suggest_preset("", result.get("network", ""), "")
+    return result
+
+
+def client_profile_presets():
+    mod = client_profile_module()
+    if not mod:
+        return {}
+    return {name: {"jc": list(v["jc"]), "jmin": list(v["jmin"]), "jspan": list(v["jspan"]), "mtu": v["mtu"],
+                   "keepalive": v["keepalive"], "i1": v["i1"], "why": v["why"]} for name, v in mod.PRESETS.items()}
+
+
 def clean_client_metadata_record(value):
     if not isinstance(value, dict):
         return {}
@@ -3317,6 +3395,9 @@ def clean_client_metadata_record(value):
         raw = value.get(key)
         if isinstance(raw, str) and re.fullmatch(r"[0-9T:Z+.-]{10,40}", raw):
             clean[key] = raw
+    tags = clean_client_tags(value.get("tags"))
+    if tags:
+        clean["tags"] = tags
     return clean
 
 
@@ -3376,6 +3457,22 @@ def set_client_metadata(config_name, display_name, auth=None):
 
 def set_client_display_name(config_name, display_name):
     set_client_metadata(config_name, display_name)
+
+
+def set_client_tags(config_name, tags):
+    config_name = safe_name(config_name)
+    data = load_client_metadata()
+    record = data.setdefault("clients", {}).get(config_name)
+    if not isinstance(record, dict):
+        record = {"display_name": config_name}
+    clean = clean_client_tags(tags)
+    if clean:
+        record["tags"] = clean
+    else:
+        record.pop("tags", None)
+    data["clients"][config_name] = record
+    write_client_metadata(data)
+    return clean
 
 
 def remove_client_metadata(config_name):
@@ -7349,6 +7446,26 @@ class Handler(SimpleHTTPRequestHandler):
                 return
             self.send_json(audit_client_state())
             return
+        if u.path == "/api/presets":
+            if not self.require_super(auth):
+                return
+            self.send_json({"presets": client_profile_presets()})
+            return
+        if u.path == "/api/ip-lookup":
+            if not self.require_super(auth):
+                return
+            raw_ip = (parse_qs(u.query).get("ip") or [""])[0].strip()
+            try:
+                ip_obj = ipaddress.ip_address(raw_ip)
+            except ValueError:
+                self.send_json({"error": "invalid ip"}, 400)
+                return
+            if ip_obj.is_private or ip_obj.is_loopback or ip_obj.is_link_local or ip_obj.is_multicast or ip_obj.is_reserved:
+                self.send_json({"error": "not a public address"}, 400)
+                return
+            info = lookup_endpoint_ip_info(str(ip_obj), allow_refresh=True)
+            self.send_json({"ip": str(ip_obj), "info": info, "classification": classify_endpoint_info(info)})
+            return
         if u.path == "/api/clients/latency":
             if not self.require_super(auth):
                 return
@@ -7417,6 +7534,9 @@ class Handler(SimpleHTTPRequestHandler):
                         endpoint_lookup_budget -= 1
                 else:
                     item["endpoint_info"] = {}
+                item["tags"] = client_metadata_record(peer["name"]).get("tags", {})
+                item["client_profile"] = client_profile_summary(peer["name"])
+                item["suggested_tags"] = classify_endpoint_info(item["endpoint_info"]) if self.is_super(auth) else {}
                 item["status"] = row_stats.get("status", "")
                 item["open_ports"] = item.get("p2p_ports", [])
                 item["ports_enabled"] = item.get("p2p_enabled", True)
@@ -7708,6 +7828,28 @@ class Handler(SimpleHTTPRequestHandler):
                         "assigned_to_current_token": assigned_to_current_token,
                     })
                     return
+            elif u.path == "/api/clients/tags":
+                if not self.require_super(auth):
+                    return
+                config_name = safe_name(body.get("name", ""))
+                if config_name not in {peer["name"] for peer in parse_peers()}:
+                    self.send_json({"error": "client not found"}, 404)
+                    return
+                tags = set_client_tags(config_name, body.get("tags") or {})
+                result = {"ok": True, "name": config_name, "tags": tags}
+                if body.get("apply"):
+                    args = ["client-profile", "set", config_name]
+                    for key in ("os", "device", "network", "carrier", "preset"):
+                        if tags.get(key):
+                            args.append(f"--{key}={tags[key]}")
+                    p = run_manage(*args, timeout=90)
+                    result["applied"] = p.returncode == 0
+                    if p.returncode != 0:
+                        result["stderr"] = p.stderr[-400:]
+                    result["client_profile"] = client_profile_summary(config_name)
+                audit_log(f"Client tags updated config_name={config_name} actor_role={auth.get('role')} actor_fp={auth_fingerprint(auth)} apply={'true' if body.get('apply') else 'false'}")
+                self.send_json(result)
+                return
             elif u.path == "/api/server/restart":
                 if not self.require_super(auth):
                     return
