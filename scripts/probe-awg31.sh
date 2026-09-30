@@ -15,7 +15,7 @@ trap cleanup EXIT
 chmod 600 "$tmp_conf"
 
 private_key="$(awg genkey 2>/dev/null)" || exit 1
-header_key="$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n' | base64 -w0)" || exit 1
+header_key="$(head -c 32 /dev/urandom | base64 -w0)" || exit 1
 cat >"$tmp_conf" <<EOF
 [Interface]
 PrivateKey = $private_key

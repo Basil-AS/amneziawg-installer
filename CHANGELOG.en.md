@@ -12,6 +12,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Installer: `CLI_ISOLATION` was never initialised, so every non-interactive install (`--yes`) died with `Invalid --isolation=''`.
+- `scripts/probe-awg31.sh`: HeaderProtectionKey was base64 of hex text (64 bytes), so the AWG 3.x probe always failed on module 3.1.2026xxxx.
+- Profile renderer: booleans `RandomTrailers`/`DisableCookies` are written as `on`/`off` (`awg setconf` rejects `true`, the service did not start). `RandomTrailers` is off by default (bilateral, measured harmful).
+
+
 ## [5.29.0-bas.8] - 2026-09-30
 
 ### Fixed

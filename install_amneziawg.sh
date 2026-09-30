@@ -51,7 +51,7 @@ declare -A AWG_ASSET_SHA256=(
     ["scripts/update-installed.sh"]="de611d33ccbeaafd79eb2ef59eab1c7827f54f1ee943159f5f5d14b9ecf3e481"
     ["scripts/migrate-tunnel-subnet.sh"]="a8b40101e8f02627c10d2bb769802bf860fdf41dd2bc8ac38a180e953329c3bb"
     ["scripts/awg_profile.py"]="831e0501bb5a658c0aef4a98a42bf459ad61caad781e2d3f6f2db90b4912c890"
-    ["scripts/probe-awg31.sh"]="67867c7acfd2569b31a7266feac942d0f16b6f580f61e4f377be70cfed9036bf"
+    ["scripts/probe-awg31.sh"]="29adacb4945a380274a38aa32120de70981a6f095d097cf8ba0c45a93509fa53"
 )
 
 # Проверенный AWG 2.0 для ядер, где третья линия пока не используется.
@@ -71,6 +71,7 @@ CLI_WEB_CERT_MODE=""; CLI_WEB_DOMAIN=""; CLI_WEB_CERT_FILE=""; CLI_WEB_KEY_FILE=
 CLI_ENABLE_ADGUARD=0; CLI_DISABLE_ADGUARD=0; CLI_ADGUARD_PORT=""; CLI_DNS_MODE=""
 CLI_ENABLE_GEOIP_AUTO_UPDATE=0
 CLI_WIRESOCK_HINTS=""; CLI_WIRESOCK_ID=""; CLI_WIRESOCK_IP=""; CLI_WIRESOCK_IB=""
+CLI_ISOLATION="default"
 CLI_SERVER_NAME=""
 CLI_PRESET=""; CLI_JC=""; CLI_JMIN=""; CLI_JMAX=""; CLI_AWG_VERSION=""
 
