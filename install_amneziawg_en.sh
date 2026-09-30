@@ -9,14 +9,14 @@ fi
 # ==============================================================================
 # AmneziaWG 2.0 installation and configuration script for Ubuntu/Debian servers
 # Author: @bivlked
-# Version: 5.29.0-bas.8
+# Version: 5.29.0-bas.9
 # Date: 2026-08-30
 # Repository: https://github.com/bivlked/amneziawg-installer
 # ==============================================================================
 
 # --- Safe mode and Constants ---
 set -o pipefail
-SCRIPT_VERSION="5.29.0-bas.8"
+SCRIPT_VERSION="5.29.0-bas.9"
 
 AWG_DIR="/root/awg"
 INSTALLER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)"
@@ -36,11 +36,11 @@ AWG_PROFILE_SCRIPT_PATH="$AWG_DIR/scripts/awg_profile.py"
 # are used first; remote download is allowed only with pinned SHA256 or explicit
 # AWG_ALLOW_UNVERIFIED_DOWNLOAD=1 for development.
 declare -A AWG_ASSET_SHA256=(
-    ["awg_common_en.sh"]="eebedafb62a9d1ca8d254c98557f0771411135b4e47e086d78277f09755a22f1"
-    ["manage_amneziawg_en.sh"]="bde20eec6265e7e75026a7168073c5644164325d4171e000a75146d057c497db"
-    ["web/server.py"]="2ed05a206297341e13e869903e9a0a86cc9742e9116ebee89525e7024d6b3306"
+    ["awg_common_en.sh"]="109ba9b0a409dfebd24f3fd38e142b8bfe9cac12baf65491fe206985bcfc621a"
+    ["manage_amneziawg_en.sh"]="989688668da5420827eb76cd0bab9e40761caa52e5e79c2c9567a1daa2533021"
+    ["web/server.py"]="6626d15a33f81b549233149beaae8ca6d2ee2d1b46a074e1c3b308954a522aaa"
     ["web/index.html"]="7c07ed1d1991e08c0f9fc31e86ed8eb2bba5fa96387088f1f18918396cf7e662"
-    ["web/app.js"]="5a9f15e50fc30a833b9080e92ae865911df6ca0cddc7da380ffaae3a1e2f26b3"
+    ["web/app.js"]="13c96bdccf0d04b06e99bab222a27d8e7ea68ae009f3920ee0ca478b8b4a7d22"
     ["web/awg_i1.js"]="c97a6ac6c4e4bd7ab24c37c45f451e364414f276441f8da1c0805d26013aaa03"
     ["web/style.css"]="c6c728f244b79cdae162df3c5d0eddaea0b0b92951598355e4547f0add9e911a"
     ["web/favicon.svg"]="ae700ecb12dbf01403d0ed25247bac6b70f11201b094ee6c14b774b7fa533859"
@@ -50,8 +50,9 @@ declare -A AWG_ASSET_SHA256=(
     ["scripts/gen_vpn_uri.py"]="4b6e9be27b4f27fd01a8b9c689fbfa83d85da919ae4e3314d6952de4deb18235"
     ["scripts/update-installed.sh"]="de611d33ccbeaafd79eb2ef59eab1c7827f54f1ee943159f5f5d14b9ecf3e481"
     ["scripts/migrate-tunnel-subnet.sh"]="a8b40101e8f02627c10d2bb769802bf860fdf41dd2bc8ac38a180e953329c3bb"
-    ["scripts/awg_profile.py"]="831e0501bb5a658c0aef4a98a42bf459ad61caad781e2d3f6f2db90b4912c890"
-    ["scripts/probe-awg31.sh"]="67867c7acfd2569b31a7266feac942d0f16b6f580f61e4f377be70cfed9036bf"
+    ["scripts/awg_profile.py"]="d3b13be7f2725f1601e052f8e1f73d54085f158ba7f9c8cf6958785740c2993c"
+    ["scripts/awg_client_profile.py"]="2940a2984723174951b6e1638d2a3bbc8c47ee54e272b23afe988e3c17a108ec"
+    ["scripts/probe-awg31.sh"]="29adacb4945a380274a38aa32120de70981a6f095d097cf8ba0c45a93509fa53"
 )
 
 # Verified AWG 2.0 fallback for kernels where the third line is not selected.
@@ -71,6 +72,7 @@ CLI_WEB_CERT_MODE=""; CLI_WEB_DOMAIN=""; CLI_WEB_CERT_FILE=""; CLI_WEB_KEY_FILE=
 CLI_ENABLE_ADGUARD=0; CLI_DISABLE_ADGUARD=0; CLI_ADGUARD_PORT=""; CLI_DNS_MODE=""
 CLI_ENABLE_GEOIP_AUTO_UPDATE=0
 CLI_WIRESOCK_HINTS=""; CLI_WIRESOCK_ID=""; CLI_WIRESOCK_IP=""; CLI_WIRESOCK_IB=""
+CLI_ISOLATION="default"
 CLI_SERVER_NAME=""
 CLI_PRESET=""; CLI_JC=""; CLI_JMIN=""; CLI_JMAX=""; CLI_AWG_VERSION=""
 
@@ -5903,6 +5905,7 @@ step5_download_scripts() {
     _deploy_asset "scripts/update-installed.sh" "$AWG_DIR/update-installed.sh" 700
     _deploy_asset "scripts/migrate-tunnel-subnet.sh" "$AWG_DIR/migrate-tunnel-subnet.sh" 700
     _deploy_asset "scripts/awg_profile.py" "$AWG_PROFILE_SCRIPT_PATH" 700
+    _deploy_asset "scripts/awg_client_profile.py" "$AWG_DIR/scripts/awg_client_profile.py" 700
     _deploy_asset "scripts/probe-awg31.sh" "$AWG_DIR/scripts/probe-awg31.sh" 700
 
     log "Step 5 completed."
@@ -6190,7 +6193,7 @@ def render_users(lines):
             while i < len(users) and not re.match(r"^  -\s+", users[i]):
                 item.append(users[i])
                 i += 1
-            name_line = next((line for line in item if re.match(r"^\s+name\s*:", line)), "")
+            name_line = next((line for line in item if re.match(r"^\s*-?\s*name\s*:", line)), "")
             if not re.search(rf"name\s*:\s*['\"]?{re.escape(ag_user)}['\"]?\s*$", name_line):
                 out.extend(item)
             continue

@@ -3108,6 +3108,7 @@ function renderClients() {
               <p class="mt-1 text-xs text-[var(--muted)]">${active ? "Active recently" : "No recent traffic"} · Last seen ${esc(timeAgo(client.latestHandshakeAt || client.last_handshake))}</p>
               <p class="mt-1 flex min-w-0 flex-wrap items-center gap-2 text-xs text-[var(--muted)]"><span class="truncate">Endpoint: ${esc(endpoint)}</span>${statusState.role === "super" ? renderLatencyChip(client) + renderSharedProfileChip(client) + renderPathChip(client) : ""}</p>
               ${renderEndpointInfo(client)}
+              ${renderClientTags(client)}
               ${portMarkup ? `<div class="mt-2">${portMarkup}</div>` : ""}
             </div>
           </div>
@@ -3134,6 +3135,7 @@ function renderClients() {
               <button type="button" data-action="regenerate-config" class="client-menu-item text-amber-700">${icon("refresh")}<span>Regenerate</span></button>
               ${renderMenuItem("toggle", "power", client.disabled ? "Enable client" : "Disable client")}
               ${renderMenuItem("toggle-ports", "shield", "Port details / toggle", shieldClass)}
+              ${isAdmin ? renderMenuItem("edit-tags", "link", "Labels and profile") : ""}
               ${familyItem}
               ${adminDeleteItem}
               ${removeAccessItem}
@@ -3336,6 +3338,79 @@ async function addClient() {
   }
 }
 
+const TAG_OS = ["android", "ios", "windows", "macos", "linux", "router", "other"];
+const TAG_DEVICE = ["phone", "tablet", "laptop", "desktop", "router", "tv", "other"];
+const TAG_NETWORK = ["mobile", "home", "office", "hosting", "unknown"];
+
+function renderClientTags(client) {
+  const tags = client.tags || {};
+  const profile = client.client_profile || {};
+  const suggested = client.suggested_tags || {};
+  const chips = ["os", "device", "network", "carrier"].filter(key => tags[key]).map(key =>
+    `<span class="rounded-full border border-[var(--line)] px-2 py-0.5 text-xs" title="${esc(key)}">${esc(tags[key])}</span>`);
+  if (profile.preset) {
+    chips.push(`<span class="rounded-full border border-[var(--line)] px-2 py-0.5 text-xs" title="Jc ${esc(profile.jc)} / Jmin ${esc(profile.jmin)} / Jmax ${esc(profile.jmax)} / MTU ${esc(profile.mtu)}">preset ${esc(profile.preset)}</span>`);
+  }
+  let hint = "";
+  if (statusState.role === "super" && !tags.network && suggested.network && suggested.network !== "unknown") {
+    hint = `<span class="text-xs text-[var(--muted)]" title="ASN/org heuristic">seen on ${esc(suggested.network)}${suggested.carrier ? " / " + esc(suggested.carrier) : ""}</span>`;
+  }
+  if (!chips.length && !hint) return "";
+  return `<div class="mt-2 flex flex-wrap items-center gap-1.5">${chips.join("")}${hint}</div>`;
+}
+
+async function editClientTags(name) {
+  const client = latestClients.find(item => item.name === name || item.id === name) || {};
+  const tags = client.tags || {};
+  const suggested = client.suggested_tags || {};
+  let presets = {};
+  try { presets = (await api("/api/presets")).presets || {}; } catch (error) { presets = {}; }
+  const sel = (id, values, current, blank) => `<select id="${id}" class="mt-1 h-9 w-full rounded-md border border-[var(--line)] bg-[var(--soft)] px-2 text-sm">` +
+    `<option value="">${esc(blank)}</option>` + values.map(v => `<option value="${esc(v)}"${v === current ? " selected" : ""}>${esc(v)}</option>`).join("") + "</select>";
+  return new Promise(resolve => {
+    const dialog = document.createElement("dialog");
+    dialog.className = "w-[min(460px,calc(100vw-32px))] rounded-lg border border-[var(--line)] bg-[var(--panel)] p-0 text-[var(--text)] shadow-xl backdrop:bg-black/55";
+    dialog.innerHTML = `
+      <form method="dialog" class="p-4 grid gap-3">
+        <h2 class="text-base font-semibold">Labels and profile: ${esc(clientDisplayLabel(client) || name)}</h2>
+        <p class="text-xs text-[var(--muted)]">Labels help later analysis. Saving with "generate profile" gives this client its own Jc/Jmin/Jmax, I1 and MTU for the chosen preset (keys do not change; re-import the config on the device).</p>
+        <label class="text-sm">OS ${sel("tagOs", TAG_OS, tags.os, "-")}</label>
+        <label class="text-sm">Device ${sel("tagDevice", TAG_DEVICE, tags.device, "-")}</label>
+        <label class="text-sm">Network ${sel("tagNetwork", TAG_NETWORK, tags.network || (suggested.network !== "unknown" ? suggested.network : ""), "-")}</label>
+        <label class="text-sm">Carrier / ISP (a-z, 0-9, _ -)
+          <input id="tagCarrier" value="${esc(tags.carrier || suggested.carrier || "")}" maxlength="32" class="mt-1 h-9 w-full rounded-md border border-[var(--line)] bg-[var(--soft)] px-2 text-sm" autocomplete="off"></label>
+        <label class="text-sm">Preset ${sel("tagPreset", Object.keys(presets), tags.preset || suggested.suggested_preset, "auto")}</label>
+        <label class="text-sm">Note <input id="tagNote" value="${esc(tags.note || "")}" maxlength="80" class="mt-1 h-9 w-full rounded-md border border-[var(--line)] bg-[var(--soft)] px-2 text-sm" autocomplete="off"></label>
+        <label class="flex items-center gap-2 text-sm"><input id="tagApply" type="checkbox"> Generate profile for this client now</label>
+        <div class="flex justify-end gap-2">
+          <button type="button" value="cancel" class="${buttonClasses()}">Cancel</button>
+          <button type="button" value="ok" class="${buttonClasses("border-amber-600 bg-amber-500 text-white")}">Save</button>
+        </div>
+      </form>`;
+    document.body.appendChild(dialog);
+    const close = value => dialog.close(value);
+    dialog.querySelector('button[value="cancel"]').addEventListener("click", () => close("cancel"));
+    dialog.querySelector('button[value="ok"]').addEventListener("click", async () => {
+      const value = id => dialog.querySelector("#" + id).value.trim();
+      const payload = {
+        name,
+        apply: dialog.querySelector("#tagApply").checked,
+        tags: {os: value("tagOs"), device: value("tagDevice"), network: value("tagNetwork"), carrier: value("tagCarrier").toLowerCase(), preset: value("tagPreset"), note: value("tagNote")},
+      };
+      try {
+        const result = await api("/api/clients/tags", {method: "POST", body: JSON.stringify(payload)});
+        showToast(payload.apply ? (result.applied ? "Labels saved, profile generated" : "Labels saved, profile failed") : "Labels saved", payload.apply && !result.applied ? "error" : "success");
+        close("ok");
+        await loadClients();
+      } catch (error) {
+        showToast("Could not save labels", "error");
+      }
+    });
+    dialog.addEventListener("close", () => { dialog.remove(); resolve(); }, {once: true});
+    dialog.showModal();
+  });
+}
+
 async function clientAction(name, action) {
   try {
     if (action === "config") return showConfig(name);
@@ -3346,6 +3421,7 @@ async function clientAction(name, action) {
     if (action === "copy-uri") return copyUri(name);
     if (action === "copy-access-link") return copyAccessLink(name);
     if (action === "regenerate-config") return regenerateConfig(name);
+    if (action === "edit-tags") return editClientTags(name);
     if (action === "toggle") {
       await api(`/api/clients/${encodeURIComponent(name)}/toggle`, {method: "POST", body: "{}"});
       showToast("Client toggled");

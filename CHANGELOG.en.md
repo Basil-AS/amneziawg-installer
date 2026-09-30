@@ -12,6 +12,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [5.29.0-bas.9] - 2026-09-30
+
+### Fixed
+
+- Installer: `CLI_ISOLATION` was never initialised, so every non-interactive install (`--yes`) died with `Invalid --isolation=''`.
+- `scripts/probe-awg31.sh`: HeaderProtectionKey was base64 of hex text (64 bytes), so the AWG 3.x probe always failed on module 3.1.2026xxxx.
+- Profile renderer: booleans `RandomTrailers`/`DisableCookies` are written as `on`/`off` (`awg setconf` rejects `true`, the service did not start). `RandomTrailers` is off by default (bilateral, measured harmful).
+- AdGuard Home: on reinstall the `admin` user was duplicated in `AdGuardHome.yaml` (the regex missed the `- name:` line) and the service failed to start (`login: duplicated value`).
+### Added
+
+- Per-client profiles: `scripts/awg_client_profile.py` gives every client its own `Jc/Jmin/Jmax`, a unique DNS- or QUIC-shaped `I1`, MTU and keepalive (sender-side values; `S1-S4`/`H1-H4` stay shared). Presets `mobile`, `ios`, `home`, `desktop`, `router`, `stealth`, chosen from OS/device/network labels, plus an ASN/org heuristic for the carrier. Commands `manage client-profile set|show|clear|presets|classify` and `manage add --os= --device= --network= --carrier=`; new clients get a profile by default (`AWG_PER_CLIENT_PARAMS=0` disables it). `set|clear` never rotate keys.
+- Web panel: client labels (OS, device, network, carrier, preset, note), a "Labels and profile" action that can generate the profile, label chips and a carrier hint derived from ASN/org in the client list. API: `GET /api/presets`, `GET /api/ip-lookup?ip=` (GeoIP/ASN plus network classification), `POST /api/clients/tags`; `/api/clients` returns `tags`, `client_profile` (without I1) and `suggested_tags`.
+
+
 ## [5.29.0-bas.8] - 2026-09-30
 
 ### Fixed
@@ -1731,7 +1745,8 @@ Major security and reliability update after several consecutive code audits. The
 - Diagnostic report (`--diagnostic`).
 - Full uninstall (`--uninstall`).
 
-[Unreleased]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.29.0-bas.8...HEAD
+[Unreleased]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.29.0-bas.9...HEAD
+[5.29.0-bas.9]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.29.0-bas.8...v5.29.0-bas.9
 [5.29.0-bas.8]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.29.0-bas.7...v5.29.0-bas.8
 [5.29.0-bas.7]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.29.0-bas.6...v5.29.0-bas.7
 [5.29.0-bas.6]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.29.0-bas.5...v5.29.0-bas.6

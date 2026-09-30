@@ -9,14 +9,14 @@ fi
 # ==============================================================================
 # Скрипт для управления пользователями (пирами) AmneziaWG 2.0
 # Автор: @bivlked
-# Версия: 5.29.0-bas.8
+# Версия: 5.29.0-bas.9
 # Дата: 2026-08-30
 # Репозиторий: https://github.com/bivlked/amneziawg-installer
 # ==============================================================================
 
 # --- Безопасный режим и Константы ---
 # shellcheck disable=SC2034
-SCRIPT_VERSION="5.29.0-bas.8"
+SCRIPT_VERSION="5.29.0-bas.9"
 set -o pipefail
 AWG_DIR="/root/awg"
 SERVER_CONF_FILE="/etc/amnezia/amneziawg/awg0.conf"
@@ -206,6 +206,9 @@ while [[ $# -gt 0 ]]; do
         --preset=*)        ROTATE_PRESET="${1#*=}"; shift ;;
         --preset)          ROTATE_PRESET="${2:-}"; shift 2 ;;
         --carrier=*)       CLI_CARRIER="${1#*=}"; shift ;;
+        --os=*)            CLIENT_TAG_OS="${1#*=}"; shift ;;
+        --device=*)        CLIENT_TAG_DEVICE="${1#*=}"; shift ;;
+        --network=*)       CLIENT_TAG_NETWORK="${1#*=}"; shift ;;
         --*)
             echo "Неизвестная опция: $1" >&2
             for _rest in "$@"; do [[ "$_rest" == "--json" ]] && JSON_OUTPUT=1; done
@@ -221,6 +224,8 @@ while [[ $# -gt 0 ]]; do
 done
 CLIENT_NAME="${ARGS[0]}"
 PARAM="${ARGS[1]}"
+CLIENT_TAG_CARRIER="${CLI_CARRIER:-}"
+[[ "${ROTATE_PRESET:-default}" != "default" ]] && CLIENT_TAG_PRESET="$ROTATE_PRESET"
 VALUE="${ARGS[2]}"
 
 # Проверяем режим только после полного разбора argv: --json может находиться
@@ -2516,6 +2521,10 @@ usage() {
     echo "  diagnose [--carrier=N] Диагностика kernel/sysctl/UFW + fork-секций"
     echo "  profile status         Версия AWG, валидность профиля и capability probe"
     echo "  profile validate       Проверить AWG 3.1 профиль без вывода секретов"
+    echo "  client-profile set <имя> [--os=OS --device=D --network=N --carrier=C --preset=P]"
+    echo "                        Создать профиль клиента (уникальные Jc/Jmin/Jmax/I1, MTU) и пересобрать конфиг клиента (ключи не меняются)"
+    echo "  client-profile show|clear <имя>    Показать / удалить профиль клиента"
+    echo "  client-profile presets|classify [ASN ORG]  Пресеты / определить тип сети по ASN и названию"
     echo "  voice-check           Диагностика UDP/STUN/NAT для звонков"
     echo "  p2p list              Показать P2P порты всех клиентов"
     echo "  p2p show <имя>        Показать P2P информацию клиента"
@@ -2831,6 +2840,40 @@ case $COMMAND in
 
     diagnose)
         diagnose_server || _cmd_rc=1
+        ;;
+
+    client-profile)
+        _sub="${ARGS[0]:-show}"; _cn="${ARGS[1]:-}"
+        case "$_sub" in
+            presets)
+                python3 "$AWG_CLIENT_PROFILE_SCRIPT_PATH" presets || _cmd_rc=1
+                ;;
+            classify)
+                python3 "$AWG_CLIENT_PROFILE_SCRIPT_PATH" classify --asn "${ARGS[1]:-}" --org "${ARGS[2]:-}" || _cmd_rc=1
+                ;;
+            set|show|clear)
+                [[ -n "$_cn" ]] || die "Имя клиента не указано."
+                validate_client_name "$_cn" || exit 1
+                grep -qxF "#_Name = ${_cn}" "$SERVER_CONF_FILE" || die "Клиент '$_cn' не найден."
+                case "$_sub" in
+                    set)
+                        client_profile_set "$_cn" "${CLIENT_TAG_OS:-}" "${CLIENT_TAG_DEVICE:-}" "${CLIENT_TAG_NETWORK:-}"                             "${CLIENT_TAG_CARRIER:-}" "${CLIENT_TAG_PRESET:-}" && refresh_client_config "$_cn" || _cmd_rc=1
+                        ;;
+                    show)
+                        if [[ -f "$AWG_CLIENT_PROFILE_DIR/${_cn}.json" ]]; then
+                            sed -E 's/("i1": "<b 0x.{16}).*/\1...>"/' "$AWG_CLIENT_PROFILE_DIR/${_cn}.json"
+                        else
+                            echo "Профиля клиента нет: используются параметры сервера."
+                        fi
+                        ;;
+                    clear)
+                        rm -f "$AWG_CLIENT_PROFILE_DIR/${_cn}.json"
+                        refresh_client_config "$_cn" || _cmd_rc=1
+                        ;;
+                esac
+                ;;
+            *) die "Неизвестная команда client-profile: ${_sub}" ;;
+        esac
         ;;
 
     profile-status)

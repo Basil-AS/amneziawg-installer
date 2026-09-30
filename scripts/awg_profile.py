@@ -204,11 +204,11 @@ def generate(version: str, seed: int | None = None, profile: str = "balanced") -
             "maxHandshakeAttempts": "15-20",
         })
         if version == "3.1":
-            # Random trailers are part of the bilateral 3.1 profile: both
-            # peers receive the same setting through the canonical renderer.
+            # Random trailers are bilateral and measurably hurt throughput/handshakes,
+            # so they stay off by default; opt in per profile if a path needs it.
             # Keep cookies enabled for the default profile because disabling
             # them removes WireGuard's handshake-flood protection.
-            profile.update({"randomTrailers": True, "disableCookies": False})
+            profile.update({"randomTrailers": False, "disableCookies": False})
     return validate(profile, version)
 
 
@@ -239,7 +239,7 @@ def render(profile: dict[str, object]) -> str:
     lines = []
     for key, name in names:
         if key in checked:
-            value = str(checked[key]).lower() if isinstance(checked[key], bool) else checked[key]
+            value = ("on" if checked[key] else "off") if isinstance(checked[key], bool) else checked[key]
             lines.append(f"{name} = {value}")
     return "\n".join(lines) + "\n"
 

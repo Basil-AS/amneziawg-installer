@@ -231,3 +231,17 @@ teardown() {
     [[ "$AWG_S3" -ge 8 ]]  && [[ "$AWG_S3" -le 55 ]]
     [[ "$AWG_S4" -ge 4 ]]  && [[ "$AWG_S4" -le 27 ]]
 }
+
+@test "installers initialise CLI_ISOLATION so a non-interactive install does not die" {
+    for f in install_amneziawg.sh install_amneziawg_en.sh; do
+        run grep -Fx 'CLI_ISOLATION="default"' "$BATS_TEST_DIRNAME/../$f"
+        [ "$status" -eq 0 ]
+    done
+}
+
+@test "AdGuard users renderer recognises the '- name:' line so reinstall does not duplicate the admin" {
+    for f in install_amneziawg.sh install_amneziawg_en.sh; do
+        run grep -F 're.match(r"^\s*-?\s*name\s*:", line)' "$BATS_TEST_DIRNAME/../$f"
+        [ "$status" -eq 0 ]
+    done
+}

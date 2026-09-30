@@ -18,3 +18,8 @@ setup() {
 @test "AWG 3.1 probe contains no kernel version gate" {
     ! grep -qE 'uname|6\.7|kernel.*version' "$SCRIPT"
 }
+
+@test "AWG 3.1 probe HeaderProtectionKey is base64 of 32 raw bytes, not of hex text" {
+    grep -q 'head -c 32 /dev/urandom | base64' "$SCRIPT"
+    ! grep -q 'tx1.*base64' "$SCRIPT"
+}
