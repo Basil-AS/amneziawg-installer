@@ -51,6 +51,7 @@ declare -A AWG_ASSET_SHA256=(
     ["scripts/update-installed.sh"]="de611d33ccbeaafd79eb2ef59eab1c7827f54f1ee943159f5f5d14b9ecf3e481"
     ["scripts/migrate-tunnel-subnet.sh"]="a8b40101e8f02627c10d2bb769802bf860fdf41dd2bc8ac38a180e953329c3bb"
     ["scripts/awg_profile.py"]="831e0501bb5a658c0aef4a98a42bf459ad61caad781e2d3f6f2db90b4912c890"
+    ["scripts/awg_client_profile.py"]="2940a2984723174951b6e1638d2a3bbc8c47ee54e272b23afe988e3c17a108ec"
     ["scripts/probe-awg31.sh"]="67867c7acfd2569b31a7266feac942d0f16b6f580f61e4f377be70cfed9036bf"
 )
 
@@ -5903,6 +5904,7 @@ step5_download_scripts() {
     _deploy_asset "scripts/update-installed.sh" "$AWG_DIR/update-installed.sh" 700
     _deploy_asset "scripts/migrate-tunnel-subnet.sh" "$AWG_DIR/migrate-tunnel-subnet.sh" 700
     _deploy_asset "scripts/awg_profile.py" "$AWG_PROFILE_SCRIPT_PATH" 700
+    _deploy_asset "scripts/awg_client_profile.py" "$AWG_DIR/scripts/awg_client_profile.py" 700
     _deploy_asset "scripts/probe-awg31.sh" "$AWG_DIR/scripts/probe-awg31.sh" 700
 
     log "Step 5 completed."

@@ -3009,6 +3009,59 @@ _extract_mtu_from_server_conf() {
 }
 
 # Рендер клиентского конфига AWG 2.0
+# --- Профиль клиента (scripts/awg_client_profile.py) ---
+# Jc/Jmin/Jmax/I1, MTU и keepalive задаются на стороне отправителя, поэтому у каждого клиента могут быть
+# свои значения при общих S1-S4/H1-H4. Хранится в $AWG_DIR/client_profiles/<имя>.json.
+AWG_CLIENT_PROFILE_SCRIPT_PATH="${AWG_CLIENT_PROFILE_SCRIPT_PATH:-$AWG_DIR/scripts/awg_client_profile.py}"
+AWG_CLIENT_PROFILE_DIR="${AWG_CLIENT_PROFILE_DIR:-$AWG_DIR/client_profiles}"
+
+_apply_client_profile() {
+    local name="$1" f out k v
+    CLIENT_PROFILE_MTU=""; CLIENT_PROFILE_KEEPALIVE=""
+    f="$AWG_CLIENT_PROFILE_DIR/${name}.json"
+    [[ -f "$f" && -r "$AWG_CLIENT_PROFILE_SCRIPT_PATH" ]] || return 0
+    out=$(python3 "$AWG_CLIENT_PROFILE_SCRIPT_PATH" env "$f" 2>/dev/null) || {
+        log_warn "Профиль клиента '$name' некорректен; используются параметры сервера."
+        return 0
+    }
+    while IFS='=' read -r k v; do
+        case "$k" in
+            jc)        AWG_Jc="$v" ;;
+            jmin)      AWG_Jmin="$v" ;;
+            jmax)      AWG_Jmax="$v" ;;
+            mtu)       CLIENT_PROFILE_MTU="$v" ;;
+            keepalive) CLIENT_PROFILE_KEEPALIVE="$v" ;;
+            i1)        [[ -z "${AWG_I1_OVERRIDE:-}" ]] && AWG_I1="$v" ;;
+        esac
+    done <<< "$out"
+    return 0
+}
+
+# client_profile_set <имя> [os] [device] [network] [carrier] [preset]
+client_profile_set() {
+    local name="$1" os="${2:-}" device="${3:-}" network="${4:-}" carrier="${5:-}" preset="${6:-}" tmp
+    [[ "$preset" == "default" ]] && preset=""
+    [[ -r "$AWG_CLIENT_PROFILE_SCRIPT_PATH" ]] || { log_error "awg_client_profile.py не найден: $AWG_CLIENT_PROFILE_SCRIPT_PATH"; return 1; }
+    mkdir -p "$AWG_CLIENT_PROFILE_DIR" || return 1
+    chmod 700 "$AWG_CLIENT_PROFILE_DIR" 2>/dev/null || true
+    tmp=$(mktemp "$AWG_CLIENT_PROFILE_DIR/.${name}.XXXXXX") || return 1
+    if ! python3 "$AWG_CLIENT_PROFILE_SCRIPT_PATH" generate --os "$os" --device "$device" --network "$network"             --carrier "$carrier" --preset "$preset" > "$tmp"; then
+        rm -f "$tmp"; return 1
+    fi
+    chmod 600 "$tmp"
+    mv "$tmp" "$AWG_CLIENT_PROFILE_DIR/${name}.json" || { rm -f "$tmp"; return 1; }
+    log "Профиль клиента '$name' создан (уникальные Jc/Jmin/Jmax/I1)."
+}
+
+# Новые клиенты получают свой профиль, если не задано AWG_PER_CLIENT_PARAMS=0.
+client_profile_autocreate() {
+    local name="$1"
+    [[ "${AWG_PER_CLIENT_PARAMS:-1}" == "0" ]] && return 0
+    [[ -f "$AWG_CLIENT_PROFILE_DIR/${name}.json" ]] && return 0
+    client_profile_set "$name" "${CLIENT_TAG_OS:-}" "${CLIENT_TAG_DEVICE:-}" "${CLIENT_TAG_NETWORK:-}"         "${CLIENT_TAG_CARRIER:-}" "${CLIENT_TAG_PRESET:-}" || log_warn "Не удалось создать профиль клиента '$name'; используются параметры сервера."
+    return 0
+}
+
 # render_client_config <name> <client_ip> <client_privkey> <server_pubkey> <endpoint> <port> [client_ipv6]
 is_panel_domain_endpoint() {
     local endpoint="${1:-}" panel_domain="${AWG_WEB_DOMAIN:-}"
@@ -3032,6 +3085,7 @@ render_client_config() {
     fi
 
     load_awg_params || return 1
+    _apply_client_profile "$name"
 
     local conf_file="$AWG_DIR/${name}.conf" server_name
     server_name=$(awg_server_name)
@@ -3084,6 +3138,8 @@ render_client_config() {
             mtu=1280
         fi
     fi
+
+    [[ -n "${CLIENT_PROFILE_MTU:-}" ]] && mtu="$CLIENT_PROFILE_MTU"
 
     # temp в каталоге клиентского конфига ($AWG_DIR) -> mv = атомарный rename.
     local tmpfile
@@ -3157,7 +3213,7 @@ EOF
     cat >> "$tmpfile" << EOF
 Endpoint = ${endpoint}:${port}
 AllowedIPs = ${allowed_ips}
-PersistentKeepalive = 25
+PersistentKeepalive = ${CLIENT_PROFILE_KEEPALIVE:-25}
 EOF
 
     if ! mv "$tmpfile" "$conf_file"; then
@@ -4642,6 +4698,7 @@ generate_client() {
     fi
 
     # Конфиг клиента
+    client_profile_autocreate "$name"
     render_client_config "$name" "$client_ip" "$client_privkey" "$server_pubkey" "$endpoint" "$_cport" "$client_ipv6" || {
         log_error "Откат: удаление ключей '$name'"
         rm -f "$KEYS_DIR/${name}.private" "$KEYS_DIR/${name}.public"

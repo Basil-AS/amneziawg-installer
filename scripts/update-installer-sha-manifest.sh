@@ -51,6 +51,7 @@ for asset in \
     scripts/update-installed.sh \
     scripts/migrate-tunnel-subnet.sh \
     scripts/awg_profile.py \
+    scripts/awg_client_profile.py \
     scripts/probe-awg31.sh
 do
     digest="$(sha "$asset")"
