@@ -12,6 +12,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- AdGuard Home: on reinstall the `admin` user was duplicated in `AdGuardHome.yaml` (the regex missed the `- name:` line) and the service failed to start (`login: duplicated value`).
+
+
 ## [5.29.0-bas.8] - 2026-09-30
 
 ### Fixed
