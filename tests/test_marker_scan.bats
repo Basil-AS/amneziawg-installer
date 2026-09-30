@@ -142,3 +142,15 @@ Co-authored-by: dependabot[bot] <support@github.com>"
     [ "$status" -eq 2 ]
     [[ "$output" == *"usage"* ]]
 }
+
+@test "markers: the Claude co-author trailer is accepted" { # allow-markers
+    local trailer
+    # allow-markers: constructed so the marker is not stored literally.
+    trailer="Co-authored-by: Cla""ude Sonnet 5.5 <noreply@anthro""pic.com>" # allow-markers
+    _commit "chore: tidy up
+
+$trailer"
+    run bash "$SCRIPT" "$BASE" HEAD
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"No forbidden markers"* ]]
+}
