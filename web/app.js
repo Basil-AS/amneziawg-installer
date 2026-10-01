@@ -3440,7 +3440,7 @@ async function editClientParams(name) {
   const extra = profile.extra || {};
   const limits = data.limits || {};
   const presets = Object.keys(data.presets || {});
-  const styles = data.styles && data.styles.length ? data.styles : ["dns", "quic"];
+  const styles = Array.isArray(data.styles) ? data.styles : [];
   const num = (id, label, value, key) => {
     const [lo, hi] = limits[key] || [0, 65535];
     return `<label class="text-sm">${esc(label)}<input id="${id}" type="number" min="${lo}" max="${hi}" value="${esc(value ?? "")}" class="${TAG_INPUT_CLASS}"></label>`;
