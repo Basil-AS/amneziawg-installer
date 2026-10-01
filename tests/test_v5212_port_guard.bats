@@ -189,7 +189,7 @@ _prepare_gen() {
         run grep -F 'render_client_config "$name" "$client_ip" "$client_privkey" "$server_pubkey" "$endpoint" "${AWG_PORT}" "$client_ipv6"' "$src"
         [ "$status" -ne 0 ] || { echo "$f still renders a raw AWG_PORT"; return 1; }
         # The guard itself must exist in generate, refresh and regenerate.
-        run grep -cF '_cport=$(_sanitize_port "${AWG_PORT:-}")' "$src"
+        run grep -cF '_cport=$(_sanitize_port "${AWG_CLIENT_PORT:-${AWG_PORT:-}}")' "$src"
         [ "$output" -eq 3 ] || { echo "$f: expected 3 port guards, found $output"; return 1; }
     done
 }

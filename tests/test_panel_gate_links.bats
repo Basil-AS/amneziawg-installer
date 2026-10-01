@@ -112,7 +112,7 @@ PY
 
 @test "client port: AWG_CLIENT_PORT is an accepted config key and all three client builders use it" {
     for f in awg_common.sh awg_common_en.sh; do
-        grep -qF 'AWG_SERVER_NAME|AWG_CLIENT_PORT)' "$BATS_TEST_DIRNAME/../$f"
+        grep -qF 'AWG_CLIENT_PORT|AWG_SERVER_NAME)' "$BATS_TEST_DIRNAME/../$f"
         [ "$(grep -cF '_sanitize_port "${AWG_CLIENT_PORT:-${AWG_PORT:-}}"' "$BATS_TEST_DIRNAME/../$f")" -eq 3 ]
     done
 }
