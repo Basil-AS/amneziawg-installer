@@ -9,7 +9,7 @@ fi
 # ==============================================================================
 # Скрипт для установки и настройки AmneziaWG 2.0 на Ubuntu/Debian серверах
 # Автор: @bivlked
-# Версия: 5.29.0-bas.9
+# Версия: 5.29.0-bas.10
 # Дата: 2026-08-30
 # Репозиторий: https://github.com/bivlked/amneziawg-installer
 # ==============================================================================
@@ -17,7 +17,7 @@ fi
 # --- Безопасный режим и Константы ---
 set -o pipefail
 
-SCRIPT_VERSION="5.29.0-bas.9"
+SCRIPT_VERSION="5.29.0-bas.10"
 AWG_DIR="/root/awg"
 INSTALLER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)"
 CONFIG_FILE="$AWG_DIR/awgsetup_cfg.init"
@@ -36,11 +36,11 @@ AWG_PROFILE_SCRIPT_PATH="$AWG_DIR/scripts/awg_profile.py"
 # используются первыми; remote download разрешён только с pinned SHA256 либо
 # при явном AWG_ALLOW_UNVERIFIED_DOWNLOAD=1 для разработки.
 declare -A AWG_ASSET_SHA256=(
-    ["awg_common.sh"]="ff4b299559d3077d2db77ac3c38971fb29095dcdf21fc0f0cda7be544907e60a"
-    ["manage_amneziawg.sh"]="20841b9f43eaac4b9397675c11f9cb4f0d350e3c433a1fcd4a874742dbd1453d"
-    ["web/server.py"]="beb0aceeb5001b5b78ae83cc7a7bbf1ed7a2f3bd76c45470f0aaedc908403230"
+    ["awg_common.sh"]="f1b1289ee19cc6f1533864d76f337f8b622ebb60fb48f13209c770c8bd888370"
+    ["manage_amneziawg.sh"]="e310f05a82db8ecc62b6ab588150bba7e1e9800becf4ddf21e734f1beec0bef7"
+    ["web/server.py"]="a749de7e05e49e18c40e36872baf65ff9d173f15af7cc4550d07958ae7658144"
     ["web/index.html"]="7c07ed1d1991e08c0f9fc31e86ed8eb2bba5fa96387088f1f18918396cf7e662"
-    ["web/app.js"]="13c96bdccf0d04b06e99bab222a27d8e7ea68ae009f3920ee0ca478b8b4a7d22"
+    ["web/app.js"]="e0da4cc6161b0332bd187c6c2a66b731e67414ce79d4c544ad45e4105d773d6d"
     ["web/awg_i1.js"]="c97a6ac6c4e4bd7ab24c37c45f451e364414f276441f8da1c0805d26013aaa03"
     ["web/style.css"]="c6c728f244b79cdae162df3c5d0eddaea0b0b92951598355e4547f0add9e911a"
     ["web/favicon.svg"]="ae700ecb12dbf01403d0ed25247bac6b70f11201b094ee6c14b774b7fa533859"
@@ -51,7 +51,7 @@ declare -A AWG_ASSET_SHA256=(
     ["scripts/update-installed.sh"]="de611d33ccbeaafd79eb2ef59eab1c7827f54f1ee943159f5f5d14b9ecf3e481"
     ["scripts/migrate-tunnel-subnet.sh"]="a8b40101e8f02627c10d2bb769802bf860fdf41dd2bc8ac38a180e953329c3bb"
     ["scripts/awg_profile.py"]="d3b13be7f2725f1601e052f8e1f73d54085f158ba7f9c8cf6958785740c2993c"
-    ["scripts/awg_client_profile.py"]="3d718299a26f650f59fa1f7acf9c1299bc8ee0e6010aa9e296fbcbe064480197"
+    ["scripts/awg_client_profile.py"]="c89704756d52145e1530186efad335a09f6f3895f209224c1600bf4f585170b2"
     ["scripts/probe-awg31.sh"]="29adacb4945a380274a38aa32120de70981a6f095d097cf8ba0c45a93509fa53"
 )
 

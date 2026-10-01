@@ -2617,6 +2617,8 @@ async function renderPanel() {
       </div>
       <div ${collapsibleSectionBody("advancedPanel", "mt-3")}>
         <button id="rotateProfile" class="${buttonClasses("border-amber-600 text-amber-700")}">${icon("refresh")}<span>Rotate profile</span></button>
+        <button id="accessLogButton" class="${buttonClasses()}">${icon("search")}<span>Access log</span></button>
+        <button id="tagStatsButton" class="${buttonClasses()}">${icon("link")}<span>Label stats</span></button>
       </div>
     </section>
 
@@ -2647,7 +2649,11 @@ async function renderPanel() {
   bindCollapsibleSections();
   bindNetworkTester();
   if (statusState.role === "super") document.querySelector("#newToken").onclick = newToken;
-  if (statusState.role === "super") document.querySelector("#rotateProfile").onclick = rotateProfile;
+  if (statusState.role === "super") {
+    document.querySelector("#rotateProfile").onclick = rotateProfile;
+    document.querySelector("#accessLogButton").onclick = showAccessLog;
+    document.querySelector("#tagStatsButton").onclick = showTagStats;
+  }
   if (statusState.role === "super") {
     document.querySelector("#testWebAccessPolicy").onclick = () => submitWebAccessPolicy("test");
     document.querySelector("#saveWebAccessPolicy").onclick = () => submitWebAccessPolicy("save");
@@ -3135,7 +3141,8 @@ function renderClients() {
               <button type="button" data-action="regenerate-config" class="client-menu-item text-amber-700">${icon("refresh")}<span>Regenerate</span></button>
               ${renderMenuItem("toggle", "power", client.disabled ? "Enable client" : "Disable client")}
               ${renderMenuItem("toggle-ports", "shield", "Port details / toggle", shieldClass)}
-              ${isAdmin ? renderMenuItem("edit-tags", "link", "Labels and profile") : ""}
+              ${isAdmin ? renderMenuItem("edit-tags", "link", "Labels") : ""}
+              ${isAdmin ? renderMenuItem("edit-params", "refresh", "Parameters") : ""}
               ${familyItem}
               ${adminDeleteItem}
               ${removeAccessItem}
@@ -3338,69 +3345,78 @@ async function addClient() {
   }
 }
 
-const TAG_OS = ["android", "ios", "windows", "macos", "linux", "router", "other"];
-const TAG_DEVICE = ["phone", "tablet", "laptop", "desktop", "router", "tv", "other"];
-const TAG_NETWORK = ["mobile", "home", "office", "hosting", "unknown"];
+const TAG_SUGGEST = {
+  os: ["android", "ios", "windows", "macos", "linux", "openwrt", "keenetic", "router", "other"],
+  device: ["phone", "tablet", "laptop", "desktop", "router", "tv", "other"],
+  network: ["mobile", "home", "office", "hosting", "unknown"],
+  carrier: ["megafon", "mts", "beeline", "tele2", "yota", "rostelecom", "domru"],
+};
+const TAG_INPUT_CLASS = "mt-1 h-9 w-full rounded-md border border-[var(--line)] bg-[var(--soft)] px-2 text-sm";
+
+function tagChip(text, title = "") {
+  return `<span class="rounded-full border border-[var(--line)] px-2 py-0.5 text-xs" title="${esc(title)}">${esc(text)}</span>`;
+}
 
 function renderClientTags(client) {
   const tags = client.tags || {};
   const profile = client.client_profile || {};
   const suggested = client.suggested_tags || {};
-  const chips = ["os", "device", "network", "carrier"].filter(key => tags[key]).map(key =>
-    `<span class="rounded-full border border-[var(--line)] px-2 py-0.5 text-xs" title="${esc(key)}">${esc(tags[key])}</span>`);
+  const chips = ["os", "device", "network", "carrier"].filter(key => tags[key]).map(key => tagChip(tags[key], key));
+  (tags.labels || []).forEach(label => chips.push(tagChip("#" + label, "label")));
   if (profile.preset) {
-    chips.push(`<span class="rounded-full border border-[var(--line)] px-2 py-0.5 text-xs" title="Jc ${esc(profile.jc)} / Jmin ${esc(profile.jmin)} / Jmax ${esc(profile.jmax)} / MTU ${esc(profile.mtu)}">preset ${esc(profile.preset)}</span>`);
+    chips.push(tagChip("profile " + profile.preset, `Jc ${profile.jc} / Jmin ${profile.jmin} / Jmax ${profile.jmax} / MTU ${profile.mtu}`));
   }
   let hint = "";
   if (statusState.role === "super" && !tags.network && suggested.network && suggested.network !== "unknown") {
     hint = `<span class="text-xs text-[var(--muted)]" title="ASN/org heuristic">seen on ${esc(suggested.network)}${suggested.carrier ? " / " + esc(suggested.carrier) : ""}</span>`;
   }
-  if (!chips.length && !hint) return "";
-  return `<div class="mt-2 flex flex-wrap items-center gap-1.5">${chips.join("")}${hint}</div>`;
+  const note = tags.note ? `<span class="text-xs text-[var(--muted)]">${esc(tags.note)}</span>` : "";
+  if (!chips.length && !hint && !note) return "";
+  return `<div class="mt-2 flex flex-wrap items-center gap-1.5">${chips.join("")}${hint}${note}</div>`;
+}
+
+function tagInput(id, label, value, listKey, placeholder = "") {
+  const list = TAG_SUGGEST[listKey] ? `list="${id}List"` : "";
+  const options = TAG_SUGGEST[listKey] ? `<datalist id="${id}List">${TAG_SUGGEST[listKey].map(v => `<option value="${esc(v)}">`).join("")}</datalist>` : "";
+  return `<label class="text-sm">${esc(label)}<input id="${id}" ${list} value="${esc(value || "")}" maxlength="32" placeholder="${esc(placeholder)}" class="${TAG_INPUT_CLASS}" autocomplete="off">${options}</label>`;
 }
 
 async function editClientTags(name) {
   const client = latestClients.find(item => item.name === name || item.id === name) || {};
   const tags = client.tags || {};
   const suggested = client.suggested_tags || {};
-  let presets = {};
-  try { presets = (await api("/api/presets")).presets || {}; } catch (error) { presets = {}; }
-  const sel = (id, values, current, blank) => `<select id="${id}" class="mt-1 h-9 w-full rounded-md border border-[var(--line)] bg-[var(--soft)] px-2 text-sm">` +
-    `<option value="">${esc(blank)}</option>` + values.map(v => `<option value="${esc(v)}"${v === current ? " selected" : ""}>${esc(v)}</option>`).join("") + "</select>";
   return new Promise(resolve => {
     const dialog = document.createElement("dialog");
     dialog.className = "w-[min(460px,calc(100vw-32px))] rounded-lg border border-[var(--line)] bg-[var(--panel)] p-0 text-[var(--text)] shadow-xl backdrop:bg-black/55";
     dialog.innerHTML = `
       <form method="dialog" class="p-4 grid gap-3">
-        <h2 class="text-base font-semibold">Labels and profile: ${esc(clientDisplayLabel(client) || name)}</h2>
-        <p class="text-xs text-[var(--muted)]">Labels help later analysis. Saving with "generate profile" gives this client its own Jc/Jmin/Jmax, I1 and MTU for the chosen preset (keys do not change; re-import the config on the device).</p>
-        <label class="text-sm">OS ${sel("tagOs", TAG_OS, tags.os, "-")}</label>
-        <label class="text-sm">Device ${sel("tagDevice", TAG_DEVICE, tags.device, "-")}</label>
-        <label class="text-sm">Network ${sel("tagNetwork", TAG_NETWORK, tags.network || (suggested.network !== "unknown" ? suggested.network : ""), "-")}</label>
-        <label class="text-sm">Carrier / ISP (a-z, 0-9, _ -)
-          <input id="tagCarrier" value="${esc(tags.carrier || suggested.carrier || "")}" maxlength="32" class="mt-1 h-9 w-full rounded-md border border-[var(--line)] bg-[var(--soft)] px-2 text-sm" autocomplete="off"></label>
-        <label class="text-sm">Preset ${sel("tagPreset", Object.keys(presets), tags.preset || suggested.suggested_preset, "auto")}</label>
-        <label class="text-sm">Note <input id="tagNote" value="${esc(tags.note || "")}" maxlength="80" class="mt-1 h-9 w-full rounded-md border border-[var(--line)] bg-[var(--soft)] px-2 text-sm" autocomplete="off"></label>
-        <label class="flex items-center gap-2 text-sm"><input id="tagApply" type="checkbox"> Generate profile for this client now</label>
-        <div class="flex justify-end gap-2">
-          <button type="button" value="cancel" class="${buttonClasses()}">Cancel</button>
-          <button type="button" value="ok" class="${buttonClasses("border-amber-600 bg-amber-500 text-white")}">Save</button>
+        <h2 class="text-base font-semibold">Labels: ${esc(clientDisplayLabel(client) || name)}</h2>
+        <p class="text-xs text-[var(--muted)]">Free text, a-z 0-9 _ . - . Suggestions are only hints. Labels never change the connection; they are for statistics.</p>
+        ${tagInput("tagOs", "OS", tags.os, "os", "openwrt")}
+        ${tagInput("tagDevice", "Device", tags.device, "device", "router")}
+        ${tagInput("tagNetwork", "Network", tags.network || (suggested.network !== "unknown" ? suggested.network : ""), "network", "mobile")}
+        ${tagInput("tagCarrier", "Carrier / ISP", tags.carrier || suggested.carrier, "carrier", "megafon")}
+        <label class="text-sm">Extra labels (comma separated, up to 8)
+          <input id="tagLabels" value="${esc((tags.labels || []).join(", "))}" placeholder="openwrt, bpi-r4, office" class="${TAG_INPUT_CLASS}" autocomplete="off"></label>
+        <label class="text-sm">Note <input id="tagNote" value="${esc(tags.note || "")}" maxlength="80" class="${TAG_INPUT_CLASS}" autocomplete="off"></label>
+        <div class="flex flex-wrap justify-between gap-2">
+          <button type="button" value="params" class="${buttonClasses()}">Edit parameters...</button>
+          <span class="flex gap-2">
+            <button type="button" value="cancel" class="${buttonClasses()}">Cancel</button>
+            <button type="button" value="ok" class="${buttonClasses("border-amber-600 bg-amber-500 text-white")}">Save</button>
+          </span>
         </div>
       </form>`;
     document.body.appendChild(dialog);
-    const close = value => dialog.close(value);
-    dialog.querySelector('button[value="cancel"]').addEventListener("click", () => close("cancel"));
+    dialog.querySelector('button[value="cancel"]').addEventListener("click", () => dialog.close("cancel"));
+    dialog.querySelector('button[value="params"]').addEventListener("click", () => { dialog.close("params"); editClientParams(name); });
     dialog.querySelector('button[value="ok"]').addEventListener("click", async () => {
       const value = id => dialog.querySelector("#" + id).value.trim();
-      const payload = {
-        name,
-        apply: dialog.querySelector("#tagApply").checked,
-        tags: {os: value("tagOs"), device: value("tagDevice"), network: value("tagNetwork"), carrier: value("tagCarrier").toLowerCase(), preset: value("tagPreset"), note: value("tagNote")},
-      };
+      const payload = {name, tags: {os: value("tagOs"), device: value("tagDevice"), network: value("tagNetwork"), carrier: value("tagCarrier"), labels: value("tagLabels"), note: value("tagNote")}};
       try {
-        const result = await api("/api/clients/tags", {method: "POST", body: JSON.stringify(payload)});
-        showToast(payload.apply ? (result.applied ? "Labels saved, profile generated" : "Labels saved, profile failed") : "Labels saved", payload.apply && !result.applied ? "error" : "success");
-        close("ok");
+        await api("/api/clients/tags", {method: "POST", body: JSON.stringify(payload)});
+        showToast("Labels saved");
+        dialog.close("ok");
         await loadClients();
       } catch (error) {
         showToast("Could not save labels", "error");
@@ -3409,6 +3425,145 @@ async function editClientTags(name) {
     dialog.addEventListener("close", () => { dialog.remove(); resolve(); }, {once: true});
     dialog.showModal();
   });
+}
+
+async function editClientParams(name) {
+  let data;
+  try {
+    data = await api(`/api/clients/${encodeURIComponent(name)}/params`);
+  } catch (error) {
+    showToast("Could not load parameters", "error");
+    return;
+  }
+  const client = latestClients.find(item => item.name === name || item.id === name) || {};
+  const profile = data.profile || {};
+  const extra = profile.extra || {};
+  const limits = data.limits || {};
+  const presets = Object.keys(data.presets || {});
+  const styles = Array.isArray(data.styles) ? data.styles : [];
+  const num = (id, label, value, key) => {
+    const [lo, hi] = limits[key] || [0, 65535];
+    return `<label class="text-sm">${esc(label)}<input id="${id}" type="number" min="${lo}" max="${hi}" value="${esc(value ?? "")}" class="${TAG_INPUT_CLASS}"></label>`;
+  };
+  const txt = (id, label, value, ph) => `<label class="text-sm">${esc(label)}<input id="${id}" value="${esc(value || "")}" placeholder="${esc(ph)}" class="${TAG_INPUT_CLASS} font-mono" autocomplete="off"></label>`;
+  const iRow = n => `
+    <div class="grid gap-1">
+      <div class="flex items-center justify-between gap-2"><span class="text-sm">I${n}${n === 1 ? " (sent before the handshake)" : ""}</span>
+        <span class="flex items-center gap-1"><select data-style="${n}" class="h-8 rounded-md border border-[var(--line)] bg-[var(--soft)] px-1 text-xs">${styles.map(v => `<option>${esc(v)}</option>`).join("")}</select>
+        <button type="button" data-gen="${n}" class="${buttonClasses("h-8 px-2 text-xs")}">Generate</button>
+        <button type="button" data-clear="${n}" class="${buttonClasses("h-8 px-2 text-xs")}">Clear</button></span></div>
+      <textarea id="paramI${n}" rows="2" spellcheck="false" class="w-full rounded-md border border-[var(--line)] bg-[var(--soft)] p-2 font-mono text-xs">${esc(profile["i" + n] || "")}</textarea>
+    </div>`;
+  const shared = Object.entries(data.server || {}).filter(([k]) => /^[SH][1-4]$/.test(k)).map(([k, v]) => `${k}=${v}`).join("  ");
+  const dialog = document.createElement("dialog");
+  dialog.className = "w-[min(640px,calc(100vw-24px))] max-h-[92vh] overflow-auto rounded-lg border border-[var(--line)] bg-[var(--panel)] p-0 text-[var(--text)] shadow-xl backdrop:bg-black/55";
+  dialog.innerHTML = `
+    <form method="dialog" class="p-4 grid gap-3">
+      <h2 class="text-base font-semibold">Parameters: ${esc(clientDisplayLabel(client) || name)}</h2>
+      <p class="text-xs text-[var(--muted)]">Only values that do not have to match the server are editable. Saving rebuilds this client's config without changing its keys; re-import it on the device (download / QR).</p>
+      <div class="flex flex-wrap items-end gap-2">
+        <label class="text-sm">Preset<select id="paramPreset" class="${TAG_INPUT_CLASS}">${presets.map(v => `<option${v === profile.preset ? " selected" : ""}>${esc(v)}</option>`).join("")}</select></label>
+        <button type="button" id="paramGenAll" class="${buttonClasses()}">Generate all from preset</button>
+      </div>
+      <div class="grid grid-cols-2 gap-2 sm:grid-cols-5">
+        ${num("paramJc", "Jc", profile.jc, "jc")}${num("paramJmin", "Jmin", profile.jmin, "jmin")}${num("paramJmax", "Jmax", profile.jmax, "jmax")}
+        ${num("paramMtu", "MTU", profile.mtu, "mtu")}${num("paramKa", "Keepalive", profile.keepalive, "keepalive")}
+      </div>
+      <p id="paramWarn" class="hidden rounded-md border border-amber-600 p-2 text-xs text-amber-700"></p>
+      <div class="grid grid-cols-2 gap-2">
+        ${txt("paramPad", "Content padding", extra.content_padding, "10-100")}${txt("paramKaT", "Keepalive timeout", extra.keepalive_timeout, "25-35")}
+        ${txt("paramRekeyA", "Rekey after", extra.rekey_after_time, "100-120")}${txt("paramRekeyT", "Rekey timeout", extra.rekey_timeout, "3-7")}
+      </div>
+      ${[1, 2, 3, 4, 5].map(iRow).join("")}
+      <div class="rounded-md border border-[var(--line)] p-2 text-xs text-[var(--muted)]"><strong>Shared with the server (read-only):</strong> ${esc(shared || "-")}<br>${esc(data.shared_note || "")}</div>
+      <div class="flex justify-end gap-2">
+        <button type="button" value="cancel" class="${buttonClasses()}">Cancel</button>
+        <button type="button" value="ok" class="${buttonClasses("border-amber-600 bg-amber-500 text-white")}">Save and rebuild config</button>
+      </div>
+    </form>`;
+  document.body.appendChild(dialog);
+  const field = id => dialog.querySelector("#" + id);
+  const setProfile = p => {
+    field("paramJc").value = p.jc ?? ""; field("paramJmin").value = p.jmin ?? ""; field("paramJmax").value = p.jmax ?? "";
+    field("paramMtu").value = p.mtu ?? ""; field("paramKa").value = p.keepalive ?? "";
+    const e = p.extra || {};
+    field("paramPad").value = e.content_padding || ""; field("paramKaT").value = e.keepalive_timeout || "";
+    field("paramRekeyA").value = e.rekey_after_time || ""; field("paramRekeyT").value = e.rekey_timeout || "";
+    for (let n = 1; n <= 5; n++) field("paramI" + n).value = p["i" + n] || "";
+  };
+  const updateWarn = () => {
+    const mtu = Number(field("paramMtu").value) || 0;
+    const m = /^(\d+)-(\d+)$/.exec(field("paramPad").value.trim());
+    const pad = Math.max(100, m ? Number(m[2]) : 0);
+    const est = mtu + 32 + 28 + pad;
+    const warn = dialog.querySelector("#paramWarn");
+    warn.textContent = est > 1500 ? `Worst-case outer packet is about ${est} bytes (over 1500): full-size packets with maximum padding get fragmented, which some networks drop. Lower the MTU or the padding.` : "";
+    warn.classList.toggle("hidden", est <= 1500);
+  };
+  ["paramMtu", "paramPad"].forEach(id => field(id).addEventListener("input", updateWarn));
+  updateWarn();
+  dialog.querySelectorAll("[data-gen]").forEach(btn => btn.addEventListener("click", async () => {
+    const n = btn.dataset.gen;
+    try {
+      const style = dialog.querySelector(`[data-style="${n}"]`).value;
+      const result = await api("/api/params/generate", {method: "POST", body: JSON.stringify({only: "i1", style})});
+      field("paramI" + n).value = result.i1 || "";
+    } catch (error) { showToast("Could not generate", "error"); }
+  }));
+  dialog.querySelectorAll("[data-clear]").forEach(btn => btn.addEventListener("click", () => { field("paramI" + btn.dataset.clear).value = ""; }));
+  field("paramGenAll").addEventListener("click", async () => {
+    try {
+      const result = await api("/api/params/generate", {method: "POST", body: JSON.stringify({preset: field("paramPreset").value, tags: (client.tags || {})})});
+      setProfile(result.profile || {});
+      updateWarn();
+    } catch (error) { showToast("Could not generate", "error"); }
+  });
+  dialog.querySelector('button[value="cancel"]').addEventListener("click", () => dialog.close("cancel"));
+  dialog.querySelector('button[value="ok"]').addEventListener("click", async () => {
+    const intOf = id => field(id).value === "" ? "" : Number(field(id).value);
+    const body = {custom: true, profile: {
+      jc: intOf("paramJc"), jmin: intOf("paramJmin"), jmax: intOf("paramJmax"), mtu: intOf("paramMtu"), keepalive: intOf("paramKa"),
+      preset: field("paramPreset").value,
+      extra: {content_padding: field("paramPad").value.trim(), keepalive_timeout: field("paramKaT").value.trim(), rekey_after_time: field("paramRekeyA").value.trim(), rekey_timeout: field("paramRekeyT").value.trim()},
+    }};
+    for (let n = 1; n <= 5; n++) body.profile["i" + n] = field("paramI" + n).value.trim();
+    try {
+      await api(`/api/clients/${encodeURIComponent(name)}/params`, {method: "PUT", body: JSON.stringify(body)});
+      showToast("Saved. Re-import the config on the device.");
+      dialog.close("ok");
+      await loadClients();
+    } catch (error) {
+      let message = "Could not save parameters";
+      try { message = JSON.parse(error.message).error || message; } catch (e) { /* keep default */ }
+      showToast(message, "error");
+    }
+  });
+  dialog.addEventListener("close", () => dialog.remove(), {once: true});
+  dialog.showModal();
+}
+
+async function showAccessLog() {
+  let rows = [];
+  try { rows = (await api("/api/security/log?limit=200")).events || []; } catch (error) { showToast("Could not load the log", "error"); return; }
+  const kindClass = {auth_fail: "text-[var(--danger)]", action: "text-amber-700", session: ""};
+  const body = rows.length ? `<div class="max-h-[60vh] overflow-auto"><table class="w-full text-left text-xs"><thead><tr><th class="p-1">Time (UTC)</th><th class="p-1">Event</th><th class="p-1">IP</th><th class="p-1">Device</th><th class="p-1">Detail</th></tr></thead><tbody>` +
+    rows.map(r => `<tr class="border-t border-[var(--line)]"><td class="p-1 whitespace-nowrap">${esc((r.ts || "").replace("T", " ").replace("Z", ""))}</td><td class="p-1 ${kindClass[r.kind] || ""}">${esc(r.kind)}</td><td class="p-1 font-mono">${esc(r.ip)}</td><td class="p-1">${esc(((r.device || {}).os || "") + " / " + ((r.device || {}).browser || ""))}</td><td class="p-1">${esc([r.method, r.path, r.reason, r.token || r.fp].filter(Boolean).join(" "))}</td></tr>`).join("") +
+    `</tbody></table></div>` : `<p class="text-sm text-[var(--muted)]">No events yet.</p>`;
+  showModal("Access log", body);
+}
+
+async function showTagStats() {
+  let data;
+  try { data = await api("/api/clients/tags/stats"); } catch (error) { showToast("Could not load stats", "error"); return; }
+  const section = (title, bucket) => {
+    const entries = Object.entries(bucket || {});
+    if (!entries.length) return "";
+    return `<h3 class="mt-3 text-sm font-semibold">${esc(title)}</h3>` + entries.sort((a, b) => b[1].count - a[1].count).map(([k, v]) =>
+      `<div class="flex justify-between gap-3 border-t border-[var(--line)] py-1 text-xs"><span>${esc(k)}</span><span class="text-[var(--muted)]">${v.count} client(s): ${esc(v.clients.join(", "))}</span></div>`).join("");
+  };
+  const body = `<p class="text-xs text-[var(--muted)]">${data.total} clients, ${data.untagged.length} without labels.</p>` +
+    section("OS", data.fields.os) + section("Device", data.fields.device) + section("Network", data.fields.network) + section("Carrier", data.fields.carrier) + section("Labels", data.labels);
+  showModal("Label statistics", body);
 }
 
 async function clientAction(name, action) {
@@ -3422,6 +3577,7 @@ async function clientAction(name, action) {
     if (action === "copy-access-link") return copyAccessLink(name);
     if (action === "regenerate-config") return regenerateConfig(name);
     if (action === "edit-tags") return editClientTags(name);
+    if (action === "edit-params") return editClientParams(name);
     if (action === "toggle") {
       await api(`/api/clients/${encodeURIComponent(name)}/toggle`, {method: "POST", body: "{}"});
       showToast("Client toggled");

@@ -32,7 +32,7 @@ assert len({(r["jmin"],r["jmax"],r["jc"]) for r in rows})>5
 }
 
 @test "client profile: invalid labels are rejected" {
-    run PROF generate --os plan9
+    run PROF generate --os 'bad os!'
     [ "$status" -eq 1 ]
     run PROF generate --carrier 'bad label!'
     [ "$status" -eq 1 ]

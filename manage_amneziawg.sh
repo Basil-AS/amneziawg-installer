@@ -9,14 +9,14 @@ fi
 # ==============================================================================
 # Скрипт для управления пользователями (пирами) AmneziaWG 2.0
 # Автор: @bivlked
-# Версия: 5.29.0-bas.9
+# Версия: 5.29.0-bas.10
 # Дата: 2026-08-30
 # Репозиторий: https://github.com/bivlked/amneziawg-installer
 # ==============================================================================
 
 # --- Безопасный режим и Константы ---
 # shellcheck disable=SC2034
-SCRIPT_VERSION="5.29.0-bas.9"
+SCRIPT_VERSION="5.29.0-bas.10"
 set -o pipefail
 AWG_DIR="/root/awg"
 SERVER_CONF_FILE="/etc/amnezia/amneziawg/awg0.conf"
@@ -2523,7 +2523,8 @@ usage() {
     echo "  profile validate       Проверить AWG 3.1 профиль без вывода секретов"
     echo "  client-profile set <имя> [--os=OS --device=D --network=N --carrier=C --preset=P]"
     echo "                        Создать профиль клиента (уникальные Jc/Jmin/Jmax/I1, MTU) и пересобрать конфиг клиента (ключи не меняются)"
-    echo "  client-profile show|clear <имя>    Показать / удалить профиль клиента"
+    echo "  client-profile show|clear|refresh <имя>   Показать / удалить / пересобрать из сохранённого профиля"
+    echo "  client-profile fill                Создать профиль всем клиентам, у которых его нет (нужен реимпорт)"
     echo "  client-profile presets|classify [ASN ORG]  Пресеты / определить тип сети по ASN и названию"
     echo "  voice-check           Диагностика UDP/STUN/NAT для звонков"
     echo "  p2p list              Показать P2P порты всех клиентов"
@@ -2848,10 +2849,20 @@ case $COMMAND in
             presets)
                 python3 "$AWG_CLIENT_PROFILE_SCRIPT_PATH" presets || _cmd_rc=1
                 ;;
+            fill)
+                # give every client that still shares the server's sender values its own profile
+                _filled=0
+                while IFS= read -r _fc; do
+                    _fc="${_fc## }"; [[ -n "$_fc" ]] || continue
+                    [[ -f "$AWG_CLIENT_PROFILE_DIR/${_fc}.json" ]] && continue
+                    if client_profile_set "$_fc" && refresh_client_config "$_fc"; then _filled=$((_filled + 1)); else _cmd_rc=1; fi
+                done < <(grep '^#_Name = ' "$SERVER_CONF_FILE" | sed 's/^#_Name = //')
+                log "Профилей создано: $_filled"
+                ;;
             classify)
                 python3 "$AWG_CLIENT_PROFILE_SCRIPT_PATH" classify --asn "${ARGS[1]:-}" --org "${ARGS[2]:-}" || _cmd_rc=1
                 ;;
-            set|show|clear)
+            set|show|clear|refresh)
                 [[ -n "$_cn" ]] || die "Имя клиента не указано."
                 validate_client_name "$_cn" || exit 1
                 grep -qxF "#_Name = ${_cn}" "$SERVER_CONF_FILE" || die "Клиент '$_cn' не найден."
@@ -2865,6 +2876,9 @@ case $COMMAND in
                         else
                             echo "Профиля клиента нет: используются параметры сервера."
                         fi
+                        ;;
+                    refresh)
+                        refresh_client_config "$_cn" || _cmd_rc=1
                         ;;
                     clear)
                         rm -f "$AWG_CLIENT_PROFILE_DIR/${_cn}.json"

@@ -441,6 +441,92 @@ def audit_log(message):
     print(message, file=sys.stderr, flush=True)
 
 
+ACCESS_LOG_FILE = Path(os.environ.get("AWG_WEB_ACCESS_LOG", "/var/log/awg-web-access.log"))
+ACCESS_LOG_MAX_BYTES = 5 * 1024 * 1024
+ACCESS_LOG_LOCK = threading.Lock()
+ACCESS_SESSIONS = {}
+ACCESS_SESSION_TTL = 1800
+
+
+def parse_user_agent(ua):
+    """Coarse device description from a User-Agent: os, browser, form factor."""
+    ua = str(ua or "")[:300]
+    low = ua.lower()
+    if "android" in low:
+        os_name = "android"
+    elif "iphone" in low or "ipad" in low or "ios" in low:
+        os_name = "ios"
+    elif "windows" in low:
+        os_name = "windows"
+    elif "mac os" in low or "macintosh" in low:
+        os_name = "macos"
+    elif "linux" in low or "x11" in low:
+        os_name = "linux"
+    else:
+        os_name = "other"
+    browser = "other"
+    for needle, name in (("edg/", "edge"), ("opr/", "opera"), ("firefox/", "firefox"), ("chrome/", "chrome"), ("safari/", "safari"), ("curl/", "curl"), ("python", "python")):
+        if needle in low:
+            browser = name
+            break
+    form = "mobile" if ("mobile" in low or os_name in ("android", "ios")) else "desktop"
+    return {"os": os_name, "browser": browser, "form": form}
+
+
+def access_log_event(kind, ip, ua="", **fields):
+    """One JSON line per event: time, kind, client ip and a coarse device. Never logs tokens."""
+    record = {"ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "kind": kind, "ip": ip or "-",
+              "device": parse_user_agent(ua), "ua": str(ua or "")[:160]}
+    record.update({k: v for k, v in fields.items() if v not in (None, "")})
+    line = json.dumps(record, ensure_ascii=False, sort_keys=True)
+    try:
+        with ACCESS_LOG_LOCK:
+            ACCESS_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+            if ACCESS_LOG_FILE.exists() and ACCESS_LOG_FILE.stat().st_size > ACCESS_LOG_MAX_BYTES:
+                for idx in (2, 1):
+                    older = ACCESS_LOG_FILE.with_name(f"{ACCESS_LOG_FILE.name}.{idx}")
+                    newer = ACCESS_LOG_FILE if idx == 1 else ACCESS_LOG_FILE.with_name(f"{ACCESS_LOG_FILE.name}.{idx - 1}")
+                    if newer.exists():
+                        os.replace(newer, older)
+            fd = os.open(ACCESS_LOG_FILE, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+            with os.fdopen(fd, "a", encoding="utf-8") as fh:
+                fh.write(line + "\n")
+    except OSError:
+        pass
+    audit_log("ACCESS " + line)
+
+
+def access_log_tail(limit=100, kind=""):
+    rows = []
+    try:
+        data = ACCESS_LOG_FILE.read_text(encoding="utf-8", errors="replace").splitlines()[-5000:]
+    except OSError:
+        return rows
+    for line in reversed(data):
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if kind and row.get("kind") != kind:
+            continue
+        rows.append(row)
+        if len(rows) >= limit:
+            break
+    return rows
+
+
+def note_api_session(auth, ip, ua):
+    """Log a session_start the first time a (token, ip, device) combination is seen or after 30 idle minutes."""
+    key = (auth_fingerprint(auth), ip, hash(str(ua)))
+    now = time.time()
+    last = ACCESS_SESSIONS.get(key, 0)
+    ACCESS_SESSIONS[key] = now
+    if len(ACCESS_SESSIONS) > 2000:
+        for k in [k for k, v in ACCESS_SESSIONS.items() if now - v > ACCESS_SESSION_TTL]:
+            ACCESS_SESSIONS.pop(k, None)
+    return now - last > ACCESS_SESSION_TTL
+
+
 def auth_fingerprint(auth):
     return (auth.get("hash") or "")[:8] if isinstance(auth, dict) else ""
 
@@ -3319,45 +3405,145 @@ def client_profile_module():
     return _CLIENT_PROFILE_MODULE or None
 
 
+TAG_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9_.-]{0,31}$")
+TAG_FIELDS = ("os", "device", "network", "carrier")
+TAG_MAX_LABELS = 8
+
+
+def clean_tag_slug(value):
+    value = str(value or "").strip().lower().replace(" ", "-")
+    return value if TAG_SLUG_RE.fullmatch(value) else ""
+
+
 def clean_client_tags(value):
-    """Validated client labels: os, device, network, carrier, preset, note. Unknown keys are dropped."""
+    """Client labels.  os/device/network/carrier are free-form slugs (the UI only suggests values), plus
+    a short list of free labels and a note.  Unknown keys are dropped."""
     if not isinstance(value, dict):
         return {}
-    mod = client_profile_module()
-    os_values = set(getattr(mod, "OS_VALUES", ())) if mod else set()
-    device_values = set(getattr(mod, "DEVICE_VALUES", ())) if mod else set()
-    network_values = set(getattr(mod, "NETWORK_VALUES", ())) if mod else set()
-    presets = set(getattr(mod, "PRESETS", {})) if mod else set()
     clean = {}
-    for key, allowed in (("os", os_values), ("device", device_values), ("network", network_values), ("preset", presets)):
-        raw = str(value.get(key) or "").strip().lower()
-        if raw and (not allowed or raw in allowed):
-            clean[key] = raw
-    carrier = str(value.get("carrier") or "").strip().lower()
-    if carrier and re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,31}", carrier):
-        clean["carrier"] = carrier
+    for key in TAG_FIELDS:
+        slug = clean_tag_slug(value.get(key))
+        if slug:
+            clean[key] = slug
+    raw_labels = value.get("labels")
+    if isinstance(raw_labels, str):
+        raw_labels = re.split(r"[,\s]+", raw_labels)
+    labels = []
+    for item in raw_labels if isinstance(raw_labels, list) else []:
+        slug = clean_tag_slug(item)
+        if slug and slug not in labels:
+            labels.append(slug)
+    if labels:
+        clean["labels"] = labels[:TAG_MAX_LABELS]
     note = str(value.get("note") or "").strip()
     if note and _CLIENT_TAG_NOTE_RE.fullmatch(note):
         clean["note"] = note
     return clean
 
 
-def client_profile_summary(config_name):
-    """Public view of a saved per-client profile (never the full I1 packet)."""
+def client_tag_stats(peers, stats):
+    """Counts and traffic per tag value, for later analysis (carrier, OS, labels, ...)."""
+    meta = load_client_metadata().get("clients", {})
+    fields = {key: {} for key in TAG_FIELDS}
+    labels = {}
+    untagged = []
+
+    def add(bucket, value, name):
+        row = bucket.setdefault(value, {"count": 0, "clients": [], "rx": 0, "tx": 0})
+        row["count"] += 1
+        row["clients"].append(name)
+        st = stats.get(name, {})
+        row["rx"] += int(st.get("rx", 0) or 0)
+        row["tx"] += int(st.get("tx", 0) or 0)
+
+    for peer in peers:
+        name = peer["name"]
+        tags = (meta.get(name) or {}).get("tags") or {}
+        if not tags:
+            untagged.append(name)
+            continue
+        for key in TAG_FIELDS:
+            if tags.get(key):
+                add(fields[key], tags[key], name)
+        for label in tags.get("labels", []):
+            add(labels, label, name)
+    return {"total": len(peers), "untagged": untagged, "fields": fields, "labels": labels}
+
+
+def client_profile_path(config_name):
+    return CLIENT_PROFILE_DIR / f"{safe_name(config_name)}.json"
+
+
+def read_client_profile(config_name):
     try:
-        data = json.loads((CLIENT_PROFILE_DIR / f"{safe_name(config_name)}.json").read_text(encoding="utf-8"))
+        data = json.loads(client_profile_path(config_name).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {}
-    if not isinstance(data, dict):
+    return data if isinstance(data, dict) else {}
+
+
+def write_client_profile(config_name, profile):
+    CLIENT_PROFILE_DIR.mkdir(parents=True, exist_ok=True)
+    os.chmod(CLIENT_PROFILE_DIR, 0o700)
+    target = client_profile_path(config_name)
+    tmp = target.with_name(f".{target.name}.tmp.{os.getpid()}")
+    tmp.write_text(json.dumps(profile, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, target)
+
+
+def cps_size(i1):
+    size = 0
+    for kind, val in re.findall(r"<(b|r)\s+(?:0x)?([0-9a-fA-F]+)>", i1 or ""):
+        size += len(val) // 2 if kind == "b" else int(val, 10)
+    return size
+
+
+def client_profile_summary(config_name):
+    """Public view of a saved per-client profile (never the CPS packets themselves)."""
+    data = read_client_profile(config_name)
+    if not data:
         return {}
     out = {k: data[k] for k in ("preset", "jc", "jmin", "jmax", "mtu", "keepalive") if isinstance(data.get(k), (int, str)) and not isinstance(data.get(k), bool)}
-    i1 = str(data.get("i1") or "")
-    if i1:
-        size = 0
-        for kind, val in re.findall(r"<(b|r)\s+(?:0x)?([0-9a-fA-F]+)>", i1):
-            size += len(val) // 2 if kind == "b" else int(val, 10)
-        out["i1_bytes"] = size
+    sizes = {f"i{i}": cps_size(str(data.get(f"i{i}") or "")) for i in range(1, 6) if data.get(f"i{i}")}
+    if sizes:
+        out["i_bytes"] = sizes
+        out["i1_bytes"] = sizes.get("i1", 0)
+    if isinstance(data.get("extra"), dict):
+        out["extra"] = {k: str(v) for k, v in data["extra"].items()}
     return out
+
+
+SHARED_SERVER_KEYS = ("S1", "S2", "S3", "S4", "H1", "H2", "H3", "H4")
+
+
+def shared_server_params():
+    """Read-only values every client must share with the server interface (not editable per client)."""
+    out = {}
+    try:
+        for line in Path(os.environ.get("SERVER_CONF_FILE", "/etc/amnezia/amneziawg/awg0.conf")).read_text(encoding="utf-8").splitlines():
+            m = re.match(r"^(S[1-4]|H[1-4]|Jc|Jmin|Jmax)\s*=\s*(\S+)", line.strip())
+            if m and m.group(1) in SHARED_SERVER_KEYS + ("Jc", "Jmin", "Jmax"):
+                out.setdefault(m.group(1), m.group(2))
+    except OSError:
+        pass
+    return out
+
+
+def client_params_payload(config_name):
+    mod = client_profile_module()
+    profile = read_client_profile(config_name)
+    return {
+        "name": config_name,
+        "profile": profile,
+        "tags": client_metadata_record(config_name).get("tags", {}),
+        "server": shared_server_params(),
+        "shared_note": "S1-S4 and H1-H4 are shared with the server interface and cannot be changed per client.",
+        "limits": dict(getattr(mod, "LIMITS", {})) if mod else {},
+        "warnings": mod.mtu_warnings(profile) if (mod and profile) else [],
+        "presets": client_profile_presets(),
+        "styles": list(getattr(mod, "I_STYLES", ())) if mod else [],
+    }
 
 
 def classify_endpoint_info(info):
@@ -6783,6 +6969,11 @@ class LimitedThreadingHTTPServer(ThreadingHTTPServer):
             self._sem.release()
 
 
+def u_path_only(raw_path):
+    """Request path without the query string (queries can carry identifiers)."""
+    return str(raw_path or "").split("?", 1)[0][:200]
+
+
 class Handler(SimpleHTTPRequestHandler):
     server_version = "Panel"
     sys_version = ""
@@ -6859,8 +7050,16 @@ class Handler(SimpleHTTPRequestHandler):
             reason, fingerprint = auth_reject_reason(header)
             suffix = f" fingerprint={fingerprint}" if fingerprint else ""
             audit_log(f"Rejected bearer token remote={ip} path={self.path} reason={reason}{suffix}")
+            access_log_event("auth_fail", ip, self.headers.get("User-Agent", ""), path=u_path_only(self.path), reason=reason, fp=fingerprint)
             self.send_api_error(HTTPStatus.UNAUTHORIZED, "unauthorized")
             return None
+        self.log_ip = ip
+        ua = self.headers.get("User-Agent", "")
+        method = getattr(self, "command", "GET")
+        if method != "GET":
+            access_log_event("action", ip, ua, method=method, path=u_path_only(self.path), role=auth.get("role"), fp=auth_fingerprint(auth), token=auth.get("name"))
+        elif note_api_session(auth, ip, ua):
+            access_log_event("session", ip, ua, role=auth.get("role"), fp=auth_fingerprint(auth), token=auth.get("name"))
         return auth
 
     @staticmethod
@@ -7454,6 +7653,32 @@ class Handler(SimpleHTTPRequestHandler):
                 return
             self.send_json({"presets": client_profile_presets()})
             return
+        if u.path == "/api/security/log":
+            if not self.require_super(auth):
+                return
+            query = parse_qs(u.query)
+            try:
+                limit = max(1, min(int((query.get("limit") or ["100"])[0]), 500))
+            except (TypeError, ValueError):
+                limit = 100
+            kind = (query.get("kind") or [""])[0]
+            self.send_json({"events": access_log_tail(limit, kind if kind in {"auth_fail", "action", "session"} else "")})
+            return
+        if u.path == "/api/clients/tags/stats":
+            if not self.require_super(auth):
+                return
+            self.send_json(client_tag_stats(parse_peers(), client_stats_map()))
+            return
+        m_params = re.match(r"^/api/clients/([^/]+)/params$", u.path)
+        if m_params:
+            if not self.require_super(auth):
+                return
+            config_name = safe_name(m_params.group(1))
+            if config_name not in {peer["name"] for peer in parse_peers()}:
+                self.send_json({"error": "client not found"}, 404)
+                return
+            self.send_json(client_params_payload(config_name))
+            return
         if u.path == "/api/ip-lookup":
             if not self.require_super(auth):
                 return
@@ -7839,19 +8064,27 @@ class Handler(SimpleHTTPRequestHandler):
                     self.send_json({"error": "client not found"}, 404)
                     return
                 tags = set_client_tags(config_name, body.get("tags") or {})
-                result = {"ok": True, "name": config_name, "tags": tags}
-                if body.get("apply"):
-                    args = ["client-profile", "set", config_name]
-                    for key in ("os", "device", "network", "carrier", "preset"):
-                        if tags.get(key):
-                            args.append(f"--{key}={tags[key]}")
-                    p = run_manage(*args, timeout=90)
-                    result["applied"] = p.returncode == 0
-                    if p.returncode != 0:
-                        result["stderr"] = p.stderr[-400:]
-                    result["client_profile"] = client_profile_summary(config_name)
-                audit_log(f"Client tags updated config_name={config_name} actor_role={auth.get('role')} actor_fp={auth_fingerprint(auth)} apply={'true' if body.get('apply') else 'false'}")
-                self.send_json(result)
+                audit_log(f"Client tags updated config_name={config_name} actor_role={auth.get('role')} actor_fp={auth_fingerprint(auth)}")
+                self.send_json({"ok": True, "name": config_name, "tags": tags})
+                return
+            elif u.path == "/api/params/generate":
+                if not self.require_super(auth):
+                    return
+                mod = client_profile_module()
+                if not mod:
+                    self.send_json({"error": "profile generator is not installed"}, 500)
+                    return
+                try:
+                    if body.get("only") == "i1":
+                        self.send_json({"i1": mod.I1_STYLES[str(body.get("style") or "dns")]()})
+                        return
+                    tags = body.get("tags") if isinstance(body.get("tags"), dict) else {}
+                    generated = mod.generate(str(tags.get("os") or ""), str(tags.get("device") or ""), str(tags.get("network") or ""),
+                                             str(tags.get("carrier") or ""), str(body.get("preset") or ""), str(body.get("style") or ""))
+                except (KeyError, ValueError) as exc:
+                    self.send_json({"error": str(exc)}, 400)
+                    return
+                self.send_json({"profile": generated})
                 return
             elif u.path == "/api/server/restart":
                 if not self.require_super(auth):
@@ -8113,6 +8346,35 @@ class Handler(SimpleHTTPRequestHandler):
                 body = self.json_body()
                 write_geoip_providers_config(body)
                 self.send_json({"ok": True, **geoip_providers_config_for_admin()})
+                return
+            m_params = re.match(r"^/api/clients/([^/]+)/params$", u.path)
+            if m_params:
+                if not self.require_super(auth):
+                    return
+                config_name = safe_name(m_params.group(1))
+                if config_name not in {peer["name"] for peer in parse_peers()}:
+                    self.send_json({"error": "client not found"}, 404)
+                    return
+                mod = client_profile_module()
+                if not mod:
+                    self.send_json({"error": "profile generator is not installed"}, 500)
+                    return
+                body = self.json_body()
+                try:
+                    cleaned = mod.validate_params(body.get("profile") or {})
+                except ValueError as exc:
+                    self.send_json({"error": str(exc)}, 400)
+                    return
+                cleaned["preset"] = "custom" if body.get("custom", True) else cleaned.get("preset", "custom")
+                tags = client_metadata_record(config_name).get("tags") or {}
+                cleaned["tags"] = {k: tags.get(k, "") for k in ("os", "device", "network", "carrier")}
+                write_client_profile(config_name, cleaned)
+                p = run_manage("client-profile", "refresh", config_name, timeout=90)
+                audit_log(f"Client params edited config_name={config_name} actor_role={auth.get('role')} actor_fp={auth_fingerprint(auth)} refreshed={'true' if p.returncode == 0 else 'false'}")
+                if p.returncode != 0:
+                    self.send_json({"error": "config refresh failed", "stderr": p.stderr[-400:]}, 500)
+                    return
+                self.send_json({"ok": True, "profile": client_profile_summary(config_name)})
                 return
             name_update = re.match(r"^/api/tokens/([^/]+)/name$", u.path)
             clients_update = re.match(r"^/api/tokens/([^/]+)/clients$", u.path)

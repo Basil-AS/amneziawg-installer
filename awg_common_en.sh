@@ -4,7 +4,7 @@
 # ==============================================================================
 # Common function library for AmneziaWG 2.0
 # Author: @bivlked
-# Version: 5.29.0-bas.9
+# Version: 5.29.0-bas.10
 # Date: 2026-08-30
 # Repository: https://github.com/bivlked/amneziawg-installer
 # ==============================================================================
@@ -96,7 +96,7 @@ awg_profile_status() {
 # Library version. The manage script verifies it after sourcing this file so a
 # partial update fails with a clear message instead of a later missing symbol.
 # shellcheck disable=SC2034
-AWG_COMMON_VERSION="5.29.0-bas.9"
+AWG_COMMON_VERSION="5.29.0-bas.10"
 
 # --- Автоочистка временных файлов ---
 # ВАЖНО: trap НЕ устанавливается здесь, чтобы не перезаписать trap вызывающего скрипта.
@@ -2771,9 +2771,24 @@ _extract_mtu_from_server_conf() {
 AWG_CLIENT_PROFILE_SCRIPT_PATH="${AWG_CLIENT_PROFILE_SCRIPT_PATH:-$AWG_DIR/scripts/awg_client_profile.py}"
 AWG_CLIENT_PROFILE_DIR="${AWG_CLIENT_PROFILE_DIR:-$AWG_DIR/client_profiles}"
 
+# Rewrites the AWG 3.x timer/padding lines of a client config with the per-client values (if any).
+_client_profile_apply_extra() {
+    local line
+    while IFS= read -r line; do
+        case "$line" in
+            "ContentPaddingAddition = "*) [[ -n "${CLIENT_PROFILE_PADDING:-}" ]] && line="ContentPaddingAddition = ${CLIENT_PROFILE_PADDING}" ;;
+            "KeepaliveTimeout = "*)       [[ -n "${CLIENT_PROFILE_KA_TIMEOUT:-}" ]] && line="KeepaliveTimeout = ${CLIENT_PROFILE_KA_TIMEOUT}" ;;
+            "RekeyAfterTime = "*)         [[ -n "${CLIENT_PROFILE_REKEY_AFTER:-}" ]] && line="RekeyAfterTime = ${CLIENT_PROFILE_REKEY_AFTER}" ;;
+            "RekeyTimeout = "*)           [[ -n "${CLIENT_PROFILE_REKEY_TIMEOUT:-}" ]] && line="RekeyTimeout = ${CLIENT_PROFILE_REKEY_TIMEOUT}" ;;
+        esac
+        printf '%s\n' "$line"
+    done
+}
+
 _apply_client_profile() {
     local name="$1" f out k v
     CLIENT_PROFILE_MTU=""; CLIENT_PROFILE_KEEPALIVE=""
+    CLIENT_PROFILE_PADDING=""; CLIENT_PROFILE_KA_TIMEOUT=""; CLIENT_PROFILE_REKEY_AFTER=""; CLIENT_PROFILE_REKEY_TIMEOUT=""
     f="$AWG_CLIENT_PROFILE_DIR/${name}.json"
     [[ -f "$f" && -r "$AWG_CLIENT_PROFILE_SCRIPT_PATH" ]] || return 0
     out=$(python3 "$AWG_CLIENT_PROFILE_SCRIPT_PATH" env "$f" 2>/dev/null) || {
@@ -2788,6 +2803,12 @@ _apply_client_profile() {
             mtu)       CLIENT_PROFILE_MTU="$v" ;;
             keepalive) CLIENT_PROFILE_KEEPALIVE="$v" ;;
             i1)        [[ -z "${AWG_I1_OVERRIDE:-}" ]] && AWG_I1="$v" ;;
+            i2|i3|i4|i5)
+                printf -v "AWG_${k^^}" '%s' "$v" ;;
+            content_padding)   CLIENT_PROFILE_PADDING="$v" ;;
+            keepalive_timeout) CLIENT_PROFILE_KA_TIMEOUT="$v" ;;
+            rekey_after_time)  CLIENT_PROFILE_REKEY_AFTER="$v" ;;
+            rekey_timeout)     CLIENT_PROFILE_REKEY_TIMEOUT="$v" ;;
         esac
     done <<< "$out"
     return 0
@@ -2933,7 +2954,9 @@ H4 = ${h4}
 EOF
 
     if [[ "$protocol_version" == "3.0" || "$protocol_version" == "3.1" ]]; then
-        _awg31_render_extra_fields >> "$tmpfile" || { rm -f "$tmpfile"; return 1; }
+        local _awg31_extra
+        _awg31_extra=$(_awg31_render_extra_fields) || { rm -f "$tmpfile"; return 1; }
+        printf '%s\n' "$_awg31_extra" | _client_profile_apply_extra >> "$tmpfile"
     fi
 
     if _awg_protocol_has_cps; then

@@ -2,8 +2,8 @@
 """Per-client AmneziaWG sender profile: unique junk/CPS parameters, MTU and keepalive.
 
 Only parameters that are local to the sending side are varied per client:
-Jc, Jmin, Jmax, I1 (a CPS packet the client sends before the handshake), MTU and
-PersistentKeepalive.  S1-S4 and H1-H4 must stay identical on both ends of an
+Jc, Jmin, Jmax, I1-I5 (CPS packets the client sends before the handshake), MTU,
+PersistentKeepalive and, for AWG 3.x, the local timers and content padding.  S1-S4 and H1-H4 must stay identical on both ends of an
 interface, so they are never touched here.  Giving every client its own junk
 sizes and its own I1 removes the shared, repeated pattern that makes a server
 easy to fingerprint.
@@ -13,6 +13,8 @@ Sub-commands (stdlib only, keys are never handled):
   classify --asn AS8359 --org "..."    guess network type / carrier from ASN and org name
   generate --os android --network mobile [--carrier slug] [--device phone] [--preset name]
   env FILE                             print key=value lines for the shell from a saved profile
+  validate FILE                        check a profile (the web editor uses the same rules)
+  i1 --style dns|quic                  generate one CPS packet
 """
 from __future__ import annotations
 
@@ -22,9 +24,13 @@ import re
 import secrets
 import sys
 
-OS_VALUES = ("android", "ios", "windows", "macos", "linux", "router", "other")
+# Suggestions only: labels are free-form slugs, so "openwrt", "keenetic" or any custom value is fine.
+OS_VALUES = ("android", "ios", "windows", "macos", "linux", "openwrt", "router", "other")
 DEVICE_VALUES = ("phone", "tablet", "laptop", "desktop", "router", "tv", "other")
 NETWORK_VALUES = ("mobile", "home", "office", "hosting", "unknown")
+ROUTER_OS = ("router", "openwrt", "keenetic", "mikrotik", "pfsense", "opnsense")
+I_STYLES = ("dns", "quic")
+LIMITS = {"jc": (0, 16), "jmin": (0, 1200), "jmax": (1, 1280), "mtu": (576, 1500), "keepalive": (0, 600)}
 SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")
 
 # Best-effort classification.  ASN numbers change hands; the org-name patterns are
@@ -73,12 +79,12 @@ PRESETS = {
         "i1": "dns", "why": "iOS clients: conservative MTU, short junk",
     },
     "home": {
-        "jc": (4, 6), "jmin": (40, 90), "jspan": (50, 150), "mtu": 1380, "keepalive": 25,
-        "i1": "dns", "why": "wired/Wi-Fi ISP path, room for PPPoE and tunnel overhead",
+        "jc": (4, 6), "jmin": (40, 90), "jspan": (50, 150), "mtu": 1280, "keepalive": 25,
+        "i1": "dns", "why": "wired/Wi-Fi ISP path; 1280 keeps padded packets below 1500 bytes (no fragmentation)",
     },
     "desktop": {
-        "jc": (4, 6), "jmin": (48, 96), "jspan": (60, 160), "mtu": 1380, "keepalive": 25,
-        "i1": "quic", "why": "desktop clients on home/office links",
+        "jc": (4, 6), "jmin": (48, 96), "jspan": (60, 160), "mtu": 1280, "keepalive": 25,
+        "i1": "quic", "why": "desktop clients on home/office links; 1280 keeps padded packets below 1500 bytes",
     },
     "router": {
         "jc": (4, 7), "jmin": (48, 110), "jspan": (80, 220), "mtu": 1280, "keepalive": 25,
@@ -90,6 +96,17 @@ PRESETS = {
     },
 }
 DEFAULT_PRESET = "home"
+
+# AWG 3.x local timers and content padding.  They are sender-side, so they can differ per client; the
+# ranges stay inside what the reference profile uses so that no client becomes an outlier in the
+# other direction.
+EXTRA_RANGES = {
+    "content_padding": ((8, 24), (40, 126)),     # low bound range, span range; high end stays <= 150
+    "keepalive_timeout": ((20, 30), (6, 14)),
+    "rekey_after_time": ((90, 115), (6, 20)),
+    "rekey_timeout": ((2, 4), (1, 4)),
+}
+RANGE_RE = re.compile(r"^(\d{1,4})-(\d{1,4})$")
 
 # Domains for the shape of the I1 packet.  Neutral, popular names; never SNIs that are known to be
 # filtered (a filtered name in the very first packet would defeat the purpose).
@@ -170,7 +187,7 @@ def classify(asn: str = "", org: str = "") -> dict:
 
 
 def suggest_preset(os_name: str = "", network: str = "", device: str = "") -> str:
-    if os_name == "router" or device == "router":
+    if os_name in ROUTER_OS or device == "router":
         return "router"
     if network == "mobile" or (os_name in ("android", "ios") and network in ("", "unknown")):
         return "ios" if os_name == "ios" else "mobile"
@@ -186,19 +203,24 @@ def clean_slug(value: str) -> str:
     return value
 
 
-def generate(os_name="", device="", network="", carrier="", preset="") -> dict:
-    os_name, device, network = (os_name or "").lower(), (device or "").lower(), (network or "").lower()
-    if os_name and os_name not in OS_VALUES:
-        raise ValueError(f"os must be one of {', '.join(OS_VALUES)}")
-    if device and device not in DEVICE_VALUES:
-        raise ValueError(f"device must be one of {', '.join(DEVICE_VALUES)}")
-    if network and network not in NETWORK_VALUES:
-        raise ValueError(f"network must be one of {', '.join(NETWORK_VALUES)}")
+def extra_values() -> dict:
+    out = {}
+    for key, (low, span) in EXTRA_RANGES.items():
+        lo = rand_range(*low)
+        out[key] = f"{lo}-{lo + rand_range(*span)}"
+    return out
+
+
+def generate(os_name="", device="", network="", carrier="", preset="", style="") -> dict:
+    os_name, device, network = clean_slug(os_name), clean_slug(device), clean_slug(network)
     carrier = clean_slug(carrier)
     preset = preset or suggest_preset(os_name, network, device)
     if preset not in PRESETS:
         raise ValueError(f"unknown preset {preset!r}")
     spec = PRESETS[preset]
+    style = style or spec["i1"]
+    if style not in I1_STYLES:
+        raise ValueError(f"unknown I1 style {style!r}")
     jc = rand_range(*spec["jc"])
     jmin = rand_range(*spec["jmin"])
     jmax = jmin + rand_range(*spec["jspan"])
@@ -207,26 +229,105 @@ def generate(os_name="", device="", network="", carrier="", preset="") -> dict:
         "tags": {"os": os_name, "device": device, "network": network, "carrier": carrier},
         "jc": jc, "jmin": jmin, "jmax": jmax,
         "mtu": spec["mtu"], "keepalive": spec["keepalive"],
-        "i1": I1_STYLES[spec["i1"]](),
+        "i1": I1_STYLES[style](),
+        "extra": extra_values(),
         "why": spec["why"],
     }
 
 
-def env_lines(profile: dict) -> list[str]:
-    """Only validated numeric fields and the I1 string are emitted for the shell."""
+def outer_packet_estimate(profile: dict, server_padding_hi: int = 100) -> int:
+    """Worst-case size of an outer UDP/IPv4 packet carrying a full-MTU inner packet.
+
+    inner MTU + 32 bytes AWG data header + 8 UDP + 20 IPv4 + the largest content padding either side adds.
+    """
+    mtu = int(profile.get("mtu") or 0)
+    pad = server_padding_hi
+    rng = (profile.get("extra") or {}).get("content_padding", "")
+    m = RANGE_RE.fullmatch(str(rng))
+    if m:
+        pad = max(pad, int(m.group(2)))
+    return mtu + 32 + 28 + pad
+
+
+def mtu_warnings(profile: dict) -> list:
     out = []
-    for key in ("jc", "jmin", "jmax", "mtu", "keepalive"):
-        value = profile.get(key)
-        if not isinstance(value, int) or isinstance(value, bool) or value < 0 or value > 65535:
-            raise ValueError(f"bad {key}")
-        out.append(f"{key}={value}")
-    if profile["jmin"] >= profile["jmax"]:
+    est = outer_packet_estimate(profile)
+    if est > 1500:
+        out.append(f"worst-case outer packet is about {est} bytes (> 1500): full-size packets with maximum padding will be "
+                   "fragmented, which some networks drop. Lower the MTU or the content padding.")
+    return out
+
+
+def _int_field(profile: dict, key: str, default=None) -> int:
+    value = profile.get(key, default)
+    if value is None:
+        raise ValueError(f"{key} is required")
+    if isinstance(value, bool) or not isinstance(value, (int, str)) or (isinstance(value, str) and not value.strip().lstrip("-").isdigit()):
+        raise ValueError(f"{key} must be an integer")
+    value = int(value)
+    lo, hi = LIMITS[key]
+    if not lo <= value <= hi:
+        raise ValueError(f"{key} must be between {lo} and {hi}")
+    return value
+
+
+def _cps(value: str, name: str) -> str:
+    value = (value or "").strip()
+    if not value:
+        return ""
+    if len(value) > 2000 or not re.fullmatch(r"[ 0-9a-fA-Fx<>br]+", value) or not ("<b 0x" in value or "<r " in value):
+        raise ValueError(f"{name} must be a CPS string made of <b 0x..> and <r N> parts (up to 2000 chars)")
+    return value
+
+
+def validate_params(profile: dict) -> dict:
+    """Return a cleaned profile or raise ValueError.  Only sender-side fields are accepted."""
+    if not isinstance(profile, dict):
+        raise ValueError("profile must be an object")
+    out = {
+        "jc": _int_field(profile, "jc"),
+        "jmin": _int_field(profile, "jmin"),
+        "jmax": _int_field(profile, "jmax"),
+        "mtu": _int_field(profile, "mtu"),
+        "keepalive": _int_field(profile, "keepalive"),
+    }
+    if out["jmin"] >= out["jmax"]:
         raise ValueError("jmin must be below jmax")
-    i1 = profile.get("i1", "")
-    if i1:
-        if not re.fullmatch(r"[ 0-9a-fA-Fx<>br]+", i1) or len(i1) > 2000:
-            raise ValueError("bad i1")
-        out.append(f"i1={i1}")
+    for i in range(1, 6):
+        v = _cps(str(profile.get(f"i{i}") or ""), f"i{i}")
+        if v:
+            out[f"i{i}"] = v
+    extra_in = profile.get("extra") or {}
+    if not isinstance(extra_in, dict):
+        raise ValueError("extra must be an object")
+    extra = {}
+    for key in EXTRA_RANGES:
+        v = str(extra_in.get(key) or "").strip()
+        if not v:
+            continue
+        m = RANGE_RE.fullmatch(v)
+        if not m or int(m.group(1)) > int(m.group(2)):
+            raise ValueError(f"{key} must look like 10-100")
+        extra[key] = v
+    if extra:
+        out["extra"] = extra
+    preset = str(profile.get("preset") or "custom")
+    out["preset"] = preset if (preset in PRESETS or preset == "custom") else "custom"
+    tags = profile.get("tags")
+    if isinstance(tags, dict):
+        out["tags"] = {k: clean_slug(str(tags.get(k) or "")) for k in ("os", "device", "network", "carrier")}
+    return out
+
+
+def env_lines(profile: dict) -> list[str]:
+    """Only validated fields are emitted for the shell, one key=value per line."""
+    p = validate_params(profile)
+    out = [f"{k}={p[k]}" for k in ("jc", "jmin", "jmax", "mtu", "keepalive")]
+    for i in range(1, 6):
+        if p.get(f"i{i}"):
+            out.append(f"i{i}={p[f'i{i}']}")
+    for key, value in (p.get("extra") or {}).items():
+        out.append(f"{key}={value}")
     return out
 
 
@@ -242,6 +343,10 @@ def main() -> int:
         g.add_argument(f"--{opt}", default="")
     e = sub.add_parser("env")
     e.add_argument("file")
+    v = sub.add_parser("validate")
+    v.add_argument("file")
+    i = sub.add_parser("i1")
+    i.add_argument("--style", default="dns")
     a = ap.parse_args()
     try:
         if a.cmd == "presets":
@@ -250,6 +355,13 @@ def main() -> int:
             print(json.dumps(classify(a.asn, a.org)))
         elif a.cmd == "generate":
             print(json.dumps(generate(a.os, a.device, a.network, a.carrier, a.preset)))
+        elif a.cmd == "i1":
+            if a.style not in I1_STYLES:
+                raise ValueError(f"style must be one of {', '.join(I_STYLES)}")
+            print(I1_STYLES[a.style]())
+        elif a.cmd == "validate":
+            with open(a.file, encoding="utf-8") as fh:
+                print(json.dumps(validate_params(json.load(fh))))
         else:
             with open(a.file, encoding="utf-8") as fh:
                 print("\n".join(env_lines(json.load(fh))))

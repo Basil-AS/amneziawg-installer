@@ -1,0 +1,21 @@
+[DEFAULT]
+# your own addresses are never banned
+ignoreip = 127.0.0.1/8 ::1 10.0.0.0/8 203.0.113.10
+
+[nginx-gate]
+enabled = true
+port = http,https
+filter = nginx-gate
+logpath = /var/log/nginx/gate.log
+maxretry = 5
+findtime = 600
+bantime = 604800
+
+[nginx-probe]
+enabled = true
+port = http,https
+filter = nginx-probe
+logpath = /var/log/nginx/access.log
+maxretry = 6
+findtime = 600
+bantime = 86400
