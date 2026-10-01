@@ -3353,7 +3353,10 @@ def client_profile_summary(config_name):
     out = {k: data[k] for k in ("preset", "jc", "jmin", "jmax", "mtu", "keepalive") if isinstance(data.get(k), (int, str)) and not isinstance(data.get(k), bool)}
     i1 = str(data.get("i1") or "")
     if i1:
-        out["i1_bytes"] = max(0, (len(i1) - len("<b 0x>")) // 2)
+        size = 0
+        for kind, val in re.findall(r"<(b|r)\s+(?:0x)?([0-9a-fA-F]+)>", i1):
+            size += len(val) // 2 if kind == "b" else int(val, 10)
+        out["i1_bytes"] = size
     return out
 
 

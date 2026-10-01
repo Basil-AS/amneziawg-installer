@@ -12,6 +12,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- Client profile `quic` style: I1 is now a QUIC Initial with a real header layout and a 1200-1252 byte size (`<b ...><r N>`) instead of a short packet.
+
+
 ## [5.29.0-bas.9] - 2026-09-30
 
 ### Fixed
