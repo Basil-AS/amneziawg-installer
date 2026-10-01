@@ -4,7 +4,7 @@
 # ==============================================================================
 # Общая библиотека функций для AmneziaWG 2.0
 # Автор: @bivlked
-# Версия: 5.29.0-bas.12
+# Версия: 5.29.0-bas.13
 # Дата: 2026-08-30
 # Репозиторий: https://github.com/bivlked/amneziawg-installer
 # ==============================================================================
@@ -100,7 +100,7 @@ awg_profile_status() {
 # (обновили один файл, забыли второй) - иначе рассинхрон всплывает как
 # "command not found" в случайном месте. Бампается вместе с остальными версиями.
 # shellcheck disable=SC2034  # используется в manage-скрипте после source
-AWG_COMMON_VERSION="5.29.0-bas.12"
+AWG_COMMON_VERSION="5.29.0-bas.13"
 
 # --- Автоочистка временных файлов ---
 # ВАЖНО: trap НЕ устанавливается здесь, чтобы не перезаписать trap вызывающего скрипта.
@@ -2413,7 +2413,7 @@ safe_load_config() {
                 AWG_P2P_ENABLED|AWG_P2P_BASE_PORT|AWG_P2P_PORTS_PER_CLIENT|AWG_FULLCONE_NAT|\
                 AWG_WEB_ENABLED|AWG_WEB_PORT|AWG_WEB_BIND|AWG_WEB_CERT_MODE|AWG_WEB_DOMAIN|AWG_WEB_CERT_FILE|AWG_WEB_KEY_FILE|AWG_WEB_CERT_PROVIDER|AWG_WEB_LE_EMAIL|AWG_WEB_PUBLIC_URL|AWG_WEB_CERT_FALLBACK|AWG_WEB_CERT_ATTEMPTED_MODE|AWG_WEB_CERT_FAILURE_REASON|AWG_WEB_CERT_FALLBACK_USED|\
                 AWG_DNS_MODE|AWG_CUSTOM_DNS|AWG_ADGUARD_ENABLED|AWG_ADGUARD_PORT|AWG_ADGUARD_DIR|\
-                AWG_WIRESOCK_HINTS|AWG_WIRESOCK_ID|AWG_WIRESOCK_IP|AWG_WIRESOCK_IB|AWG_SERVER_NAME)
+                AWG_WIRESOCK_HINTS|AWG_WIRESOCK_ID|AWG_WIRESOCK_IP|AWG_WIRESOCK_IB|AWG_CLIENT_PORT|AWG_SERVER_NAME)
                     export "$key=$value"
                     ;;
             esac
@@ -4492,7 +4492,7 @@ generate_vpn_uri() {
         "$AWG_H1" "$AWG_H2" "$AWG_H3" "$AWG_H4" \
         "$AWG_Jc" "$AWG_Jmin" "$AWG_Jmax" \
         "$AWG_S1" "$AWG_S2" "$AWG_S3" "$AWG_S4" \
-        "$AWG_I1" "${AWG_I2:-}" "${AWG_I3:-}" "${AWG_I4:-}" "${AWG_I5:-}" "$AWG_PORT" "$endpoint" \
+        "$AWG_I1" "${AWG_I2:-}" "${AWG_I3:-}" "${AWG_I4:-}" "${AWG_I5:-}" "${AWG_CLIENT_PORT:-$AWG_PORT}" "$endpoint" \
         "$client_ip" "$client_ipv6" "$allowed_ips" \
         "$mtu" "$keepalive" "$dns1" "$dns2" "${AWG_SERVER_NAME:-AWG Server}" "$protocol_version" \
         "$awg31_content_padding" "$awg31_header_key" "$awg31_max_handshake" "$awg31_keepalive_timeout" \
@@ -4712,7 +4712,7 @@ generate_client() {
     # и отлаживается вслепую. Отказываем явно, как generate_vpn_uri для vpn://
     # URI. Артефакты откатит _rollback ниже.
     local _cport
-    _cport=$(_sanitize_port "${AWG_PORT:-}")
+    _cport=$(_sanitize_port "${AWG_CLIENT_PORT:-${AWG_PORT:-}}")
     if [[ "$_cport" == "0" ]]; then
         log_error "AWG_PORT некорректен ('${AWG_PORT:-}') - клиентский конфиг для '$name' не создан. Проверьте ListenPort в $SERVER_CONF_FILE (или AWG_PORT в $CONFIG_FILE)."
         _rollback_client_artifacts "$name"
@@ -4939,7 +4939,7 @@ refresh_client_config() {
 
     # Перегенерация конфига
     local _cport
-    _cport=$(_sanitize_port "${AWG_PORT:-}")
+    _cport=$(_sanitize_port "${AWG_CLIENT_PORT:-${AWG_PORT:-}}")
     if [[ "$_cport" == "0" ]]; then
         log_error "AWG_PORT некорректен ('${AWG_PORT:-}') — конфиг '$name' не обновлён."
         exec {lock_fd}>&-
@@ -5553,7 +5553,7 @@ regenerate_client() {
     local _old_i1="${AWG_I1:-}"
     AWG_I1="$new_i1"
     local _cport
-    _cport=$(_sanitize_port "${AWG_PORT:-}")
+    _cport=$(_sanitize_port "${AWG_CLIENT_PORT:-${AWG_PORT:-}}")
     if [[ "$_cport" == "0" ]]; then
         log_error "AWG_PORT некорректен ('${AWG_PORT:-}') — конфиг '$name' не перегенерирован."
         AWG_I1="$_old_i1"

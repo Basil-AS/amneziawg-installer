@@ -9,14 +9,14 @@ fi
 # ==============================================================================
 # Скрипт для управления пользователями (пирами) AmneziaWG 2.0
 # Автор: @bivlked
-# Версия: 5.29.0-bas.12
+# Версия: 5.29.0-bas.13
 # Дата: 2026-08-30
 # Репозиторий: https://github.com/bivlked/amneziawg-installer
 # ==============================================================================
 
 # --- Безопасный режим и Константы ---
 # shellcheck disable=SC2034
-SCRIPT_VERSION="5.29.0-bas.12"
+SCRIPT_VERSION="5.29.0-bas.13"
 set -o pipefail
 AWG_DIR="/root/awg"
 SERVER_CONF_FILE="/etc/amnezia/amneziawg/awg0.conf"
@@ -2526,7 +2526,8 @@ usage() {
     echo "  client-profile show|clear|refresh <имя>   Показать / удалить / пересобрать из сохранённого профиля"
     echo "  client-profile fill                Создать профиль всем клиентам, у которых его нет (нужен реимпорт)"
     echo "  client-profile presets|classify [ASN ORG]  Пресеты / определить тип сети по ASN и названию"
-    echo "  summary               Пересобрать INSTALL_SUMMARY.txt по реальному состоянию сервера"
+    echo "  alt-port list|add <port>|remove <port>   Доп. публичные UDP-порты на порт сервера (AWG_CLIENT_PORT в awgsetup_cfg.init задаёт порт в новых конфигах)"
+    echo "  summary [full]        Пересобрать INSTALL_SUMMARY.txt: коротко (ссылки и доступы) или полный отчёт"
     echo "  voice-check           Диагностика UDP/STUN/NAT для звонков"
     echo "  p2p list              Показать P2P порты всех клиентов"
     echo "  p2p show <имя>        Показать P2P информацию клиента"
@@ -3187,6 +3188,65 @@ case $COMMAND in
     set-endpoint)
         safe_load_config "$CONFIG_FILE" 2>/dev/null || true
         set_server_endpoint "${ARGS[0]:-}" "${ARGS[1]:-}" || _cmd_rc=1
+        ;;
+
+    alt-port)
+        # extra public UDP ports that reach the real listen port (some ISPs throttle high random ports)
+        safe_load_config "$CONFIG_FILE" 2>/dev/null || true
+        _ap_sub="${ARGS[0]:-list}"
+        _ap_file="/etc/nftables.d/awg-alt-ports.nft"
+        _ap_state="$AWG_DIR/alt_ports"
+        _ap_listen="${AWG_PORT:-}"
+        _ap_ports=()
+        [[ -f "$_ap_state" ]] && mapfile -t _ap_ports < <(grep -E '^[0-9]+$' "$_ap_state" | sort -un)
+        _ap_write() {
+            local _dev _list
+            _dev=$(ip route get 1.1.1.1 2>/dev/null | grep -oP 'dev \K\S+' | head -n1)
+            [[ -n "$_dev" ]] || { log_error "Cannot detect the uplink interface."; return 1; }
+            if [[ ${#_ap_ports[@]} -eq 0 ]]; then
+                nft delete table ip awg_altports 2>/dev/null || true
+                rm -f "$_ap_file" "$_ap_state"
+                return 0
+            fi
+            _list=$(IFS=,; echo "${_ap_ports[*]}" | sed 's/,/, /g')
+            printf '%s\n' "# Alternative public UDP ports that reach the AmneziaWG listen port. Managed by: manage alt-port" \
+                "table ip awg_altports {" "    chain prerouting {" \
+                "        type nat hook prerouting priority dstnat; policy accept;" \
+                "        iifname \"$_dev\" udp dport { $_list } redirect to :$_ap_listen comment \"awg alt ports\"" \
+                "    }" "}" > "$_ap_file.tmp" && mv "$_ap_file.tmp" "$_ap_file"
+            printf '%s\n' "${_ap_ports[@]}" > "$_ap_state"
+            nft delete table ip awg_altports 2>/dev/null || true
+            nft -f "$_ap_file" || { log_error "nft rejected $_ap_file"; return 1; }
+        }
+        case "$_ap_sub" in
+            list)
+                echo "Listen port: ${_ap_listen:-?}   alternative ports: ${_ap_ports[*]:-none}   client default port: ${AWG_CLIENT_PORT:-${AWG_PORT:-?}}"
+                ;;
+            add|remove)
+                _ap_port="${ARGS[1]:-}"
+                [[ "$_ap_port" =~ ^[0-9]+$ ]] && (( _ap_port >= 1 && _ap_port <= 65535 )) || die "Usage: alt-port $_ap_sub <port 1-65535>"
+                case "$_ap_port" in
+                    22|53|80|443|5060) die "Port $_ap_port is filtered or reserved on many networks; pick another (3478 and 4500 worked best in tests)." ;;
+                esac
+                [[ "$_ap_port" == "$_ap_listen" ]] && die "Port $_ap_port is already the listen port."
+                [[ -n "$_ap_listen" ]] || die "AWG_PORT is not set in $CONFIG_FILE."
+                if [[ "$_ap_sub" == "add" ]]; then
+                    printf '%s\n' "${_ap_ports[@]}" "$_ap_port" | grep -E '^[0-9]+$' | sort -un > "$_ap_state.new"
+                    mapfile -t _ap_ports < "$_ap_state.new"; rm -f "$_ap_state.new"
+                    _ap_write || _cmd_rc=1
+                    command -v ufw >/dev/null 2>&1 && ufw allow "${_ap_port}/udp" comment "awg alt port" >/dev/null 2>&1 || true
+                    log "Port ${_ap_port}/udp now reaches the AmneziaWG listen port ${_ap_listen}."
+                else
+                    _ap_new=()
+                    for _p in "${_ap_ports[@]}"; do [[ "$_p" == "$_ap_port" ]] || _ap_new+=("$_p"); done
+                    _ap_ports=("${_ap_new[@]}")
+                    _ap_write || _cmd_rc=1
+                    command -v ufw >/dev/null 2>&1 && ufw delete allow "${_ap_port}/udp" >/dev/null 2>&1 || true
+                    log "Port ${_ap_port}/udp removed."
+                fi
+                ;;
+            *) die "Usage: alt-port list | add <port> | remove <port>" ;;
+        esac
         ;;
 
     summary)
