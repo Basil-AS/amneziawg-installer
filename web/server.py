@@ -7054,8 +7054,9 @@ class Handler(SimpleHTTPRequestHandler):
             return None
         self.log_ip = ip
         ua = self.headers.get("User-Agent", "")
-        if self.command != "GET":
-            access_log_event("action", ip, ua, method=self.command, path=u_path_only(self.path), role=auth.get("role"), fp=auth_fingerprint(auth), token=auth.get("name"))
+        method = getattr(self, "command", "GET")
+        if method != "GET":
+            access_log_event("action", ip, ua, method=method, path=u_path_only(self.path), role=auth.get("role"), fp=auth_fingerprint(auth), token=auth.get("name"))
         elif note_api_session(auth, ip, ua):
             access_log_event("session", ip, ua, role=auth.get("role"), fp=auth_fingerprint(auth), token=auth.get("name"))
         return auth
