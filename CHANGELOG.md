@@ -12,6 +12,20 @@
 
 ## [Unreleased]
 
+## [5.29.0-bas.10] - 2026-10-01
+
+### Добавлено
+
+- Редактор параметров клиента в панели («Parameters»): `Jc/Jmin/Jmax`, MTU, keepalive, I1-I5 с генератором (стили `dns`/`quic`), локальные таймеры и padding AWG 3.x. Редактируются только значения, не зависящие от сервера; `S1-S4`/`H1-H4` показаны как общие, только для чтения. Сохранение пересобирает конфиг без смены ключей (`manage client-profile refresh`). API `PUT /api/clients/<имя>/params`, `POST /api/params/generate`.
+- Индивидуальные локальные параметры AWG 3.x у каждого клиента: `ContentPaddingAddition`, `KeepaliveTimeout`, `RekeyAfterTime`, `RekeyTimeout` (проверено живьём через rekey с отличием от серверных значений).
+- Журнал доступа панели `/var/log/awg-web-access.log` (JSON: время, IP клиента, ОС/браузер, роль, отпечаток токена) для входов, неудачных входов и каждого не-GET запроса; просмотр в Advanced -> Access log, API `GET /api/security/log`.
+- Статистика по меткам (`GET /api/clients/tags/stats`, кнопка Label stats).
+- `contrib/panel-gate/`: эталонный nginx-шлюз (заглушка + секретный URL + cookie 12 ч) и фильтры fail2ban.
+
+### Изменено
+
+- Метки клиентов свободные: `os`/`device`/`network`/`carrier` любые слаги (подсказки, в том числе `openwrt`), плюс список `labels` (до 8) и заметка; пресет в метках больше не хранится.
+
 ### Изменено
 
 - Профиль клиента, стиль `quic`: I1 теперь QUIC Initial с настоящей раскладкой заголовка и размером 1200-1252 байта (`<b ...><r N>`), а не короткий пакет.
@@ -1757,7 +1771,8 @@ Hardening-фиксы надёжности и безопасности по ре�
 - Диагностический отчет (`--diagnostic`).
 - Полная деинсталляция (`--uninstall`).
 
-[Unreleased]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.29.0-bas.9...HEAD
+[Unreleased]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.29.0-bas.10...HEAD
+[5.29.0-bas.10]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.29.0-bas.9...v5.29.0-bas.10
 [5.29.0-bas.9]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.29.0-bas.8...v5.29.0-bas.9
 [5.29.0-bas.8]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.29.0-bas.7...v5.29.0-bas.8
 [5.29.0-bas.7]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.29.0-bas.6...v5.29.0-bas.7
