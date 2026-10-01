@@ -53,7 +53,9 @@ PY
     PYTHONPATH="$BATS_TEST_DIRNAME/../web" python3 - <<'PY'
 import server
 c = server.classify_endpoint_info({"asn": "AS8359", "org": "PJSC MTS"})
-assert c["network"] == "mobile" and c["carrier"] == "mts" and c["suggested_preset"] == "mobile", c
+assert c["network"] == "unknown" and c["carrier"] == "mts", c
+c = server.classify_endpoint_info({"asn": "AS1", "org": "Example LTE Mobile"})
+assert c["network"] == "mobile" and c["suggested_preset"] == "mobile", c
 assert server.classify_endpoint_info({"asn": "AS24940", "org": "Hetzner Online GmbH"})["network"] == "hosting"
 assert "router" in server.client_profile_presets()
 PY

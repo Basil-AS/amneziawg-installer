@@ -3741,12 +3741,12 @@ def infer_network_type(record, client_tags, events, neighbours, rules, now=None)
     """Mobile / home / office / hosting for one endpoint address, with the signals behind the verdict.
 
     Several operators run mobile and wired access in the same AS, so the AS alone proves nothing.  Votes:
-      * a manual rule (CIDR -> type) wins outright;
-      * reverse-DNS and organisation-name patterns;
+      * a manual rule (CIDR -> type) wins outright; the panel creates rules for one address by default;
+      * reverse-DNS and organisation-name patterns (weak: operators mix mobile and wired access);
       * behaviour: a client that keeps changing addresses inside one /16 is on carrier-grade NAT (mobile), an
-        address that stays for days with few sessions is a fixed line (home);
-      * neighbours: addresses in the same /24 that are already classified with confidence;
-      * the manual 'network' label of the client (weak: a phone may sit on Wi-Fi).
+        address that stays for days with few sessions is a fixed line (home).
+    The device (a phone) says nothing about the network it is on right now, and neighbouring addresses of the
+    same provider can belong to a different kind of access, so neither is used.
     """
     now = now or time.time()
     ip = record.get("ip", "")
@@ -3791,12 +3791,6 @@ def infer_network_type(record, client_tags, events, neighbours, rules, now=None)
     ports = record.get("ports") or []
     if int(record.get("sessions", 0)) >= 4 and len(set(ports)) >= 4:
         vote("mobile", 0.2, "source port keeps changing")
-    for kind, weight in neighbours.items():
-        if weight:
-            vote(kind, weight, "neighbours in the same /24")
-    tag_net = (client_tags or {}).get("network")
-    if tag_net in votes:
-        vote(tag_net, 0.3, f"client label network={tag_net}")
     ranked = sorted(votes, key=lambda k: -votes[k])
     top, second = ranked[0], ranked[1]
     total = sum(votes.values())
@@ -3876,8 +3870,7 @@ def client_prefix_peers(client, prefix, exclude=""):
 
 def network_classify_record(history, name, record, rules, tags, now=None):
     client = history["clients"][name]
-    neighbours = network_neighbour_votes(client, record["ip"])
-    verdict = infer_network_type(record, tags, client["events"], neighbours, rules, now)
+    verdict = infer_network_type(record, tags, client["events"], {}, rules, now)
     record["type"] = verdict["type"]
     record["type_confidence"] = verdict["confidence"]
     record["signals"] = verdict["signals"][:8]
@@ -8961,15 +8954,17 @@ class Handler(SimpleHTTPRequestHandler):
                     kind = body.get("type")
                     if kind not in NETWORK_TYPES:
                         raise ValueError("type must be one of " + ", ".join(NETWORK_TYPES))
-                    rules = [r for r in load_network_rules() if r["cidr"] != network_prefix(ip)]
-                    rules.append({"cidr": network_prefix(ip), "type": kind, "note": str(body.get("note") or "marked in the panel")[:80]})
+                    scope = "prefix" if body.get("scope") == "prefix" else "ip"
+                    cidr = network_prefix(ip) if scope == "prefix" else (ip + ("/32" if ":" not in ip else "/128"))
+                    rules = [r for r in load_network_rules() if r["cidr"] != cidr]
+                    rules.append({"cidr": cidr, "type": kind, "note": str(body.get("note") or "marked in the panel")[:80]})
                     write_network_rules(rules)
                 except ValueError as exc:
                     self.send_json({"error": str(exc)}, 400)
                     return
                 network_reclassify_all()
-                audit_log(f"Network labelled prefix={network_prefix(ip)} type={kind} actor_fp={auth_fingerprint(auth)}")
-                self.send_json({"ok": True, "rule": network_prefix(ip), "type": kind})
+                audit_log(f"Network labelled rule={cidr} type={kind} actor_fp={auth_fingerprint(auth)}")
+                self.send_json({"ok": True, "rule": cidr, "type": kind})
                 return
             elif u.path == "/api/gate/links":
                 if not self.require_super(auth):

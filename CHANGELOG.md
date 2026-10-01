@@ -12,6 +12,12 @@
 
 ## [Unreleased]
 
+## [5.29.0-bas.14] - 2026-10-01
+
+### Изменено
+
+- Определение типа сети теперь по каждому адресу отдельно: телефон может утром сидеть на мобильных данных, а вечером на домашнем Wi-Fi, поэтому метка клиента (устройство) и соседние адреса /24 больше не влияют на тип. AS и название организации стали слабыми признаками (операторы смешивают мобильный и проводной доступ в одной AS); бренды операторов больше не считаются признаком мобильной сети. Ручная отметка в панели по умолчанию действует на один адрес; вариант «whole /24» выбирается явно.
+
 ## [5.29.0-bas.13] - 2026-10-01
 
 ### Исправлено
@@ -1810,7 +1816,8 @@ Hardening-фиксы надёжности и безопасности по ре�
 - Диагностический отчет (`--diagnostic`).
 - Полная деинсталляция (`--uninstall`).
 
-[Unreleased]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.29.0-bas.13...HEAD
+[Unreleased]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.29.0-bas.14...HEAD
+[5.29.0-bas.14]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.29.0-bas.13...v5.29.0-bas.14
 [5.29.0-bas.13]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.29.0-bas.12...v5.29.0-bas.13
 [5.29.0-bas.12]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.29.0-bas.11...v5.29.0-bas.12
 [5.29.0-bas.11]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.29.0-bas.10...v5.29.0-bas.11

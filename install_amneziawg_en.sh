@@ -9,14 +9,14 @@ fi
 # ==============================================================================
 # AmneziaWG 2.0 installation and configuration script for Ubuntu/Debian servers
 # Author: @bivlked
-# Version: 5.29.0-bas.13
+# Version: 5.29.0-bas.14
 # Date: 2026-08-30
 # Repository: https://github.com/bivlked/amneziawg-installer
 # ==============================================================================
 
 # --- Safe mode and Constants ---
 set -o pipefail
-SCRIPT_VERSION="5.29.0-bas.13"
+SCRIPT_VERSION="5.29.0-bas.14"
 
 AWG_DIR="/root/awg"
 INSTALLER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)"
@@ -36,11 +36,11 @@ AWG_PROFILE_SCRIPT_PATH="$AWG_DIR/scripts/awg_profile.py"
 # are used first; remote download is allowed only with pinned SHA256 or explicit
 # AWG_ALLOW_UNVERIFIED_DOWNLOAD=1 for development.
 declare -A AWG_ASSET_SHA256=(
-    ["awg_common_en.sh"]="1e0d5f63e9b6c7cc5ca8d0ed3671041ada7b2c746651849413c1239b859eeccd"
-    ["manage_amneziawg_en.sh"]="d41cf17bb75edf6592741f0f7baa29eac0d7ec4efa9bbc206df57561a07a036b"
-    ["web/server.py"]="e8c2fbf86fffb0375a531700f5b6ed1f9015191ecbe1b8b8bc0dcd293f9dc0fd"
+    ["awg_common_en.sh"]="73166551de53b62305ed863096a21e7980543fe8a1e40772837cdb5a667d3ee4"
+    ["manage_amneziawg_en.sh"]="24fc04b65290f0d9cb2f9d2a19d9c1c3cf837834eb30f94ae06e6797c5ec1276"
+    ["web/server.py"]="481afb593a01f0f4149afe413f687a4f8174406af34422f69481f863597154ce"
     ["web/index.html"]="7c07ed1d1991e08c0f9fc31e86ed8eb2bba5fa96387088f1f18918396cf7e662"
-    ["web/app.js"]="211961436406fd196436a66931284b30e06808ceb490608875031feed0722e1c"
+    ["web/app.js"]="563de8d6569f0b3ea95c0f42444a0d77bd03447aaaa896f81b37f7d2264e5ff2"
     ["web/awg_i1.js"]="c97a6ac6c4e4bd7ab24c37c45f451e364414f276441f8da1c0805d26013aaa03"
     ["web/style.css"]="c6c728f244b79cdae162df3c5d0eddaea0b0b92951598355e4547f0add9e911a"
     ["web/favicon.svg"]="ae700ecb12dbf01403d0ed25247bac6b70f11201b094ee6c14b774b7fa533859"
@@ -51,7 +51,7 @@ declare -A AWG_ASSET_SHA256=(
     ["scripts/update-installed.sh"]="de611d33ccbeaafd79eb2ef59eab1c7827f54f1ee943159f5f5d14b9ecf3e481"
     ["scripts/migrate-tunnel-subnet.sh"]="a8b40101e8f02627c10d2bb769802bf860fdf41dd2bc8ac38a180e953329c3bb"
     ["scripts/awg_profile.py"]="d3b13be7f2725f1601e052f8e1f73d54085f158ba7f9c8cf6958785740c2993c"
-    ["scripts/awg_client_profile.py"]="e8f3b2c0cf3fc91ec8a6bd9765366ba42c81954aaf3825fd9bc0cef18ee25c1c"
+    ["scripts/awg_client_profile.py"]="6c8aa761fee59c7630f012c9fc37337b3d0b35a2883e99885254cbc298486c2a"
     ["scripts/probe-awg31.sh"]="29adacb4945a380274a38aa32120de70981a6f095d097cf8ba0c45a93509fa53"
 )
 

@@ -42,7 +42,7 @@ assert len({(r["jmin"],r["jmax"],r["jc"]) for r in rows})>5
 
 @test "client profile: classify uses ASN then org name" {
     run PROF classify --asn AS8359 --org "PJSC MTS"
-    [[ "$output" == *'"network": "mobile"'* && "$output" == *'"carrier": "mts"'* ]]
+    [[ "$output" == *'"network": "unknown"'* && "$output" == *'"carrier": "mts"'* ]]
     run PROF classify --org "Hetzner Online GmbH"
     [[ "$output" == *'"network": "hosting"'* ]]
     run PROF classify
