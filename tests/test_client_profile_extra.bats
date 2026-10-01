@@ -73,3 +73,38 @@ for r in rows:
     [[ "$out" == *"RekeyAfterTime = 101-111"* && "$out" == *"RekeyTimeout = 3-5"* ]]
     [[ "$out" == *"HeaderProtectionKey = KEEP"* && "$out" == *"RandomTrailers = off"* ]]
 }
+
+@test "client profile: no preset can produce an outer packet above 1500 bytes" {
+    for p in mobile ios home desktop router stealth; do
+        for _ in 1 2 3 4 5; do PROF generate --preset "$p" >> "$TEST_DIR/m.jsonl"; done
+    done
+    run python3 - "$TEST_DIR/m.jsonl" "$BATS_TEST_DIRNAME/../scripts" <<'PY'
+import json, sys
+sys.path.insert(0, sys.argv[2])
+import awg_client_profile as m
+for line in open(sys.argv[1]):
+    p = json.loads(line)
+    assert m.outer_packet_estimate(p) <= 1500, (p["preset"], p["mtu"], p["extra"])
+    assert m.mtu_warnings(p) == []
+PY
+    [ "$status" -eq 0 ]
+}
+
+@test "client profile: an MTU/padding combination that fragments gets a warning" {
+    run python3 - "$BATS_TEST_DIRNAME/../scripts" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1])
+import awg_client_profile as m
+w = m.mtu_warnings({"mtu": 1420, "extra": {"content_padding": "10-120"}})
+assert w and "1500" in w[0], w
+assert m.mtu_warnings({"mtu": 1280, "extra": {"content_padding": "10-100"}}) == []
+PY
+    [ "$status" -eq 0 ]
+}
+
+@test "manage knows client-profile fill and refresh" {
+    for f in manage_amneziawg.sh manage_amneziawg_en.sh; do
+        grep -qF 'client-profile fill' "$BATS_TEST_DIRNAME/../$f"
+        grep -qF 'refresh_client_config "$_cn"' "$BATS_TEST_DIRNAME/../$f"
+    done
+}

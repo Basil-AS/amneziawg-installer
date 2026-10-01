@@ -2467,6 +2467,7 @@ usage() {
     echo "  client-profile set <name> [--os=OS --device=D --network=N --carrier=C --preset=P]"
     echo "                        Generate a per-client profile (unique Jc/Jmin/Jmax/I1, MTU) and re-render the client config (keys unchanged)"
     echo "  client-profile show|clear|refresh <name>   Show / remove / re-render from the saved profile"
+    echo "  client-profile fill                Create a profile for every client that has none (re-import needed)"
     echo "  client-profile presets|classify [ASN ORG]  List presets / guess network type from ASN and org"
     echo "  voice-check           UDP/STUN/NAT diagnostics for calls"
     echo "  p2p list              Show P2P ports for all clients"
@@ -3331,6 +3332,16 @@ case $COMMAND in
         case "$_sub" in
             presets)
                 python3 "$AWG_CLIENT_PROFILE_SCRIPT_PATH" presets || _cmd_rc=1
+                ;;
+            fill)
+                # give every client that still shares the server's sender values its own profile
+                _filled=0
+                while IFS= read -r _fc; do
+                    _fc="${_fc## }"; [[ -n "$_fc" ]] || continue
+                    [[ -f "$AWG_CLIENT_PROFILE_DIR/${_fc}.json" ]] && continue
+                    if client_profile_set "$_fc" && refresh_client_config "$_fc"; then _filled=$((_filled + 1)); else _cmd_rc=1; fi
+                done < <(grep '^#_Name = ' "$SERVER_CONF_FILE" | sed 's/^#_Name = //')
+                log "Profiles created: $_filled"
                 ;;
             classify)
                 python3 "$AWG_CLIENT_PROFILE_SCRIPT_PATH" classify --asn "${ARGS[1]:-}" --org "${ARGS[2]:-}" || _cmd_rc=1

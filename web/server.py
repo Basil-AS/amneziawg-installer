@@ -3540,6 +3540,7 @@ def client_params_payload(config_name):
         "server": shared_server_params(),
         "shared_note": "S1-S4 and H1-H4 are shared with the server interface and cannot be changed per client.",
         "limits": dict(getattr(mod, "LIMITS", {})) if mod else {},
+        "warnings": mod.mtu_warnings(profile) if (mod and profile) else [],
         "presets": client_profile_presets(),
         "styles": list(getattr(mod, "I_STYLES", ())) if mod else [],
     }

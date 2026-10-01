@@ -24,6 +24,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- Client presets `home`/`desktop`: MTU 1280 instead of 1380 (with up to 150 bytes of padding the outer packet exceeded 1500 and fragmented); client content padding is capped at 150; the editor warns about MTU/padding combinations that produce packets above 1500. `manage client-profile fill` creates a profile for every client that has none.
 - Client labels are free-form: `os`/`device`/`network`/`carrier` accept any slug (suggestions include `openwrt`), plus a `labels` list (up to 8) and a note; the preset is no longer stored in the labels.
 
 ### Changed

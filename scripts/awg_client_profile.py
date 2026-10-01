@@ -79,12 +79,12 @@ PRESETS = {
         "i1": "dns", "why": "iOS clients: conservative MTU, short junk",
     },
     "home": {
-        "jc": (4, 6), "jmin": (40, 90), "jspan": (50, 150), "mtu": 1380, "keepalive": 25,
-        "i1": "dns", "why": "wired/Wi-Fi ISP path, room for PPPoE and tunnel overhead",
+        "jc": (4, 6), "jmin": (40, 90), "jspan": (50, 150), "mtu": 1280, "keepalive": 25,
+        "i1": "dns", "why": "wired/Wi-Fi ISP path; 1280 keeps padded packets below 1500 bytes (no fragmentation)",
     },
     "desktop": {
-        "jc": (4, 6), "jmin": (48, 96), "jspan": (60, 160), "mtu": 1380, "keepalive": 25,
-        "i1": "quic", "why": "desktop clients on home/office links",
+        "jc": (4, 6), "jmin": (48, 96), "jspan": (60, 160), "mtu": 1280, "keepalive": 25,
+        "i1": "quic", "why": "desktop clients on home/office links; 1280 keeps padded packets below 1500 bytes",
     },
     "router": {
         "jc": (4, 7), "jmin": (48, 110), "jspan": (80, 220), "mtu": 1280, "keepalive": 25,
@@ -101,7 +101,7 @@ DEFAULT_PRESET = "home"
 # ranges stay inside what the reference profile uses so that no client becomes an outlier in the
 # other direction.
 EXTRA_RANGES = {
-    "content_padding": ((8, 24), (50, 150)),     # low bound range, span range
+    "content_padding": ((8, 24), (40, 126)),     # low bound range, span range; high end stays <= 150
     "keepalive_timeout": ((20, 30), (6, 14)),
     "rekey_after_time": ((90, 115), (6, 20)),
     "rekey_timeout": ((2, 4), (1, 4)),
@@ -233,6 +233,29 @@ def generate(os_name="", device="", network="", carrier="", preset="", style="")
         "extra": extra_values(),
         "why": spec["why"],
     }
+
+
+def outer_packet_estimate(profile: dict, server_padding_hi: int = 100) -> int:
+    """Worst-case size of an outer UDP/IPv4 packet carrying a full-MTU inner packet.
+
+    inner MTU + 32 bytes AWG data header + 8 UDP + 20 IPv4 + the largest content padding either side adds.
+    """
+    mtu = int(profile.get("mtu") or 0)
+    pad = server_padding_hi
+    rng = (profile.get("extra") or {}).get("content_padding", "")
+    m = RANGE_RE.fullmatch(str(rng))
+    if m:
+        pad = max(pad, int(m.group(2)))
+    return mtu + 32 + 28 + pad
+
+
+def mtu_warnings(profile: dict) -> list:
+    out = []
+    est = outer_packet_estimate(profile)
+    if est > 1500:
+        out.append(f"worst-case outer packet is about {est} bytes (> 1500): full-size packets with maximum padding will be "
+                   "fragmented, which some networks drop. Lower the MTU or the content padding.")
+    return out
 
 
 def _int_field(profile: dict, key: str, default=None) -> int:

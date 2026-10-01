@@ -3469,6 +3469,7 @@ async function editClientParams(name) {
         ${num("paramJc", "Jc", profile.jc, "jc")}${num("paramJmin", "Jmin", profile.jmin, "jmin")}${num("paramJmax", "Jmax", profile.jmax, "jmax")}
         ${num("paramMtu", "MTU", profile.mtu, "mtu")}${num("paramKa", "Keepalive", profile.keepalive, "keepalive")}
       </div>
+      <p id="paramWarn" class="hidden rounded-md border border-amber-600 p-2 text-xs text-amber-700"></p>
       <div class="grid grid-cols-2 gap-2">
         ${txt("paramPad", "Content padding", extra.content_padding, "10-100")}${txt("paramKaT", "Keepalive timeout", extra.keepalive_timeout, "25-35")}
         ${txt("paramRekeyA", "Rekey after", extra.rekey_after_time, "100-120")}${txt("paramRekeyT", "Rekey timeout", extra.rekey_timeout, "3-7")}
@@ -3490,6 +3491,17 @@ async function editClientParams(name) {
     field("paramRekeyA").value = e.rekey_after_time || ""; field("paramRekeyT").value = e.rekey_timeout || "";
     for (let n = 1; n <= 5; n++) field("paramI" + n).value = p["i" + n] || "";
   };
+  const updateWarn = () => {
+    const mtu = Number(field("paramMtu").value) || 0;
+    const m = /^(\d+)-(\d+)$/.exec(field("paramPad").value.trim());
+    const pad = Math.max(100, m ? Number(m[2]) : 0);
+    const est = mtu + 32 + 28 + pad;
+    const warn = dialog.querySelector("#paramWarn");
+    warn.textContent = est > 1500 ? `Worst-case outer packet is about ${est} bytes (over 1500): full-size packets with maximum padding get fragmented, which some networks drop. Lower the MTU or the padding.` : "";
+    warn.classList.toggle("hidden", est <= 1500);
+  };
+  ["paramMtu", "paramPad"].forEach(id => field(id).addEventListener("input", updateWarn));
+  updateWarn();
   dialog.querySelectorAll("[data-gen]").forEach(btn => btn.addEventListener("click", async () => {
     const n = btn.dataset.gen;
     try {
@@ -3503,6 +3515,7 @@ async function editClientParams(name) {
     try {
       const result = await api("/api/params/generate", {method: "POST", body: JSON.stringify({preset: field("paramPreset").value, tags: (client.tags || {})})});
       setProfile(result.profile || {});
+      updateWarn();
     } catch (error) { showToast("Could not generate", "error"); }
   });
   dialog.querySelector('button[value="cancel"]').addEventListener("click", () => dialog.close("cancel"));

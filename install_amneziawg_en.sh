@@ -37,10 +37,10 @@ AWG_PROFILE_SCRIPT_PATH="$AWG_DIR/scripts/awg_profile.py"
 # AWG_ALLOW_UNVERIFIED_DOWNLOAD=1 for development.
 declare -A AWG_ASSET_SHA256=(
     ["awg_common_en.sh"]="617819be990011502a6a24fa3ddf41a7c3aec9828277070a8963f85f29ce6e90"
-    ["manage_amneziawg_en.sh"]="c6a636c5e0887563aef0973a2659558f35cefcaaf4f2db403f6597b3bfb16ae6"
-    ["web/server.py"]="5cba04ffd8d55467e143929daeeeb373a16d32d5769db744f66dc5ea69dbc57c"
+    ["manage_amneziawg_en.sh"]="bd71d6b1411f70799303f81e3bff35bc80ba9cd005e7b40de364234666248da1"
+    ["web/server.py"]="a749de7e05e49e18c40e36872baf65ff9d173f15af7cc4550d07958ae7658144"
     ["web/index.html"]="7c07ed1d1991e08c0f9fc31e86ed8eb2bba5fa96387088f1f18918396cf7e662"
-    ["web/app.js"]="6384e080598cc7df88d3a53e537b2c9925d64978e562679678959e3e293b0895"
+    ["web/app.js"]="e0da4cc6161b0332bd187c6c2a66b731e67414ce79d4c544ad45e4105d773d6d"
     ["web/awg_i1.js"]="c97a6ac6c4e4bd7ab24c37c45f451e364414f276441f8da1c0805d26013aaa03"
     ["web/style.css"]="c6c728f244b79cdae162df3c5d0eddaea0b0b92951598355e4547f0add9e911a"
     ["web/favicon.svg"]="ae700ecb12dbf01403d0ed25247bac6b70f11201b094ee6c14b774b7fa533859"
@@ -51,7 +51,7 @@ declare -A AWG_ASSET_SHA256=(
     ["scripts/update-installed.sh"]="de611d33ccbeaafd79eb2ef59eab1c7827f54f1ee943159f5f5d14b9ecf3e481"
     ["scripts/migrate-tunnel-subnet.sh"]="a8b40101e8f02627c10d2bb769802bf860fdf41dd2bc8ac38a180e953329c3bb"
     ["scripts/awg_profile.py"]="d3b13be7f2725f1601e052f8e1f73d54085f158ba7f9c8cf6958785740c2993c"
-    ["scripts/awg_client_profile.py"]="02af2fae73e9ba09ffec970df5a83eaa94df6ffea453fe0e8e08fcecc1d528d9"
+    ["scripts/awg_client_profile.py"]="c89704756d52145e1530186efad335a09f6f3895f209224c1600bf4f585170b2"
     ["scripts/probe-awg31.sh"]="29adacb4945a380274a38aa32120de70981a6f095d097cf8ba0c45a93509fa53"
 )
 
