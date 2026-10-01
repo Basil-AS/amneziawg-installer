@@ -12,6 +12,17 @@
 
 ## [Unreleased]
 
+## [5.29.0-bas.11] - 2026-10-01
+
+### Добавлено
+
+- Персональные ссылки доступа к панели за nginx: `https://домен/i/<случайная строка>` один раз выставляет подписанную cookie (`__Host-sid`, 180 дней, HttpOnly/Secure/SameSite=Strict), дальше хватает обычного адреса; вход по токену в самой панели остаётся обязательным, токен в URL не нужен. Ссылки отзываются (`manage web gate create|list|revoke`, Advanced -> Access links), события (`gate_ok`, `gate_fail`, `gate_session`) пишутся в журнал доступа с IP и устройством. nginx проверяет cookie через `auth_request` у панели; без cookie показывается заглушка, `/api/` отвечает 404.
+- `manage summary`: пересборка `INSTALL_SUMMARY.txt` по реальному состоянию сервера (версия протокола и модуля, адрес клиентов, адрес панели и способ входа, клиенты с метками и профилями, службы, слушающие порты, fail2ban); секреты, которые нельзя восстановить из хешей, переносятся из прежнего файла.
+
+### Изменено
+
+- `contrib/panel-gate/` описывает новую схему (ссылки + cookie) вместо статического секретного URL.
+
 ## [5.29.0-bas.10] - 2026-10-01
 
 ### Добавлено
@@ -1772,7 +1783,8 @@ Hardening-фиксы надёжности и безопасности по ре�
 - Диагностический отчет (`--diagnostic`).
 - Полная деинсталляция (`--uninstall`).
 
-[Unreleased]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.29.0-bas.10...HEAD
+[Unreleased]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.29.0-bas.11...HEAD
+[5.29.0-bas.11]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.29.0-bas.10...v5.29.0-bas.11
 [5.29.0-bas.10]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.29.0-bas.9...v5.29.0-bas.10
 [5.29.0-bas.9]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.29.0-bas.8...v5.29.0-bas.9
 [5.29.0-bas.8]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.29.0-bas.7...v5.29.0-bas.8

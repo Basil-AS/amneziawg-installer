@@ -9,14 +9,14 @@ fi
 # ==============================================================================
 # Скрипт для управления пользователями (пирами) AmneziaWG 2.0
 # Автор: @bivlked
-# Версия: 5.29.0-bas.10
+# Версия: 5.29.0-bas.11
 # Дата: 2026-08-30
 # Репозиторий: https://github.com/bivlked/amneziawg-installer
 # ==============================================================================
 
 # --- Безопасный режим и Константы ---
 # shellcheck disable=SC2034
-SCRIPT_VERSION="5.29.0-bas.10"
+SCRIPT_VERSION="5.29.0-bas.11"
 set -o pipefail
 AWG_DIR="/root/awg"
 SERVER_CONF_FILE="/etc/amnezia/amneziawg/awg0.conf"
@@ -2526,6 +2526,7 @@ usage() {
     echo "  client-profile show|clear|refresh <имя>   Показать / удалить / пересобрать из сохранённого профиля"
     echo "  client-profile fill                Создать профиль всем клиентам, у которых его нет (нужен реимпорт)"
     echo "  client-profile presets|classify [ASN ORG]  Пресеты / определить тип сети по ASN и названию"
+    echo "  summary               Пересобрать INSTALL_SUMMARY.txt по реальному состоянию сервера"
     echo "  voice-check           Диагностика UDP/STUN/NAT для звонков"
     echo "  p2p list              Показать P2P порты всех клиентов"
     echo "  p2p show <имя>        Показать P2P информацию клиента"
@@ -2563,6 +2564,7 @@ usage() {
     echo "  web token revoke <hash> Удалить обычный токен"
     echo "  web token rotate <hash> Заменить обычный токен, сохранив доступы"
     echo "  web token reset-super Перегенерировать super token"
+    echo "  web gate create <имя> | list | revoke <id>    Персональные ссылки доступа к веб-панели"
     echo "  web token check <token> Проверить token без вывода секрета"
     echo "  web token status Показать состояние token store без секретов"
     echo "  web fix-nginx-startup Установить systemd drop-in: nginx ждёт awg0 VPN gateway"
@@ -3187,9 +3189,20 @@ case $COMMAND in
         set_server_endpoint "${ARGS[0]:-}" "${ARGS[1]:-}" || _cmd_rc=1
         ;;
 
+    summary)
+        safe_load_config "$CONFIG_FILE" 2>/dev/null || true
+        env AWG_DIR="$AWG_DIR" SERVER_CONF_FILE="$SERVER_CONF_FILE" AWG_WEB_DOMAIN="${AWG_WEB_DOMAIN:-}" AWG_WEB_PUBLIC_URL="${AWG_WEB_PUBLIC_URL:-}" AWG_ENDPOINT="${AWG_ENDPOINT:-}" \
+            python3 "$AWG_DIR/web/server.py" summary "${ARGS[@]}" || _cmd_rc=1
+        ;;
+
     web)
         _sub="${ARGS[0]:-}"
         case "$_sub" in
+            gate)
+                # personal access links for the web panel: create <name> | list | revoke <id>
+                safe_load_config "$CONFIG_FILE" 2>/dev/null || true
+                env AWG_DIR="$AWG_DIR" AWG_WEB_DOMAIN="${AWG_WEB_DOMAIN:-}" AWG_WEB_PUBLIC_URL="${AWG_WEB_PUBLIC_URL:-}" AWG_ENDPOINT="${AWG_ENDPOINT:-}"                     python3 "$AWG_DIR/web/server.py" gate "${ARGS[@]:1}" || _cmd_rc=1
+                ;;
             fix-nginx-startup|nginx-wait-awg0)
                 safe_load_config "$CONFIG_FILE" 2>/dev/null || true
                 install_nginx_awg0_wait_dropin "${AWG_NGINX_WAIT_IFACE:-awg0}" "${AWG_NGINX_WAIT_IP:-${AWG_WEB_BIND:-${AWG_TUNNEL_SUBNET%/*}}}" "${AWG_NGINX_WAIT_TIMEOUT:-90}" || _cmd_rc=1

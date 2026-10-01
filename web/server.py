@@ -4,6 +4,7 @@ from base64 import b64encode
 import hashlib
 import gzip
 import hmac
+from http.cookies import SimpleCookie
 import ipaddress
 import json
 import os
@@ -3628,6 +3629,344 @@ def utc_now_iso():
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 
+GATE_FILE = WEB_DIR / "gate_links.json"
+GATE_LOCK = threading.Lock()
+GATE_COOKIE = "__Host-sid"
+GATE_COOKIE_MAX_AGE = 180 * 86400
+GATE_ID_RE = re.compile(r"^[A-Za-z0-9_-]{24,64}$")
+GATE_LABEL_RE = re.compile(r"^[\w .@-]{1,40}$", re.UNICODE)
+GATE_SESSIONS = {}
+
+
+def gate_load():
+    """Access links: {"secret": hex, "links": {id: {label, created, last_used, uses, revoked}}}."""
+    try:
+        data = json.loads(GATE_FILE.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+    if not isinstance(data.get("secret"), str) or len(data["secret"]) < 32:
+        data["secret"] = secrets.token_hex(32)
+    if not isinstance(data.get("links"), dict):
+        data["links"] = {}
+    return data
+
+
+def gate_save(data):
+    WEB_DIR.mkdir(parents=True, exist_ok=True)
+    tmp = GATE_FILE.with_name(f"{GATE_FILE.name}.tmp.{os.getpid()}")
+    tmp.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, GATE_FILE)
+
+
+def gate_sign(secret, link_id):
+    return hmac.new(secret.encode("utf-8"), link_id.encode("utf-8"), hashlib.sha256).hexdigest()[:40]
+
+
+def gate_cookie_value(data, link_id):
+    return f"{link_id}.{gate_sign(data['secret'], link_id)}"
+
+
+def gate_public_base():
+    base = os.environ.get("AWG_WEB_PUBLIC_URL", "").strip()
+    if not base:
+        domain = os.environ.get("AWG_WEB_DOMAIN", "").strip() or os.environ.get("AWG_ENDPOINT", "").strip()
+        base = f"https://{domain}/" if domain else "https://HOST/"
+    # the port of the loopback listener never belongs in the public link
+    return base if base.endswith("/") else base + "/"
+
+
+def gate_create(label):
+    label = str(label or "").strip()
+    if not GATE_LABEL_RE.fullmatch(label):
+        raise ValueError("label must be 1-40 characters: letters, digits, space . @ _ -")
+    with GATE_LOCK:
+        data = gate_load()
+        link_id = secrets.token_urlsafe(24)
+        data["links"][link_id] = {"label": label, "created": utc_now_iso(), "last_used": "", "uses": 0, "revoked": False}
+        gate_save(data)
+    return link_id, f"{gate_public_base()}i/{link_id}"
+
+
+def gate_revoke(link_id_or_prefix):
+    with GATE_LOCK:
+        data = gate_load()
+        matches = [k for k in data["links"] if k == link_id_or_prefix or (len(link_id_or_prefix) >= 6 and k.startswith(link_id_or_prefix))]
+        if len(matches) != 1:
+            return False
+        data["links"][matches[0]]["revoked"] = True
+        gate_save(data)
+    return True
+
+
+def gate_list(include_url=True):
+    data = gate_load()
+    rows = []
+    for link_id, rec in sorted(data["links"].items(), key=lambda kv: kv[1].get("created", "")):
+        row = {"id": link_id[:8], "label": rec.get("label", ""), "created": rec.get("created", ""),
+               "last_used": rec.get("last_used", ""), "uses": int(rec.get("uses", 0) or 0), "revoked": bool(rec.get("revoked"))}
+        if include_url and not row["revoked"]:
+            row["url"] = f"{gate_public_base()}i/{link_id}"
+        rows.append(row)
+    return rows
+
+
+def gate_verify_cookie(cookie_header):
+    """Return (link_id, record) for a valid, non-revoked access cookie, else None."""
+    try:
+        jar = SimpleCookie()
+        jar.load(cookie_header or "")
+        morsel = jar.get(GATE_COOKIE)
+    except Exception:
+        return None
+    if morsel is None or "." not in morsel.value:
+        return None
+    link_id, _, sig = morsel.value.partition(".")
+    if not GATE_ID_RE.fullmatch(link_id):
+        return None
+    data = gate_load()
+    rec = data["links"].get(link_id)
+    if not rec or rec.get("revoked"):
+        return None
+    if not hmac.compare_digest(sig, gate_sign(data["secret"], link_id)):
+        return None
+    return link_id, rec
+
+
+def gate_redeem(link_id):
+    """Record a use of the link and return the cookie value, or None for an unknown/revoked link."""
+    if not GATE_ID_RE.fullmatch(link_id or ""):
+        return None
+    with GATE_LOCK:
+        data = gate_load()
+        rec = data["links"].get(link_id)
+        if not rec or rec.get("revoked"):
+            return None
+        rec["uses"] = int(rec.get("uses", 0) or 0) + 1
+        rec["last_used"] = utc_now_iso()
+        gate_save(data)
+        return gate_cookie_value(data, link_id), rec
+
+
+SUMMARY_FILE = AWG_DIR / "INSTALL_SUMMARY.txt"
+
+
+def _run_text(args, timeout=8):
+    try:
+        return subprocess.run(args, text=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=timeout).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return ""
+
+
+def summary_carry_over(old_text):
+    """Secrets that cannot be recovered from hashes are carried over from the previous summary."""
+    carried = {}
+    m = re.search(r"^\s*(?:WEB PANEL|\[Web Panel\])?.*?^\s*Super token:\s*(\S+)", old_text or "", re.M | re.S)
+    if m and len(m.group(1)) >= 20 and not m.group(1).startswith("not"):
+        carried["super_token"] = m.group(1)
+    m = re.search(r"ADGUARD HOME.*?^\s*Password:\s*(\S+)", old_text or "", re.M | re.S)
+    if m and not m.group(1).startswith("not"):
+        carried["adguard_password"] = m.group(1)
+    return carried
+
+
+def summary_project_version():
+    try:
+        m = re.search(r'^SCRIPT_VERSION="([^"]+)"', MANAGE.read_text(errors="ignore"), re.M)
+        if m:
+            return m.group(1)
+    except OSError:
+        pass
+    return PROJECT_VERSION
+
+
+def summary_text(carried=None):
+    """The server summary built from the live state, not from installer variables."""
+    carried = carried or {}
+    cfg = parse_config()
+    peers = parse_peers()
+    conf = {}
+    try:
+        for line in SERVER_CONF.read_text(errors="ignore").splitlines():
+            m = re.match(r"^(\w+)\s*=\s*(.*)$", line.strip())
+            if m and m.group(1) not in conf:
+                conf[m.group(1)] = m.group(2)
+    except OSError:
+        pass
+    domain = os.environ.get("AWG_WEB_DOMAIN", "") or cfg.get("AWG_WEB_DOMAIN", "")
+    endpoint = os.environ.get("AWG_ENDPOINT", "") or cfg.get("AWG_ENDPOINT", "") or domain or "<server address>"
+    port = conf.get("ListenPort") or cfg.get("AWG_PORT", "")
+    tunnel = cfg.get("AWG_TUNNEL_SUBNET", "")
+    vpn_ip = tunnel.split("/")[0] if tunnel else ""
+    tools = _run_text(["awg", "--version"])
+    module = _run_text(["modinfo", "-F", "version", "amneziawg"])
+    protocol = cfg.get("AWG_PROTOCOL_VERSION", "") or ("3.x" if "HeaderProtectionKey" in conf else "2.0")
+    now = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+
+    nginx_gate = False
+    for site in ("/etc/nginx/sites-enabled", "/etc/nginx/conf.d"):
+        try:
+            for entry in Path(site).iterdir():
+                if "auth_request /_gate_check" in entry.read_text(errors="ignore"):
+                    nginx_gate = True
+        except OSError:
+            pass
+    public_base = gate_public_base()
+    links = gate_list(include_url=False)
+
+    services = []
+    for unit in ("awg-quick@awg0", "awg-web", "nginx", "AdGuardHome", "fail2ban", "threat-reporter", "amneziawg-proxy"):
+        state = _run_text(["systemctl", "is-active", unit])
+        if state and not (unit == "amneziawg-proxy" and state != "active"):
+            services.append(f"  {unit:<18} {state}")
+    listening = []
+    for line in _run_text(["ss", "-tulnH"]).splitlines():
+        parts = line.split()
+        if len(parts) < 5:
+            continue
+        addr = parts[4]
+        if addr.startswith(("127.", "[::1]", "::1")) or "%lo" in addr:
+            continue
+        listening.append(f"  {parts[0]:<4} {addr}")
+    jails = _run_text(["fail2ban-client", "status"])
+    jail_list = re.search(r"Jail list:\s*(.*)", jails)
+
+    meta = load_client_metadata().get("clients", {})
+    client_lines = []
+    for peer in peers:
+        name = peer["name"]
+        tags = (meta.get(name) or {}).get("tags") or {}
+        prof = client_profile_summary(name)
+        label = ", ".join(f"{k}={tags[k]}" for k in ("os", "device", "network", "carrier") if tags.get(k)) or "no labels"
+        extra = ", ".join(tags.get("labels", []))
+        client_lines.append(f"  {name}: {peer.get('ipv4') or peer.get('ip') or '-'}  [{label}]{'  #' + extra if extra else ''}")
+        client_lines.append(f"      config {AWG_DIR / (name + '.conf')}  qr {AWG_DIR / (name + '.png')}  vpn:// {AWG_DIR / (name + '.vpnuri')}")
+        if prof:
+            client_lines.append(f"      own profile: {prof.get('preset', '-')}  Jc={prof.get('jc')} Jmin={prof.get('jmin')} Jmax={prof.get('jmax')} MTU={prof.get('mtu')}  I1={prof.get('i1_bytes', 0)} bytes")
+        else:
+            client_lines.append("      own profile: none (shares the server's sender values; run: manage client-profile fill)")
+
+    adguard = cfg.get("AWG_ADGUARD_ENABLED") == "1"
+    lines = [
+        "============================================================",
+        "AmneziaWG server summary (regenerated from the live state)",
+        f"Generated: {now}",
+        f"Server name: {cfg.get('AWG_SERVER_NAME') or os.environ.get('AWG_SERVER_NAME', '') or '-'}",
+        f"Project version: {summary_project_version()}",
+        "File permissions: 0600 (contains secrets)",
+        "============================================================",
+        "",
+        "VPN",
+        f"  Protocol: AmneziaWG {protocol}  (tools: {tools or '-'}; kernel module: {module or '-'})",
+        f"  Clients connect to: {endpoint}:{port}/udp",
+        f"  Tunnel subnet: {tunnel or '-'}   MTU: {conf.get('MTU', '-')}",
+        f"  Interface config: {SERVER_CONF}",
+        "  Shared by every client (cannot differ per client): S1-S4, H1-H4"
+        + (", HeaderProtectionKey" if "HeaderProtectionKey" in conf else ""),
+        "  Different per client: Jc, Jmin, Jmax, I1-I5, MTU, keepalive"
+        + (", ContentPaddingAddition, KeepaliveTimeout, RekeyAfterTime, RekeyTimeout" if "HeaderProtectionKey" in conf else ""),
+        "",
+        "WEB PANEL",
+        f"  Address: {public_base if nginx_gate else (public_base.rstrip('/') + ':' + str(os.environ.get('AWG_WEB_PORT', '')) + '/')}",
+        "  Sign-in: with a panel token on the login page (always required)",
+    ]
+    if nginx_gate:
+        lines += [
+            "  Gate: nginx shows a look-alike site until the browser holds an access cookie.",
+            "        A personal access link sets the cookie once (valid 180 days); after that the plain address is enough.",
+            f"        Links: {len(links)} total, {len([x for x in links if not x['revoked']])} active",
+            "        Create a link: sudo bash " + str(MANAGE) + " web gate create <name>   (or in the panel: Advanced -> Access links)",
+            "        List / revoke: ... web gate list | web gate revoke <id>",
+        ]
+    lines += [
+        f"  Super token: {carried.get('super_token') or 'shown only when created. Reset: sudo bash ' + str(MANAGE) + ' web token reset-super'}",
+        f"  Token file: {AWG_DIR / 'web' / 'tokens.json'} (hashes only)",
+        f"  Access log: {ACCESS_LOG_FILE} (JSON: time, client ip, device; also shown in Advanced -> Access log)",
+        "",
+        "ADGUARD HOME",
+    ]
+    if adguard:
+        lines += [
+            f"  UI: http://{vpn_ip}:{cfg.get('AWG_ADGUARD_PORT', '3000')}  (reachable only from inside the VPN)",
+            f"  DNS: {vpn_ip}:53 (VPN clients only)",
+            "  Login: admin",
+            f"  Password: {carried.get('adguard_password') or 'not stored here; set a new one in /opt/AdGuardHome/AdGuardHome.yaml (bcrypt) or reinstall'}",
+        ]
+    else:
+        lines.append("  not installed")
+    lines += [
+        "",
+        "CLIENTS",
+    ] + (client_lines or ["  none"]) + [
+        "",
+        "SERVICES",
+    ] + (services or ["  (systemctl not available)"]) + [
+        "",
+        "LISTENING (non-loopback)",
+    ] + (listening or ["  -"]) + [
+        "",
+        "PROTECTION",
+        f"  fail2ban jails: {jail_list.group(1).strip() if jail_list else 'not running'}",
+        "  Panel and decoy: see gate above; wrong guesses are banned by fail2ban",
+        "",
+        "USEFUL COMMANDS",
+        f"  Add a client:      sudo bash {MANAGE} add <name> --os=<os> --network=<mobile|home> --carrier=<isp>",
+        f"  Per-client values: sudo bash {MANAGE} client-profile set|show|refresh|fill <name>",
+        f"  Rotate shared S/H: sudo bash {MANAGE} server rotate-profile --preset stealth   (clients must be re-imported)",
+        f"  Rebuild this file: sudo bash {MANAGE} summary",
+        "",
+        "FILES",
+        f"  Summary: {SUMMARY_FILE}",
+        f"  Install log: {AWG_DIR / 'install_amneziawg.log'}",
+        f"  Manage log: {AWG_DIR / 'manage_amneziawg.log'}",
+        "",
+    ]
+    return "\n".join(lines)
+
+
+def summary_write():
+    old = ""
+    try:
+        old = SUMMARY_FILE.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        pass
+    text = summary_text(summary_carry_over(old))
+    if old:
+        backup = SUMMARY_FILE.with_name(f"{SUMMARY_FILE.name}.bak.{time.strftime('%Y%m%d-%H%M%S')}")
+        fd = os.open(backup, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(old)
+    tmp = SUMMARY_FILE.with_name(f".{SUMMARY_FILE.name}.tmp.{os.getpid()}")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write(text)
+    os.replace(tmp, SUMMARY_FILE)
+    os.chmod(SUMMARY_FILE, 0o600)
+
+
+def gate_cli(argv):
+    """python3 server.py gate create <label> | list | revoke <id-prefix>"""
+    cmd = argv[0] if argv else "list"
+    if cmd == "create":
+        _link_id, url = gate_create(" ".join(argv[1:]))
+        print(url)
+        return 0
+    if cmd == "list":
+        for row in gate_list():
+            print(f"{row['id']}  {'revoked' if row['revoked'] else 'active '}  uses={row['uses']:<4} last={row['last_used'] or '-':<21} {row['label']}")
+        return 0
+    if cmd == "revoke" and len(argv) > 1:
+        if gate_revoke(argv[1]):
+            print("revoked")
+            return 0
+        print("no such link", file=sys.stderr)
+        return 1
+    print("usage: server.py gate create <label> | list | revoke <id>", file=sys.stderr)
+    return 2
+
+
 def set_client_metadata(config_name, display_name, auth=None):
     config_name = safe_name(config_name)
     display_name = safe_name(display_name)
@@ -7038,6 +7377,7 @@ class Handler(SimpleHTTPRequestHandler):
             else:
                 self.send_error(HTTPStatus.MISDIRECTED_REQUEST)
             return None
+        self.log_ip = client_ip
         if not self.path.startswith("/api/"):
             return {"role": "static"}
         ip = client_ip
@@ -7461,6 +7801,45 @@ class Handler(SimpleHTTPRequestHandler):
             if m_import:
                 self.send_raw_import_config(unquote(m_import.group(1)), unquote(m_import.group(2)))
                 return
+            if u.path == "/gate/check":
+                found = gate_verify_cookie(self.headers.get("Cookie", ""))
+                if not found:
+                    self.send_response(401)
+                    self.send_header("Content-Length", "0")
+                    self.send_header("Cache-Control", "no-store")
+                    self.finish_response_headers()
+                    return
+                ip = getattr(self, "log_ip", "") or self.client_address[0]
+                ua = self.headers.get("User-Agent", "")
+                key = (found[0], ip, hash(ua))
+                now = time.time()
+                if now - GATE_SESSIONS.get(key, 0) > ACCESS_SESSION_TTL:
+                    access_log_event("gate_session", ip, ua, link=found[1].get("label"))
+                GATE_SESSIONS[key] = now
+                self.send_response(204)
+                self.send_header("Cache-Control", "no-store")
+                self.finish_response_headers()
+                return
+            m_gate = re.match(r"^/gate/redeem/([A-Za-z0-9_-]+)$", u.path)
+            if m_gate:
+                ip = getattr(self, "log_ip", "") or self.client_address[0]
+                ua = self.headers.get("User-Agent", "")
+                redeemed = gate_redeem(m_gate.group(1)) if check_rate_limit(ip) else None
+                if not redeemed:
+                    access_log_event("gate_fail", ip, ua, link=m_gate.group(1)[:6])
+                    self.send_response(404)
+                    self.send_header("Content-Length", "0")
+                    self.finish_response_headers()
+                    return
+                cookie_value, rec = redeemed
+                access_log_event("gate_ok", ip, ua, link=rec.get("label"))
+                self.send_response(302)
+                self.send_header("Location", "/")
+                self.send_header("Set-Cookie", f"{GATE_COOKIE}={cookie_value}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age={GATE_COOKIE_MAX_AGE}")
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("Content-Length", "0")
+                self.finish_response_headers()
+                return
             self.send_static_file(u.path)
             return
 
@@ -7652,6 +8031,11 @@ class Handler(SimpleHTTPRequestHandler):
             if not self.require_super(auth):
                 return
             self.send_json({"presets": client_profile_presets()})
+            return
+        if u.path == "/api/gate/links":
+            if not self.require_super(auth):
+                return
+            self.send_json({"links": gate_list(), "base": gate_public_base()})
             return
         if u.path == "/api/security/log":
             if not self.require_super(auth):
@@ -8067,6 +8451,17 @@ class Handler(SimpleHTTPRequestHandler):
                 audit_log(f"Client tags updated config_name={config_name} actor_role={auth.get('role')} actor_fp={auth_fingerprint(auth)}")
                 self.send_json({"ok": True, "name": config_name, "tags": tags})
                 return
+            elif u.path == "/api/gate/links":
+                if not self.require_super(auth):
+                    return
+                try:
+                    link_id, url = gate_create(body.get("label", ""))
+                except ValueError as exc:
+                    self.send_json({"error": str(exc)}, 400)
+                    return
+                audit_log(f"Access link created label={body.get('label')!r} actor_fp={auth_fingerprint(auth)}")
+                self.send_json({"ok": True, "id": link_id[:8], "url": url})
+                return
             elif u.path == "/api/params/generate":
                 if not self.require_super(auth):
                     return
@@ -8409,6 +8804,14 @@ class Handler(SimpleHTTPRequestHandler):
         if auth is None:
             return
         u = urlparse(self.path)
+        gate_m = re.match(r"^/api/gate/links/([A-Za-z0-9_-]{6,64})$", urlparse(self.path).path)
+        if gate_m:
+            if not self.require_super(auth):
+                return
+            ok = gate_revoke(gate_m.group(1))
+            audit_log(f"Access link revoke id={gate_m.group(1)[:8]} ok={ok} actor_fp={auth_fingerprint(auth)}")
+            self.send_json({"ok": ok}, 200 if ok else 404)
+            return
         try:
             m = re.match(r"^/api/nettest/reports/([^/]+)$", u.path)
             if m:
@@ -8524,4 +8927,13 @@ def main():
 
 
 if __name__ == "__main__":
+    if len(sys.argv) > 1 and sys.argv[1] == "gate":
+        raise SystemExit(gate_cli(sys.argv[2:]))
+    if len(sys.argv) > 1 and sys.argv[1] == "summary":
+        if "--print" in sys.argv[2:] or "print" in sys.argv[2:]:
+            print(summary_text(summary_carry_over(SUMMARY_FILE.read_text(errors="replace") if SUMMARY_FILE.exists() else "")))
+        else:
+            summary_write()
+            print(SUMMARY_FILE)
+        raise SystemExit(0)
     main()

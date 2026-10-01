@@ -12,6 +12,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [5.29.0-bas.11] - 2026-10-01
+
+### Added
+
+- Personal access links for the panel behind nginx: `https://domain/i/<random>` stores a signed cookie once (`__Host-sid`, 180 days, HttpOnly/Secure/SameSite=Strict); afterwards the plain address is enough. Signing in with a token inside the panel stays mandatory and no token ever goes into a URL. Links are revocable (`manage web gate create|list|revoke`, Advanced -> Access links), and gate events (`gate_ok`, `gate_fail`, `gate_session`) go to the access log with ip and device. nginx checks the cookie through `auth_request` against the panel; without it the decoy is shown and `/api/` answers 404.
+- `manage summary`: rebuilds `INSTALL_SUMMARY.txt` from the live server state (protocol and module versions, client endpoint, panel address and sign-in method, clients with labels and profiles, services, listening ports, fail2ban); secrets that cannot be recovered from hashes are carried over from the previous file.
+
+### Changed
+
+- `contrib/panel-gate/` describes the new scheme (links + cookie) instead of the static secret URL.
+
 ## [5.29.0-bas.10] - 2026-10-01
 
 ### Added
@@ -1765,7 +1776,8 @@ Major security and reliability update after several consecutive code audits. The
 - Diagnostic report (`--diagnostic`).
 - Full uninstall (`--uninstall`).
 
-[Unreleased]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.29.0-bas.10...HEAD
+[Unreleased]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.29.0-bas.11...HEAD
+[5.29.0-bas.11]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.29.0-bas.10...v5.29.0-bas.11
 [5.29.0-bas.10]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.29.0-bas.9...v5.29.0-bas.10
 [5.29.0-bas.9]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.29.0-bas.8...v5.29.0-bas.9
 [5.29.0-bas.8]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.29.0-bas.7...v5.29.0-bas.8

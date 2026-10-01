@@ -2617,6 +2617,7 @@ async function renderPanel() {
       </div>
       <div ${collapsibleSectionBody("advancedPanel", "mt-3")}>
         <button id="rotateProfile" class="${buttonClasses("border-amber-600 text-amber-700")}">${icon("refresh")}<span>Rotate profile</span></button>
+        <button id="accessLinksButton" class="${buttonClasses()}">${icon("link")}<span>Access links</span></button>
         <button id="accessLogButton" class="${buttonClasses()}">${icon("search")}<span>Access log</span></button>
         <button id="tagStatsButton" class="${buttonClasses()}">${icon("link")}<span>Label stats</span></button>
       </div>
@@ -2651,6 +2652,7 @@ async function renderPanel() {
   if (statusState.role === "super") document.querySelector("#newToken").onclick = newToken;
   if (statusState.role === "super") {
     document.querySelector("#rotateProfile").onclick = rotateProfile;
+    document.querySelector("#accessLinksButton").onclick = showAccessLinks;
     document.querySelector("#accessLogButton").onclick = showAccessLog;
     document.querySelector("#tagStatsButton").onclick = showTagStats;
   }
@@ -3540,6 +3542,64 @@ async function editClientParams(name) {
   });
   dialog.addEventListener("close", () => dialog.remove(), {once: true});
   dialog.showModal();
+}
+
+async function showAccessLinks() {
+  const dialog = document.createElement("dialog");
+  dialog.className = "w-[min(720px,calc(100vw-24px))] max-h-[92vh] overflow-auto rounded-lg border border-[var(--line)] bg-[var(--panel)] p-0 text-[var(--text)] shadow-xl backdrop:bg-black/55";
+  document.body.appendChild(dialog);
+  const render = async () => {
+    let data;
+    try { data = await api("/api/gate/links"); } catch (error) { showToast("Could not load links", "error"); dialog.close(); return; }
+    const rows = (data.links || []).map(link => `
+      <tr class="border-t border-[var(--line)] align-top">
+        <td class="p-1">${esc(link.label)}</td>
+        <td class="p-1 text-xs text-[var(--muted)] whitespace-nowrap">${esc((link.created || "").replace("T", " ").replace("Z", ""))}</td>
+        <td class="p-1 text-xs text-[var(--muted)] whitespace-nowrap">${esc(link.last_used ? link.last_used.replace("T", " ").replace("Z", "") : "never")} (${link.uses})</td>
+        <td class="p-1 text-right whitespace-nowrap">${link.revoked
+          ? '<span class="text-xs text-[var(--danger)]">revoked</span>'
+          : `<button type="button" data-copy="${esc(link.url)}" class="${buttonClasses("h-8 px-2 text-xs")}">Copy link</button>
+             <button type="button" data-revoke="${esc(link.id)}" class="${buttonClasses("h-8 px-2 text-xs text-[var(--danger)]")}">Revoke</button>`}</td>
+      </tr>`).join("");
+    dialog.innerHTML = `
+      <div class="p-4 grid gap-3">
+        <div class="flex items-center justify-between gap-3"><h2 class="text-base font-semibold">Access links</h2>
+          <button type="button" data-close class="${buttonClasses("w-9 px-0")}">x</button></div>
+        <p class="text-xs text-[var(--muted)]">Each person gets their own link. Opening it once stores a cookie in that browser; after that the plain address is enough. Signing in with a token is still required. Revoke a link to cut that browser off.</p>
+        <div class="flex flex-wrap items-end gap-2">
+          <label class="text-sm grow">Name of the person or device<input id="linkLabel" maxlength="40" class="${TAG_INPUT_CLASS}" autocomplete="off"></label>
+          <button type="button" id="linkCreate" class="${buttonClasses("border-amber-600 bg-amber-500 text-white")}">Create link</button>
+        </div>
+        <div id="linkNew" class="hidden rounded-md border border-[var(--line)] p-2 text-xs break-all"></div>
+        <table class="w-full text-left text-sm"><thead><tr class="text-xs text-[var(--muted)]"><th class="p-1">Name</th><th class="p-1">Created (UTC)</th><th class="p-1">Last used (uses)</th><th class="p-1"></th></tr></thead>
+        <tbody>${rows || '<tr><td colspan="4" class="p-2 text-sm text-[var(--muted)]">No links yet.</td></tr>'}</tbody></table>
+      </div>`;
+    dialog.querySelector("[data-close]").onclick = () => dialog.close();
+    dialog.querySelectorAll("[data-copy]").forEach(btn => btn.onclick = async () => {
+      try { await navigator.clipboard.writeText(btn.dataset.copy); showToast("Link copied"); } catch (error) { showToast("Copy failed", "error"); }
+    });
+    dialog.querySelectorAll("[data-revoke]").forEach(btn => btn.onclick = async () => {
+      if (!(await confirmModal("Revoke link", "That browser will lose access to the panel address.", "Revoke", true))) return;
+      try { await api(`/api/gate/links/${encodeURIComponent(btn.dataset.revoke)}`, {method: "DELETE"}); showToast("Link revoked"); await render(); } catch (error) { showToast("Could not revoke", "error"); }
+    });
+    dialog.querySelector("#linkCreate").onclick = async () => {
+      const label = dialog.querySelector("#linkLabel").value.trim();
+      try {
+        const result = await api("/api/gate/links", {method: "POST", body: JSON.stringify({label})});
+        await render();
+        const box = dialog.querySelector("#linkNew");
+        box.classList.remove("hidden");
+        box.textContent = "New link (copy it now, it is also in the list): " + result.url;
+      } catch (error) {
+        let message = "Could not create the link";
+        try { message = JSON.parse(error.message).error || message; } catch (e) { /* keep */ }
+        showToast(message, "error");
+      }
+    };
+  };
+  dialog.addEventListener("close", () => dialog.remove(), {once: true});
+  await render();
+  if (dialog.isConnected) dialog.showModal();
 }
 
 async function showAccessLog() {

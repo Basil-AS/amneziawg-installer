@@ -1,15 +1,17 @@
-# Reference: put the web panel behind an nginx "decoy + secret gate".
-# Replace panel.example.org, the certificate paths and TOKEN (openssl rand -hex 16).
-# Without the cookie every visitor sees a plain static site; with it the request is proxied to the
-# panel, which still requires its own token login. All gate hits are logged with ip and user agent.
+# Reference: put the web panel behind an nginx "decoy + personal access link".
+# Replace panel.example.org and the certificate paths. No secret lives in this file.
+#
+# Flow: the panel hands out personal links (https://panel.example.org/i/<random>). Opening one stores a signed,
+# revocable cookie in that browser; from then on the plain address shows the panel. Everybody else (and every
+# browser without the cookie) sees the static decoy site; /api/ answers 404. Signing in with a token inside the
+# panel is always required on top.
 #
 # http{} level (nginx.conf):
 #   log_format gate_log '$time_iso8601 $remote_addr $status "$http_user_agent"';
-
-map "$cookie___awg_adm" $is_admin {
-    default 0;
-    "~^TOKEN$" 1;
-}
+#
+# Panel side: AWG_WEB_BIND=127.0.0.1, access policy mode public_nginx,
+#             AWG_WEB_PUBLIC_URL=https://panel.example.org/   (used to print the links)
+# Create links:  manage web gate create <name>   |   panel -> Advanced -> Access links
 
 server {
     server_name panel.example.org;
@@ -19,40 +21,62 @@ server {
     ssl_certificate     /etc/letsencrypt/live/panel.example.org/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/panel.example.org/privkey.pem;
 
-    # the panel listens on loopback HTTPS only (AWG_WEB_BIND=127.0.0.1, bind mode public_nginx)
     proxy_ssl_verify off;
     proxy_ssl_server_name on;
     proxy_ssl_name panel.example.org;
 
-    # 1) the secret URL sets a short-lived cookie
-    location ~* ^/hub-mgr-TOKEN/?$ {
+    # the panel validates the cookie
+    location = /_gate_check {
+        internal;
+        proxy_pass https://127.0.0.1:9443/gate/check;
+        proxy_pass_request_body off;
+        proxy_set_header Content-Length "";
+        proxy_set_header Host $host;
+        proxy_set_header Cookie $http_cookie;
+        proxy_set_header User-Agent $http_user_agent;
+        proxy_set_header X-Forwarded-For $remote_addr;
+    }
+
+    # redeem a personal link: the panel answers 302 + Set-Cookie, or 404 for an unknown/revoked link
+    location ~ "^/i/([A-Za-z0-9_-]{24,64})$" {
         access_log /var/log/nginx/gate.log gate_log;
-        add_header Set-Cookie "__awg_adm=TOKEN; Path=/; HttpOnly; SameSite=Strict; Secure; Max-Age=43200" always;
-        return 302 /;
+        proxy_pass https://127.0.0.1:9443/gate/redeem/$1;
+        proxy_set_header Host $host;
+        proxy_set_header User-Agent $http_user_agent;
+        proxy_set_header X-Forwarded-For $remote_addr;
     }
-    location ~* ^/hub-mgr-logout/?$ {
-        add_header Set-Cookie "__awg_adm=; Path=/; HttpOnly; SameSite=Strict; Secure; Max-Age=0" always;
-        return 302 /;
-    }
-    # 2) any other /hub-mgr* path is a guess: plain 404, logged, banned by fail2ban after a few tries
-    location ~* ^/hub-mgr {
+    # any other /i/... is a guess: plain 404, logged, banned by fail2ban after a few tries
+    location ~ ^/i(/|$) {
         access_log /var/log/nginx/gate.log gate_log;
         return 404;
     }
 
-    # 3) API only with the cookie; everything else is the decoy
     location /api/ {
-        if ($is_admin != 1) { return 404; }
+        auth_request /_gate_check;
+        error_page 401 = @gone;
         proxy_pass https://127.0.0.1:9443;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $remote_addr;
         proxy_set_header X-Forwarded-Proto $scheme;
     }
+
     location / {
-        if ($is_admin = 1) { proxy_pass https://127.0.0.1:9443; break; }
+        auth_request /_gate_check;
+        error_page 401 = @decoy;
+        proxy_pass https://127.0.0.1:9443;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    # serve the decoy directly: "try_files ... /index.html" would loop back into auth_request
+    location @decoy {
         root /var/www/decoy;
-        index index.html;
-        try_files $uri $uri/ /index.html;
+        rewrite ^ /index.html break;
+    }
+    location @gone {
+        return 404;
     }
 }
