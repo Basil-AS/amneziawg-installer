@@ -36,11 +36,11 @@ AWG_PROFILE_SCRIPT_PATH="$AWG_DIR/scripts/awg_profile.py"
 # используются первыми; remote download разрешён только с pinned SHA256 либо
 # при явном AWG_ALLOW_UNVERIFIED_DOWNLOAD=1 для разработки.
 declare -A AWG_ASSET_SHA256=(
-    ["awg_common.sh"]="ff4b299559d3077d2db77ac3c38971fb29095dcdf21fc0f0cda7be544907e60a"
-    ["manage_amneziawg.sh"]="20841b9f43eaac4b9397675c11f9cb4f0d350e3c433a1fcd4a874742dbd1453d"
-    ["web/server.py"]="beb0aceeb5001b5b78ae83cc7a7bbf1ed7a2f3bd76c45470f0aaedc908403230"
+    ["awg_common.sh"]="0901396b8004a61a87f6dfff24b41e1f25493dbf8ddc11f63e116afb7661b659"
+    ["manage_amneziawg.sh"]="df7f4e3857c3a70114d377cae9bef1939b7e8a2c36b27e67d53977e74dd32757"
+    ["web/server.py"]="972e60515500a0e7a30a5be08b216df91392bc682b35fa29191084778d39d648"
     ["web/index.html"]="7c07ed1d1991e08c0f9fc31e86ed8eb2bba5fa96387088f1f18918396cf7e662"
-    ["web/app.js"]="13c96bdccf0d04b06e99bab222a27d8e7ea68ae009f3920ee0ca478b8b4a7d22"
+    ["web/app.js"]="cfd189e8d75583b3ceb0b659a5db709ac1e5a8412822b20e6c439e49a5836b29"
     ["web/awg_i1.js"]="c97a6ac6c4e4bd7ab24c37c45f451e364414f276441f8da1c0805d26013aaa03"
     ["web/style.css"]="c6c728f244b79cdae162df3c5d0eddaea0b0b92951598355e4547f0add9e911a"
     ["web/favicon.svg"]="ae700ecb12dbf01403d0ed25247bac6b70f11201b094ee6c14b774b7fa533859"
@@ -51,7 +51,7 @@ declare -A AWG_ASSET_SHA256=(
     ["scripts/update-installed.sh"]="de611d33ccbeaafd79eb2ef59eab1c7827f54f1ee943159f5f5d14b9ecf3e481"
     ["scripts/migrate-tunnel-subnet.sh"]="a8b40101e8f02627c10d2bb769802bf860fdf41dd2bc8ac38a180e953329c3bb"
     ["scripts/awg_profile.py"]="d3b13be7f2725f1601e052f8e1f73d54085f158ba7f9c8cf6958785740c2993c"
-    ["scripts/awg_client_profile.py"]="3d718299a26f650f59fa1f7acf9c1299bc8ee0e6010aa9e296fbcbe064480197"
+    ["scripts/awg_client_profile.py"]="02af2fae73e9ba09ffec970df5a83eaa94df6ffea453fe0e8e08fcecc1d528d9"
     ["scripts/probe-awg31.sh"]="29adacb4945a380274a38aa32120de70981a6f095d097cf8ba0c45a93509fa53"
 )
 

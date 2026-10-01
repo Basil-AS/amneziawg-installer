@@ -2523,7 +2523,7 @@ usage() {
     echo "  profile validate       Проверить AWG 3.1 профиль без вывода секретов"
     echo "  client-profile set <имя> [--os=OS --device=D --network=N --carrier=C --preset=P]"
     echo "                        Создать профиль клиента (уникальные Jc/Jmin/Jmax/I1, MTU) и пересобрать конфиг клиента (ключи не меняются)"
-    echo "  client-profile show|clear <имя>    Показать / удалить профиль клиента"
+    echo "  client-profile show|clear|refresh <имя>   Показать / удалить / пересобрать из сохранённого профиля"
     echo "  client-profile presets|classify [ASN ORG]  Пресеты / определить тип сети по ASN и названию"
     echo "  voice-check           Диагностика UDP/STUN/NAT для звонков"
     echo "  p2p list              Показать P2P порты всех клиентов"
@@ -2851,7 +2851,7 @@ case $COMMAND in
             classify)
                 python3 "$AWG_CLIENT_PROFILE_SCRIPT_PATH" classify --asn "${ARGS[1]:-}" --org "${ARGS[2]:-}" || _cmd_rc=1
                 ;;
-            set|show|clear)
+            set|show|clear|refresh)
                 [[ -n "$_cn" ]] || die "Имя клиента не указано."
                 validate_client_name "$_cn" || exit 1
                 grep -qxF "#_Name = ${_cn}" "$SERVER_CONF_FILE" || die "Клиент '$_cn' не найден."
@@ -2865,6 +2865,9 @@ case $COMMAND in
                         else
                             echo "Профиля клиента нет: используются параметры сервера."
                         fi
+                        ;;
+                    refresh)
+                        refresh_client_config "$_cn" || _cmd_rc=1
                         ;;
                     clear)
                         rm -f "$AWG_CLIENT_PROFILE_DIR/${_cn}.json"
