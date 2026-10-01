@@ -3057,7 +3057,7 @@ case $COMMAND in
 
     summary)
         safe_load_config "$CONFIG_FILE" 2>/dev/null || true
-        AWG_DIR="$AWG_DIR" SERVER_CONF_FILE="$SERVER_CONF_FILE" AWG_WEB_DOMAIN="${AWG_WEB_DOMAIN:-}" AWG_WEB_PUBLIC_URL="${AWG_WEB_PUBLIC_URL:-}" AWG_ENDPOINT="${AWG_ENDPOINT:-}" \
+        env AWG_DIR="$AWG_DIR" SERVER_CONF_FILE="$SERVER_CONF_FILE" AWG_WEB_DOMAIN="${AWG_WEB_DOMAIN:-}" AWG_WEB_PUBLIC_URL="${AWG_WEB_PUBLIC_URL:-}" AWG_ENDPOINT="${AWG_ENDPOINT:-}" \
             python3 "$AWG_DIR/web/server.py" summary "${ARGS[@]}" || _cmd_rc=1
         ;;
 
@@ -3067,7 +3067,7 @@ case $COMMAND in
             gate)
                 # personal access links for the web panel: create <name> | list | revoke <id>
                 safe_load_config "$CONFIG_FILE" 2>/dev/null || true
-                AWG_DIR="$AWG_DIR" AWG_WEB_DOMAIN="${AWG_WEB_DOMAIN:-}" AWG_WEB_PUBLIC_URL="${AWG_WEB_PUBLIC_URL:-}" AWG_ENDPOINT="${AWG_ENDPOINT:-}"                     python3 "$AWG_DIR/web/server.py" gate "${ARGS[@]:1}" || _cmd_rc=1
+                env AWG_DIR="$AWG_DIR" AWG_WEB_DOMAIN="${AWG_WEB_DOMAIN:-}" AWG_WEB_PUBLIC_URL="${AWG_WEB_PUBLIC_URL:-}" AWG_ENDPOINT="${AWG_ENDPOINT:-}"                     python3 "$AWG_DIR/web/server.py" gate "${ARGS[@]:1}" || _cmd_rc=1
                 ;;
             fix-nginx-startup|nginx-wait-awg0)
                 safe_load_config "$CONFIG_FILE" 2>/dev/null || true
