@@ -43,7 +43,7 @@ MOBILE_ORG_RE = re.compile(
 CARRIERS = (
     ("mts", re.compile(r"\b(mts|mobile telesystems)\b", re.I)),
     ("megafon", re.compile(r"\bmegafon\b", re.I)),
-    ("beeline", re.compile(r"\b(beeline|vimpelcom|vympelcom)\b", re.I)),
+    ("beeline", re.compile(r"\b(beeline|vimpelcom|vympelcom|corbina)\b", re.I)),
     ("tele2", re.compile(r"\b(tele2|t2 mobile)\b", re.I)),
     ("yota", re.compile(r"\byota\b", re.I)),
     ("rostelecom", re.compile(r"\b(rostelecom|rostelekom)\b", re.I)),
@@ -58,8 +58,9 @@ HOSTING_ORG_RE = re.compile(
 # ASN -> (carrier, network) hints for well-known networks.
 ASN_HINTS = {
     "AS8359": ("mts", "mobile"),
-    "AS31133": ("megafon", "mobile"),
-    "AS3216": ("beeline", "mobile"),
+    "AS31133": ("megafon", ""),     # mobile and wired access share the AS
+    "AS3216": ("beeline", ""),      # carries both mobile and wired customers
+    "AS8402": ("beeline", "home"),  # Corbina
     "AS16345": ("beeline", "mobile"),
     "AS41330": ("tele2", "mobile"),
     "AS12958": ("tele2", "mobile"),
@@ -165,6 +166,7 @@ def classify(asn: str = "", org: str = "") -> dict:
     network, carrier, basis = "unknown", "", "none"
     if asn in ASN_HINTS:
         carrier, network = ASN_HINTS[asn]
+        network = network or "unknown"
         basis = "asn"
     else:
         for slug, rx in CARRIERS:

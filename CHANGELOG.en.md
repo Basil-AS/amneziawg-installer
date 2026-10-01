@@ -12,6 +12,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [5.29.0-bas.12] - 2026-10-01
+
+### Added
+
+- Long-term network history per client: a background collector records once a minute where each client is connected from (first and last seen, session count, ports) and enriches new addresses with AS, organisation, provider, country, city and the reverse-DNS name. Stored in `web/network_history.json` (retention `AWG_NETWORK_HISTORY_DAYS`, default 730).
+- Network type inference (mobile/home/office/hosting) for operators that run mobile and wired access in one AS: manual CIDR rules, reverse DNS, organisation and AS names, client behaviour (many addresses inside one /16 within a day means carrier-grade NAT, one address for days means a fixed line), already classified neighbours in the /24, and a weak hint from the client's label. Conflicting signals leave the type `unknown` and show the signals. A type can be set by hand; the rule covers the whole /24.
+- In the panel: per client "Networks" (history with type, provider, AS, city, sessions), under Advanced "Network stats" (by type, provider, AS, country, city) and CSV/JSON export (`/api/networks/stats|export|rules|label`, `/api/clients/<name>/networks`).
+
+### Changed
+
+- Operator classification: AS8402 (Corbina) is wired, AS16345 is mobile, AS3216 and AS31133 are ambiguous (carrier known, type not); the Corbina name maps to Beeline.
+
 ## [5.29.0-bas.11] - 2026-10-01
 
 ### Added
@@ -1776,7 +1788,8 @@ Major security and reliability update after several consecutive code audits. The
 - Diagnostic report (`--diagnostic`).
 - Full uninstall (`--uninstall`).
 
-[Unreleased]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.29.0-bas.11...HEAD
+[Unreleased]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.29.0-bas.12...HEAD
+[5.29.0-bas.12]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.29.0-bas.11...v5.29.0-bas.12
 [5.29.0-bas.11]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.29.0-bas.10...v5.29.0-bas.11
 [5.29.0-bas.10]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.29.0-bas.9...v5.29.0-bas.10
 [5.29.0-bas.9]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.29.0-bas.8...v5.29.0-bas.9

@@ -2620,6 +2620,7 @@ async function renderPanel() {
         <button id="accessLinksButton" class="${buttonClasses()}">${icon("link")}<span>Access links</span></button>
         <button id="accessLogButton" class="${buttonClasses()}">${icon("search")}<span>Access log</span></button>
         <button id="tagStatsButton" class="${buttonClasses()}">${icon("link")}<span>Label stats</span></button>
+        <button id="networkStatsButton" class="${buttonClasses()}">${icon("search")}<span>Network stats</span></button>
       </div>
     </section>
 
@@ -2655,6 +2656,7 @@ async function renderPanel() {
     document.querySelector("#accessLinksButton").onclick = showAccessLinks;
     document.querySelector("#accessLogButton").onclick = showAccessLog;
     document.querySelector("#tagStatsButton").onclick = showTagStats;
+    document.querySelector("#networkStatsButton").onclick = showNetworkStats;
   }
   if (statusState.role === "super") {
     document.querySelector("#testWebAccessPolicy").onclick = () => submitWebAccessPolicy("test");
@@ -3145,6 +3147,7 @@ function renderClients() {
               ${renderMenuItem("toggle-ports", "shield", "Port details / toggle", shieldClass)}
               ${isAdmin ? renderMenuItem("edit-tags", "link", "Labels") : ""}
               ${isAdmin ? renderMenuItem("edit-params", "refresh", "Parameters") : ""}
+              ${isAdmin ? renderMenuItem("show-networks", "search", "Networks") : ""}
               ${familyItem}
               ${adminDeleteItem}
               ${removeAccessItem}
@@ -3544,6 +3547,90 @@ async function editClientParams(name) {
   dialog.showModal();
 }
 
+const NET_TYPES = ["mobile", "home", "office", "hosting"];
+
+function netTime(ts) {
+  return ts ? new Date(ts * 1000).toISOString().replace("T", " ").slice(0, 16) : "-";
+}
+
+async function downloadNetworks(format) {
+  try {
+    const result = await api(`/api/networks/export?format=${format}`);
+    const blob = format === "json" ? new Blob([JSON.stringify(result, null, 1)], {type: "application/json"}) : result;
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = format === "json" ? "networks.json" : "networks.csv";
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
+  } catch (error) {
+    showToast("Export failed", "error");
+  }
+}
+
+async function showClientNetworks(name) {
+  const client = latestClients.find(item => item.name === name || item.id === name) || {};
+  const dialog = document.createElement("dialog");
+  dialog.className = "w-[min(920px,calc(100vw-24px))] max-h-[92vh] overflow-auto rounded-lg border border-[var(--line)] bg-[var(--panel)] p-0 text-[var(--text)] shadow-xl backdrop:bg-black/55";
+  document.body.appendChild(dialog);
+  const render = async () => {
+    let rows = [];
+    try { rows = (await api(`/api/clients/${encodeURIComponent(name)}/networks`)).networks || []; } catch (error) { showToast("Could not load networks", "error"); dialog.close(); return; }
+    const body = rows.length ? rows.map(r => `
+      <tr class="border-t border-[var(--line)] align-top text-xs">
+        <td class="p-1 whitespace-nowrap">${esc(netTime(r.last_seen))}<br><span class="text-[var(--muted)]">since ${esc(netTime(r.first_seen))}</span></td>
+        <td class="p-1 font-mono">${esc(r.ip)}</td>
+        <td class="p-1" title="${esc((r.signals || []).join("\n"))}">${esc(r.type || "unknown")}<br><span class="text-[var(--muted)]">${Math.round((r.type_confidence || 0) * 100)}%</span></td>
+        <td class="p-1">${esc(r.carrier || r.provider || r.org || "-")}<br><span class="text-[var(--muted)]">${esc(r.asn || "")} ${esc(r.org || "")}</span></td>
+        <td class="p-1">${esc([r.city, r.country_code].filter(Boolean).join(", ") || "-")}</td>
+        <td class="p-1">${esc(r.sessions)}</td>
+        <td class="p-1"><select data-mark="${esc(r.ip)}" class="h-8 rounded-md border border-[var(--line)] bg-[var(--soft)] px-1 text-xs"><option value="">mark as...</option>${NET_TYPES.map(t => `<option>${t}</option>`).join("")}</select></td>
+      </tr>`).join("") : `<tr><td colspan="7" class="p-3 text-sm text-[var(--muted)]">Nothing recorded yet. The collector notes where a client connects from about once a minute.</td></tr>`;
+    dialog.innerHTML = `
+      <div class="p-4 grid gap-3">
+        <div class="flex items-center justify-between gap-3"><h2 class="text-base font-semibold">Networks: ${esc(clientDisplayLabel(client) || name)}</h2>
+          <button type="button" data-close class="${buttonClasses("w-9 px-0")}">x</button></div>
+        <p class="text-xs text-[var(--muted)]">Where this client connected from. The type is a guess from several signals (hover it); marking an address fixes its /24 and teaches the neighbours.</p>
+        <div class="overflow-auto"><table class="w-full text-left"><thead><tr class="text-xs text-[var(--muted)]"><th class="p-1">Last seen (UTC)</th><th class="p-1">Address</th><th class="p-1">Type</th><th class="p-1">Provider / AS</th><th class="p-1">Place</th><th class="p-1">Sessions</th><th class="p-1"></th></tr></thead><tbody>${body}</tbody></table></div>
+      </div>`;
+    dialog.querySelector("[data-close]").onclick = () => dialog.close();
+    dialog.querySelectorAll("[data-mark]").forEach(sel => sel.onchange = async () => {
+      if (!sel.value) return;
+      try {
+        await api("/api/networks/label", {method: "POST", body: JSON.stringify({ip: sel.dataset.mark, type: sel.value})});
+        showToast("Network marked");
+        await render();
+      } catch (error) { showToast("Could not mark", "error"); }
+    });
+  };
+  dialog.addEventListener("close", () => dialog.remove(), {once: true});
+  await render();
+  if (dialog.isConnected) dialog.showModal();
+}
+
+async function showNetworkStats() {
+  let data;
+  try { data = await api("/api/networks/stats"); } catch (error) { showToast("Could not load stats", "error"); return; }
+  const section = (title, bucket) => {
+    const entries = Object.entries(bucket || {});
+    if (!entries.length) return "";
+    return `<h3 class="mt-3 text-sm font-semibold">${esc(title)}</h3>` + entries.slice(0, 25).map(([k, v]) =>
+      `<div class="flex justify-between gap-3 border-t border-[var(--line)] py-1 text-xs"><span>${esc(k)}</span><span class="text-[var(--muted)]">${v.addresses} addr, ${v.sessions} sessions, ${esc(v.clients.join(", "))}</span></div>`).join("");
+  };
+  const body = `<div class="flex flex-wrap items-center gap-2"><span class="text-xs text-[var(--muted)]">${data.addresses} addresses recorded.</span>
+      <button type="button" id="netCsv" class="${buttonClasses("h-8 px-2 text-xs")}">Export CSV</button>
+      <button type="button" id="netJson" class="${buttonClasses("h-8 px-2 text-xs")}">Export JSON</button></div>` +
+    section("By type", data.by_type) + section("By provider", data.by_provider) + section("By AS", data.by_as) + section("By country", data.by_country) + section("By city", data.by_city);
+  showModal("Network statistics", body);
+  setTimeout(() => {
+    const csv = document.querySelector("#netCsv"), json = document.querySelector("#netJson");
+    if (csv) csv.onclick = () => downloadNetworks("csv");
+    if (json) json.onclick = () => downloadNetworks("json");
+  }, 0);
+}
+
 async function showAccessLinks() {
   const dialog = document.createElement("dialog");
   dialog.className = "w-[min(720px,calc(100vw-24px))] max-h-[92vh] overflow-auto rounded-lg border border-[var(--line)] bg-[var(--panel)] p-0 text-[var(--text)] shadow-xl backdrop:bg-black/55";
@@ -3638,6 +3725,7 @@ async function clientAction(name, action) {
     if (action === "regenerate-config") return regenerateConfig(name);
     if (action === "edit-tags") return editClientTags(name);
     if (action === "edit-params") return editClientParams(name);
+    if (action === "show-networks") return showClientNetworks(name);
     if (action === "toggle") {
       await api(`/api/clients/${encodeURIComponent(name)}/toggle`, {method: "POST", body: "{}"});
       showToast("Client toggled");
