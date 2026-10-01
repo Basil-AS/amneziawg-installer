@@ -4159,7 +4159,7 @@ def _run_text(args, timeout=8):
 def summary_carry_over(old_text):
     """Secrets that cannot be recovered from hashes are carried over from the previous summary."""
     carried = {}
-    m = re.search(r"^\s*(?:WEB PANEL|\[Web Panel\])?.*?^\s*Super token:\s*(\S+)", old_text or "", re.M | re.S)
+    m = re.search(r"^\s*(?:Super token|Token):\s*(\S+)", old_text or "", re.M)
     if m and len(m.group(1)) >= 20 and not m.group(1).startswith("not"):
         carried["super_token"] = m.group(1)
     m = re.search(r"ADGUARD HOME.*?^\s*Password:\s*(\S+)", old_text or "", re.M | re.S)
@@ -4176,6 +4176,76 @@ def summary_project_version():
     except OSError:
         pass
     return PROJECT_VERSION
+
+
+def summary_minimal(carried=None):
+    """Only what a person needs: final addresses, links, sign-in data. The long version is `summary full`."""
+    carried = carried or {}
+    cfg = parse_config()
+    domain = os.environ.get("AWG_WEB_DOMAIN", "") or cfg.get("AWG_WEB_DOMAIN", "")
+    endpoint = os.environ.get("AWG_ENDPOINT", "") or cfg.get("AWG_ENDPOINT", "") or domain or "<server address>"
+    conf = {}
+    try:
+        for line in SERVER_CONF.read_text(errors="ignore").splitlines():
+            m = re.match(r"^(\w+)\s*=\s*(.*)$", line.strip())
+            if m and m.group(1) not in conf:
+                conf[m.group(1)] = m.group(2)
+    except OSError:
+        pass
+    listen = conf.get("ListenPort") or cfg.get("AWG_PORT", "")
+    client_port = cfg.get("AWG_CLIENT_PORT", "") or listen
+    alt_ports = []
+    try:
+        alt_ports = [x for x in (AWG_DIR / "alt_ports").read_text().split() if x.isdigit()]
+    except OSError:
+        pass
+    vpn_ip = (cfg.get("AWG_TUNNEL_SUBNET", "") or "").split("/")[0]
+    ssh_port = ""
+    for line in _run_text(["ss", "-tlnpH"]).splitlines():
+        if "sshd" in line:
+            m = re.search(r":(\d+)\s", line.split()[3] + " ")
+            if m:
+                ssh_port = m.group(1)
+                break
+    server_ip = _run_text(["curl", "-s", "-m", "4", "https://api.ipify.org"]) or endpoint
+    links = [r for r in gate_list() if not r["revoked"]]
+    base = gate_public_base()
+    lines = [
+        "ACCESS AND LINKS  (file mode 0600, contains secrets; the long report is: manage summary full)",
+        f"Updated: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())}",
+        "",
+        "WEB PANEL",
+        f"  Address:  {base}",
+        "  Sign in:  token on the login page (no token in the URL)",
+        f"  Token:    {carried.get('super_token') or 'not stored. New one: sudo bash ' + str(MANAGE) + ' web token reset-super'}",
+        "  Personal access links (open once per browser; afterwards the plain address works):",
+    ]
+    if links:
+        lines += [f"    {r['label']:<20} {r['url']}" for r in links]
+    else:
+        lines.append("    none. Create: sudo bash " + str(MANAGE) + " web gate create <name>")
+    lines += [
+        "",
+        "ADGUARD HOME (only from inside the VPN)",
+        f"  Address:  http://{vpn_ip}:{cfg.get('AWG_ADGUARD_PORT', '3000')}" if cfg.get("AWG_ADGUARD_ENABLED") == "1" else "  not installed",
+    ]
+    if cfg.get("AWG_ADGUARD_ENABLED") == "1":
+        lines += ["  Login:    admin", f"  Password: {carried.get('adguard_password') or 'not stored'}"]
+    lines += [
+        "",
+        "VPN ENDPOINT",
+        f"  {endpoint}:{client_port}/udp   (server listens on {listen}; extra ports that reach it: {', '.join(alt_ports) or 'none'})",
+        "",
+        "SSH",
+        f"  ssh -p {ssh_port or '<port>'} root@{server_ip}   (keys only)",
+        "",
+        "CLIENT FILES",
+    ]
+    for peer in parse_peers():
+        name = peer["name"]
+        lines.append(f"  {name:<18} {AWG_DIR / (name + '.conf')}   qr: {AWG_DIR / (name + '.png')}")
+    lines.append("")
+    return "\n".join(lines)
 
 
 def summary_text(carried=None):
@@ -4322,13 +4392,13 @@ def summary_text(carried=None):
     return "\n".join(lines)
 
 
-def summary_write():
+def summary_write(full=False):
     old = ""
     try:
         old = SUMMARY_FILE.read_text(encoding="utf-8", errors="replace")
     except OSError:
         pass
-    text = summary_text(summary_carry_over(old))
+    text = summary_text(summary_carry_over(old)) if full else summary_minimal(summary_carry_over(old))
     if old:
         backup = SUMMARY_FILE.with_name(f"{SUMMARY_FILE.name}.bak.{time.strftime('%Y%m%d-%H%M%S')}")
         fd = os.open(backup, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
@@ -6353,6 +6423,7 @@ def parse_config():
         "AWG_H3": "",
         "AWG_H4": "",
         "AWG_SERVER_NAME": "MyVPN",
+        "AWG_CLIENT_PORT": "",
     }
     if not cfg.exists():
         return out
@@ -8231,7 +8302,7 @@ class Handler(SimpleHTTPRequestHandler):
                 access_log_event("gate_ok", ip, ua, link=rec.get("label"))
                 self.send_response(302)
                 self.send_header("Location", "/")
-                self.send_header("Set-Cookie", f"{GATE_COOKIE}={cookie_value}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age={GATE_COOKIE_MAX_AGE}")
+                self.send_header("Set-Cookie", f"{GATE_COOKIE}={cookie_value}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age={GATE_COOKIE_MAX_AGE}")
                 self.send_header("Cache-Control", "no-store")
                 self.send_header("Content-Length", "0")
                 self.finish_response_headers()
@@ -9391,10 +9462,12 @@ if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "gate":
         raise SystemExit(gate_cli(sys.argv[2:]))
     if len(sys.argv) > 1 and sys.argv[1] == "summary":
+        full = "full" in sys.argv[2:]
         if "--print" in sys.argv[2:] or "print" in sys.argv[2:]:
-            print(summary_text(summary_carry_over(SUMMARY_FILE.read_text(errors="replace") if SUMMARY_FILE.exists() else "")))
+            carried = summary_carry_over(SUMMARY_FILE.read_text(errors="replace") if SUMMARY_FILE.exists() else "")
+            print(summary_text(carried) if full else summary_minimal(carried))
         else:
-            summary_write()
+            summary_write(full)
             print(SUMMARY_FILE)
         raise SystemExit(0)
     main()

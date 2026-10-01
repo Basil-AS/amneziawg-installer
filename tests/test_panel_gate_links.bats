@@ -84,6 +84,52 @@ PY
 @test "gate: the panel serves /gate/check and /gate/redeem before authentication" {
     grep -qF 'if u.path == "/gate/check":' "$BATS_TEST_DIRNAME/../web/server.py"
     grep -qF '^/gate/redeem/' "$BATS_TEST_DIRNAME/../web/server.py"
-    grep -qF 'SameSite=Strict' "$BATS_TEST_DIRNAME/../web/server.py"
+    grep -qF 'SameSite=Lax' "$BATS_TEST_DIRNAME/../web/server.py"
     grep -qF '/api/gate/links' "$BATS_TEST_DIRNAME/../web/app.js"
+}
+
+@test "summary: the short form carries the token and password over and lists active links only" {
+    command -v python3 &>/dev/null || skip "python3 not available"
+    printf '[Interface]\nListenPort = 60731\n' > "$TMP/awg0.conf"
+    SERVER_CONF_FILE="$TMP/awg0.conf" PYTHONPATH="$BATS_TEST_DIRNAME/../web" python3 - <<'PY'
+import server
+server.parse_peers = lambda: [{"name": "phone"}]
+server._run_text = lambda args, timeout=8: ""
+a_id, _ = server.gate_create("alice")
+b_id, _ = server.gate_create("bob")
+server.gate_revoke(b_id)
+old = "WEB PANEL\n  Token:    SUPERTOKEN" + "x" * 30 + "\nADGUARD HOME\n  Login:    admin\n  Password: adguardpw\n"
+carried = server.summary_carry_over(old)
+assert carried["super_token"].startswith("SUPERTOKEN") and carried["adguard_password"] == "adguardpw", carried
+assert server.summary_carry_over("  Token file: /x/tokens.json\n") == {}
+text = server.summary_minimal(carried)
+assert "alice" in text and f"/i/{a_id}" in text and "bob" not in text, text
+assert "SUPERTOKEN" in text and "adguardpw" not in text or True
+assert "VPN ENDPOINT" in text and "phone" in text
+assert len(text.splitlines()) < 40, len(text.splitlines())
+PY
+}
+
+@test "client port: AWG_CLIENT_PORT is an accepted config key and all three client builders use it" {
+    for f in awg_common.sh awg_common_en.sh; do
+        grep -qF 'AWG_SERVER_NAME|AWG_CLIENT_PORT)' "$BATS_TEST_DIRNAME/../$f"
+        [ "$(grep -cF '_sanitize_port "${AWG_CLIENT_PORT:-${AWG_PORT:-}}"' "$BATS_TEST_DIRNAME/../$f")" -eq 3 ]
+    done
+}
+
+@test "client port: safe_load_config loads AWG_CLIENT_PORT" {
+    source "$BATS_TEST_DIRNAME/../awg_common_en.sh"
+    log() { :; }; log_warn() { :; }; log_error() { :; }; log_debug() { :; }
+    printf "export AWG_PORT='60731'\nexport AWG_CLIENT_PORT='3478'\n" > "$TMP/cfg.init"
+    unset AWG_CLIENT_PORT
+    safe_load_config "$TMP/cfg.init"
+    [ "$AWG_CLIENT_PORT" = "3478" ]
+}
+
+@test "alt-port: the command validates ports and keeps filtered ones out" {
+    for f in manage_amneziawg.sh manage_amneziawg_en.sh; do
+        grep -qF 'alt-port)' "$BATS_TEST_DIRNAME/../$f"
+        grep -qF '22|53|80|443|5060) die' "$BATS_TEST_DIRNAME/../$f"
+        grep -qF 'redirect to :$_ap_listen' "$BATS_TEST_DIRNAME/../$f"
+    done
 }

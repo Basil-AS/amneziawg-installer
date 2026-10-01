@@ -12,6 +12,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [5.29.0-bas.13] - 2026-10-01
+
+### Fixed
+
+- Personal panel access link: a `SameSite=Strict` cookie is not sent on the first request after following the link from a messenger or another site, so the decoy was shown. It is now `SameSite=Lax`.
+
+### Added
+
+- `manage alt-port list|add|remove <port>`: extra public UDP ports that reach the server's listen port (persistent nftables rule plus a ufw rule). On one ISP, ports `3478` and `4500` gave ~370-480 Mbit/s with 0% loss against ~140 Mbit/s and up to 20% loss on a high random port. Ports 22, 53, 80, 443 and 5060 are refused.
+- `AWG_CLIENT_PORT` in `awgsetup_cfg.init`: the port written into new client configs and vpn:// links (defaults to `AWG_PORT`). Already issued configs keep working; no re-import is needed.
+
+### Changed
+
+- `manage summary` now writes a short file by default: panel address, personal links, token, AdGuard password, endpoint and ports, SSH, client file paths. The long report is `manage summary full`.
+
 ## [5.29.0-bas.12] - 2026-10-01
 
 ### Added
@@ -1788,7 +1803,8 @@ Major security and reliability update after several consecutive code audits. The
 - Diagnostic report (`--diagnostic`).
 - Full uninstall (`--uninstall`).
 
-[Unreleased]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.29.0-bas.12...HEAD
+[Unreleased]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.29.0-bas.13...HEAD
+[5.29.0-bas.13]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.29.0-bas.12...v5.29.0-bas.13
 [5.29.0-bas.12]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.29.0-bas.11...v5.29.0-bas.12
 [5.29.0-bas.11]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.29.0-bas.10...v5.29.0-bas.11
 [5.29.0-bas.10]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.29.0-bas.9...v5.29.0-bas.10

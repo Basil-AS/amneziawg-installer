@@ -12,6 +12,21 @@
 
 ## [Unreleased]
 
+## [5.29.0-bas.13] - 2026-10-01
+
+### Исправлено
+
+- Персональная ссылка доступа к панели: cookie с `SameSite=Strict` не отправлялась браузером на первый запрос после перехода по ссылке из мессенджера или другого сайта, и открывалась заглушка. Теперь `SameSite=Lax`.
+
+### Добавлено
+
+- `manage alt-port list|add|remove <порт>`: дополнительные публичные UDP-порты, которые доходят до порта сервера (nftables, постоянно, плюс правило ufw). В замерах на одном провайдере порт `3478` и `4500` дали ~370-480 Мбит/с и 0% потерь против ~140 Мбит/с и до 20% потерь на высоком случайном порту. Порты 22, 53, 80, 443, 5060 отвергаются.
+- `AWG_CLIENT_PORT` в `awgsetup_cfg.init`: порт, который попадает в новые клиентские конфиги и vpn:// (по умолчанию `AWG_PORT`). Уже выданные конфиги продолжают работать, реимпорт не нужен.
+
+### Изменено
+
+- `manage summary` по умолчанию делает короткий файл: адрес панели, личные ссылки, токен, пароль AdGuard, адрес и порты подключения, SSH, пути к конфигам клиентов. Полный отчёт: `manage summary full`.
+
 ## [5.29.0-bas.12] - 2026-10-01
 
 ### Добавлено
@@ -1795,7 +1810,8 @@ Hardening-фиксы надёжности и безопасности по ре�
 - Диагностический отчет (`--diagnostic`).
 - Полная деинсталляция (`--uninstall`).
 
-[Unreleased]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.29.0-bas.12...HEAD
+[Unreleased]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.29.0-bas.13...HEAD
+[5.29.0-bas.13]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.29.0-bas.12...v5.29.0-bas.13
 [5.29.0-bas.12]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.29.0-bas.11...v5.29.0-bas.12
 [5.29.0-bas.11]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.29.0-bas.10...v5.29.0-bas.11
 [5.29.0-bas.10]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.29.0-bas.9...v5.29.0-bas.10
