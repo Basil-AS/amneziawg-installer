@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 import errno
 from base64 import b64encode
+import csv
+import io
 import hashlib
 import gzip
 import hmac
@@ -3629,6 +3631,400 @@ def utc_now_iso():
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 
+NETWORK_HISTORY_FILE = WEB_DIR / "network_history.json"
+NETWORK_RULES_FILE = WEB_DIR / "network_rules.json"
+NETWORK_HISTORY_LOCK = threading.Lock()
+NETWORK_EVENTS_MAX = 500
+NETWORK_IPS_MAX = 400
+NETWORK_COLLECT_INTERVAL = 60
+NETWORK_LOOKUPS_PER_CYCLE = 3
+NETWORK_TYPES = ("mobile", "home", "office", "hosting")
+NETWORK_COLLECTOR_STARTED = False
+NETWORK_RETENTION_DAYS = int(os.environ.get("AWG_NETWORK_HISTORY_DAYS", "730") or 730)
+
+# Reverse-DNS patterns.  They are only one vote among several signals, never a verdict on their own.
+MOBILE_PTR_RE = re.compile(r"(^|[.-])(lte|gprs|umts|3g|4g|5g|mobile|mob|cgn|cgnat|wap|gsm)([.-]|\d|$)", re.I)
+HOME_PTR_RE = re.compile(r"(^|[.-])(dsl|adsl|pppoe|ftth|gpon|pon|cable|broadband|home|static|abonent|customer|cust\d*)([.-]|\d|$)", re.I)
+
+
+def network_prefix(ip):
+    """/24 (IPv4) or /48 (IPv6) the address belongs to; neighbours in a prefix usually share a network type."""
+    try:
+        addr = ipaddress.ip_address(ip)
+    except ValueError:
+        return ""
+    return str(ipaddress.ip_network(f"{ip}/{24 if addr.version == 4 else 48}", strict=False))
+
+
+def load_network_rules():
+    try:
+        data = json.loads(NETWORK_RULES_FILE.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    rules = []
+    for item in data.get("rules", []) if isinstance(data, dict) else []:
+        try:
+            net = ipaddress.ip_network(str(item.get("cidr", "")), strict=False)
+        except ValueError:
+            continue
+        if item.get("type") in NETWORK_TYPES:
+            rules.append({"cidr": str(net), "type": item["type"], "note": str(item.get("note", ""))[:80]})
+    return rules
+
+
+def write_network_rules(rules):
+    clean = []
+    for item in rules if isinstance(rules, list) else []:
+        net = ipaddress.ip_network(str(item.get("cidr", "")).strip(), strict=False)  # ValueError on junk
+        if item.get("type") not in NETWORK_TYPES:
+            raise ValueError("type must be one of " + ", ".join(NETWORK_TYPES))
+        if net.prefixlen < (8 if net.version == 4 else 32):
+            raise ValueError("rule is too broad")
+        clean.append({"cidr": str(net), "type": item["type"], "note": str(item.get("note", ""))[:80]})
+    WEB_DIR.mkdir(parents=True, exist_ok=True)
+    tmp = NETWORK_RULES_FILE.with_name(f"{NETWORK_RULES_FILE.name}.tmp.{os.getpid()}")
+    tmp.write_text(json.dumps({"rules": clean}, indent=2) + "\n", encoding="utf-8")
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, NETWORK_RULES_FILE)
+    return clean
+
+
+def rule_for_ip(ip, rules):
+    try:
+        addr = ipaddress.ip_address(ip)
+    except ValueError:
+        return None
+    best = None
+    for rule in rules:
+        net = ipaddress.ip_network(rule["cidr"])
+        if addr in net and (best is None or net.prefixlen > ipaddress.ip_network(best["cidr"]).prefixlen):
+            best = rule
+    return best
+
+
+def load_network_history():
+    try:
+        data = json.loads(NETWORK_HISTORY_FILE.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        data = {}
+    if not isinstance(data, dict) or not isinstance(data.get("clients"), dict):
+        data = {"clients": {}}
+    data.setdefault("version", 1)
+    return data
+
+
+def save_network_history(data):
+    WEB_DIR.mkdir(parents=True, exist_ok=True)
+    tmp = NETWORK_HISTORY_FILE.with_name(f"{NETWORK_HISTORY_FILE.name}.tmp.{os.getpid()}")
+    tmp.write_text(json.dumps(data, separators=(",", ":")) + "\n", encoding="utf-8")
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, NETWORK_HISTORY_FILE)
+
+
+def ptr_lookup(ip, timeout=2.0):
+    """Reverse DNS with a hard timeout (a slow resolver must never stall the collector)."""
+    result = {"name": ""}
+
+    def work():
+        try:
+            result["name"] = socket.gethostbyaddr(ip)[0]
+        except (OSError, UnicodeError):
+            pass
+
+    thread = threading.Thread(target=work, daemon=True)
+    thread.start()
+    thread.join(timeout)
+    return result["name"][:120]
+
+
+def infer_network_type(record, client_tags, events, neighbours, rules, now=None):
+    """Mobile / home / office / hosting for one endpoint address, with the signals behind the verdict.
+
+    Several operators run mobile and wired access in the same AS, so the AS alone proves nothing.  Votes:
+      * a manual rule (CIDR -> type) wins outright;
+      * reverse-DNS and organisation-name patterns;
+      * behaviour: a client that keeps changing addresses inside one /16 is on carrier-grade NAT (mobile), an
+        address that stays for days with few sessions is a fixed line (home);
+      * neighbours: addresses in the same /24 that are already classified with confidence;
+      * the manual 'network' label of the client (weak: a phone may sit on Wi-Fi).
+    """
+    now = now or time.time()
+    ip = record.get("ip", "")
+    rule = rule_for_ip(ip, rules)
+    if rule:
+        return {"type": rule["type"], "confidence": 1.0, "signals": [f"rule {rule['cidr']}" + (f" ({rule['note']})" if rule["note"] else "")]}
+    votes = {"mobile": 0.0, "home": 0.0, "office": 0.0, "hosting": 0.0}
+    signals = []
+
+    def vote(kind, weight, text):
+        votes[kind] += weight
+        signals.append(f"{text} -> {kind} {weight:g}")
+
+    ptr = record.get("ptr", "")
+    if ptr:
+        if MOBILE_PTR_RE.search(ptr):
+            vote("mobile", 0.5, f"ptr {ptr}")
+        elif HOME_PTR_RE.search(ptr):
+            vote("home", 0.5, f"ptr {ptr}")
+    mod = client_profile_module()
+    if mod:
+        by_org = mod.classify(str(record.get("asn") or ""), str(record.get("org") or record.get("provider") or ""))
+        if by_org["network"] == "hosting":
+            vote("hosting", 0.9, f"org {record.get('org') or record.get('provider')}")
+        elif by_org["network"] == "mobile":
+            vote("mobile", 0.4, f"org/asn {record.get('org') or record.get('asn')}")
+        elif by_org["network"] == "home" and by_org["basis"] != "org-default":
+            vote("home", 0.3, f"org/asn {record.get('org') or record.get('asn')}")
+    # behaviour of this client
+    try:
+        cur16 = ipaddress.ip_network(f"{ip}/16", strict=False) if ":" not in ip else None
+    except ValueError:
+        cur16 = None
+    day = [e for e in events if now - e.get("t", 0) <= 86400]
+    if cur16 is not None:
+        same16 = {e["ip"] for e in day if ":" not in e.get("ip", "") and ipaddress.ip_address(e["ip"]) in cur16}
+        if len(same16) >= 3:
+            vote("mobile", 0.4, f"{len(same16)} addresses in a /16 within 24 h")
+    span = int(record.get("last_seen", 0)) - int(record.get("first_seen", 0))
+    if span >= 3 * 86400 and int(record.get("sessions", 0)) <= 3:
+        vote("home", 0.5, f"same address for {span // 86400} days")
+    ports = record.get("ports") or []
+    if int(record.get("sessions", 0)) >= 4 and len(set(ports)) >= 4:
+        vote("mobile", 0.2, "source port keeps changing")
+    for kind, weight in neighbours.items():
+        if weight:
+            vote(kind, weight, "neighbours in the same /24")
+    tag_net = (client_tags or {}).get("network")
+    if tag_net in votes:
+        vote(tag_net, 0.3, f"client label network={tag_net}")
+    ranked = sorted(votes, key=lambda k: -votes[k])
+    top, second = ranked[0], ranked[1]
+    total = sum(votes.values())
+    if votes[top] < 0.5:
+        return {"type": "unknown", "confidence": round(votes[top], 2), "signals": signals}
+    if votes[second] >= 0.3 and votes[second] >= 0.75 * votes[top]:
+        signals.append(f"conflict: {top} {votes[top]:g} vs {second} {votes[second]:g}")
+        return {"type": "unknown", "confidence": round(votes[top] / max(1.0, total), 2), "signals": signals}
+    return {"type": top, "confidence": round(votes[top] / max(1.0, total), 2), "signals": signals}
+
+
+def network_record_for(history, name, ip, now):
+    client = history["clients"].setdefault(name, {"networks": {}, "events": []})
+    nets = client["networks"]
+    if ip not in nets:
+        if len(nets) >= NETWORK_IPS_MAX:
+            oldest = min(nets, key=lambda k: nets[k].get("last_seen", 0))
+            nets.pop(oldest, None)
+        nets[ip] = {"ip": ip, "first_seen": int(now), "last_seen": int(now), "observations": 0, "sessions": 0, "ports": []}
+    return client, nets[ip]
+
+
+def network_apply_info(record, info, ptr=""):
+    info = info if isinstance(info, dict) else {}
+    for key in ("asn", "org", "country", "country_code", "region", "city"):
+        if info.get(key):
+            record[key] = str(info[key])[:80]
+    provider = info.get("provider_display") or info.get("provider") or info.get("org") or ""
+    if provider:
+        record["provider"] = str(provider)[:80]
+    mod = client_profile_module()
+    if mod:
+        carrier = mod.classify(str(record.get("asn") or ""), str(record.get("org") or provider))["carrier"]
+        if carrier:
+            record["carrier"] = carrier
+    if ptr:
+        record["ptr"] = ptr
+    record["info_at"] = int(time.time())
+
+
+def network_observe(history, name, ip, port, handshake, now):
+    """Record one sighting of client `name` at `ip`; returns the record and whether it is a new session."""
+    client, record = network_record_for(history, name, ip, now)
+    events = client["events"]
+    new_session = not events or events[-1].get("ip") != ip
+    record["last_seen"] = int(now)
+    record["observations"] = int(record.get("observations", 0)) + 1
+    if handshake:
+        record["last_handshake"] = int(handshake)
+    if port:
+        ports = record.setdefault("ports", [])
+        if int(port) not in ports:
+            ports.append(int(port))
+            del ports[:-8]
+    if new_session:
+        record["sessions"] = int(record.get("sessions", 0)) + 1
+        events.append({"t": int(now), "ip": ip, "port": int(port or 0)})
+        del events[:-NETWORK_EVENTS_MAX]
+    return record, new_session
+
+
+def network_neighbour_votes(client, ip):
+    """Weighted votes from already confident classifications of other addresses in the same /24."""
+    prefix = network_prefix(ip)
+    counts = {}
+    for other_ip, other in client_prefix_peers(client, prefix, exclude=ip):
+        if other.get("type") in NETWORK_TYPES and float(other.get("type_confidence", 0)) >= 0.6:
+            counts[other["type"]] = counts.get(other["type"], 0) + 1
+    return {kind: 0.5 for kind in counts}
+
+
+def client_prefix_peers(client, prefix, exclude=""):
+    for other_ip, other in client["networks"].items():
+        if other_ip != exclude and network_prefix(other_ip) == prefix:
+            yield other_ip, other
+
+
+def network_classify_record(history, name, record, rules, tags, now=None):
+    client = history["clients"][name]
+    neighbours = network_neighbour_votes(client, record["ip"])
+    verdict = infer_network_type(record, tags, client["events"], neighbours, rules, now)
+    record["type"] = verdict["type"]
+    record["type_confidence"] = verdict["confidence"]
+    record["signals"] = verdict["signals"][:8]
+    return verdict
+
+
+def network_prune(history, now=None):
+    now = now or time.time()
+    cutoff = now - NETWORK_RETENTION_DAYS * 86400
+    for name, client in list(history["clients"].items()):
+        client["events"] = [e for e in client.get("events", []) if e.get("t", 0) >= cutoff]
+        for ip in [k for k, v in client["networks"].items() if v.get("last_seen", 0) < cutoff]:
+            client["networks"].pop(ip, None)
+        if not client["networks"] and not client["events"]:
+            history["clients"].pop(name, None)
+
+
+def network_history_collect_once(now=None):
+    """One collector pass: note where every connected client comes from, enrich new addresses, classify."""
+    now = now or time.time()
+    peers = parse_peers()
+    stats = client_stats_map()
+    rules = load_network_rules()
+    meta = load_client_metadata().get("clients", {})
+    lookups = 0
+    with NETWORK_HISTORY_LOCK:
+        history = load_network_history()
+        dirty = False
+        for peer in peers:
+            name = peer["name"]
+            row = stats.get(name, {}) if isinstance(stats, dict) else {}
+            endpoint_ip, endpoint_port = split_endpoint(row.get("endpoint", ""))
+            if not endpoint_ip or _is_private_endpoint_ip(endpoint_ip):
+                continue
+            try:
+                port = int(endpoint_port or 0)
+            except (TypeError, ValueError):
+                port = 0
+            handshake = int(row.get("latestHandshakeAt", row.get("last_handshake", 0)) or 0)
+            record, new_session = network_observe(history, name, endpoint_ip, port, handshake, now)
+            dirty = True
+            if not record.get("info_at") and lookups < NETWORK_LOOKUPS_PER_CYCLE:
+                lookups += 1
+                network_apply_info(record, lookup_endpoint_ip_info(endpoint_ip, allow_refresh=True), ptr_lookup(endpoint_ip))
+            tags = (meta.get(name) or {}).get("tags") or {}
+            network_classify_record(history, name, record, rules, tags, now)
+        if dirty:
+            network_prune(history, now)
+            save_network_history(history)
+    return history
+
+
+def network_reclassify_all():
+    rules = load_network_rules()
+    meta = load_client_metadata().get("clients", {})
+    with NETWORK_HISTORY_LOCK:
+        history = load_network_history()
+        for name, client in history["clients"].items():
+            tags = (meta.get(name) or {}).get("tags") or {}
+            for _ in range(2):  # second pass lets neighbours inform each other
+                for record in client["networks"].values():
+                    network_classify_record(history, name, record, rules, tags)
+        save_network_history(history)
+    return history
+
+
+def network_history_loop():
+    while True:
+        try:
+            network_history_collect_once()
+        except Exception as exc:  # the collector must survive any single failure
+            audit_log(f"Network history collector error: {exc.__class__.__name__}")
+        time.sleep(NETWORK_COLLECT_INTERVAL)
+
+
+def start_network_history_collector():
+    global NETWORK_COLLECTOR_STARTED
+    with NETWORK_HISTORY_LOCK:
+        if NETWORK_COLLECTOR_STARTED:
+            return
+        NETWORK_COLLECTOR_STARTED = True
+    threading.Thread(target=network_history_loop, name="network-history", daemon=True).start()
+
+
+def network_rows(history=None, name=""):
+    """Flat rows (one per client and address), newest first."""
+    history = history if history is not None else load_network_history()
+    rows = []
+    for client_name, client in history["clients"].items():
+        if name and client_name != name:
+            continue
+        for record in client["networks"].values():
+            row = {"client": client_name}
+            row.update({k: v for k, v in record.items() if k != "signals"})
+            row["signals"] = record.get("signals", [])
+            rows.append(row)
+    rows.sort(key=lambda r: r.get("last_seen", 0), reverse=True)
+    return rows
+
+
+NETWORK_CSV_FIELDS = ("client", "ip", "first_seen", "last_seen", "sessions", "observations", "asn", "org", "provider", "carrier",
+                      "type", "type_confidence", "country_code", "country", "region", "city", "ptr")
+
+
+def network_csv(rows):
+    out = io.StringIO()
+    writer = csv.writer(out)
+    writer.writerow(NETWORK_CSV_FIELDS)
+    for row in rows:
+        values = []
+        for key in NETWORK_CSV_FIELDS:
+            value = row.get(key, "")
+            if key in ("first_seen", "last_seen") and value:
+                value = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(int(value)))
+            # a cell starting with = + - @ would be run as a formula by spreadsheet programs
+            if isinstance(value, str) and value[:1] in ("=", "+", "-", "@"):
+                value = "'" + value
+            values.append(value)
+        writer.writerow(values)
+    return out.getvalue()
+
+
+def network_stats(history=None):
+    history = history if history is not None else load_network_history()
+    rows = network_rows(history)
+
+    def group(key_fn):
+        out = {}
+        for row in rows:
+            key = key_fn(row) or "unknown"
+            item = out.setdefault(key, {"addresses": 0, "sessions": 0, "clients": set(), "last_seen": 0})
+            item["addresses"] += 1
+            item["sessions"] += int(row.get("sessions", 0))
+            item["clients"].add(row["client"])
+            item["last_seen"] = max(item["last_seen"], int(row.get("last_seen", 0)))
+        return {k: {**v, "clients": sorted(v["clients"])} for k, v in sorted(out.items(), key=lambda kv: -kv[1]["sessions"])}
+
+    return {
+        "addresses": len(rows),
+        "by_type": group(lambda r: r.get("type")),
+        "by_provider": group(lambda r: (r.get("carrier") or r.get("provider") or r.get("org") or "") + (f" ({r.get('type')})" if r.get("type") not in (None, "unknown") else "")),
+        "by_as": group(lambda r: (r.get("asn", "") + " " + r.get("org", "")).strip()),
+        "by_country": group(lambda r: r.get("country_code") or r.get("country")),
+        "by_city": group(lambda r: ", ".join(x for x in (r.get("city"), r.get("country_code")) if x)),
+    }
+
+
 GATE_FILE = WEB_DIR / "gate_links.json"
 GATE_LOCK = threading.Lock()
 GATE_COOKIE = "__Host-sid"
@@ -3685,7 +4081,7 @@ def gate_create(label):
     with GATE_LOCK:
         data = gate_load()
         link_id = secrets.token_urlsafe(24)
-        data["links"][link_id] = {"label": label, "created": utc_now_iso(), "last_used": "", "uses": 0, "revoked": False}
+        data["links"][link_id] = {"label": label, "created": utc_now_iso(), "ts": time.time(), "last_used": "", "uses": 0, "revoked": False}
         gate_save(data)
     return link_id, f"{gate_public_base()}i/{link_id}"
 
@@ -3704,7 +4100,7 @@ def gate_revoke(link_id_or_prefix):
 def gate_list(include_url=True):
     data = gate_load()
     rows = []
-    for link_id, rec in sorted(data["links"].items(), key=lambda kv: kv[1].get("created", "")):
+    for link_id, rec in sorted(data["links"].items(), key=lambda kv: (kv[1].get("ts", 0), kv[1].get("created", ""))):
         row = {"id": link_id[:8], "label": rec.get("label", ""), "created": rec.get("created", ""),
                "last_used": rec.get("last_used", ""), "uses": int(rec.get("uses", 0) or 0), "revoked": bool(rec.get("revoked"))}
         if include_url and not row["revoked"]:
@@ -8037,6 +8433,41 @@ class Handler(SimpleHTTPRequestHandler):
                 return
             self.send_json({"links": gate_list(), "base": gate_public_base()})
             return
+        if u.path == "/api/networks/stats":
+            if not self.require_super(auth):
+                return
+            self.send_json(network_stats())
+            return
+        if u.path == "/api/networks/rules":
+            if not self.require_super(auth):
+                return
+            self.send_json({"rules": load_network_rules(), "types": list(NETWORK_TYPES)})
+            return
+        if u.path == "/api/networks/export":
+            if not self.require_super(auth):
+                return
+            fmt = (parse_qs(u.query).get("format") or ["csv"])[0]
+            rows = network_rows()
+            if fmt == "json":
+                body, ctype, fname = json.dumps(rows, ensure_ascii=False, indent=1).encode("utf-8"), "application/json; charset=utf-8", "networks.json"
+            else:
+                body, ctype, fname = network_csv(rows).encode("utf-8"), "text/csv; charset=utf-8", "networks.csv"
+            access_log_event("export", getattr(self, "log_ip", ""), self.headers.get("User-Agent", ""), what=fname, rows=len(rows))
+            self.send_response(200)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Disposition", f'attachment; filename="{fname}"')
+            self.send_header("Content-Length", str(len(body)))
+            self.send_security_headers()
+            if self.finish_response_headers():
+                self.write_response_body(body)
+            return
+        m_nets = re.match(r"^/api/clients/([^/]+)/networks$", u.path)
+        if m_nets:
+            if not self.require_super(auth):
+                return
+            config_name = safe_name(m_nets.group(1))
+            self.send_json({"name": config_name, "networks": network_rows(name=config_name)})
+            return
         if u.path == "/api/security/log":
             if not self.require_super(auth):
                 return
@@ -8451,6 +8882,24 @@ class Handler(SimpleHTTPRequestHandler):
                 audit_log(f"Client tags updated config_name={config_name} actor_role={auth.get('role')} actor_fp={auth_fingerprint(auth)}")
                 self.send_json({"ok": True, "name": config_name, "tags": tags})
                 return
+            elif u.path == "/api/networks/label":
+                if not self.require_super(auth):
+                    return
+                try:
+                    ip = str(ipaddress.ip_address(str(body.get("ip", "")).strip()))
+                    kind = body.get("type")
+                    if kind not in NETWORK_TYPES:
+                        raise ValueError("type must be one of " + ", ".join(NETWORK_TYPES))
+                    rules = [r for r in load_network_rules() if r["cidr"] != network_prefix(ip)]
+                    rules.append({"cidr": network_prefix(ip), "type": kind, "note": str(body.get("note") or "marked in the panel")[:80]})
+                    write_network_rules(rules)
+                except ValueError as exc:
+                    self.send_json({"error": str(exc)}, 400)
+                    return
+                network_reclassify_all()
+                audit_log(f"Network labelled prefix={network_prefix(ip)} type={kind} actor_fp={auth_fingerprint(auth)}")
+                self.send_json({"ok": True, "rule": network_prefix(ip), "type": kind})
+                return
             elif u.path == "/api/gate/links":
                 if not self.require_super(auth):
                     return
@@ -8742,6 +9191,17 @@ class Handler(SimpleHTTPRequestHandler):
                 write_geoip_providers_config(body)
                 self.send_json({"ok": True, **geoip_providers_config_for_admin()})
                 return
+            if u.path == "/api/networks/rules":
+                if not self.require_super(auth):
+                    return
+                try:
+                    rules = write_network_rules(self.json_body().get("rules", []))
+                except ValueError as exc:
+                    self.send_json({"error": str(exc)}, 400)
+                    return
+                network_reclassify_all()
+                self.send_json({"ok": True, "rules": rules})
+                return
             m_params = re.match(r"^/api/clients/([^/]+)/params$", u.path)
             if m_params:
                 if not self.require_super(auth):
@@ -8917,6 +9377,7 @@ def main():
     load_tokens()
     policy = load_access_policy()
     start_server_health_collector()
+    start_network_history_collector()
     os.chdir(WEB_DIR)
     bind_host = policy.get("bind_host") or os.environ.get("AWG_WEB_BIND") or configured_vpn_ipv4()[0]
     httpd = LimitedThreadingHTTPServer((bind_host, int(os.environ.get("AWG_WEB_PORT", "8443"))), Handler)
