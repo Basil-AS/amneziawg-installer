@@ -415,6 +415,23 @@ class BotTests(unittest.TestCase):
             self.assertIn("/api/tokens/" + "a" * 64 + "/name", request.full_url)
             self.assertEqual(json.loads(request.data), {"name": "Phone"})
 
+    def test_client_remove_requests_owned_deletion(self):
+        class Response:
+            def __enter__(self): return self
+            def __exit__(self, *args): return False
+            def read(self): return b'{"ok":true,"deleted":true,"client":"phone"}'
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "panels.json"
+            path.write_text('{"panels":[{"id":"finland","url":"https://vpn.invalid","token":"super-secret"}]}', encoding="utf-8")
+            manager = PanelManager(path)
+            with patch("src.bot.urlopen", return_value=Response()) as opened:
+                result = manager.request("finland", "remove", "user-token", value="phone")
+            self.assertTrue(result["ok"])
+            self.assertTrue(result["deleted"])
+            request = opened.call_args.args[0]
+            self.assertEqual(request.get_method(), "DELETE")
+            self.assertIn("/api/clients/phone?action=delete_owned", request.full_url)
+
     def test_token_name_response_is_a_card(self):
         rendered = format_panel_payload({"panel": "Sunny-Finland", "ok": True, "name": "Phone"}, "update-token-name")
         self.assertIn("Имя:", rendered)

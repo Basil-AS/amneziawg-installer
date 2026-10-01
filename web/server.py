@@ -9391,14 +9391,18 @@ class Handler(SimpleHTTPRequestHandler):
                     p = delete_client_global(name, auth)
                     self.send_json({"ok": p.returncode == 0, "stdout": p.stdout, "stderr": p.stderr}, 200 if p.returncode == 0 else 400)
                     return
-                action = (parse_qs(u.query).get("action") or ["remove_access"])[0]
-                if action in {"remove_access", ""}:
+                action = (parse_qs(u.query).get("action") or [""])[0]
+                if action == "remove_access":
                     _removed, remaining = remove_client_from_token(name, auth)
                     self.send_json({"ok": True, "removed_access": True, "deleted": False, "client": name, "remaining_user_assignments": remaining})
                     return
-                if action == "delete_owned":
+                if action in {"delete_owned", "delete", ""}:
                     allowed, reason = can_user_delete_client(name, auth)
                     if not allowed:
+                        if action == "" and reason in {"shared", "not_owner"}:
+                            _removed, remaining = remove_client_from_token(name, auth)
+                            self.send_json({"ok": True, "removed_access": True, "deleted": False, "client": name, "remaining_user_assignments": remaining})
+                            return
                         audit_log(f"Denied user-owned delete config_name={name} actor_fp={auth_fingerprint(auth)} reason={reason}")
                         self.send_json({"error": "delete not allowed", "reason": reason}, 403)
                         return

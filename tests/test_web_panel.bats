@@ -582,19 +582,21 @@ user_token = "user-token"
 other_token = "other-token"
 user_hash = server.token_hash(user_token)
 other_hash = server.token_hash(other_token)
-auth = {"role": "user", "hash": user_hash, "clients": ["owned", "shared", "legacy"]}
+auth = {"role": "user", "hash": user_hash, "clients": ["owned", "owned_default", "shared", "legacy"]}
 server.write_tokens({
     "super_token_hash": server.token_hash(super_token),
     "users": {
-        user_hash: {"name": "owner", "clients": ["owned", "shared", "legacy"]},
+        user_hash: {"name": "owner", "clients": ["owned", "owned_default", "shared", "legacy"]},
         other_hash: {"name": "other", "clients": ["shared"]},
     },
 })
 server.set_client_metadata("owned", "owned", auth)
+server.set_client_metadata("owned_default", "owned_default", auth)
 server.set_client_metadata("shared", "shared", auth)
 server.set_client_display_name("legacy", "legacy")
 
 assert server.can_user_delete_client("owned", auth) == (True, "ok")
+assert server.can_user_delete_client("owned_default", auth) == (True, "ok")
 assert server.can_user_delete_client("shared", auth) == (False, "shared")
 assert server.can_user_delete_client("legacy", auth) == (False, "missing_metadata")
 
@@ -646,6 +648,16 @@ assert payload["deleted"] is True
 assert calls == [("remove", "owned")]
 assert "owned" not in server.load_tokens()["users"][user_hash]["clients"]
 assert "owned" not in server.load_client_metadata()["clients"]
+
+# Bare DELETE without query parameter should also delete owned client
+handler = make_handler("/api/clients/owned_default", user_token)
+handler.do_DELETE()
+assert handler.responses == [200]
+payload = json.loads(handler.wfile.getvalue().decode())
+assert payload["deleted"] is True
+assert calls == [("remove", "owned"), ("remove", "owned_default")]
+assert "owned_default" not in server.load_tokens()["users"][user_hash]["clients"]
+assert "owned_default" not in server.load_client_metadata()["clients"]
 PY
     rm -rf "$tmp"
 }

@@ -405,7 +405,7 @@ class PanelManager:
             endpoint_info = ("POST", f"/api/clients/{quote(value, safe='')}/access-link")
             body = json.dumps({"ttl": 86400, "one_time": True}).encode()
         elif action == "remove":
-            endpoint_info = ("DELETE", f"/api/clients/{quote(value, safe='')}")
+            endpoint_info = ("DELETE", f"/api/clients/{quote(value, safe='')}?action=delete_owned")
         elif action in {"client-toggle", "p2p-toggle", "ports-toggle"}:
             suffix = {"client-toggle": "toggle", "p2p-toggle": "p2p/toggle", "ports-toggle": "ports/toggle"}[action]
             endpoint_info = ("POST", f"/api/clients/{quote(value, safe='')}/{suffix}")
