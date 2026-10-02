@@ -12,6 +12,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [5.29.0-bas.14] - 2026-10-01
+
+### Changed
+
+- Network type is now judged per address: a phone can be on mobile data in the morning and on home Wi-Fi in the evening, so the client's label (the device) and neighbouring addresses in the /24 no longer influence the type. The AS and the organisation name are weak signals (operators mix mobile and wired access in one AS); operator brands no longer count as a sign of a mobile network. A manual mark in the panel applies to one address by default; the "whole /24" variant must be chosen explicitly.
+
 ## [5.29.0-bas.13] - 2026-10-01
 
 ### Fixed
@@ -1803,7 +1809,8 @@ Major security and reliability update after several consecutive code audits. The
 - Diagnostic report (`--diagnostic`).
 - Full uninstall (`--uninstall`).
 
-[Unreleased]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.29.0-bas.13...HEAD
+[Unreleased]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.29.0-bas.14...HEAD
+[5.29.0-bas.14]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.29.0-bas.13...v5.29.0-bas.14
 [5.29.0-bas.13]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.29.0-bas.12...v5.29.0-bas.13
 [5.29.0-bas.12]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.29.0-bas.11...v5.29.0-bas.12
 [5.29.0-bas.11]: https://github.com/Basil-AS/amneziawg-installer/compare/v5.29.0-bas.10...v5.29.0-bas.11

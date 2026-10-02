@@ -35,11 +35,9 @@ SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")
 
 # Best-effort classification.  ASN numbers change hands; the org-name patterns are
 # the primary signal and the result is always marked as a heuristic.
-MOBILE_ORG_RE = re.compile(
-    r"\b(mobile|mobil|cellular|wireless|gsm|lte|mts|megafon|vimpelcom|beeline|tele2|t2 mobile|yota|"
-    r"motiv|sbermobile|vodafone|orange|telefonica|verizon|t-mobile)\b",
-    re.I,
-)
+# Generic words only: an operator brand in the name says nothing about the kind of access (mobile and wired
+# customers share ASes and names).
+MOBILE_ORG_RE = re.compile(r"\b(mobile|mobil|cellular|wireless|gsm|lte)\b", re.I)
 CARRIERS = (
     ("mts", re.compile(r"\b(mts|mobile telesystems)\b", re.I)),
     ("megafon", re.compile(r"\bmegafon\b", re.I)),
@@ -57,15 +55,16 @@ HOSTING_ORG_RE = re.compile(
 )
 # ASN -> (carrier, network) hints for well-known networks.
 ASN_HINTS = {
-    "AS8359": ("mts", "mobile"),
-    "AS31133": ("megafon", ""),     # mobile and wired access share the AS
-    "AS3216": ("beeline", ""),      # carries both mobile and wired customers
-    "AS8402": ("beeline", "home"),  # Corbina
-    "AS16345": ("beeline", "mobile"),
-    "AS41330": ("tele2", "mobile"),
-    "AS12958": ("tele2", "mobile"),
-    "AS12389": ("rostelecom", "home"),
-    "AS31463": ("domru", "home"),
+    # carrier only: mobile and wired customers can share an AS, so the AS never decides the network type
+    "AS8359": ("mts", ""),
+    "AS31133": ("megafon", ""),
+    "AS3216": ("beeline", ""),
+    "AS8402": ("beeline", ""),
+    "AS16345": ("beeline", ""),
+    "AS41330": ("tele2", ""),
+    "AS12958": ("tele2", ""),
+    "AS12389": ("rostelecom", ""),
+    "AS31463": ("domru", ""),
 }
 
 # Presets: ranges are inclusive.  MTU values are deliberately conservative defaults; they are
@@ -165,26 +164,23 @@ def classify(asn: str = "", org: str = "") -> dict:
     org = org or ""
     network, carrier, basis = "unknown", "", "none"
     if asn in ASN_HINTS:
-        carrier, network = ASN_HINTS[asn]
-        network = network or "unknown"
+        carrier = ASN_HINTS[asn][0]
         basis = "asn"
-    else:
+    if not carrier:
         for slug, rx in CARRIERS:
             if rx.search(org):
                 carrier = slug
                 basis = "org"
                 break
-        if MOBILE_ORG_RE.search(org):
-            network = "mobile"
-            basis = basis if basis != "none" else "org"
-        elif HOSTING_ORG_RE.search(org):
-            network = "hosting"
-            basis = "org"
-        elif carrier in ("rostelecom", "domru", "mgts"):
-            network = "home"
-        elif org:
-            network = "home"
-            basis = "org-default"
+    if MOBILE_ORG_RE.search(org):
+        network = "mobile"
+        basis = basis if basis != "none" else "org"
+    elif HOSTING_ORG_RE.search(org):
+        network = "hosting"
+        basis = "org"
+    elif org and not carrier:
+        network = "home"
+        basis = "org-default"
     return {"network": network, "carrier": carrier, "basis": basis, "confidence": "heuristic"}
 
 

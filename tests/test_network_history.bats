@@ -42,14 +42,14 @@ assert v["type"] == "mobile" and any("/16" in s for s in v["signals"]), v
 # 4) the same address for days with few sessions is a fixed line
 v = server.infer_network_type({**base, "ip": "203.0.113.30", "first_seen": now - 5 * 86400, "last_seen": now, "sessions": 2}, {}, [], {}, [], now)
 assert v["type"] == "home", v
-# 5) neighbours that are already classified lend weight
+# 5) neighbours are ignored: another provider's address in the same /24 can be a different kind of access
 v = server.infer_network_type({**base, "ip": "203.0.113.40", "first_seen": now, "last_seen": now, "sessions": 1}, {}, [], {"mobile": 0.5}, [], now)
-assert v["type"] == "mobile", v
+assert v["type"] == "unknown", v
 # 6) nothing to go on: unknown, never a coin flip
 v = server.infer_network_type({**base, "ip": "203.0.113.50", "first_seen": now, "last_seen": now, "sessions": 1}, {}, [], {}, [], now)
 assert v["type"] == "unknown", v
-# 7) the client label alone is too weak to decide
-v = server.infer_network_type({**base, "ip": "203.0.113.60", "first_seen": now, "last_seen": now, "sessions": 1}, {"network": "mobile"}, [], {}, [], now)
+# 7) the device/client label says nothing about the network it is on right now
+v = server.infer_network_type({**base, "ip": "203.0.113.60", "first_seen": now, "last_seen": now, "sessions": 1}, {"network": "mobile", "device": "phone"}, [], {}, [], now)
 assert v["type"] == "unknown", v
 # 8) conflicting signals are reported as unknown, with the conflict spelled out
 v = server.infer_network_type({"ip": "203.0.113.80", "asn": "AS16345", "org": "16345 Mobile Region", "ptr": "128-71-170-153.broadband.example.ru", "first_seen": now, "last_seen": now, "sessions": 1}, {}, [], {}, [], now)
@@ -132,10 +132,10 @@ assert h["clients"]["c"]["networks"]["198.51.100.5"]["type"] == "mobile"
 PY
 }
 
-@test "network history: classification knows Beeline wired and mobile ASNs differently" {
+@test "network history: an AS alone never decides the type, but the carrier is still known" {
     command -v python3 &>/dev/null || skip "python3 not available"
     run python3 "$BATS_TEST_DIRNAME/../scripts/awg_client_profile.py" classify --asn AS8402 --org CORBINA
-    [[ "$output" == *'"carrier": "beeline"'* && "$output" == *'"network": "home"'* ]]
+    [[ "$output" == *'"carrier": "beeline"'* && "$output" == *'"network": "unknown"'* ]]
     run python3 "$BATS_TEST_DIRNAME/../scripts/awg_client_profile.py" classify --asn AS16345 --org "16345 Mobile Region"
     [[ "$output" == *'"carrier": "beeline"'* && "$output" == *'"network": "mobile"'* ]]
     run python3 "$BATS_TEST_DIRNAME/../scripts/awg_client_profile.py" classify --asn AS3216 --org "PJSC VimpelCom"

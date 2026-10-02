@@ -3586,20 +3586,21 @@ async function showClientNetworks(name) {
         <td class="p-1">${esc(r.carrier || r.provider || r.org || "-")}<br><span class="text-[var(--muted)]">${esc(r.asn || "")} ${esc(r.org || "")}</span></td>
         <td class="p-1">${esc([r.city, r.country_code].filter(Boolean).join(", ") || "-")}</td>
         <td class="p-1">${esc(r.sessions)}</td>
-        <td class="p-1"><select data-mark="${esc(r.ip)}" class="h-8 rounded-md border border-[var(--line)] bg-[var(--soft)] px-1 text-xs"><option value="">mark as...</option>${NET_TYPES.map(t => `<option>${t}</option>`).join("")}</select></td>
+        <td class="p-1"><select data-mark="${esc(r.ip)}" class="h-8 rounded-md border border-[var(--line)] bg-[var(--soft)] px-1 text-xs"><option value="">mark as...</option>${NET_TYPES.map(t => `<option value="${t}|ip">${t} (this address)</option>`).join("")}${NET_TYPES.map(t => `<option value="${t}|prefix">${t} (whole /24)</option>`).join("")}</select></td>
       </tr>`).join("") : `<tr><td colspan="7" class="p-3 text-sm text-[var(--muted)]">Nothing recorded yet. The collector notes where a client connects from about once a minute.</td></tr>`;
     dialog.innerHTML = `
       <div class="p-4 grid gap-3">
         <div class="flex items-center justify-between gap-3"><h2 class="text-base font-semibold">Networks: ${esc(clientDisplayLabel(client) || name)}</h2>
           <button type="button" data-close class="${buttonClasses("w-9 px-0")}">x</button></div>
-        <p class="text-xs text-[var(--muted)]">Where this client connected from. The type is a guess from several signals (hover it); marking an address fixes its /24 and teaches the neighbours.</p>
+        <p class="text-xs text-[var(--muted)]">Where this client connected from. The type is a guess from several signals (hover it). A phone can be on mobile data in the morning and on home Wi-Fi in the evening, so every address is judged on its own. Marking applies to that one address; choose the /24 variant only when you know the whole block is one kind of access.</p>
         <div class="overflow-auto"><table class="w-full text-left"><thead><tr class="text-xs text-[var(--muted)]"><th class="p-1">Last seen (UTC)</th><th class="p-1">Address</th><th class="p-1">Type</th><th class="p-1">Provider / AS</th><th class="p-1">Place</th><th class="p-1">Sessions</th><th class="p-1"></th></tr></thead><tbody>${body}</tbody></table></div>
       </div>`;
     dialog.querySelector("[data-close]").onclick = () => dialog.close();
     dialog.querySelectorAll("[data-mark]").forEach(sel => sel.onchange = async () => {
       if (!sel.value) return;
       try {
-        await api("/api/networks/label", {method: "POST", body: JSON.stringify({ip: sel.dataset.mark, type: sel.value})});
+        const [kind, scope] = sel.value.split("|");
+        await api("/api/networks/label", {method: "POST", body: JSON.stringify({ip: sel.dataset.mark, type: kind, scope})});
         showToast("Network marked");
         await render();
       } catch (error) { showToast("Could not mark", "error"); }
