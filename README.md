@@ -122,6 +122,7 @@ sudo /root/awg/manage_amneziawg.sh --help
 
 - [Установка на VPS](INSTALL_VPS.ru.md)
 - [Расширенная настройка](ADVANCED.md)
+- [Поведение AWG на домашних каналах: порты, фильтры, скорость](docs/NETWORK_BEHAVIOR.md)
 - [История изменений](CHANGELOG.md)
 - [Участие в разработке](CONTRIBUTING.md)
 - [Английская версия](README.en.md)
