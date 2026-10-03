@@ -109,16 +109,18 @@ assert len({(r["jmin"],r["jmax"],r["jc"]) for r in rows})>5
     [ -f "$AWG_CLIENT_PROFILE_DIR/other.json" ]
 }
 
-@test "client profile: QUIC style I1 is Initial-sized (>= 1200 bytes) with an odd first byte" {
+@test "client profile: QUIC style I1 is Initial-sized (>= 1200 bytes), odd first byte, random tags <= 1000" {
     for _ in $(seq 1 10); do PROF generate --os windows >> "$TEST_DIR/quic.jsonl"; done
     run python3 -c '
 import json,re,sys
 for l in open(sys.argv[1]):
     p=json.loads(l)
     assert p["preset"]=="desktop"
-    m=re.fullmatch(r"<b 0x([0-9a-f]+)><r (\d+)>", p["i1"])
+    m=re.fullmatch(r"<b 0x([0-9a-f]+)>((?:<r \d+>)+)", p["i1"])
     assert m, p["i1"]
-    head=bytes.fromhex(m.group(1)); total=len(head)+int(m.group(2))
+    sizes=[int(x) for x in re.findall(r"<r (\d+)>", m.group(2))]
+    assert all(1<=x<=1000 for x in sizes), sizes
+    head=bytes.fromhex(m.group(1)); total=len(head)+sum(sizes)
     assert 1200<=total<=1252, total
     assert head[0]&1==1 and head[0]&0xC0==0xC0
 ' "$TEST_DIR/quic.jsonl"

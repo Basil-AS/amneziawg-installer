@@ -137,6 +137,16 @@ def dns_i1() -> str:
     return "<b 0x" + (header + question + answer).hex() + ">"
 
 
+def random_tags(n: int, limit: int = 1000) -> str:
+    """`<r N>` tags that add up to n random bytes; one tag may not exceed `limit` bytes."""
+    out = []
+    while n > 0:
+        part = min(n, limit)
+        out.append("<r " + str(part) + ">")
+        n -= part
+    return "".join(out)
+
+
 def quic_i1() -> str:
     """A QUIC Initial shaped packet: real long-header layout, then random bytes up to a realistic size.
 
@@ -151,7 +161,7 @@ def quic_i1() -> str:
     head = bytes([first]) + bytes.fromhex("00000001") + bytes([len(dcid)]) + dcid + bytes.fromhex("0000")
     length = total - len(head) - 2
     head += bytes([0x40 | (length >> 8), length & 0xFF])  # 2-byte QUIC varint payload length
-    return "<b 0x" + head.hex() + "><r " + str(total - len(head)) + ">"
+    return "<b 0x" + head.hex() + ">" + random_tags(total - len(head))
 
 
 I1_STYLES = {"dns": dns_i1, "quic": quic_i1}

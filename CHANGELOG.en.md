@@ -12,6 +12,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- The QUIC-style I1 generator (`awg_client_profile.py`) now splits the random tail into `<r N>` tags of at most 1000 bytes each (it used to emit a single tag of up to ~1190 bytes).
+
 ### Added
 
 - Measurement notes on AmneziaWG 3.1 behaviour on two home links: which ports and traffic are throttled, the effect of parameters and mimicry, the outgoing UDP limit, path blocks and the speed ceiling (`docs/NETWORK_BEHAVIOR.en.md`).
