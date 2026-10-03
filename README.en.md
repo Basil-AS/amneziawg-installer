@@ -124,6 +124,7 @@ Read [SECURITY.md](SECURITY.md). Never publish `.conf` files, QR codes, VPN URIs
 
 - [VPS installation](INSTALL_VPS.md)
 - [Advanced configuration](ADVANCED.en.md)
+- [AWG behaviour on home links: ports, filters, speed](docs/NETWORK_BEHAVIOR.en.md)
 - [Changelog](CHANGELOG.en.md)
 - [Contributing](CONTRIBUTING.md)
 - [Russian README](README.md)

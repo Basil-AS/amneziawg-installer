@@ -12,6 +12,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- Measurement notes on AmneziaWG 3.1 behaviour on two home links: which ports and traffic are throttled, the effect of parameters and mimicry, the outgoing UDP limit, path blocks and the speed ceiling (`docs/NETWORK_BEHAVIOR.en.md`).
+
 ## [5.29.0-bas.14] - 2026-10-01
 
 ### Changed
